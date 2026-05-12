@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.tox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# uv
+.venv/
+.python-version
+
+# Node / TypeScript
+node_modules/
+*.tsbuildinfo
+.npm/
+.pnpm-store/
+dist-ts/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local Relay state (sidecar runtime data, never commit)
+.relay/
+
+# Build artifacts
+*.log
+*.tmp
+relay-sidecar-bundle-*.tar.gz
+relay-sidecar-bundle-*.zip
+
+# Ops runtime
+.ops/
