@@ -7,6 +7,11 @@
  *   VAL-W1-037 snake_case <-> camelCase alias map (TS side)
  *
  * Tier-1 plumbing tests. ASCII-only per CLAUDE.md.
+ *
+ * Relocated from packages/schemas/typescript/test/ (SCR-W1-001 fix):
+ * the test exercises generated SDK output and therefore belongs to the
+ * sdk-typescript package; the cross-package import previously violated
+ * the schemas package tsconfig rootDir.
  */
 
 import { describe, it, expect } from "vitest";
@@ -22,7 +27,7 @@ import type {
   EvidenceBundle,
   ReplayFixture,
   ErrorEnvelope,
-} from "../../../sdk-typescript/src/_generated/index.js";
+} from "../src/_generated/index.js";
 
 import {
   CANONICAL_ENVELOPES,
@@ -31,9 +36,9 @@ import {
   camelToSnake,
   RelayUnknownSchemaVersionError,
   parseEnvelope,
-} from "../../../sdk-typescript/src/_generated/index.js";
+} from "../src/_generated/index.js";
 
-const REPO_ROOT = path.resolve(__dirname, "..", "..", "..", "..");
+const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 
 const CANONICAL_ENVELOPE_LIST = [
   "RunResult",
