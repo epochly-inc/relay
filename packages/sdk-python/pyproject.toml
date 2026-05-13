@@ -1,0 +1,47 @@
+# epochly-relay (Python SDK package skeleton)
+#
+# This package will house the Relay Python SDK (W3). For W1.5 it carries the
+# generated canonical schemas (Pydantic v2 BaseModel subclasses) under
+# `relay/_generated/schemas/`, produced by the W1.5 codegen pipeline
+# (datamodel-code-generator from packages/schemas/raw/openapi.yaml).
+#
+# Per VAL-W1-033: `python -c "from relay._generated.schemas import RunResult,
+# GateDecision, ..."` MUST succeed; every generated class is a `BaseModel`
+# subclass with `model_config = ConfigDict(extra='forbid')`.
+#
+# The hand-authored rich-validation envelopes (cross-field checks, canonical
+# serializers) live under `packages/schemas/python/relay_schemas/`; the
+# W1.5 generated tree is a base layer the SDK can compose on top of.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay"
+version = "0.0.0"
+description = "Relay Python SDK (placeholder; W3 wires the client surface)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["relay"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "relay",
+  "README.md",
+]

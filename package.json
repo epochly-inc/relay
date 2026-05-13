@@ -5,7 +5,8 @@
   "description": "Relay v0.1 OSS - npm workspaces root.",
   "license": "Apache-2.0",
   "workspaces": [
-    "packages/schemas/typescript"
+    "packages/schemas/typescript",
+    "packages/sdk-typescript"
   ],
   "engines": {
     "node": ">=22"
