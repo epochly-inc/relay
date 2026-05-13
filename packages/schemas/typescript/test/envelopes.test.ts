@@ -20,11 +20,15 @@ import { fileURLToPath } from "node:url";
 import {
   Actor,
   EventLogEntry,
+  EvidenceBundle,
+  EvidenceClaim,
   GateDecision,
   GateDecisionDraft,
   GateRound,
   IdempotencyRecord,
   ManifestVersion,
+  ReplayCase,
+  ReplayFixture,
   RunResult,
   ScopeStateEvidenceBundle,
   ScopeStateGateRound,
@@ -32,23 +36,32 @@ import {
   ScopeStateRun,
   isActor,
   isEventLogEntry,
+  isEvidenceBundle,
+  isEvidenceClaim,
   isGateDecision,
   isGateDecisionDraft,
   isGateRound,
   isIdempotencyRecord,
   isManifestVersion,
+  isReplayCase,
+  isReplayFixture,
   isRunResult,
   isScopeState,
   parseActor,
   parseEventLogEntry,
+  parseEvidenceBundle,
+  parseEvidenceClaim,
   parseGateDecision,
   parseGateDecisionDraft,
   parseGateRound,
   parseIdempotencyRecord,
   parseManifestVersion,
+  parseReplayCase,
+  parseReplayFixture,
   parseRunResult,
   parseScopeState,
   serializeEventLogEntryCanonical,
+  serializeReplayFixtureCanonical,
   SHA256_HASH_PATTERN,
   ULID_PATTERN,
 } from "../src/envelopes.js";
@@ -1293,6 +1306,710 @@ describe("extra-field rejection on W1.2 envelopes", () => {
   });
 });
 
+// ===========================================================================
+// W1.3 evidence + replay envelopes
+// ===========================================================================
+//
+// Covers VAL-W1-018 through VAL-W1-025 (field-level constraints) and
+// VAL-W1-052 through VAL-W1-055 (schema_version literal pins) from the
+// TypeScript side.
+
+const VALID_BUNDLE_DIGEST = "sha256-" + "e".repeat(64);
+const VALID_CLAIM_DIGEST = "sha256-" + "f".repeat(64);
+const VALID_INPUT_DIGEST = "sha256-" + "1".repeat(64);
+const VALID_OUTPUT_DIGEST = "sha256-" + "2".repeat(64);
+const VALID_INPUTS_DIGEST = "sha256-" + "3".repeat(64);
+const VALID_FAILURE_SIG = "sha256-" + "4".repeat(64);
+
+function baseEvidenceBundle(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.evidence_bundle.v1",
+    evidence_bundle_id: newUuid(),
+    org_id: newUuid(),
+    project_id: newUuid(),
+    scope_type: "run",
+    scope_id: newUuid(),
+    bundle_digest: VALID_BUNDLE_DIGEST,
+    acef_core_version: "0.1.0",
+    relay_extension_version: "0.1.0",
+    signing_key_id: "key-evidence-001",
+    signature_algorithm: "ES256",
+    verification_status: "unverified",
+    redaction_policy_version: "relay.redaction.v1#default",
+    manifest_commit_hash: VALID_MANIFEST_HASH,
+    object_ref: "r2://evidence/00000000-0000-4000-8000-000000000001",
+    supersedes_bundle_id: null,
+    created_at: "2026-05-12T00:00:00+00:00",
+    ...overrides,
+  };
+}
+
+function baseEvidenceClaim(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.evidence_claim.v1",
+    evidence_claim_id: newUuid(),
+    evidence_bundle_id: newUuid(),
+    claim_type: "run_result",
+    subject_kind: "run",
+    subject_id: newUuid(),
+    claim_digest: VALID_CLAIM_DIGEST,
+    redaction_transform_version: "relay.redaction.v1#transform-001",
+    manifest_commit_hash: VALID_MANIFEST_HASH,
+    signer_key_id: "key-claim-001",
+    signature: VALID_SIGNATURE,
+    supersedes_claim_id: null,
+    created_at: "2026-05-12T00:00:00+00:00",
+    ...overrides,
+  };
+}
+
+function baseReplayCase(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.replay_case.v1",
+    replay_case_id: newUuid(),
+    project_id: newUuid(),
+    source_run_id: newUuid(),
+    failure_signature_hash: VALID_FAILURE_SIG,
+    inputs_ref: "r2://replay/inputs/00000000-0000-4000-8000-000000000002",
+    inputs_digest: VALID_INPUTS_DIGEST,
+    expected_assertion_ids: [],
+    human_reviewed: false,
+    reviewer_email: null,
+    reviewed_at: null,
+    status: "proposed",
+    created_at: "2026-05-12T00:00:00+00:00",
+    ...overrides,
+  };
+}
+
+function baseReplayFixture(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.replay_fixture.v1",
+    fixture_id: newUuid(),
+    replay_case_id: newUuid(),
+    source_span_id: newUuid(),
+    kind: "model_call",
+    mode: "cassette",
+    redaction_policy_version: "relay.redaction.v1#default",
+    input_digest: VALID_INPUT_DIGEST,
+    output_ref: "r2://replay/outputs/00000000-0000-4000-8000-000000000003",
+    output_digest: VALID_OUTPUT_DIGEST,
+    provider: "openai",
+    model: "gpt-4o-mini",
+    model_signature: "fp_abc123",
+    capture_clock: "2026-05-12T10:00:00+05:30",
+    refresh_policy: "invalidate_on_signature_change",
+    side_effect_class: "read_only",
+    allowed_in_replay: false,
+    created_at: "2026-05-12T00:00:00+00:00",
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// VAL-W1-018: evidence_bundles.bundle_digest sha256 pattern, non-nullable
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-018 evidence_bundles.bundle_digest sha256 pattern", () => {
+  it("accepts a canonical sha256-<hex> bundle_digest", () => {
+    expect(isEvidenceBundle(baseEvidenceBundle())).toBe(true);
+  });
+
+  it("rejects a missing bundle_digest", () => {
+    const payload = baseEvidenceBundle();
+    delete payload.bundle_digest;
+    expect(isEvidenceBundle(payload)).toBe(false);
+  });
+
+  it("rejects a null bundle_digest", () => {
+    expect(
+      isEvidenceBundle(baseEvidenceBundle({ bundle_digest: null })),
+    ).toBe(false);
+  });
+
+  it("rejects the colon-form bundle_digest", () => {
+    expect(
+      isEvidenceBundle(
+        baseEvidenceBundle({ bundle_digest: "sha256:" + "a".repeat(64) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a 63-char hex bundle_digest", () => {
+    expect(
+      isEvidenceBundle(
+        baseEvidenceBundle({ bundle_digest: "sha256-" + "a".repeat(63) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("parseEvidenceBundle names bundle_digest in the error message", () => {
+    expect(() =>
+      parseEvidenceBundle(
+        baseEvidenceBundle({ bundle_digest: "sha256:" + "a".repeat(64) }),
+      ),
+    ).toThrow(/bundle_digest/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-019: evidence_bundles.verification_status closed enum
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-019 evidence_bundles.verification_status closed enum", () => {
+  for (const status of ["unverified", "verified", "tampered", "revoked"]) {
+    it(`accepts the canonical verification_status '${status}'`, () => {
+      expect(
+        isEvidenceBundle(baseEvidenceBundle({ verification_status: status })),
+      ).toBe(true);
+    });
+  }
+
+  it("rejects an unknown verification_status value", () => {
+    expect(
+      isEvidenceBundle(
+        baseEvidenceBundle({ verification_status: "approved" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects an empty verification_status", () => {
+    expect(
+      isEvidenceBundle(baseEvidenceBundle({ verification_status: "" })),
+    ).toBe(false);
+  });
+
+  it("parseEvidenceBundle names verification_status in the error message", () => {
+    expect(() =>
+      parseEvidenceBundle(
+        baseEvidenceBundle({ verification_status: "approved" }),
+      ),
+    ).toThrow(/verification_status/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-020: evidence_claims.claim_type closed enum of eight kinds
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-020 evidence_claims.claim_type closed enum of eight kinds", () => {
+  for (const claimType of [
+    "run_result",
+    "gate_decision",
+    "contract_result",
+    "replay_result",
+    "human_oversight",
+    "incident",
+    "data_quality_check",
+    "provider_compatibility",
+  ]) {
+    it(`accepts the canonical claim_type '${claimType}'`, () => {
+      expect(
+        isEvidenceClaim(baseEvidenceClaim({ claim_type: claimType })),
+      ).toBe(true);
+    });
+  }
+
+  it("rejects an unknown claim_type", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({ claim_type: "orchestrator_decision" }),
+      ),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-021: evidence_claims.claim_digest + signature + supersedes_claim_id
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-021 evidence_claims field constraints", () => {
+  it("accepts the canonical claim_digest", () => {
+    expect(isEvidenceClaim(baseEvidenceClaim())).toBe(true);
+  });
+
+  it("rejects colon-form claim_digest", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({ claim_digest: "sha256:" + "a".repeat(64) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects 63-char hex claim_digest", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({ claim_digest: "sha256-" + "a".repeat(63) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects an empty signature", () => {
+    expect(isEvidenceClaim(baseEvidenceClaim({ signature: "" }))).toBe(false);
+  });
+
+  it("parseEvidenceClaim names signature in the error message on empty", () => {
+    expect(() => parseEvidenceClaim(baseEvidenceClaim({ signature: "" }))).toThrow(
+      /signature/,
+    );
+  });
+
+  it("accepts a null supersedes_claim_id", () => {
+    expect(
+      isEvidenceClaim(baseEvidenceClaim({ supersedes_claim_id: null })),
+    ).toBe(true);
+  });
+
+  it("accepts a UUID supersedes_claim_id", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({ supersedes_claim_id: newUuid() }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a non-UUID supersedes_claim_id", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({ supersedes_claim_id: "not-a-uuid" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("parseEvidenceClaim names supersedes_claim_id on a non-UUID string", () => {
+    expect(() =>
+      parseEvidenceClaim(
+        baseEvidenceClaim({ supersedes_claim_id: "not-a-uuid" }),
+      ),
+    ).toThrow(/supersedes_claim_id/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-022: replay_cases.status enum + expected_assertion_ids +
+//             required failure_signature_hash
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-022 replay_cases field constraints", () => {
+  for (const status of ["proposed", "approved", "retired"]) {
+    it(`accepts the canonical status '${status}'`, () => {
+      expect(isReplayCase(baseReplayCase({ status }))).toBe(true);
+    });
+  }
+
+  it("rejects an invalid status", () => {
+    expect(
+      isReplayCase(baseReplayCase({ status: "approved_with_gaps" })),
+    ).toBe(false);
+  });
+
+  it("status defaults to 'proposed' when omitted", () => {
+    const payload = baseReplayCase();
+    delete payload.status;
+    const rc = parseReplayCase(payload);
+    expect(rc.status).toBe("proposed");
+  });
+
+  it("expected_assertion_ids defaults to [] when omitted", () => {
+    const payload = baseReplayCase();
+    delete payload.expected_assertion_ids;
+    const rc = parseReplayCase(payload);
+    expect(rc.expected_assertion_ids).toEqual([]);
+  });
+
+  it("accepts non-empty string IDs in expected_assertion_ids", () => {
+    expect(
+      isReplayCase(
+        baseReplayCase({
+          expected_assertion_ids: ["VAL-STRUCTURED-001", "VAL-STRUCTURED-002"],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects an empty-string member in expected_assertion_ids", () => {
+    expect(
+      isReplayCase(baseReplayCase({ expected_assertion_ids: [""] })),
+    ).toBe(false);
+  });
+
+  it("rejects a non-string member in expected_assertion_ids", () => {
+    expect(
+      isReplayCase(baseReplayCase({ expected_assertion_ids: [123] })),
+    ).toBe(false);
+  });
+
+  it("rejects a missing failure_signature_hash", () => {
+    const payload = baseReplayCase();
+    delete payload.failure_signature_hash;
+    expect(isReplayCase(payload)).toBe(false);
+  });
+
+  it("rejects an empty failure_signature_hash", () => {
+    expect(
+      isReplayCase(baseReplayCase({ failure_signature_hash: "" })),
+    ).toBe(false);
+  });
+
+  it("parseReplayCase names failure_signature_hash in the error message", () => {
+    expect(() =>
+      parseReplayCase(baseReplayCase({ failure_signature_hash: "" })),
+    ).toThrow(/failure_signature_hash/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-023: replay_fixtures kind / mode / side_effect_class enums +
+//             allowed_in_replay strict bool
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-023 replay_fixtures closed enums + strict bool", () => {
+  for (const kind of [
+    "model_call",
+    "tool_call",
+    "retrieval",
+    "embedding",
+    "custom",
+  ]) {
+    it(`accepts the canonical kind '${kind}'`, () => {
+      expect(isReplayFixture(baseReplayFixture({ kind }))).toBe(true);
+    });
+  }
+
+  it("rejects an unknown kind", () => {
+    expect(
+      isReplayFixture(baseReplayFixture({ kind: "planning_call" })),
+    ).toBe(false);
+  });
+
+  for (const mode of ["cassette", "live", "degraded_live", "mock"]) {
+    it(`accepts the canonical mode '${mode}'`, () => {
+      expect(isReplayFixture(baseReplayFixture({ mode }))).toBe(true);
+    });
+  }
+
+  it("rejects an unknown mode", () => {
+    expect(
+      isReplayFixture(baseReplayFixture({ mode: "passthrough" })),
+    ).toBe(false);
+  });
+
+  for (const side_effect_class of [
+    "read_only",
+    "mutating",
+    "external_irreversible",
+    "approval_required",
+  ]) {
+    it(`accepts the canonical side_effect_class '${side_effect_class}'`, () => {
+      expect(
+        isReplayFixture(baseReplayFixture({ side_effect_class })),
+      ).toBe(true);
+    });
+  }
+
+  it("rejects an unknown side_effect_class", () => {
+    expect(
+      isReplayFixture(
+        baseReplayFixture({ side_effect_class: "audited" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("allowed_in_replay defaults to false when omitted", () => {
+    const payload = baseReplayFixture();
+    delete payload.allowed_in_replay;
+    const rf = parseReplayFixture(payload);
+    expect(rf.allowed_in_replay).toBe(false);
+  });
+
+  it("accepts allowed_in_replay = true", () => {
+    expect(
+      isReplayFixture(baseReplayFixture({ allowed_in_replay: true })),
+    ).toBe(true);
+  });
+
+  it("rejects string 'true' for allowed_in_replay", () => {
+    expect(
+      isReplayFixture(baseReplayFixture({ allowed_in_replay: "true" })),
+    ).toBe(false);
+  });
+
+  it("rejects string 'false' for allowed_in_replay", () => {
+    expect(
+      isReplayFixture(baseReplayFixture({ allowed_in_replay: "false" })),
+    ).toBe(false);
+  });
+
+  it("rejects int 1 for allowed_in_replay", () => {
+    expect(
+      isReplayFixture(baseReplayFixture({ allowed_in_replay: 1 })),
+    ).toBe(false);
+  });
+
+  it("parseReplayFixture names allowed_in_replay in the error message", () => {
+    expect(() =>
+      parseReplayFixture(baseReplayFixture({ allowed_in_replay: "true" })),
+    ).toThrow(/allowed_in_replay/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-024: replay_fixtures.capture_clock RFC 3339 timezone-aware +
+//             cross-language byte-equal round-trip fixture
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-024 replay_fixtures.capture_clock RFC 3339 + offset required", () => {
+  it("accepts the UTC 'Z' form", () => {
+    expect(
+      isReplayFixture(
+        baseReplayFixture({ capture_clock: "2026-05-12T00:00:00Z" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a positive offset (+05:30)", () => {
+    expect(
+      isReplayFixture(
+        baseReplayFixture({ capture_clock: "2026-05-12T10:00:00+05:30" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a negative offset (-08:00)", () => {
+    expect(
+      isReplayFixture(
+        baseReplayFixture({ capture_clock: "2026-05-12T00:00:00-08:00" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a naive string (no offset)", () => {
+    expect(
+      isReplayFixture(
+        baseReplayFixture({ capture_clock: "2026-05-12T00:00:00" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("parseReplayFixture names capture_clock on naive input", () => {
+    expect(() =>
+      parseReplayFixture(
+        baseReplayFixture({ capture_clock: "2026-05-12T00:00:00" }),
+      ),
+    ).toThrow(/capture_clock/);
+  });
+
+  it("canonical serializer preserves the capture_clock offset byte-for-byte", () => {
+    for (const offsetStr of [
+      "2026-05-12T10:00:00+05:30",
+      "2026-05-12T10:00:00-08:00",
+      "2026-05-12T10:00:00+00:00",
+    ]) {
+      const rf = parseReplayFixture(
+        baseReplayFixture({ capture_clock: offsetStr }),
+      );
+      const bytes = serializeReplayFixtureCanonical(rf);
+      const decoded = JSON.parse(Buffer.from(bytes).toString("utf-8"));
+      expect(decoded.capture_clock).toBe(offsetStr);
+    }
+  });
+
+  it("cross-language fixture digest matches the Python serializer output", () => {
+    const fixtureDir = path.resolve(
+      __dirname,
+      "..",
+      "..",
+      "python",
+      "tests",
+      "fixtures",
+    );
+    const payload = JSON.parse(
+      fs.readFileSync(
+        path.join(fixtureDir, "replay_fixture_capture_clock.json"),
+        "utf-8",
+      ),
+    );
+    const expectedDigest = fs
+      .readFileSync(
+        path.join(fixtureDir, "replay_fixture_capture_clock.sha256"),
+        "utf-8",
+      )
+      .trim();
+
+    const rf = parseReplayFixture(payload);
+    const canonical = serializeReplayFixtureCanonical(rf);
+    const actualDigest =
+      "sha256-" + crypto.createHash("sha256").update(canonical).digest("hex");
+    expect(actualDigest).toBe(expectedDigest);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-025: replay_fixtures.refresh_policy closed enum + default
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-025 replay_fixtures.refresh_policy closed enum", () => {
+  for (const refreshPolicy of [
+    "invalidate_on_signature_change",
+    "hold_forever",
+    "refresh_weekly",
+    "invalidate_on_model_version_change",
+  ]) {
+    it(`accepts the canonical refresh_policy '${refreshPolicy}'`, () => {
+      expect(
+        isReplayFixture(
+          baseReplayFixture({ refresh_policy: refreshPolicy }),
+        ),
+      ).toBe(true);
+    });
+  }
+
+  it("rejects an unknown refresh_policy", () => {
+    expect(
+      isReplayFixture(baseReplayFixture({ refresh_policy: "refresh_daily" })),
+    ).toBe(false);
+  });
+
+  it("refresh_policy defaults to invalidate_on_signature_change", () => {
+    const payload = baseReplayFixture();
+    delete payload.refresh_policy;
+    const rf = parseReplayFixture(payload);
+    expect(rf.refresh_policy).toBe("invalidate_on_signature_change");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-052..055: schema_version literal pins (W1.3 envelopes)
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-052 evidence_bundle schema_version pinned", () => {
+  it("accepts the canonical schema_version", () => {
+    expect(isEvidenceBundle(baseEvidenceBundle())).toBe(true);
+  });
+
+  it("rejects a non-canonical schema_version", () => {
+    expect(
+      isEvidenceBundle(
+        baseEvidenceBundle({ schema_version: "relay.evidence_bundle.v2" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("generated TS source contains the evidence_bundle.v1 literal", () => {
+    const src = path.resolve(__dirname, "..", "src", "envelopes.ts");
+    const text = fs.readFileSync(src, "utf-8");
+    const occurrences = (
+      text.match(/"relay\.evidence_bundle\.v1"/g) ?? []
+    ).length;
+    expect(occurrences).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("VAL-W1-053 evidence_claim schema_version pinned", () => {
+  it("accepts the canonical schema_version", () => {
+    expect(isEvidenceClaim(baseEvidenceClaim())).toBe(true);
+  });
+
+  it("rejects a non-canonical schema_version", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({ schema_version: "relay.evidence_claim.v2" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("generated TS source contains the evidence_claim.v1 literal", () => {
+    const src = path.resolve(__dirname, "..", "src", "envelopes.ts");
+    const text = fs.readFileSync(src, "utf-8");
+    const occurrences = (
+      text.match(/"relay\.evidence_claim\.v1"/g) ?? []
+    ).length;
+    expect(occurrences).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("VAL-W1-054 replay_case schema_version pinned", () => {
+  it("accepts the canonical schema_version", () => {
+    expect(isReplayCase(baseReplayCase())).toBe(true);
+  });
+
+  it("rejects a non-canonical schema_version", () => {
+    expect(
+      isReplayCase(baseReplayCase({ schema_version: "relay.replay_case.v2" })),
+    ).toBe(false);
+  });
+
+  it("generated TS source contains the replay_case.v1 literal", () => {
+    const src = path.resolve(__dirname, "..", "src", "envelopes.ts");
+    const text = fs.readFileSync(src, "utf-8");
+    const occurrences = (
+      text.match(/"relay\.replay_case\.v1"/g) ?? []
+    ).length;
+    expect(occurrences).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("VAL-W1-055 replay_fixture schema_version pinned", () => {
+  it("accepts the canonical schema_version", () => {
+    expect(isReplayFixture(baseReplayFixture())).toBe(true);
+  });
+
+  it("rejects a non-canonical schema_version", () => {
+    expect(
+      isReplayFixture(
+        baseReplayFixture({ schema_version: "relay.replay_fixture.v2" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("generated TS source contains the replay_fixture.v1 literal", () => {
+    const src = path.resolve(__dirname, "..", "src", "envelopes.ts");
+    const text = fs.readFileSync(src, "utf-8");
+    const occurrences = (
+      text.match(/"relay\.replay_fixture\.v1"/g) ?? []
+    ).length;
+    expect(occurrences).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Defense-in-depth: extra-field rejection on W1.3 envelopes
+// ---------------------------------------------------------------------------
+
+describe("extra-field rejection on W1.3 envelopes", () => {
+  it("rejects unknown fields on EvidenceBundle", () => {
+    expect(
+      isEvidenceBundle(baseEvidenceBundle({ unknown_field: "value" })),
+    ).toBe(false);
+  });
+
+  it("rejects unknown fields on EvidenceClaim", () => {
+    expect(
+      isEvidenceClaim(baseEvidenceClaim({ unknown_field: "value" })),
+    ).toBe(false);
+  });
+
+  it("rejects unknown fields on ReplayCase", () => {
+    expect(
+      isReplayCase(baseReplayCase({ unknown_field: "value" })),
+    ).toBe(false);
+  });
+
+  it("rejects unknown fields on ReplayFixture", () => {
+    expect(
+      isReplayFixture(baseReplayFixture({ unknown_field: "value" })),
+    ).toBe(false);
+  });
+});
+
 // Avoid TS "declared but never used" by referencing the type-narrowing
 // constants. (Type-level usage suffices for the import to be reachable.)
 const _typeRefs: ReadonlyArray<
@@ -1303,5 +2020,9 @@ const _typeRefs: ReadonlyArray<
   | ScopeStateEvidenceBundle
   | IdempotencyRecord
   | EventLogEntry
+  | EvidenceBundle
+  | EvidenceClaim
+  | ReplayCase
+  | ReplayFixture
 > = [];
 void _typeRefs;

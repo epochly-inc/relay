@@ -321,6 +321,207 @@ schemas:
       first_seen_at:   { type: timestamptz, required: true }
       expires_at:      { type: timestamptz, required: true }
 
+  # ---------------------------------------------------------------------------
+  # W1.3 evidence + replay envelopes
+  # ---------------------------------------------------------------------------
+  #
+  # Spec anchors:
+  #   J line 2798-2810   evidence_bundles DDL (verification_status column)
+  #   A.16 lines 3331-3353 evidence_claims DDL (claim_type closed enum,
+  #                        claim_digest sha256, signature non-empty,
+  #                        supersedes_claim_id nullable UUID self-ref)
+  #   A.8 lines 3131-3145 replay_cases DDL (status enum,
+  #                        expected_assertion_ids list[str] default [],
+  #                        failure_signature_hash required)
+  #   A.8 lines 3147-3168 replay_fixtures DDL (kind / mode / side_effect_class
+  #                        closed enums; allowed_in_replay bool default false;
+  #                        refresh_policy default invalidate_on_signature_change)
+  #   E.2 line 3913       capture_clock = wall-clock at fixture capture
+  #   E.2 line 3914       refresh_policy {invalidate_on_signature_change,
+  #                        hold_forever, refresh_weekly,
+  #                        invalidate_on_model_version_change}
+  #   E.3 lines 3928-3935 side_effect_class enumeration
+  #   B.7 lines 3618-3621 schema versioning rules (Literal pin)
+  #   K   lines 4394+     evidence bundle signature semantics
+  #
+  # VAL-W1-019 enum-lock-in (eng-plan-locked candidate set): spec J declares
+  # the verification_status column but does NOT enumerate values. The
+  # candidates the eng plan surfaced are {unverified, verified, tampered,
+  # revoked}, which is the smallest set that round-trips through
+  # sectionAB bundle verification:
+  #   unverified  -> issued-by-signer but not yet verified by registry
+  #   verified    -> signature + JCS + manifest digest all check out
+  #   tampered    -> bundle digest does not match stored signature; integrity
+  #                  broken
+  #   revoked     -> signing key was revoked or bundle was administratively
+  #                  retired (sectionK supersedes flow)
+  # These four are locked here per /ops-plan worker direction; spec sectionJ
+  # narrative amendment to enumerate them is queued post-v0.1.
+
+  EvidenceBundle:
+    schema_version: relay.evidence_bundle.v1
+    spec: J
+    description: |
+      Signed evidence bundle row. Mirrors spec sectionJ table at line 2792-2810.
+      bundle_digest is the canonical Relay sha256 wire form
+      (sha256-<64 lowercase hex>) and is non-nullable (VAL-W1-018). The
+      verification_status column is a closed enum
+      {unverified, verified, tampered, revoked} (VAL-W1-019); see the
+      enum-lock-in comment above.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.evidence_bundle.v1
+        required: true
+      evidence_bundle_id:        { type: uuid, required: true }
+      org_id:                    { type: uuid, required: true }
+      project_id:                { type: uuid, required: true }
+      scope_type:                { type: string, required: true }
+      scope_id:                  { type: uuid, required: true }
+      bundle_digest:             { type: sha256_hash, required: true }
+      acef_core_version:         { type: string, required: true }
+      relay_extension_version:   { type: string, required: true }
+      signing_key_id:            { type: string, required: false, nullable: true }
+      signature_algorithm:       { type: string, required: false, nullable: true }
+      verification_status:
+        type: enum
+        values: [unverified, verified, tampered, revoked]
+        required: true
+      redaction_policy_version:  { type: string, required: true }
+      manifest_commit_hash:      { type: sha256_hash, required: false, nullable: true }
+      object_ref:                { type: string, required: true }
+      supersedes_bundle_id:      { type: uuid, required: false, nullable: true }
+      created_at:                { type: timestamptz, required: true }
+
+  EvidenceClaim:
+    schema_version: relay.evidence_claim.v1
+    spec: A.16
+    description: |
+      Atomic claim inside an evidence bundle (spec sectionA.16 lines 3331-3353).
+      claim_type is a closed eight-member enum (VAL-W1-020). claim_digest
+      is the canonical sha256-<hex> wire form (VAL-W1-021). signature is a
+      required, non-empty string. supersedes_claim_id is a nullable UUID
+      self-reference; a non-UUID string MUST fail validation.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.evidence_claim.v1
+        required: true
+      evidence_claim_id:           { type: uuid, required: true }
+      evidence_bundle_id:          { type: uuid, required: true }
+      claim_type:
+        type: enum
+        values:
+          - run_result
+          - gate_decision
+          - contract_result
+          - replay_result
+          - human_oversight
+          - incident
+          - data_quality_check
+          - provider_compatibility
+        required: true
+      subject_kind:                { type: string, required: true }
+      subject_id:                  { type: uuid, required: true }
+      claim_digest:                { type: sha256_hash, required: true }
+      redaction_transform_version: { type: string, required: true }
+      manifest_commit_hash:        { type: sha256_hash, required: true }
+      signer_key_id:               { type: string, required: true }
+      signature:                   { type: non_empty_string, required: true }
+      supersedes_claim_id:         { type: uuid, required: false, nullable: true }
+      created_at:                  { type: timestamptz, required: true }
+
+  ReplayCase:
+    schema_version: relay.replay_case.v1
+    spec: A.8
+    description: |
+      Replay case row (spec sectionA.8 lines 3131-3145). status is a closed
+      three-member enum (VAL-W1-022). expected_assertion_ids defaults to
+      [] and accepts only non-empty string IDs (e.g. VAL-STRUCTURED-001
+      shape). failure_signature_hash is required and non-empty.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.replay_case.v1
+        required: true
+      replay_case_id:           { type: uuid, required: true }
+      project_id:               { type: uuid, required: true }
+      source_run_id:            { type: uuid, required: false, nullable: true }
+      failure_signature_hash:   { type: non_empty_string, required: true }
+      inputs_ref:               { type: string, required: true }
+      inputs_digest:            { type: sha256_hash, required: true }
+      expected_assertion_ids:
+        type: list_non_empty_str
+        required: false
+        default: []
+      human_reviewed:           { type: bool, required: false, default: false }
+      reviewer_email:           { type: string, required: false, nullable: true }
+      reviewed_at:              { type: timestamptz, required: false, nullable: true }
+      status:
+        type: enum
+        values: [proposed, approved, retired]
+        required: false
+        default: proposed
+      created_at:               { type: timestamptz, required: true }
+
+  ReplayFixture:
+    schema_version: relay.replay_fixture.v1
+    spec: A.8
+    description: |
+      Replay fixture row (spec sectionA.8 lines 3147-3168, sectionE.2-E.3). kind, mode,
+      and side_effect_class are closed enums (VAL-W1-023). allowed_in_replay
+      defaults to false and MUST be a boolean (not coercible from string
+      forms such as "true"). refresh_policy defaults to
+      invalidate_on_signature_change and rejects out-of-set values
+      (VAL-W1-025). capture_clock is RFC 3339 with a required timezone
+      offset (VAL-W1-024, mirrors VAL-W1-017 discipline).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.replay_fixture.v1
+        required: true
+      fixture_id:                 { type: uuid, required: true }
+      replay_case_id:             { type: uuid, required: true }
+      source_span_id:             { type: uuid, required: true }
+      kind:
+        type: enum
+        values: [model_call, tool_call, retrieval, embedding, custom]
+        required: true
+      mode:
+        type: enum
+        values: [cassette, live, degraded_live, mock]
+        required: true
+      redaction_policy_version:   { type: string, required: true }
+      input_digest:               { type: sha256_hash, required: true }
+      output_ref:                 { type: string, required: false, nullable: true }
+      output_digest:              { type: sha256_hash, required: false, nullable: true }
+      provider:                   { type: string, required: false, nullable: true }
+      model:                      { type: string, required: false, nullable: true }
+      model_signature:            { type: string, required: false, nullable: true }
+      capture_clock:              { type: timestamptz_offset_required, required: true }
+      refresh_policy:
+        type: enum
+        values:
+          - invalidate_on_signature_change
+          - hold_forever
+          - refresh_weekly
+          - invalidate_on_model_version_change
+        required: false
+        default: invalidate_on_signature_change
+      side_effect_class:
+        type: enum
+        values:
+          - read_only
+          - mutating
+          - external_irreversible
+          - approval_required
+        required: true
+      allowed_in_replay:
+        type: strict_bool
+        required: false
+        default: false
+      created_at:                 { type: timestamptz, required: true }
+
   EventLogEntry:
     schema_version: relay.event_log_entry.v1
     spec: A.11
@@ -397,3 +598,16 @@ types:
     default: {}
   bool:         { python: "bool", typescript: "boolean" }
   string:       { python: "str", typescript: "string" }
+  non_empty_string:
+    python: 'Annotated[str, Field(min_length=1)]'
+    typescript: "string"
+    constraint: "min_length=1 (VAL-W1-021 signature, VAL-W1-022 failure_signature_hash)"
+  list_non_empty_str:
+    python: 'list[Annotated[str, Field(min_length=1)]]'
+    typescript: "string[]"
+    default: []
+    constraint: "list of non-empty strings (VAL-W1-022 expected_assertion_ids)"
+  strict_bool:
+    python: 'bool'
+    typescript: "boolean"
+    constraint: "strict boolean; string forms 'true'/'false' rejected (VAL-W1-023 allowed_in_replay)"

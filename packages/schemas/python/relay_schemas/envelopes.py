@@ -644,17 +644,298 @@ def serialize_event_log_entry_canonical(entry: EventLogEntry) -> bytes:
     return json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+# -----------------------------------------------------------------------------
+# W1.3 evidence + replay envelopes (spec J, A.16, A.8, E.2-E.3)
+# -----------------------------------------------------------------------------
+#
+# Spec anchors:
+#   J line 2798-2810   evidence_bundles DDL (verification_status column)
+#   A.16 lines 3331-3353 evidence_claims DDL (claim_type closed enum,
+#                        claim_digest sha256, signature non-empty,
+#                        supersedes_claim_id nullable UUID self-ref)
+#   A.8 lines 3131-3145 replay_cases DDL (status enum,
+#                        expected_assertion_ids list[str] default [],
+#                        failure_signature_hash required)
+#   A.8 lines 3147-3168 replay_fixtures DDL (kind / mode / side_effect_class
+#                        closed enums; allowed_in_replay bool default false;
+#                        refresh_policy default invalidate_on_signature_change)
+#   E.2 line 3913       capture_clock = wall-clock at fixture capture
+#   E.3 lines 3928-3935 side_effect_class enumeration
+#   K   lines 4394+     evidence bundle signature semantics
+#
+# VAL-W1-019 enum-lock-in: spec J does not enumerate verification_status
+# values; the eng-plan-locked candidate set is locked in the canonical YAML
+# at packages/schemas/raw/envelopes.yaml as
+# {unverified, verified, tampered, revoked}.
+
+NonEmptyStr = Annotated[str, Field(min_length=1)]
+"""Non-empty string. Used for signatures and failure_signature_hash."""
+
+
+class EvidenceBundle(_RelayEnvelope):
+    """Signed evidence bundle row (spec J line 2792-2810).
+
+    VAL-W1-018: ``bundle_digest`` non-nullable, canonical sha256-<hex> form.
+    VAL-W1-019: ``verification_status`` closed enum locked at
+                {unverified, verified, tampered, revoked} (see YAML lock-in
+                comment + raw/envelopes.yaml).
+    VAL-W1-052: ``schema_version`` pinned to ``relay.evidence_bundle.v1``.
+    """
+
+    schema_version: Literal["relay.evidence_bundle.v1"]
+    evidence_bundle_id: UUID
+    org_id: UUID
+    project_id: UUID
+    scope_type: str
+    scope_id: UUID
+    bundle_digest: Sha256Hash
+    acef_core_version: str
+    relay_extension_version: str
+    signing_key_id: str | None = None
+    signature_algorithm: str | None = None
+    verification_status: Literal["unverified", "verified", "tampered", "revoked"]
+    redaction_policy_version: str
+    manifest_commit_hash: Sha256Hash | None = None
+    object_ref: str
+    supersedes_bundle_id: UUID | None = None
+    created_at: datetime
+
+
+class EvidenceClaim(_RelayEnvelope):
+    """Atomic claim inside an evidence bundle (spec A.16 lines 3331-3353).
+
+    VAL-W1-020: ``claim_type`` closed enum of eight kinds.
+    VAL-W1-021: ``claim_digest`` canonical sha256-<hex> form; ``signature``
+                non-empty string; ``supersedes_claim_id`` nullable UUID.
+    VAL-W1-053: ``schema_version`` pinned to ``relay.evidence_claim.v1``.
+    """
+
+    schema_version: Literal["relay.evidence_claim.v1"]
+    evidence_claim_id: UUID
+    evidence_bundle_id: UUID
+    claim_type: Literal[
+        "run_result",
+        "gate_decision",
+        "contract_result",
+        "replay_result",
+        "human_oversight",
+        "incident",
+        "data_quality_check",
+        "provider_compatibility",
+    ]
+    subject_kind: str
+    subject_id: UUID
+    claim_digest: Sha256Hash
+    redaction_transform_version: str
+    manifest_commit_hash: Sha256Hash
+    signer_key_id: str
+    signature: NonEmptyStr
+    supersedes_claim_id: UUID | None = None
+    created_at: datetime
+
+
+class ReplayCase(_RelayEnvelope):
+    """Replay case row (spec A.8 lines 3131-3145).
+
+    VAL-W1-022: ``status`` closed enum {proposed, approved, retired};
+                ``expected_assertion_ids`` defaults to []; only non-empty
+                strings accepted. ``failure_signature_hash`` required
+                non-empty.
+    VAL-W1-054: ``schema_version`` pinned to ``relay.replay_case.v1``.
+    """
+
+    schema_version: Literal["relay.replay_case.v1"]
+    replay_case_id: UUID
+    project_id: UUID
+    source_run_id: UUID | None = None
+    failure_signature_hash: NonEmptyStr
+    inputs_ref: str
+    inputs_digest: Sha256Hash
+    expected_assertion_ids: list[NonEmptyStr] = Field(default_factory=list)
+    human_reviewed: bool = False
+    reviewer_email: str | None = None
+    reviewed_at: datetime | None = None
+    status: Literal["proposed", "approved", "retired"] = "proposed"
+    created_at: datetime
+
+
+class ReplayFixture(_RelayEnvelope):
+    """Replay fixture row (spec A.8 lines 3147-3168, E.2-E.3).
+
+    VAL-W1-023: ``kind`` / ``mode`` / ``side_effect_class`` closed enums;
+                ``allowed_in_replay`` STRICT bool (not coercible from
+                "true"/"false" strings or int 0/1).
+    VAL-W1-024: ``capture_clock`` RFC 3339 timezone-aware; naive timestamps
+                rejected. The raw wire-format string is captured on a
+                private attribute so the canonical serializer can emit it
+                byte-for-byte for the cross-language round-trip fixture.
+    VAL-W1-025: ``refresh_policy`` closed four-member enum, default
+                ``invalidate_on_signature_change``.
+    VAL-W1-055: ``schema_version`` pinned to ``relay.replay_fixture.v1``.
+    """
+
+    schema_version: Literal["relay.replay_fixture.v1"]
+    fixture_id: UUID
+    replay_case_id: UUID
+    source_span_id: UUID
+    kind: Literal["model_call", "tool_call", "retrieval", "embedding", "custom"]
+    mode: Literal["cassette", "live", "degraded_live", "mock"]
+    redaction_policy_version: str
+    input_digest: Sha256Hash
+    output_ref: str | None = None
+    output_digest: Sha256Hash | None = None
+    provider: str | None = None
+    model: str | None = None
+    model_signature: str | None = None
+    capture_clock: datetime
+    refresh_policy: Literal[
+        "invalidate_on_signature_change",
+        "hold_forever",
+        "refresh_weekly",
+        "invalidate_on_model_version_change",
+    ] = "invalidate_on_signature_change"
+    side_effect_class: Literal[
+        "read_only",
+        "mutating",
+        "external_irreversible",
+        "approval_required",
+    ]
+    allowed_in_replay: bool = False
+    created_at: datetime
+
+    _capture_clock_raw: str | None = PrivateAttr(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _check_capture_clock_offset_and_strict_bool(cls, data: Any) -> Any:
+        # VAL-W1-024: reject naive RFC 3339 string forms BEFORE Pydantic's
+        # datetime coercion silently produces a tz-naive datetime.
+        # VAL-W1-023: reject any allowed_in_replay value that is not a
+        # native Python bool. Pydantic v2 default-mode coerces "true"/"false"
+        # strings AND int 0/1 to bool; we reject both BEFORE field validation.
+        if isinstance(data, dict):
+            raw = data.get("capture_clock")
+            if isinstance(raw, str) and _RFC3339_OFFSET_RE.search(raw) is None:
+                raise ValueError(
+                    "capture_clock: naive RFC 3339 timestamp rejected; wire "
+                    "form MUST carry a timezone offset (Z or +/-HH:MM) per "
+                    f"VAL-W1-024 (observed={raw!r})"
+                )
+            if "allowed_in_replay" in data:
+                value = data["allowed_in_replay"]
+                if not isinstance(value, bool):
+                    raise ValueError(
+                        "allowed_in_replay: strict boolean required; type "
+                        f"{type(value).__name__} rejected per VAL-W1-023 "
+                        f"(observed={value!r})"
+                    )
+        return data
+
+    @field_validator("capture_clock", mode="after")
+    @classmethod
+    def _capture_clock_requires_tzinfo(cls, value: datetime) -> datetime:
+        # VAL-W1-024: a naive datetime object passed in directly bypasses
+        # the string regex above; assert tzinfo is non-None here.
+        if value.tzinfo is None:
+            raise ValueError(
+                "capture_clock: timezone-naive datetime rejected; tzinfo "
+                "MUST be set per VAL-W1-024"
+            )
+        return value
+
+    @classmethod
+    def model_validate(
+        cls,
+        obj: Any,
+        *,
+        strict: bool | None = None,
+        from_attributes: bool | None = None,
+        context: Any = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> ReplayFixture:
+        # Capture the raw capture_clock string on the validated instance so
+        # the canonical serializer can emit it byte-for-byte for the
+        # cross-language round-trip fixture (mirrors EventLogEntry).
+        raw_capture_clock: str | None = None
+        if isinstance(obj, dict):
+            candidate = obj.get("capture_clock")
+            if isinstance(candidate, str):
+                raw_capture_clock = candidate
+        instance = super().model_validate(
+            obj,
+            strict=strict,
+            from_attributes=from_attributes,
+            context=context,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
+        if raw_capture_clock is not None:
+            instance._capture_clock_raw = raw_capture_clock
+        return instance
+
+
+def serialize_replay_fixture_canonical(fixture: ReplayFixture) -> bytes:
+    """Canonical JSON byte serialization for cross-language round-trip.
+
+    Mirrors ``serialize_event_log_entry_canonical`` (VAL-W1-017) so the same
+    fixture produces an identical SHA-256 digest in Py and TS. Rules:
+
+    1. Sort keys lexicographically (``sort_keys=True``).
+    2. Use compact separators (",", ":") (no extra whitespace).
+    3. UUID fields rendered as canonical 8-4-4-4-12 lowercase-hex strings.
+    4. ``capture_clock`` rendered as the captured original wire-format
+       string preserving the timezone offset byte-for-byte.
+    5. ``created_at`` rendered via ``isoformat()`` (only capture_clock is
+       used for the VAL-W1-024 byte-equal evidence; ``created_at`` is not
+       on the offset-preservation critical path but is included in the
+       canonical envelope for completeness).
+    6. UTF-8 encoded bytes.
+    """
+    if fixture._capture_clock_raw is None:
+        capture_clock_str = fixture.capture_clock.isoformat()
+    else:
+        capture_clock_str = fixture._capture_clock_raw
+
+    canonical: dict[str, Any] = {
+        "schema_version": fixture.schema_version,
+        "fixture_id": str(fixture.fixture_id),
+        "replay_case_id": str(fixture.replay_case_id),
+        "source_span_id": str(fixture.source_span_id),
+        "kind": fixture.kind,
+        "mode": fixture.mode,
+        "redaction_policy_version": fixture.redaction_policy_version,
+        "input_digest": fixture.input_digest,
+        "output_ref": fixture.output_ref,
+        "output_digest": fixture.output_digest,
+        "provider": fixture.provider,
+        "model": fixture.model,
+        "model_signature": fixture.model_signature,
+        "capture_clock": capture_clock_str,
+        "refresh_policy": fixture.refresh_policy,
+        "side_effect_class": fixture.side_effect_class,
+        "allowed_in_replay": fixture.allowed_in_replay,
+        "created_at": fixture.created_at.isoformat(),
+    }
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 __all__ = [
     "Actor",
     "EventLogEntry",
+    "EvidenceBundle",
     "EvidenceBundleScopeState",
+    "EvidenceClaim",
     "GateDecision",
     "GateDecisionDraft",
     "GateRound",
     "GateRoundScopeState",
     "IdempotencyRecord",
     "ManifestVersion",
+    "NonEmptyStr",
+    "ReplayCase",
     "ReplayCaseScopeState",
+    "ReplayFixture",
     "RunResult",
     "RunScopeState",
     "ScopeState",
@@ -663,4 +944,5 @@ __all__ = [
     "ULID_PATTERN",
     "Ulid",
     "serialize_event_log_entry_canonical",
+    "serialize_replay_fixture_canonical",
 ]

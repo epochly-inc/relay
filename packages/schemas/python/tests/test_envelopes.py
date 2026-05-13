@@ -24,14 +24,19 @@ from pydantic import ValidationError
 from relay_schemas.envelopes import (
     Actor,
     EventLogEntry,
+    EvidenceBundle,
+    EvidenceClaim,
     GateDecision,
     GateDecisionDraft,
     GateRound,
     IdempotencyRecord,
     ManifestVersion,
+    ReplayCase,
+    ReplayFixture,
     RunResult,
     ScopeState,
     serialize_event_log_entry_canonical,
+    serialize_replay_fixture_canonical,
 )
 
 VALID_ACTOR_HASH = "sha256-" + ("a" * 64)
@@ -1447,6 +1452,831 @@ def test_event_log_entry_rejects_unknown_field() -> None:
     payload = _base_event_log_entry(unknown_field="value")
     with pytest.raises(ValidationError) as excinfo:
         EventLogEntry.model_validate(payload)
+    assert (
+        "unknown_field" in str(excinfo.value)
+        or "extra" in str(excinfo.value).lower()
+    )
+
+
+# =============================================================================
+# W1.3 evidence + replay envelopes
+# =============================================================================
+#
+# Covers VAL-W1-018 through VAL-W1-025 (field-level constraints) and
+# VAL-W1-052 through VAL-W1-055 (schema_version literal pins). Helpers
+# below construct minimally-valid payloads; per-test overrides exercise
+# the boundary cases the contract evidence lines name.
+
+
+VALID_BUNDLE_DIGEST = "sha256-" + ("e" * 64)
+VALID_CLAIM_DIGEST = "sha256-" + ("f" * 64)
+VALID_INPUT_DIGEST = "sha256-" + ("1" * 64)
+VALID_OUTPUT_DIGEST = "sha256-" + ("2" * 64)
+VALID_INPUTS_DIGEST = "sha256-" + ("3" * 64)
+VALID_FAILURE_SIG = "sha256-" + ("4" * 64)
+
+
+def _base_evidence_bundle(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "relay.evidence_bundle.v1",
+        "evidence_bundle_id": _new_uuid(),
+        "org_id": _new_uuid(),
+        "project_id": _new_uuid(),
+        "scope_type": "run",
+        "scope_id": _new_uuid(),
+        "bundle_digest": VALID_BUNDLE_DIGEST,
+        "acef_core_version": "0.1.0",
+        "relay_extension_version": "0.1.0",
+        "signing_key_id": "key-evidence-001",
+        "signature_algorithm": "ES256",
+        "verification_status": "unverified",
+        "redaction_policy_version": "relay.redaction.v1#default",
+        "manifest_commit_hash": VALID_MANIFEST_HASH,
+        "object_ref": "r2://evidence/00000000-0000-4000-8000-000000000001",
+        "supersedes_bundle_id": None,
+        "created_at": "2026-05-12T00:00:00+00:00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _base_evidence_claim(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "relay.evidence_claim.v1",
+        "evidence_claim_id": _new_uuid(),
+        "evidence_bundle_id": _new_uuid(),
+        "claim_type": "run_result",
+        "subject_kind": "run",
+        "subject_id": _new_uuid(),
+        "claim_digest": VALID_CLAIM_DIGEST,
+        "redaction_transform_version": "relay.redaction.v1#transform-001",
+        "manifest_commit_hash": VALID_MANIFEST_HASH,
+        "signer_key_id": "key-claim-001",
+        "signature": VALID_SIGNATURE,
+        "supersedes_claim_id": None,
+        "created_at": "2026-05-12T00:00:00+00:00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _base_replay_case(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "relay.replay_case.v1",
+        "replay_case_id": _new_uuid(),
+        "project_id": _new_uuid(),
+        "source_run_id": _new_uuid(),
+        "failure_signature_hash": VALID_FAILURE_SIG,
+        "inputs_ref": "r2://replay/inputs/00000000-0000-4000-8000-000000000002",
+        "inputs_digest": VALID_INPUTS_DIGEST,
+        "expected_assertion_ids": [],
+        "human_reviewed": False,
+        "reviewer_email": None,
+        "reviewed_at": None,
+        "status": "proposed",
+        "created_at": "2026-05-12T00:00:00+00:00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _base_replay_fixture(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "relay.replay_fixture.v1",
+        "fixture_id": _new_uuid(),
+        "replay_case_id": _new_uuid(),
+        "source_span_id": _new_uuid(),
+        "kind": "model_call",
+        "mode": "cassette",
+        "redaction_policy_version": "relay.redaction.v1#default",
+        "input_digest": VALID_INPUT_DIGEST,
+        "output_ref": "r2://replay/outputs/00000000-0000-4000-8000-000000000003",
+        "output_digest": VALID_OUTPUT_DIGEST,
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "model_signature": "fp_abc123",
+        "capture_clock": "2026-05-12T10:00:00+05:30",
+        "refresh_policy": "invalidate_on_signature_change",
+        "side_effect_class": "read_only",
+        "allowed_in_replay": False,
+        "created_at": "2026-05-12T00:00:00+00:00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-018: evidence_bundles.bundle_digest sha256-<hex> pattern, non-nullable
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-018")
+def test_evidence_bundle_accepts_canonical_bundle_digest() -> None:
+    eb = EvidenceBundle.model_validate(_base_evidence_bundle())
+    assert eb.bundle_digest == VALID_BUNDLE_DIGEST
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-018")
+def test_evidence_bundle_rejects_missing_bundle_digest() -> None:
+    payload = _base_evidence_bundle()
+    del payload["bundle_digest"]
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceBundle.model_validate(payload)
+    assert "bundle_digest" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-018")
+def test_evidence_bundle_rejects_null_bundle_digest() -> None:
+    payload = _base_evidence_bundle(bundle_digest=None)
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceBundle.model_validate(payload)
+    assert "bundle_digest" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-018")
+def test_evidence_bundle_rejects_colon_form_bundle_digest() -> None:
+    payload = _base_evidence_bundle(bundle_digest="sha256:" + ("a" * 64))
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceBundle.model_validate(payload)
+    assert "bundle_digest" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-018")
+def test_evidence_bundle_rejects_short_bundle_digest() -> None:
+    payload = _base_evidence_bundle(bundle_digest="sha256-" + ("a" * 63))
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceBundle.model_validate(payload)
+    assert "bundle_digest" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-018")
+def test_evidence_bundle_rejects_non_hex_bundle_digest() -> None:
+    payload = _base_evidence_bundle(
+        bundle_digest="sha256-" + "g" + ("a" * 63)
+    )
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceBundle.model_validate(payload)
+    assert "bundle_digest" in str(excinfo.value)
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-019: evidence_bundles.verification_status closed enum
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-019")
+@pytest.mark.parametrize(
+    "status",
+    ["unverified", "verified", "tampered", "revoked"],
+)
+def test_evidence_bundle_accepts_all_verification_statuses(status: str) -> None:
+    eb = EvidenceBundle.model_validate(
+        _base_evidence_bundle(verification_status=status)
+    )
+    assert eb.verification_status == status
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-019")
+def test_evidence_bundle_rejects_unknown_verification_status() -> None:
+    payload = _base_evidence_bundle(verification_status="approved")
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceBundle.model_validate(payload)
+    assert "verification_status" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-019")
+def test_evidence_bundle_rejects_empty_verification_status() -> None:
+    payload = _base_evidence_bundle(verification_status="")
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceBundle.model_validate(payload)
+    assert "verification_status" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-019")
+def test_raw_yaml_documents_verification_status_enum_lock() -> None:
+    """The canonical YAML must lock the four-member enum and reference the
+    eng-plan-locked candidate set. Mirrors the VAL-W1-019 gap-flag."""
+    raw_dir = Path(__file__).resolve().parents[2] / "raw"
+    text = (raw_dir / "envelopes.yaml").read_text(encoding="utf-8")
+    assert "[unverified, verified, tampered, revoked]" in text
+    # The lock-in comment must cite the gap.
+    assert "VAL-W1-019" in text
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-020: evidence_claims.claim_type closed enum of eight kinds
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-020")
+@pytest.mark.parametrize(
+    "claim_type",
+    [
+        "run_result",
+        "gate_decision",
+        "contract_result",
+        "replay_result",
+        "human_oversight",
+        "incident",
+        "data_quality_check",
+        "provider_compatibility",
+    ],
+)
+def test_evidence_claim_accepts_all_canonical_claim_types(claim_type: str) -> None:
+    ec = EvidenceClaim.model_validate(_base_evidence_claim(claim_type=claim_type))
+    assert ec.claim_type == claim_type
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-020")
+def test_evidence_claim_rejects_unknown_claim_type() -> None:
+    payload = _base_evidence_claim(claim_type="orchestrator_decision")
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceClaim.model_validate(payload)
+    assert "claim_type" in str(excinfo.value)
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-021: evidence_claims.claim_digest sha256 pattern, signature non-empty,
+#             supersedes_claim_id nullable UUID
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-021")
+def test_evidence_claim_accepts_canonical_claim_digest() -> None:
+    ec = EvidenceClaim.model_validate(_base_evidence_claim())
+    assert ec.claim_digest == VALID_CLAIM_DIGEST
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-021")
+def test_evidence_claim_rejects_colon_form_claim_digest() -> None:
+    payload = _base_evidence_claim(claim_digest="sha256:" + ("a" * 64))
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceClaim.model_validate(payload)
+    assert "claim_digest" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-021")
+def test_evidence_claim_rejects_short_claim_digest() -> None:
+    payload = _base_evidence_claim(claim_digest="sha256-" + ("a" * 63))
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceClaim.model_validate(payload)
+    assert "claim_digest" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-021")
+def test_evidence_claim_rejects_empty_signature() -> None:
+    payload = _base_evidence_claim(signature="")
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceClaim.model_validate(payload)
+    assert "signature" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-021")
+def test_evidence_claim_accepts_null_supersedes_claim_id() -> None:
+    ec = EvidenceClaim.model_validate(
+        _base_evidence_claim(supersedes_claim_id=None)
+    )
+    assert ec.supersedes_claim_id is None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-021")
+def test_evidence_claim_accepts_uuid_supersedes_claim_id() -> None:
+    pred = _new_uuid()
+    ec = EvidenceClaim.model_validate(
+        _base_evidence_claim(supersedes_claim_id=pred)
+    )
+    assert str(ec.supersedes_claim_id) == pred
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-021")
+def test_evidence_claim_rejects_non_uuid_supersedes_claim_id() -> None:
+    payload = _base_evidence_claim(supersedes_claim_id="not-a-uuid")
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceClaim.model_validate(payload)
+    assert "supersedes_claim_id" in str(excinfo.value)
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-022: replay_cases.status enum + expected_assertion_ids + required
+#             failure_signature_hash
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-022")
+@pytest.mark.parametrize("status", ["proposed", "approved", "retired"])
+def test_replay_case_accepts_all_canonical_statuses(status: str) -> None:
+    rc = ReplayCase.model_validate(_base_replay_case(status=status))
+    assert rc.status == status
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-022")
+def test_replay_case_rejects_invalid_status() -> None:
+    payload = _base_replay_case(status="approved_with_gaps")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayCase.model_validate(payload)
+    assert "status" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-022")
+def test_replay_case_status_defaults_to_proposed() -> None:
+    payload = _base_replay_case()
+    del payload["status"]
+    rc = ReplayCase.model_validate(payload)
+    assert rc.status == "proposed"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-022")
+def test_replay_case_expected_assertion_ids_defaults_to_empty() -> None:
+    payload = _base_replay_case()
+    del payload["expected_assertion_ids"]
+    rc = ReplayCase.model_validate(payload)
+    assert rc.expected_assertion_ids == []
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-022")
+def test_replay_case_expected_assertion_ids_accepts_non_empty_strings() -> None:
+    payload = _base_replay_case(
+        expected_assertion_ids=["VAL-STRUCTURED-001", "VAL-STRUCTURED-002"]
+    )
+    rc = ReplayCase.model_validate(payload)
+    assert rc.expected_assertion_ids == ["VAL-STRUCTURED-001", "VAL-STRUCTURED-002"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-022")
+def test_replay_case_expected_assertion_ids_rejects_empty_string() -> None:
+    payload = _base_replay_case(expected_assertion_ids=[""])
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayCase.model_validate(payload)
+    assert "expected_assertion_ids" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-022")
+def test_replay_case_expected_assertion_ids_rejects_non_string_member() -> None:
+    payload = _base_replay_case(expected_assertion_ids=[123])  # type: ignore[list-item]
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayCase.model_validate(payload)
+    assert "expected_assertion_ids" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-022")
+def test_replay_case_rejects_missing_failure_signature_hash() -> None:
+    payload = _base_replay_case()
+    del payload["failure_signature_hash"]
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayCase.model_validate(payload)
+    assert "failure_signature_hash" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-022")
+def test_replay_case_rejects_empty_failure_signature_hash() -> None:
+    payload = _base_replay_case(failure_signature_hash="")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayCase.model_validate(payload)
+    assert "failure_signature_hash" in str(excinfo.value)
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-023: replay_fixtures.kind / mode / side_effect_class enums +
+#             allowed_in_replay strict bool
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+@pytest.mark.parametrize(
+    "kind",
+    ["model_call", "tool_call", "retrieval", "embedding", "custom"],
+)
+def test_replay_fixture_accepts_all_canonical_kinds(kind: str) -> None:
+    rf = ReplayFixture.model_validate(_base_replay_fixture(kind=kind))
+    assert rf.kind == kind
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+def test_replay_fixture_rejects_unknown_kind() -> None:
+    payload = _base_replay_fixture(kind="planning_call")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "kind" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+@pytest.mark.parametrize(
+    "mode",
+    ["cassette", "live", "degraded_live", "mock"],
+)
+def test_replay_fixture_accepts_all_canonical_modes(mode: str) -> None:
+    rf = ReplayFixture.model_validate(_base_replay_fixture(mode=mode))
+    assert rf.mode == mode
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+def test_replay_fixture_rejects_unknown_mode() -> None:
+    payload = _base_replay_fixture(mode="passthrough")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "mode" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+@pytest.mark.parametrize(
+    "side_effect_class",
+    ["read_only", "mutating", "external_irreversible", "approval_required"],
+)
+def test_replay_fixture_accepts_all_side_effect_classes(
+    side_effect_class: str,
+) -> None:
+    rf = ReplayFixture.model_validate(
+        _base_replay_fixture(side_effect_class=side_effect_class)
+    )
+    assert rf.side_effect_class == side_effect_class
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+def test_replay_fixture_rejects_unknown_side_effect_class() -> None:
+    payload = _base_replay_fixture(side_effect_class="audited")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "side_effect_class" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+def test_replay_fixture_allowed_in_replay_defaults_false() -> None:
+    payload = _base_replay_fixture()
+    del payload["allowed_in_replay"]
+    rf = ReplayFixture.model_validate(payload)
+    assert rf.allowed_in_replay is False
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+def test_replay_fixture_allowed_in_replay_accepts_true_bool() -> None:
+    rf = ReplayFixture.model_validate(_base_replay_fixture(allowed_in_replay=True))
+    assert rf.allowed_in_replay is True
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+def test_replay_fixture_allowed_in_replay_rejects_string_true() -> None:
+    payload = _base_replay_fixture(allowed_in_replay="true")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "allowed_in_replay" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+def test_replay_fixture_allowed_in_replay_rejects_string_false() -> None:
+    payload = _base_replay_fixture(allowed_in_replay="false")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "allowed_in_replay" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-023")
+def test_replay_fixture_allowed_in_replay_rejects_int_one() -> None:
+    payload = _base_replay_fixture(allowed_in_replay=1)
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "allowed_in_replay" in str(excinfo.value)
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-024: replay_fixtures.capture_clock RFC 3339 timezone-aware +
+#             cross-language byte-equal round-trip fixture
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+def test_replay_fixture_capture_clock_accepts_utc_z() -> None:
+    rf = ReplayFixture.model_validate(
+        _base_replay_fixture(capture_clock="2026-05-12T00:00:00Z")
+    )
+    assert rf.capture_clock.tzinfo is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+def test_replay_fixture_capture_clock_accepts_positive_offset() -> None:
+    rf = ReplayFixture.model_validate(
+        _base_replay_fixture(capture_clock="2026-05-12T10:00:00+05:30")
+    )
+    assert rf.capture_clock.utcoffset() == timedelta(hours=5, minutes=30)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+def test_replay_fixture_capture_clock_accepts_negative_offset() -> None:
+    rf = ReplayFixture.model_validate(
+        _base_replay_fixture(capture_clock="2026-05-12T00:00:00-08:00")
+    )
+    assert rf.capture_clock.utcoffset() == timedelta(hours=-8)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+def test_replay_fixture_capture_clock_rejects_naive_string() -> None:
+    payload = _base_replay_fixture(capture_clock="2026-05-12T00:00:00")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "capture_clock" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+def test_replay_fixture_capture_clock_rejects_naive_datetime_object() -> None:
+    payload = _base_replay_fixture(capture_clock=datetime(2026, 5, 12, 0, 0, 0))
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "capture_clock" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+def test_replay_fixture_capture_clock_round_trip_preserves_offset() -> None:
+    for original_offset_str in [
+        "2026-05-12T10:00:00+05:30",
+        "2026-05-12T10:00:00-08:00",
+        "2026-05-12T10:00:00+00:00",
+    ]:
+        payload = _base_replay_fixture(capture_clock=original_offset_str)
+        rf = ReplayFixture.model_validate(payload)
+        blob = serialize_replay_fixture_canonical(rf)
+        decoded = json.loads(blob.decode("utf-8"))
+        assert decoded["capture_clock"] == original_offset_str
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+def test_replay_fixture_cross_language_digest_fixture() -> None:
+    """Cross-language byte-equal round-trip fixture for replay_fixture.
+
+    Same pattern as VAL-W1-017 event_log_entry fixture. The TS test reads
+    the SAME fixture and asserts the SAME digest. Byte-equal Py and TS
+    canonicalization = VAL-W1-024 evidence.
+    """
+    fixture_dir = Path(__file__).parent / "fixtures"
+    fixture_file = fixture_dir / "replay_fixture_capture_clock.json"
+    digest_file = fixture_dir / "replay_fixture_capture_clock.sha256"
+
+    raw = fixture_file.read_bytes()
+    payload = json.loads(raw.decode("utf-8"))
+
+    rf = ReplayFixture.model_validate(payload)
+    assert rf.capture_clock.tzinfo is not None
+
+    canonical = serialize_replay_fixture_canonical(rf)
+    actual_digest = "sha256-" + hashlib.sha256(canonical).hexdigest()
+    expected_digest = digest_file.read_text(encoding="utf-8").strip()
+    assert actual_digest == expected_digest, (
+        f"Cross-language fixture digest mismatch. expected={expected_digest} "
+        f"actual={actual_digest}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-025: replay_fixtures.refresh_policy closed enum, default
+#             invalidate_on_signature_change
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-025")
+@pytest.mark.parametrize(
+    "refresh_policy",
+    [
+        "invalidate_on_signature_change",
+        "hold_forever",
+        "refresh_weekly",
+        "invalidate_on_model_version_change",
+    ],
+)
+def test_replay_fixture_accepts_all_canonical_refresh_policies(
+    refresh_policy: str,
+) -> None:
+    rf = ReplayFixture.model_validate(
+        _base_replay_fixture(refresh_policy=refresh_policy)
+    )
+    assert rf.refresh_policy == refresh_policy
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-025")
+def test_replay_fixture_rejects_unknown_refresh_policy() -> None:
+    payload = _base_replay_fixture(refresh_policy="refresh_daily")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "refresh_policy" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-025")
+def test_replay_fixture_refresh_policy_default_is_signature_change() -> None:
+    payload = _base_replay_fixture()
+    del payload["refresh_policy"]
+    rf = ReplayFixture.model_validate(payload)
+    assert rf.refresh_policy == "invalidate_on_signature_change"
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-052: evidence_bundle schema_version literal "relay.evidence_bundle.v1"
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-052")
+def test_evidence_bundle_schema_version_pinned() -> None:
+    eb = EvidenceBundle.model_validate(_base_evidence_bundle())
+    assert eb.schema_version == "relay.evidence_bundle.v1"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-052")
+def test_evidence_bundle_rejects_wrong_schema_version() -> None:
+    payload = _base_evidence_bundle(schema_version="relay.evidence_bundle.v2")
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceBundle.model_validate(payload)
+    assert "schema_version" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-052")
+def test_generated_python_contains_evidence_bundle_v1_literal() -> None:
+    src = Path(__file__).resolve().parents[1] / "relay_schemas" / "envelopes.py"
+    text = src.read_text(encoding="utf-8")
+    assert text.count('"relay.evidence_bundle.v1"') >= 1
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-053: evidence_claim schema_version literal "relay.evidence_claim.v1"
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-053")
+def test_evidence_claim_schema_version_pinned() -> None:
+    ec = EvidenceClaim.model_validate(_base_evidence_claim())
+    assert ec.schema_version == "relay.evidence_claim.v1"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-053")
+def test_evidence_claim_rejects_wrong_schema_version() -> None:
+    payload = _base_evidence_claim(schema_version="relay.evidence_claim.v2")
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceClaim.model_validate(payload)
+    assert "schema_version" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-053")
+def test_generated_python_contains_evidence_claim_v1_literal() -> None:
+    src = Path(__file__).resolve().parents[1] / "relay_schemas" / "envelopes.py"
+    text = src.read_text(encoding="utf-8")
+    assert text.count('"relay.evidence_claim.v1"') >= 1
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-054: replay_case schema_version literal "relay.replay_case.v1"
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-054")
+def test_replay_case_schema_version_pinned() -> None:
+    rc = ReplayCase.model_validate(_base_replay_case())
+    assert rc.schema_version == "relay.replay_case.v1"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-054")
+def test_replay_case_rejects_wrong_schema_version() -> None:
+    payload = _base_replay_case(schema_version="relay.replay_case.v2")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayCase.model_validate(payload)
+    assert "schema_version" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-054")
+def test_generated_python_contains_replay_case_v1_literal() -> None:
+    src = Path(__file__).resolve().parents[1] / "relay_schemas" / "envelopes.py"
+    text = src.read_text(encoding="utf-8")
+    assert text.count('"relay.replay_case.v1"') >= 1
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-055: replay_fixture schema_version literal "relay.replay_fixture.v1"
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-055")
+def test_replay_fixture_schema_version_pinned() -> None:
+    rf = ReplayFixture.model_validate(_base_replay_fixture())
+    assert rf.schema_version == "relay.replay_fixture.v1"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-055")
+def test_replay_fixture_rejects_wrong_schema_version() -> None:
+    payload = _base_replay_fixture(schema_version="relay.replay_fixture.v2")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "schema_version" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-055")
+def test_generated_python_contains_replay_fixture_v1_literal() -> None:
+    src = Path(__file__).resolve().parents[1] / "relay_schemas" / "envelopes.py"
+    text = src.read_text(encoding="utf-8")
+    assert text.count('"relay.replay_fixture.v1"') >= 1
+
+
+# -----------------------------------------------------------------------------
+# Defense-in-depth: extra-field rejection on W1.3 envelopes
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-052")
+def test_evidence_bundle_rejects_unknown_field() -> None:
+    payload = _base_evidence_bundle(unknown_field="value")
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceBundle.model_validate(payload)
+    assert (
+        "unknown_field" in str(excinfo.value)
+        or "extra" in str(excinfo.value).lower()
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-053")
+def test_evidence_claim_rejects_unknown_field() -> None:
+    payload = _base_evidence_claim(unknown_field="value")
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceClaim.model_validate(payload)
+    assert (
+        "unknown_field" in str(excinfo.value)
+        or "extra" in str(excinfo.value).lower()
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-054")
+def test_replay_case_rejects_unknown_field() -> None:
+    payload = _base_replay_case(unknown_field="value")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayCase.model_validate(payload)
+    assert (
+        "unknown_field" in str(excinfo.value)
+        or "extra" in str(excinfo.value).lower()
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-055")
+def test_replay_fixture_rejects_unknown_field() -> None:
+    payload = _base_replay_fixture(unknown_field="value")
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
     assert (
         "unknown_field" in str(excinfo.value)
         or "extra" in str(excinfo.value).lower()

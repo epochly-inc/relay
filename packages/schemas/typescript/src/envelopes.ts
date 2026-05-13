@@ -1420,6 +1420,629 @@ export function serializeEventLogEntryCanonical(
   return new TextEncoder().encode(text);
 }
 
+/* -------------------------------------------------------------------------- */
+/* W1.3 evidence + replay envelopes                                            */
+/* -------------------------------------------------------------------------- */
+//
+// Spec anchors:
+//   J line 2798-2810   evidence_bundles DDL (verification_status column)
+//   A.16 lines 3331-3353 evidence_claims DDL
+//   A.8 lines 3131-3145 replay_cases DDL
+//   A.8 lines 3147-3168 replay_fixtures DDL (kind / mode / side_effect_class
+//                       closed enums; allowed_in_replay strict bool default
+//                       false; refresh_policy default
+//                       invalidate_on_signature_change)
+//   E.2 lines 3913-3914 capture_clock + refresh_policy semantics
+//   E.3 lines 3928-3935 side_effect_class enumeration
+//   K   lines 4394+     evidence bundle signature semantics
+//
+// VAL-W1-019 enum-lock-in: spec J does not enumerate verification_status
+// values; the eng-plan-locked candidate set
+// {unverified, verified, tampered, revoked} is locked in the canonical YAML.
+
+function checkNonEmptyString(field: string, value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ValidationError(field, "must be a non-empty string", value);
+  }
+}
+
+function checkStrictBool(field: string, value: unknown): asserts value is boolean {
+  // VAL-W1-023: strict boolean required for allowed_in_replay. JS does not
+  // distinguish int 0/1 from bool, but we still reject string forms
+  // ("true"/"false") and numeric forms.
+  if (typeof value !== "boolean") {
+    throw new ValidationError(
+      field,
+      "strict boolean required; string and numeric forms rejected per VAL-W1-023",
+      value,
+    );
+  }
+}
+
+function checkListOfNonEmptyStrings(
+  field: string,
+  value: unknown,
+): asserts value is string[] {
+  if (!Array.isArray(value)) {
+    throw new ValidationError(field, "must be a list of non-empty strings", value);
+  }
+  for (let i = 0; i < value.length; i++) {
+    const v = value[i];
+    if (typeof v !== "string" || v.length === 0) {
+      throw new ValidationError(
+        `${field}[${i}]`,
+        "must be a non-empty string",
+        v,
+      );
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* EvidenceBundle (spec J; VAL-W1-018, VAL-W1-019, VAL-W1-052)                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Signed evidence bundle row.
+ *
+ * - VAL-W1-018: bundle_digest non-nullable, canonical sha256-<hex> form
+ * - VAL-W1-019: verification_status closed enum
+ *   {unverified, verified, tampered, revoked}
+ * - VAL-W1-052: schema_version pinned to "relay.evidence_bundle.v1"
+ */
+export interface EvidenceBundle {
+  readonly schema_version: "relay.evidence_bundle.v1";
+  readonly evidence_bundle_id: string;
+  readonly org_id: string;
+  readonly project_id: string;
+  readonly scope_type: string;
+  readonly scope_id: string;
+  readonly bundle_digest: string;
+  readonly acef_core_version: string;
+  readonly relay_extension_version: string;
+  readonly signing_key_id: string | null;
+  readonly signature_algorithm: string | null;
+  readonly verification_status:
+    | "unverified"
+    | "verified"
+    | "tampered"
+    | "revoked";
+  readonly redaction_policy_version: string;
+  readonly manifest_commit_hash: string | null;
+  readonly object_ref: string;
+  readonly supersedes_bundle_id: string | null;
+  readonly created_at: string;
+}
+
+const EVIDENCE_BUNDLE_FIELDS = [
+  "schema_version",
+  "evidence_bundle_id",
+  "org_id",
+  "project_id",
+  "scope_type",
+  "scope_id",
+  "bundle_digest",
+  "acef_core_version",
+  "relay_extension_version",
+  "signing_key_id",
+  "signature_algorithm",
+  "verification_status",
+  "redaction_policy_version",
+  "manifest_commit_hash",
+  "object_ref",
+  "supersedes_bundle_id",
+  "created_at",
+] as const;
+
+const EVIDENCE_BUNDLE_VERIFICATION_STATUS = [
+  "unverified",
+  "verified",
+  "tampered",
+  "revoked",
+] as const;
+
+export function parseEvidenceBundle(input: unknown): EvidenceBundle {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("EvidenceBundle", p, EVIDENCE_BUNDLE_FIELDS);
+  checkLiteral("schema_version", p.schema_version, "relay.evidence_bundle.v1");
+  checkUuid("evidence_bundle_id", p.evidence_bundle_id);
+  checkUuid("org_id", p.org_id);
+  checkUuid("project_id", p.project_id);
+  checkString("scope_type", p.scope_type);
+  checkUuid("scope_id", p.scope_id);
+  // VAL-W1-018: bundle_digest non-nullable canonical sha256-<hex>.
+  checkSha256Hash("bundle_digest", p.bundle_digest);
+  checkString("acef_core_version", p.acef_core_version);
+  checkString("relay_extension_version", p.relay_extension_version);
+  checkStringNullable("signing_key_id", p.signing_key_id);
+  checkStringNullable("signature_algorithm", p.signature_algorithm);
+  // VAL-W1-019: closed four-member enum.
+  checkEnum(
+    "verification_status",
+    p.verification_status,
+    EVIDENCE_BUNDLE_VERIFICATION_STATUS,
+  );
+  checkString("redaction_policy_version", p.redaction_policy_version);
+  checkSha256HashNullable("manifest_commit_hash", p.manifest_commit_hash);
+  checkString("object_ref", p.object_ref);
+  checkUuidNullable("supersedes_bundle_id", p.supersedes_bundle_id);
+  checkRfc3339("created_at", p.created_at);
+
+  return {
+    schema_version: "relay.evidence_bundle.v1",
+    evidence_bundle_id: p.evidence_bundle_id as string,
+    org_id: p.org_id as string,
+    project_id: p.project_id as string,
+    scope_type: p.scope_type as string,
+    scope_id: p.scope_id as string,
+    bundle_digest: p.bundle_digest as string,
+    acef_core_version: p.acef_core_version as string,
+    relay_extension_version: p.relay_extension_version as string,
+    signing_key_id: (p.signing_key_id ?? null) as string | null,
+    signature_algorithm: (p.signature_algorithm ?? null) as string | null,
+    verification_status: p.verification_status as EvidenceBundle["verification_status"],
+    redaction_policy_version: p.redaction_policy_version as string,
+    manifest_commit_hash: (p.manifest_commit_hash ?? null) as string | null,
+    object_ref: p.object_ref as string,
+    supersedes_bundle_id: (p.supersedes_bundle_id ?? null) as string | null,
+    created_at: p.created_at as string,
+  };
+}
+
+export function isEvidenceBundle(input: unknown): input is EvidenceBundle {
+  try {
+    parseEvidenceBundle(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* EvidenceClaim (spec A.16; VAL-W1-020, VAL-W1-021, VAL-W1-053)               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Atomic claim inside an evidence bundle.
+ *
+ * - VAL-W1-020: claim_type closed enum of eight kinds
+ * - VAL-W1-021: claim_digest sha256-<hex> + signature non-empty + nullable UUID
+ * - VAL-W1-053: schema_version pinned to "relay.evidence_claim.v1"
+ */
+export interface EvidenceClaim {
+  readonly schema_version: "relay.evidence_claim.v1";
+  readonly evidence_claim_id: string;
+  readonly evidence_bundle_id: string;
+  readonly claim_type:
+    | "run_result"
+    | "gate_decision"
+    | "contract_result"
+    | "replay_result"
+    | "human_oversight"
+    | "incident"
+    | "data_quality_check"
+    | "provider_compatibility";
+  readonly subject_kind: string;
+  readonly subject_id: string;
+  readonly claim_digest: string;
+  readonly redaction_transform_version: string;
+  readonly manifest_commit_hash: string;
+  readonly signer_key_id: string;
+  readonly signature: string;
+  readonly supersedes_claim_id: string | null;
+  readonly created_at: string;
+}
+
+const EVIDENCE_CLAIM_FIELDS = [
+  "schema_version",
+  "evidence_claim_id",
+  "evidence_bundle_id",
+  "claim_type",
+  "subject_kind",
+  "subject_id",
+  "claim_digest",
+  "redaction_transform_version",
+  "manifest_commit_hash",
+  "signer_key_id",
+  "signature",
+  "supersedes_claim_id",
+  "created_at",
+] as const;
+
+const EVIDENCE_CLAIM_TYPES = [
+  "run_result",
+  "gate_decision",
+  "contract_result",
+  "replay_result",
+  "human_oversight",
+  "incident",
+  "data_quality_check",
+  "provider_compatibility",
+] as const;
+
+export function parseEvidenceClaim(input: unknown): EvidenceClaim {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("EvidenceClaim", p, EVIDENCE_CLAIM_FIELDS);
+  checkLiteral("schema_version", p.schema_version, "relay.evidence_claim.v1");
+  checkUuid("evidence_claim_id", p.evidence_claim_id);
+  checkUuid("evidence_bundle_id", p.evidence_bundle_id);
+  checkEnum("claim_type", p.claim_type, EVIDENCE_CLAIM_TYPES);
+  checkString("subject_kind", p.subject_kind);
+  checkUuid("subject_id", p.subject_id);
+  // VAL-W1-021: claim_digest canonical sha256-<hex>.
+  checkSha256Hash("claim_digest", p.claim_digest);
+  checkString("redaction_transform_version", p.redaction_transform_version);
+  checkSha256Hash("manifest_commit_hash", p.manifest_commit_hash);
+  checkString("signer_key_id", p.signer_key_id);
+  // VAL-W1-021: signature non-empty string.
+  checkNonEmptyString("signature", p.signature);
+  checkUuidNullable("supersedes_claim_id", p.supersedes_claim_id);
+  checkRfc3339("created_at", p.created_at);
+
+  return {
+    schema_version: "relay.evidence_claim.v1",
+    evidence_claim_id: p.evidence_claim_id as string,
+    evidence_bundle_id: p.evidence_bundle_id as string,
+    claim_type: p.claim_type as EvidenceClaim["claim_type"],
+    subject_kind: p.subject_kind as string,
+    subject_id: p.subject_id as string,
+    claim_digest: p.claim_digest as string,
+    redaction_transform_version: p.redaction_transform_version as string,
+    manifest_commit_hash: p.manifest_commit_hash as string,
+    signer_key_id: p.signer_key_id as string,
+    signature: p.signature as string,
+    supersedes_claim_id: (p.supersedes_claim_id ?? null) as string | null,
+    created_at: p.created_at as string,
+  };
+}
+
+export function isEvidenceClaim(input: unknown): input is EvidenceClaim {
+  try {
+    parseEvidenceClaim(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* ReplayCase (spec A.8; VAL-W1-022, VAL-W1-054)                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Replay case row.
+ *
+ * - VAL-W1-022: status enum {proposed, approved, retired};
+ *   expected_assertion_ids list of non-empty strings default [];
+ *   failure_signature_hash required non-empty
+ * - VAL-W1-054: schema_version pinned to "relay.replay_case.v1"
+ */
+export interface ReplayCase {
+  readonly schema_version: "relay.replay_case.v1";
+  readonly replay_case_id: string;
+  readonly project_id: string;
+  readonly source_run_id: string | null;
+  readonly failure_signature_hash: string;
+  readonly inputs_ref: string;
+  readonly inputs_digest: string;
+  readonly expected_assertion_ids: readonly string[];
+  readonly human_reviewed: boolean;
+  readonly reviewer_email: string | null;
+  readonly reviewed_at: string | null;
+  readonly status: "proposed" | "approved" | "retired";
+  readonly created_at: string;
+}
+
+const REPLAY_CASE_FIELDS = [
+  "schema_version",
+  "replay_case_id",
+  "project_id",
+  "source_run_id",
+  "failure_signature_hash",
+  "inputs_ref",
+  "inputs_digest",
+  "expected_assertion_ids",
+  "human_reviewed",
+  "reviewer_email",
+  "reviewed_at",
+  "status",
+  "created_at",
+] as const;
+
+const REPLAY_CASE_STATUS = ["proposed", "approved", "retired"] as const;
+
+export function parseReplayCase(input: unknown): ReplayCase {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("ReplayCase", p, REPLAY_CASE_FIELDS);
+  checkLiteral("schema_version", p.schema_version, "relay.replay_case.v1");
+  checkUuid("replay_case_id", p.replay_case_id);
+  checkUuid("project_id", p.project_id);
+  checkUuidNullable("source_run_id", p.source_run_id);
+  // VAL-W1-022: failure_signature_hash required, non-empty.
+  checkNonEmptyString("failure_signature_hash", p.failure_signature_hash);
+  checkString("inputs_ref", p.inputs_ref);
+  checkSha256Hash("inputs_digest", p.inputs_digest);
+
+  let expectedAssertionIds = p.expected_assertion_ids;
+  if (expectedAssertionIds === undefined) {
+    expectedAssertionIds = [];
+  } else {
+    checkListOfNonEmptyStrings("expected_assertion_ids", expectedAssertionIds);
+  }
+
+  let humanReviewed = p.human_reviewed;
+  if (humanReviewed === undefined) {
+    humanReviewed = false;
+  } else {
+    checkBool("human_reviewed", humanReviewed);
+  }
+
+  checkStringNullable("reviewer_email", p.reviewer_email);
+  checkRfc3339Nullable("reviewed_at", p.reviewed_at);
+
+  let status = p.status;
+  if (status === undefined) {
+    status = "proposed";
+  } else {
+    checkEnum("status", status, REPLAY_CASE_STATUS);
+  }
+
+  checkRfc3339("created_at", p.created_at);
+
+  return {
+    schema_version: "relay.replay_case.v1",
+    replay_case_id: p.replay_case_id as string,
+    project_id: p.project_id as string,
+    source_run_id: (p.source_run_id ?? null) as string | null,
+    failure_signature_hash: p.failure_signature_hash as string,
+    inputs_ref: p.inputs_ref as string,
+    inputs_digest: p.inputs_digest as string,
+    expected_assertion_ids: expectedAssertionIds as readonly string[],
+    human_reviewed: humanReviewed as boolean,
+    reviewer_email: (p.reviewer_email ?? null) as string | null,
+    reviewed_at: (p.reviewed_at ?? null) as string | null,
+    status: status as ReplayCase["status"],
+    created_at: p.created_at as string,
+  };
+}
+
+export function isReplayCase(input: unknown): input is ReplayCase {
+  try {
+    parseReplayCase(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* ReplayFixture (spec A.8, E.2-E.3; VAL-W1-023, VAL-W1-024, VAL-W1-025, V055) */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Replay fixture row.
+ *
+ * - VAL-W1-023: kind / mode / side_effect_class closed enums;
+ *   allowed_in_replay STRICT bool (no string/numeric coercion)
+ * - VAL-W1-024: capture_clock RFC 3339 with required timezone offset
+ * - VAL-W1-025: refresh_policy closed four-member enum, default
+ *   "invalidate_on_signature_change"
+ * - VAL-W1-055: schema_version pinned to "relay.replay_fixture.v1"
+ */
+export interface ReplayFixture {
+  readonly schema_version: "relay.replay_fixture.v1";
+  readonly fixture_id: string;
+  readonly replay_case_id: string;
+  readonly source_span_id: string;
+  readonly kind:
+    | "model_call"
+    | "tool_call"
+    | "retrieval"
+    | "embedding"
+    | "custom";
+  readonly mode: "cassette" | "live" | "degraded_live" | "mock";
+  readonly redaction_policy_version: string;
+  readonly input_digest: string;
+  readonly output_ref: string | null;
+  readonly output_digest: string | null;
+  readonly provider: string | null;
+  readonly model: string | null;
+  readonly model_signature: string | null;
+  readonly capture_clock: string;
+  readonly refresh_policy:
+    | "invalidate_on_signature_change"
+    | "hold_forever"
+    | "refresh_weekly"
+    | "invalidate_on_model_version_change";
+  readonly side_effect_class:
+    | "read_only"
+    | "mutating"
+    | "external_irreversible"
+    | "approval_required";
+  readonly allowed_in_replay: boolean;
+  readonly created_at: string;
+}
+
+const REPLAY_FIXTURE_FIELDS = [
+  "schema_version",
+  "fixture_id",
+  "replay_case_id",
+  "source_span_id",
+  "kind",
+  "mode",
+  "redaction_policy_version",
+  "input_digest",
+  "output_ref",
+  "output_digest",
+  "provider",
+  "model",
+  "model_signature",
+  "capture_clock",
+  "refresh_policy",
+  "side_effect_class",
+  "allowed_in_replay",
+  "created_at",
+] as const;
+
+const REPLAY_FIXTURE_KIND = [
+  "model_call",
+  "tool_call",
+  "retrieval",
+  "embedding",
+  "custom",
+] as const;
+
+const REPLAY_FIXTURE_MODE = [
+  "cassette",
+  "live",
+  "degraded_live",
+  "mock",
+] as const;
+
+const REPLAY_FIXTURE_REFRESH_POLICY = [
+  "invalidate_on_signature_change",
+  "hold_forever",
+  "refresh_weekly",
+  "invalidate_on_model_version_change",
+] as const;
+
+const REPLAY_FIXTURE_SIDE_EFFECT_CLASS = [
+  "read_only",
+  "mutating",
+  "external_irreversible",
+  "approval_required",
+] as const;
+
+export function parseReplayFixture(input: unknown): ReplayFixture {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("ReplayFixture", p, REPLAY_FIXTURE_FIELDS);
+  checkLiteral("schema_version", p.schema_version, "relay.replay_fixture.v1");
+  checkUuid("fixture_id", p.fixture_id);
+  checkUuid("replay_case_id", p.replay_case_id);
+  checkUuid("source_span_id", p.source_span_id);
+  checkEnum("kind", p.kind, REPLAY_FIXTURE_KIND);
+  checkEnum("mode", p.mode, REPLAY_FIXTURE_MODE);
+  checkString("redaction_policy_version", p.redaction_policy_version);
+  checkSha256Hash("input_digest", p.input_digest);
+  checkStringNullable("output_ref", p.output_ref);
+  checkSha256HashNullable("output_digest", p.output_digest);
+  checkStringNullable("provider", p.provider);
+  checkStringNullable("model", p.model);
+  checkStringNullable("model_signature", p.model_signature);
+  // VAL-W1-024: capture_clock RFC 3339 with required timezone offset.
+  checkRfc3339WithOffset("capture_clock", p.capture_clock);
+
+  // VAL-W1-025: refresh_policy default invalidate_on_signature_change.
+  let refreshPolicy = p.refresh_policy;
+  if (refreshPolicy === undefined) {
+    refreshPolicy = "invalidate_on_signature_change";
+  } else {
+    checkEnum("refresh_policy", refreshPolicy, REPLAY_FIXTURE_REFRESH_POLICY);
+  }
+
+  checkEnum(
+    "side_effect_class",
+    p.side_effect_class,
+    REPLAY_FIXTURE_SIDE_EFFECT_CLASS,
+  );
+
+  // VAL-W1-023: allowed_in_replay strict bool default false.
+  let allowedInReplay = p.allowed_in_replay;
+  if (allowedInReplay === undefined) {
+    allowedInReplay = false;
+  } else {
+    checkStrictBool("allowed_in_replay", allowedInReplay);
+  }
+
+  checkRfc3339("created_at", p.created_at);
+
+  return {
+    schema_version: "relay.replay_fixture.v1",
+    fixture_id: p.fixture_id as string,
+    replay_case_id: p.replay_case_id as string,
+    source_span_id: p.source_span_id as string,
+    kind: p.kind as ReplayFixture["kind"],
+    mode: p.mode as ReplayFixture["mode"],
+    redaction_policy_version: p.redaction_policy_version as string,
+    input_digest: p.input_digest as string,
+    output_ref: (p.output_ref ?? null) as string | null,
+    output_digest: (p.output_digest ?? null) as string | null,
+    provider: (p.provider ?? null) as string | null,
+    model: (p.model ?? null) as string | null,
+    model_signature: (p.model_signature ?? null) as string | null,
+    capture_clock: p.capture_clock as string,
+    refresh_policy: refreshPolicy as ReplayFixture["refresh_policy"],
+    side_effect_class: p.side_effect_class as ReplayFixture["side_effect_class"],
+    allowed_in_replay: allowedInReplay as boolean,
+    created_at: p.created_at as string,
+  };
+}
+
+export function isReplayFixture(input: unknown): input is ReplayFixture {
+  try {
+    parseReplayFixture(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Canonical JSON byte serialization of a ReplayFixture. Output is byte-equal
+ * to the Python `serialize_replay_fixture_canonical` for the same input.
+ * Rules mirror `serializeEventLogEntryCanonical` (VAL-W1-017):
+ *
+ * 1. Keys sorted lexicographically.
+ * 2. Compact separators (no whitespace).
+ * 3. capture_clock and created_at preserved verbatim from input (timezone
+ *    offset byte-for-byte). Since this entrypoint receives a parsed
+ *    `ReplayFixture` whose `capture_clock` and `created_at` are the raw
+ *    wire-format strings, no further normalization is required.
+ * 4. UTF-8 encoded bytes.
+ */
+export function serializeReplayFixtureCanonical(
+  fixture: ReplayFixture,
+): Uint8Array {
+  const canonical: Record<string, unknown> = {
+    schema_version: fixture.schema_version,
+    fixture_id: fixture.fixture_id,
+    replay_case_id: fixture.replay_case_id,
+    source_span_id: fixture.source_span_id,
+    kind: fixture.kind,
+    mode: fixture.mode,
+    redaction_policy_version: fixture.redaction_policy_version,
+    input_digest: fixture.input_digest,
+    output_ref: fixture.output_ref,
+    output_digest: fixture.output_digest,
+    provider: fixture.provider,
+    model: fixture.model,
+    model_signature: fixture.model_signature,
+    capture_clock: fixture.capture_clock,
+    refresh_policy: fixture.refresh_policy,
+    side_effect_class: fixture.side_effect_class,
+    allowed_in_replay: fixture.allowed_in_replay,
+    created_at: fixture.created_at,
+  };
+  const text = canonicalJsonStringify(canonical);
+  return new TextEncoder().encode(text);
+}
+
 /**
  * Sort-keys + compact-separator JSON stringifier. Recurses into nested
  * objects (NOT arrays -- arrays preserve order). Matches Python's
