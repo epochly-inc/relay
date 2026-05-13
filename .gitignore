@@ -39,6 +39,9 @@ dist-ts/
 # Local Relay state (sidecar runtime data, never commit)
 .relay/
 
+# Claude Code session artifacts (local-only, not part of the public repo)
+.claude/
+
 # Build artifacts
 *.log
 *.tmp
