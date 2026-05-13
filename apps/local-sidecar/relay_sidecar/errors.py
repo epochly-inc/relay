@@ -19,6 +19,7 @@ The numeric allocation is locked here:
     RELAY-SIDECAR-004 -> AUTH-MISMATCH        (VAL-W2-007)
     RELAY-SIDECAR-005 -> NONCE-EXPIRED        (VAL-W2-008)
     RELAY-SIDECAR-006 -> NONLOCAL-FS          (VAL-W2-011)
+    RELAY-SQLITE-001  -> SQLITE-BUSY-EXHAUSTED (VAL-W2-020)
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -35,6 +36,8 @@ RELAY_SIDECAR_LOCKFILE_WINDOWS_ACL_CODE: Final[str] = "RELAY-SIDECAR-003"
 RELAY_SIDECAR_AUTH_MISMATCH_CODE: Final[str] = "RELAY-SIDECAR-004"
 RELAY_SIDECAR_NONCE_EXPIRED_CODE: Final[str] = "RELAY-SIDECAR-005"
 RELAY_SIDECAR_NONLOCAL_FS_CODE: Final[str] = "RELAY-SIDECAR-006"
+# W2.3 numeric code for SQLITE BUSY exhaustion (VAL-W2-020).
+RELAY_SQLITE_BUSY_EXHAUSTED_CODE: Final[str] = "RELAY-SQLITE-001"
 
 # Descriptive tokens (from contract.md prose). Surfaced as ``error_class``
 # in the structured error so VAL-W2-* tests can match the contract text.
@@ -44,6 +47,8 @@ RELAY_SIDECAR_LOCKFILE_WINDOWS_ACL: Final[str] = "RELAY-SIDECAR-LOCKFILE-WINDOWS
 RELAY_SIDECAR_AUTH_MISMATCH: Final[str] = "RELAY-SIDECAR-AUTH-MISMATCH"
 RELAY_SIDECAR_NONCE_EXPIRED: Final[str] = "RELAY-SIDECAR-NONCE-EXPIRED"
 RELAY_SIDECAR_NONLOCAL_FS: Final[str] = "RELAY-SIDECAR-NONLOCAL-FS"
+# Contract-text descriptive token used in VAL-W2-020 prose.
+RELAY_SQLITE_BUSY_EXHAUSTED: Final[str] = "RELAY-SQLITE-BUSY-EXHAUSTED"
 
 # Bidirectional map for callers that have one form and need the other.
 _CODE_TO_CLASS: Final[dict[str, str]] = {
@@ -53,6 +58,7 @@ _CODE_TO_CLASS: Final[dict[str, str]] = {
     RELAY_SIDECAR_AUTH_MISMATCH_CODE: RELAY_SIDECAR_AUTH_MISMATCH,
     RELAY_SIDECAR_NONCE_EXPIRED_CODE: RELAY_SIDECAR_NONCE_EXPIRED,
     RELAY_SIDECAR_NONLOCAL_FS_CODE: RELAY_SIDECAR_NONLOCAL_FS,
+    RELAY_SQLITE_BUSY_EXHAUSTED_CODE: RELAY_SQLITE_BUSY_EXHAUSTED,
 }
 _CLASS_TO_CODE: Final[dict[str, str]] = {v: k for k, v in _CODE_TO_CLASS.items()}
 
@@ -113,6 +119,55 @@ def make_error(
     )
 
 
+class RelaySQLiteBusyExhausted(Exception):
+    """SQLITE_BUSY retry/backoff budget exhausted (VAL-W2-020).
+
+    Raised by ``transactional_db_write`` when the busy_timeout window
+    (5000ms by default) plus application-level exponential backoff has
+    elapsed without acquiring the SQLite write lock. The HTTP layer maps
+    this exception to a structured 503 response carrying:
+
+        code         = RELAY-SQLITE-001
+        error_class  = RELAY-SQLITE-BUSY-EXHAUSTED
+        http_status  = 503
+        retry_advice = after_retry_after
+
+    Not a ``SidecarError`` subclass because SidecarError is dataclass-
+    frozen with a strict ``(code, error_class)`` pair check; this
+    exception additionally carries ``attempts`` and
+    ``sql_statement_digest`` for the observability surface.
+    """
+
+    code: Final[str] = RELAY_SQLITE_BUSY_EXHAUSTED_CODE
+    error_class: Final[str] = RELAY_SQLITE_BUSY_EXHAUSTED
+    http_status: Final[int] = 503
+
+    def __init__(
+        self,
+        *,
+        message: str,
+        attempts: int,
+        sql_statement_digest: str,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.attempts = attempts
+        self.sql_statement_digest = sql_statement_digest
+
+    def to_envelope(self) -> dict[str, object]:
+        """Return a JSON-serialisable error envelope payload."""
+        return {
+            "code": self.code,
+            "error_class": self.error_class,
+            "http_status": self.http_status,
+            "message": self.message,
+            "details": {
+                "attempts": self.attempts,
+                "sql_statement_digest": self.sql_statement_digest,
+            },
+        }
+
+
 __all__ = [
     "RELAY_SIDECAR_AUTH_MISMATCH",
     "RELAY_SIDECAR_AUTH_MISMATCH_CODE",
@@ -126,6 +181,9 @@ __all__ = [
     "RELAY_SIDECAR_NONCE_EXPIRED_CODE",
     "RELAY_SIDECAR_NONLOCAL_FS",
     "RELAY_SIDECAR_NONLOCAL_FS_CODE",
+    "RELAY_SQLITE_BUSY_EXHAUSTED",
+    "RELAY_SQLITE_BUSY_EXHAUSTED_CODE",
+    "RelaySQLiteBusyExhausted",
     "SidecarError",
     "make_error",
 ]

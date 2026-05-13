@@ -42,8 +42,11 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
+from .db import DEFAULT_READER_COUNT, SidecarDatabase
+from .errors import RelaySQLiteBusyExhausted
 from .health import HealthState, _register_health_routes
 from .lockfile import relay_home
+from .primitives.transactional_db_write import set_active_database
 
 # Drain grace window advertised to clients via ``Retry-After``. Matches the
 # manifest service.local-sidecar.quiesce_timeout_ms (30000 ms = 30 s).
@@ -106,35 +109,19 @@ class RuntimeState:
             uvicorn invokes shutdown on SIGTERM. The DrainMiddleware
             checks this flag and returns 503 + Retry-After for new
             requests once set.
+        database: The W2.3 ``SidecarDatabase`` owning the writer + reader
+            connections and the single-writer queue. None before lifespan
+            startup; populated in ``lifespan`` and closed in shutdown.
+        reader_count: Number of reader connections to open. Default
+            ``DEFAULT_READER_COUNT`` (2) per VAL-W2-023 (>= 2 connections).
     """
 
     health: HealthState
     sqlite_path: Path
     bound_at_monotonic: float | None = None
     draining: bool = False
-
-
-async def _init_sqlite_wal(db_path: Path) -> None:
-    """Run ``PRAGMA journal_mode=WAL`` + ``busy_timeout`` on the sidecar DB.
-
-    The connection is opened, the pragmas executed, then closed. Subsequent
-    handlers will open their own connections; WAL is a per-file mode so
-    once set it persists across connections (VAL-W2-017 will test this in
-    W2.3, but the pragma is run here regardless).
-    """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(str(db_path)) as conn:
-        # journal_mode=WAL returns the new mode as a row; we surface it
-        # via /health later. busy_timeout takes a milliseconds integer.
-        async with conn.execute("PRAGMA journal_mode=WAL") as cur:
-            row = await cur.fetchone()
-            mode = row[0] if row else None
-            if str(mode).lower() != "wal":
-                raise RuntimeError(
-                    f"sqlite did not switch to WAL mode (observed mode={mode!r})"
-                )
-        await conn.execute("PRAGMA busy_timeout = 5000")
-        await conn.commit()
+    database: SidecarDatabase | None = None
+    reader_count: int = DEFAULT_READER_COUNT
 
 
 @asynccontextmanager
@@ -159,8 +146,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state: RuntimeState = app.state.runtime
 
     # ---- Startup ----
-    # 1. SQLite WAL init (BEFORE port bind per VAL-W2-014).
-    await _init_sqlite_wal(state.sqlite_path)
+    # 1. SQLite database manager (writer + N readers, WAL + busy_timeout
+    #    + migrations + single-writer queue). Per VAL-W2-014 ALL of this
+    #    completes BEFORE the listener binds the port. Per VAL-W2-017/-018
+    #    every connection runs PRAGMA journal_mode=WAL + busy_timeout=5000.
+    state.database = SidecarDatabase(
+        db_path=state.sqlite_path,
+        reader_count=state.reader_count,
+    )
+    await state.database.open()
+    # Register the database as the process-wide instance backing the
+    # ``transactional_db_write`` module-level primitive.
+    set_active_database(state.database)
     # 2. Single shared httpx.AsyncClient.
     app.state.http_client = _make_async_client()
     # 3. Record bind-ready timestamp. Uvicorn binds AFTER startup yields,
@@ -183,6 +180,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         client: httpx.AsyncClient | None = getattr(app.state, "http_client", None)
         if client is not None:
             await client.aclose()
+        # Close the SQLite database manager (cancels the writer task,
+        # drains pending requests, closes all connections). Clear the
+        # module-level registration so a subsequent
+        # ``transactional_db_write`` call surfaces a clean RuntimeError
+        # rather than touching a closed connection.
+        if state.database is not None:
+            await state.database.close()
+            state.database = None
+        set_active_database(None)
 
 
 class DrainMiddleware:
@@ -271,6 +277,15 @@ def build_runtime_app(
     # lazily on first request, so app.state assignment timing matters).
     app.add_middleware(DrainMiddleware, runtime=runtime)
 
+    # VAL-W2-020: SQLITE_BUSY exhaustion surfaces as HTTP 503 with a
+    # structured RELAY-SQLITE-BUSY-EXHAUSTED envelope (NOT a bare 500
+    # carrying sqlite3.OperationalError).
+    @app.exception_handler(RelaySQLiteBusyExhausted)
+    async def _sqlite_busy_handler(
+        _request: Any, exc: RelaySQLiteBusyExhausted
+    ) -> JSONResponse:
+        return JSONResponse(status_code=exc.http_status, content=exc.to_envelope())
+
     # Attach runtime state.
     app.state.runtime = runtime
     app.state.http_client = None  # populated in lifespan startup
@@ -311,6 +326,47 @@ def build_runtime_app(
             "draining": runtime.draining,
             "port": runtime.health.port,
             "sidecar_version": __version__,
+        }
+
+    @app.get("/diagnostics/db")
+    async def diagnostics_db() -> dict[str, Any]:
+        """Return SidecarDatabase stats: connection counts, reader pragmas.
+
+        Used by VAL-W2-023 to prove >= 2 aiosqlite connections (writer +
+        readers) are open and that readers carry PRAGMA query_only = 1.
+        Reader pragmas are read via the actual reader connections (NOT a
+        fresh transient connection) so the test sees the persistent
+        query_only setting.
+        """
+        db = runtime.database
+        if db is None:
+            return {
+                "open": False,
+                "connect_call_count": 0,
+                "reader_count": 0,
+                "readers": [],
+            }
+        readers_info: list[dict[str, Any]] = []
+        for i in range(db.reader_count):
+            conn = db.acquire_reader()
+            async with conn.execute("PRAGMA query_only") as cur:
+                row = await cur.fetchone()
+                query_only = int(row[0]) if row else None
+            async with conn.execute("PRAGMA busy_timeout") as cur:
+                row = await cur.fetchone()
+                busy_timeout = int(row[0]) if row else None
+            readers_info.append(
+                {
+                    "index": i,
+                    "query_only": query_only,
+                    "busy_timeout": busy_timeout,
+                }
+            )
+        return {
+            "open": True,
+            "connect_call_count": db.connect_call_count,
+            "reader_count": db.reader_count,
+            "readers": readers_info,
         }
 
     return app
