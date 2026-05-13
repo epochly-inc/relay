@@ -1,0 +1,45 @@
+# epochly-relay-schemas
+#
+# Canonical schema package for the Relay control plane. Every persisted
+# control-plane envelope is defined here in YAML (under raw/) as the single
+# source of truth, with Pydantic models (under python/) and TypeScript types
+# (under typescript/) generated and kept in sync via the W1.5 codegen drift
+# check.
+#
+# This package is published to PyPI as `epochly-relay-schemas` (v0.0.0
+# placeholder until the W12 release pipeline cuts the first tag).
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-schemas"
+version = "0.0.0"
+description = "Canonical control-plane schemas for the Relay agent reliability OS."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/relay_schemas"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "python/relay_schemas",
+  "raw",
+  "sql",
+  "README.md",
+]

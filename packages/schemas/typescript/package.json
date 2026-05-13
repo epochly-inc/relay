@@ -1,0 +1,38 @@
+{
+  "name": "@epochly/relay-schemas",
+  "version": "0.0.0",
+  "description": "Canonical control-plane schemas for the Relay agent reliability OS (TypeScript types and runtime guards).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/envelopes.js",
+  "types": "./dist/envelopes.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/envelopes.d.ts",
+      "import": "./dist/envelopes.js"
+    },
+    "./envelopes": {
+      "types": "./dist/envelopes.d.ts",
+      "import": "./dist/envelopes.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --reporter=verbose"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

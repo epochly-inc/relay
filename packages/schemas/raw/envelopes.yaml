@@ -1,0 +1,250 @@
+# Canonical control-plane envelope schemas (W1.1 scope).
+#
+# Single source of truth for the four core envelopes plus the actors registry
+# table referenced by the three-anchor handoff protocol (spec C.5).
+#
+# Generated outputs:
+#   - packages/schemas/python/relay_schemas/envelopes.py (Pydantic v2)
+#   - packages/schemas/typescript/src/envelopes.ts (TS types + runtime guards)
+#   - packages/schemas/sql/0001_actors.sql (FK target table)
+#
+# The W1.5 codegen pipeline will consume this file via datamodel-code-generator
+# (Python) and openapi-typescript (TypeScript). Until W1.5 lands, the generated
+# outputs above are hand-authored to match this file; the codegen drift check
+# (VAL-W1-035) will replace the hand-authored outputs with generator output.
+#
+# Spec anchors:
+#   A.1 run_results
+#   A.2 gate_decisions
+#   A.3 gate_decision_drafts
+#   A.4 gate_rounds
+#   B.7 schema versioning rules
+#   C.5 three-anchor handoff
+#
+# CLAUDE.md keystone invariants enforced at the wire-format layer:
+#   #1  control plane writes the result   -> Literal["control_plane"]/["gate_engine"]
+#   #4  three-anchor handoff               -> sha256-<hex> pattern + actors FK
+#   #10 schema versioning                  -> Literal schema_version per envelope
+
+schemas:
+
+  RunResult:
+    schema_version: relay.run_result.v1
+    spec: A.1
+    description: |
+      Canonical run outcome. Written exclusively by the control plane.
+      A successful run requires a bound evidence_bundle_id (CLAUDE.md
+      keystone invariant #2: pass without evidence is not a pass).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.run_result.v1
+        required: true
+      run_result_id:    { type: uuid, required: true }
+      run_id:           { type: uuid, required: true }
+      project_id:       { type: uuid, required: true }
+      written_by:
+        type: literal
+        value: control_plane
+        required: true
+      status:
+        type: enum
+        values: [accepted, remediate_required, blocked, invalid]
+        required: true
+      primary_failure_class: { type: string, required: false, nullable: true }
+      error_priority_rule:
+        type: string
+        required: false
+        default: first_p0_then_highest_severity_then_earliest_span
+      evidence_bundle_id:    { type: uuid, required: false, nullable: true }
+      manifest_commit_hash:  { type: sha256_hash, required: true }
+      actor_identity_hash:   { type: sha256_hash, required: true }
+      decided_at:            { type: timestamptz, required: true }
+      decision_epoch:        { type: int_ge_zero, required: false, default: 0 }
+      signature:             { type: string, required: true }
+      signature_key_id:      { type: string, required: true }
+    constraints:
+      - name: accepted_requires_evidence
+        kind: cross_field
+        rule: |
+          If status == "accepted" then evidence_bundle_id MUST NOT be null.
+          Mirrors the SQL CHECK accepted_requires_evidence on the wire-format
+          layer.
+
+  GateDecision:
+    schema_version: relay.gate_decision.v1
+    spec: A.2
+    description: |
+      Canonical gate decision. Written exclusively by the gate engine.
+      Bound to an evidence_bundle_id and to the three-anchor handoff
+      (manifest_commit_hash, actor_identity_hash, scope_id).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.gate_decision.v1
+        required: true
+      gate_decision_id: { type: uuid, required: true }
+      gate_id:          { type: uuid, required: true }
+      scope_type:
+        type: enum
+        values: [run, replay, eval_run, release, domain_pack]
+        required: true
+      scope_id:         { type: uuid, required: true }
+      round:            { type: int_ge_one, required: true }
+      action:
+        type: enum
+        values: [accept, remediate, block, invalid]
+        required: true
+      strict_pass:           { type: bool, required: false, default: false }
+      failed_assertion_ids:  { type: list_str, required: false, default: [] }
+      unmet_conditions:      { type: list_any, required: false, default: [] }
+      evidence_bundle_id:    { type: uuid, required: true }
+      cascade_on_block:      { type: bool, required: false, default: true }
+      decided_by:
+        type: literal
+        value: gate_engine
+        required: true
+      decided_at:            { type: timestamptz, required: true }
+      manifest_commit_hash:  { type: sha256_hash, required: true }
+      actor_identity_hash:   { type: sha256_hash, required: true }
+      signature:             { type: string, required: true }
+      signature_key_id:      { type: string, required: true }
+      decision_epoch:        { type: int_ge_zero, required: false, default: 0, nullable: true }
+
+  GateDecisionDraft:
+    schema_version: relay.gate_decision_draft.v1
+    spec: A.3
+    description: |
+      Submitter-facing draft. NOT authoritative. Resolved into a
+      gate_decision exactly once by the state engine. The two state
+      columns (draft_kind, resolution_state) are intentionally orthogonal:
+      a dry_run_unsigned draft moves through pending -> {expired,
+      cancelled, rejected_handoff, duplicate_submission} but can NEVER
+      resolve to a gate_decision.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.gate_decision_draft.v1
+        required: true
+      draft_id:         { type: uuid, required: true }
+      gate_id:          { type: uuid, required: true }
+      scope_type:       { type: string, required: true }
+      scope_id:         { type: uuid, required: true }
+      round:            { type: int_ge_one, required: true }
+      release_sha:      { type: string, required: false, nullable: true }
+      eval_run_ids:     { type: list_uuid, required: false, default: [] }
+      evidence_refs:    { type: list_any, required: false, default: [] }
+      worker_id:        { type: uuid, required: true }
+      manifest_commit_hash: { type: sha256_hash, required: true }
+      actor_identity_hash:  { type: sha256_hash, required: true }
+      submitted_at:         { type: timestamptz, required: true }
+      resolved_gate_decision_id:
+        type: uuid
+        required: false
+        nullable: true
+      draft_kind:
+        type: enum
+        values: [submitted, dry_run_unsigned]
+        required: false
+        default: submitted
+      resolution_state:
+        type: enum
+        values:
+          - pending
+          - resolved
+          - rejected_handoff
+          - expired
+          - cancelled
+          - duplicate_submission
+        required: false
+        default: pending
+      cancelled_at:           { type: timestamptz, required: false, nullable: true }
+      cancellation_reason:    { type: string, required: false, nullable: true }
+    constraints:
+      - name: dry_run_never_resolves
+        kind: cross_field
+        rule: |
+          draft_kind == "submitted"
+          OR resolution_state IN
+            (pending, expired, cancelled, rejected_handoff, duplicate_submission)
+      - name: dry_run_no_decision
+        kind: cross_field
+        rule: |
+          draft_kind == "submitted"
+          OR resolved_gate_decision_id IS NULL
+
+  GateRound:
+    schema_version: relay.gate_round.v1
+    spec: A.4
+    description: |
+      Per-round audit trail. restart_predecessor is NULL on the first round
+      and references the predecessor gate_round_id on every restart round
+      (gate restart on failure rule, spec section C).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.gate_round.v1
+        required: true
+      gate_round_id:    { type: uuid, required: true }
+      gate_id:          { type: uuid, required: true }
+      scope_type:       { type: string, required: true }
+      scope_id:         { type: uuid, required: true }
+      round:            { type: int_ge_one, required: true }
+      initiated_at:     { type: timestamptz, required: true }
+      initiated_by:
+        type: enum
+        values: [control_plane, cron, user, remediation]
+        required: true
+      initiation_reason:    { type: string, required: false, nullable: true }
+      gate_decision_id:     { type: uuid, required: false, nullable: true }
+      restart_predecessor:
+        type: uuid
+        required: false
+        nullable: true
+
+  Actor:
+    spec: C.5
+    description: |
+      Actor identity registry. FK target for the three-anchor handoff
+      (gate_decision_drafts.actor_identity_hash, gate_decisions.
+      actor_identity_hash, run_results.actor_identity_hash). A handoff
+      whose actor_identity_hash is missing from this table OR whose
+      revoked_at is non-null MUST fail with HandoffResult(ok=False,
+      reason="ACTOR_NOT_REGISTERED") (contract preamble line 912).
+    fields:
+      identity_hash:  { type: sha256_hash, required: true, primary_key: true }
+      kind:
+        type: enum
+        values: [human, bot, worker, reviewer]
+        required: true
+      created_at:     { type: timestamptz, required: true }
+      revoked_at:     { type: timestamptz, required: false, nullable: true }
+
+# -----------------------------------------------------------------------------
+# Type definitions
+# -----------------------------------------------------------------------------
+#
+# These define how the abstract YAML field types map to language-specific
+# representations. The codegen pipeline (W1.5) reads this section to produce
+# Pydantic Annotated[...] / TS type aliases.
+
+types:
+  uuid:         { python: "UUID", typescript: "string" }
+  sha256_hash:
+    python: 'Annotated[str, Field(pattern=r"^sha256-[0-9a-f]{64}$")]'
+    typescript: "string"
+    pattern: '^sha256-[0-9a-f]{64}$'
+  timestamptz:  { python: "datetime", typescript: "string", format: "date-time" }
+  int_ge_one:
+    python: 'Annotated[int, Field(ge=1)]'
+    typescript: "number"
+    constraint: "ge=1"
+  int_ge_zero:
+    python: 'Annotated[int, Field(ge=0)]'
+    typescript: "number"
+    constraint: "ge=0"
+  list_str:     { python: "list[str]", typescript: "string[]", default: [] }
+  list_uuid:    { python: "list[UUID]", typescript: "string[]", default: [] }
+  list_any:     { python: "list[Any]", typescript: "unknown[]", default: [] }
+  bool:         { python: "bool", typescript: "boolean" }
+  string:       { python: "str", typescript: "string" }
