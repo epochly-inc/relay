@@ -1,12 +1,13 @@
-# Canonical control-plane envelope schemas (W1.1 scope).
+# Canonical control-plane envelope schemas (W1.1 + W1.2 scope).
 #
-# Single source of truth for the four core envelopes plus the actors registry
-# table referenced by the three-anchor handoff protocol (spec C.5).
+# Single source of truth for the core canonical envelopes plus the actors
+# registry table referenced by the three-anchor handoff protocol (spec C.5).
 #
 # Generated outputs:
 #   - packages/schemas/python/relay_schemas/envelopes.py (Pydantic v2)
 #   - packages/schemas/typescript/src/envelopes.ts (TS types + runtime guards)
 #   - packages/schemas/sql/0001_actors.sql (FK target table)
+#   - packages/schemas/sql/0002_control_plane.sql (control-plane envelopes DDL)
 #
 # The W1.5 codegen pipeline will consume this file via datamodel-code-generator
 # (Python) and openapi-typescript (TypeScript). Until W1.5 lands, the generated
@@ -14,12 +15,19 @@
 # (VAL-W1-035) will replace the hand-authored outputs with generator output.
 #
 # Spec anchors:
-#   A.1 run_results
-#   A.2 gate_decisions
-#   A.3 gate_decision_drafts
-#   A.4 gate_rounds
-#   B.7 schema versioning rules
-#   C.5 three-anchor handoff
+#   A.1  run_results
+#   A.2  gate_decisions
+#   A.3  gate_decision_drafts
+#   A.4  gate_rounds
+#   A.9  manifest_versions
+#   A.11 event_log_entries
+#   A.12 idempotency_records
+#   B.2  idempotency ULID grammar
+#   B.7  schema versioning rules
+#   C.1  scope state sets per scope_kind
+#   C.4  scope_state epoch monotonicity (aggregate version)
+#   C.5  three-anchor handoff
+#   W    scope_state aggregate version table
 #
 # CLAUDE.md keystone invariants enforced at the wire-format layer:
 #   #1  control plane writes the result   -> Literal["control_plane"]/["gate_engine"]
@@ -220,6 +228,134 @@ schemas:
       created_at:     { type: timestamptz, required: true }
       revoked_at:     { type: timestamptz, required: false, nullable: true }
 
+  # ---------------------------------------------------------------------------
+  # W1.2 control-plane envelopes
+  # ---------------------------------------------------------------------------
+
+  ManifestVersion:
+    schema_version: relay.manifest.v1
+    spec: A.9
+    description: |
+      A specific committed manifest version. commit_hash is the canonical
+      Relay sha256 wire form (sha256-<64 lowercase hex>) computed over the
+      RFC 8785 JCS canonicalization of the parsed manifest YAML body. The
+      contract preamble pins the manifest_commit_hash basis at lines 83-86.
+      The colon form (sha256:<hex>) and bare-hex form are both rejected per
+      VAL-W1-009; VAL-W1-014, VAL-W1-018, VAL-W1-021 inherit this pin.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.manifest.v1
+        required: true
+      manifest_version_id: { type: uuid, required: true }
+      manifest_id:         { type: uuid, required: true }
+      commit_hash:         { type: sha256_hash, required: true }
+      body:                { type: any_object, required: true }
+      signed_by:           { type: string, required: false, nullable: true }
+      signature:           { type: string, required: false, nullable: true }
+      signature_key_id:    { type: string, required: false, nullable: true }
+      effective_at:        { type: timestamptz, required: true }
+      effective_until:     { type: timestamptz, required: false, nullable: true }
+
+  ScopeState:
+    schema_version: relay.scope_state.v1
+    spec: W
+    description: |
+      Mutable scope state per (scope_kind, scope_id). Implemented as a
+      discriminated union on scope_kind so each scope kind's allowed state
+      set (spec C.1 lines 3632-3636) is statically enforced at the
+      wire-format layer. A document with scope_kind=run carrying
+      state=building (an evidence_bundle state) MUST fail validation
+      (VAL-W1-011). epoch is the optimistic-concurrency aggregate version
+      (spec C.4 lines 3679-3722); it is a non-negative bigint and MUST
+      reject -1 (VAL-W1-012). schema_version pins to relay.scope_state.v1
+      (VAL-W1-049).
+
+      Note on spec coverage: spec W declares six scope_kind values
+      ('run','replay_case','gate_round','evidence_bundle','eval_run','release')
+      but spec C.1 only declares state sets for the first four. The
+      remaining two (eval_run, release) are state-set-declared in spec
+      AM and Q.2 respectively and fall outside the W1.2 contract surface;
+      this envelope therefore enumerates only the four C.1 kinds in its
+      discriminator. The full six-way union lands when W9/W12 land.
+    discriminator: scope_kind
+    variants:
+      - kind: run
+        state_values: [pending, captured, validating, gated, result_written, terminal]
+      - kind: replay_case
+        state_values: [proposed, fixtures_ready, executing, analyzed, terminal]
+      - kind: gate_round
+        state_values: [open, draft_received, evaluating, decision_written, restarted, terminal]
+      - kind: evidence_bundle
+        state_values: [building, signed, published, superseded, revoked]
+    common_fields:
+      schema_version:
+        type: literal
+        value: relay.scope_state.v1
+        required: true
+      scope_id:    { type: uuid, required: true }
+      project_id:  { type: uuid, required: true }
+      epoch:       { type: int_ge_zero, required: true }
+      created_at:  { type: timestamptz, required: true }
+      updated_at:  { type: timestamptz, required: true }
+
+  IdempotencyRecord:
+    schema_version: relay.idempotency_record.v1
+    spec: A.12
+    description: |
+      Request dedupe record. idempotency_key is a Crockford-base32 ULID
+      (26 chars, alphabet ^[0-9A-HJKMNP-TV-Z]{26}$ per spec B.2/B.6 line
+      3517). request_digest reuses the canonical sha256-<hex> pattern
+      (VAL-W1-014 inherits VAL-W1-009). schema_version pins to
+      relay.idempotency_record.v1 (VAL-W1-050).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.idempotency_record.v1
+        required: true
+      idempotency_key: { type: ulid, required: true }
+      project_id:      { type: uuid, required: true }
+      request_digest:  { type: sha256_hash, required: true }
+      response_status: { type: int_ge_zero, required: true }
+      response_ref:    { type: string, required: false, nullable: true }
+      first_seen_at:   { type: timestamptz, required: true }
+      expires_at:      { type: timestamptz, required: true }
+
+  EventLogEntry:
+    schema_version: relay.event_log_entry.v1
+    spec: A.11
+    description: |
+      Append-only audit trail row. Every state transition (spec C.4)
+      emits one row. scope_type is a closed enum
+      {run, replay, gate, eval_run, release, manifest, key, other}
+      (VAL-W1-015). actor_kind is a closed enum
+      {control_plane, gate_engine, worker, sdk, user, cron} (VAL-W1-016).
+      occurred_at is RFC 3339 with a required timezone offset; naive
+      timestamps fail (VAL-W1-017). schema_version pins to
+      relay.event_log_entry.v1 (VAL-W1-051).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.event_log_entry.v1
+        required: true
+      event_id:    { type: uuid, required: true }
+      project_id:  { type: uuid, required: true }
+      scope_type:
+        type: enum
+        values: [run, replay, gate, eval_run, release, manifest, key, other]
+        required: true
+      scope_id:    { type: uuid, required: true }
+      event_type:  { type: string, required: true }
+      actor_kind:
+        type: enum
+        values: [control_plane, gate_engine, worker, sdk, user, cron]
+        required: true
+      actor_id:              { type: uuid, required: false, nullable: true }
+      manifest_commit_hash:  { type: sha256_hash, required: false, nullable: true }
+      payload:               { type: any_object, required: false, default: {} }
+      occurred_at:           { type: timestamptz_offset_required, required: true }
+      ingest_sequence:       { type: int_ge_zero, required: true }
+
 # -----------------------------------------------------------------------------
 # Type definitions
 # -----------------------------------------------------------------------------
@@ -234,7 +370,16 @@ types:
     python: 'Annotated[str, Field(pattern=r"^sha256-[0-9a-f]{64}$")]'
     typescript: "string"
     pattern: '^sha256-[0-9a-f]{64}$'
+  ulid:
+    python: 'Annotated[str, Field(pattern=r"^[0-9A-HJKMNP-TV-Z]{26}$")]'
+    typescript: "string"
+    pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
   timestamptz:  { python: "datetime", typescript: "string", format: "date-time" }
+  timestamptz_offset_required:
+    python: "datetime"
+    typescript: "string"
+    format: "date-time"
+    constraint: "tzinfo required; naive timestamps rejected (VAL-W1-017)"
   int_ge_one:
     python: 'Annotated[int, Field(ge=1)]'
     typescript: "number"
@@ -246,5 +391,9 @@ types:
   list_str:     { python: "list[str]", typescript: "string[]", default: [] }
   list_uuid:    { python: "list[UUID]", typescript: "string[]", default: [] }
   list_any:     { python: "list[Any]", typescript: "unknown[]", default: [] }
+  any_object:
+    python: "dict[str, Any]"
+    typescript: "Record<string, unknown>"
+    default: {}
   bool:         { python: "bool", typescript: "boolean" }
   string:       { python: "str", typescript: "string" }

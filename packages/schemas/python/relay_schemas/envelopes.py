@@ -17,21 +17,38 @@ versions on write.
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 Spec anchors:
-    A.1 run_results         (RunResult)
-    A.2 gate_decisions      (GateDecision)
-    A.3 gate_decision_drafts (GateDecisionDraft)
-    A.4 gate_rounds         (GateRound)
-    C.5 three-anchor handoff (Actor identity registry)
-    B.7 schema versioning rules
+    A.1  run_results         (RunResult)
+    A.2  gate_decisions      (GateDecision)
+    A.3  gate_decision_drafts (GateDecisionDraft)
+    A.4  gate_rounds         (GateRound)
+    A.9  manifest_versions   (ManifestVersion)
+    A.11 event_log_entries   (EventLogEntry)
+    A.12 idempotency_records (IdempotencyRecord)
+    B.2  idempotency ULID grammar
+    B.6  ULID alphabet ^[0-9A-HJKMNP-TV-Z]{26}$
+    B.7  schema versioning rules
+    C.1  per-scope-kind state sets
+    C.4  scope_state.epoch aggregate version
+    C.5  three-anchor handoff (Actor identity registry)
+    W    scope_state aggregate version table
 """
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 # -----------------------------------------------------------------------------
 # Shared type aliases
@@ -51,6 +68,21 @@ PositiveRound = Annotated[int, Field(ge=1)]
 
 NonNegativeEpoch = Annotated[int, Field(ge=0)]
 """Decision epoch, >= 0 (spec A.1 / VAL-W1-059)."""
+
+# Crockford-base32 ULID grammar per spec B.6 line 3517: 26 chars from
+# the alphabet 0-9 + A-H + JKMNP-TV-Z (I, L, O, U excluded). Lowercase
+# letters are NOT permitted. Used by IdempotencyRecord.idempotency_key
+# (VAL-W1-013).
+ULID_PATTERN = r"^[0-9A-HJKMNP-TV-Z]{26}$"
+
+Ulid = Annotated[str, Field(pattern=ULID_PATTERN)]
+"""Canonical Crockford-base32 ULID, exactly 26 uppercase chars."""
+
+# RFC 3339 offset-marker regex: matches the trailing 'Z' or '+/-HH:MM' on a
+# string. Used by EventLogEntry.occurred_at (VAL-W1-017) to reject naive
+# wire-format inputs before Pydantic's datetime coercion silently drops the
+# distinction.
+_RFC3339_OFFSET_RE = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
 
 
 # -----------------------------------------------------------------------------
@@ -107,7 +139,7 @@ class RunResult(_RelayEnvelope):
     signature_key_id: str
 
     @model_validator(mode="after")
-    def _check_accepted_requires_evidence(self) -> "RunResult":
+    def _check_accepted_requires_evidence(self) -> RunResult:
         # VAL-W1-003: mirrors SQL constraint accepted_requires_evidence.
         # An accepted RunResult MUST bind to an evidence_bundle_id.
         if self.status == "accepted" and self.evidence_bundle_id is None:
@@ -211,7 +243,7 @@ class GateDecisionDraft(_RelayEnvelope):
     cancellation_reason: str | None = None
 
     @model_validator(mode="after")
-    def _check_dry_run_constraints(self) -> "GateDecisionDraft":
+    def _check_dry_run_constraints(self) -> GateDecisionDraft:
         # VAL-W1-006: dry_run_never_resolves
         if self.draft_kind == "dry_run_unsigned" and self.resolution_state == "resolved":
             raise ValueError(
@@ -280,12 +312,355 @@ class Actor(_RelayEnvelope):
     revoked_at: datetime | None = None
 
 
+# -----------------------------------------------------------------------------
+# ManifestVersion (spec A.9; VAL-W1-009, VAL-W1-010)
+# -----------------------------------------------------------------------------
+
+
+class ManifestVersion(_RelayEnvelope):
+    """A committed manifest version.
+
+    VAL-W1-009: ``commit_hash`` MUST match the canonical sha256-<hex> wire
+                form. The colon form (sha256:<hex>) and bare-hex form are
+                rejected.
+    VAL-W1-010: ``schema_version`` pinned to ``Literal["relay.manifest.v1"]``.
+
+    The manifest body is modelled as ``dict[str, Any]`` for forward-compat;
+    the W1.5 codegen pipeline will replace this with a typed Manifest model
+    once the spec F manifest schema is itself generated from this YAML.
+    """
+
+    schema_version: Literal["relay.manifest.v1"]
+    manifest_version_id: UUID
+    manifest_id: UUID
+    commit_hash: Sha256Hash
+    body: dict[str, Any]
+    signed_by: str | None = None
+    signature: str | None = None
+    signature_key_id: str | None = None
+    effective_at: datetime
+    effective_until: datetime | None = None
+
+
+# -----------------------------------------------------------------------------
+# ScopeState (spec W; VAL-W1-011, VAL-W1-012, VAL-W1-049)
+# -----------------------------------------------------------------------------
+#
+# Implemented as a discriminated union on ``scope_kind`` so each scope kind's
+# allowed state set (spec C.1 lines 3632-3636) is statically enforced at the
+# wire-format layer. A document with scope_kind=run carrying state=building
+# (an evidence_bundle state) MUST fail validation per VAL-W1-011.
+
+
+class _ScopeStateBase(_RelayEnvelope):
+    """Common fields for every scope_state variant.
+
+    VAL-W1-049: ``schema_version`` literal pin.
+    VAL-W1-012: ``epoch`` non-negative bigint; -1 rejected by Field(ge=0).
+    """
+
+    schema_version: Literal["relay.scope_state.v1"]
+    scope_id: UUID
+    project_id: UUID
+    epoch: NonNegativeEpoch
+    created_at: datetime
+    updated_at: datetime
+
+
+class RunScopeState(_ScopeStateBase):
+    """scope_kind='run' (spec C.1: pending -> captured -> validating -> gated
+    -> result_written -> terminal)."""
+
+    scope_kind: Literal["run"]
+    state: Literal[
+        "pending",
+        "captured",
+        "validating",
+        "gated",
+        "result_written",
+        "terminal",
+    ]
+
+
+class ReplayCaseScopeState(_ScopeStateBase):
+    """scope_kind='replay_case' (spec C.1: proposed -> fixtures_ready ->
+    executing -> analyzed -> terminal)."""
+
+    scope_kind: Literal["replay_case"]
+    state: Literal[
+        "proposed",
+        "fixtures_ready",
+        "executing",
+        "analyzed",
+        "terminal",
+    ]
+
+
+class GateRoundScopeState(_ScopeStateBase):
+    """scope_kind='gate_round' (spec C.1: open -> draft_received -> evaluating
+    -> decision_written -> restarted | terminal)."""
+
+    scope_kind: Literal["gate_round"]
+    state: Literal[
+        "open",
+        "draft_received",
+        "evaluating",
+        "decision_written",
+        "restarted",
+        "terminal",
+    ]
+
+
+class EvidenceBundleScopeState(_ScopeStateBase):
+    """scope_kind='evidence_bundle' (spec C.1: building -> signed -> published
+    | superseded | revoked)."""
+
+    scope_kind: Literal["evidence_bundle"]
+    state: Literal[
+        "building",
+        "signed",
+        "published",
+        "superseded",
+        "revoked",
+    ]
+
+
+# Discriminated union (Pydantic v2 ``discriminator='scope_kind'``). The union
+# is exposed both as a TypeAlias for callers AND as a ``ScopeState`` class
+# wrapper that mirrors the Pydantic ``model_validate`` surface used by the
+# tests.
+_ScopeStateUnion = Annotated[
+    RunScopeState | ReplayCaseScopeState | GateRoundScopeState | EvidenceBundleScopeState,
+    Field(discriminator="scope_kind"),
+]
+
+
+class _ScopeStateAdapterMeta(type):
+    """Metaclass exposing ``ScopeState.model_validate(payload)`` that dispatches
+    through the discriminated union and returns the concrete variant instance.
+
+    Direct ``Union[...]`` types do not carry a ``.model_validate`` classmethod,
+    so we wrap the union in a small adapter so the tests can call
+    ``ScopeState.model_validate(payload)`` exactly like every other envelope.
+    """
+
+    def model_validate(cls, payload: Any) -> _ScopeStateBase:
+        from pydantic import TypeAdapter
+
+        adapter: TypeAdapter[_ScopeStateBase] = TypeAdapter(_ScopeStateUnion)
+        return adapter.validate_python(payload)
+
+
+class ScopeState(metaclass=_ScopeStateAdapterMeta):
+    """Discriminated-union facade over the four per-scope-kind state models.
+
+    Calling ``ScopeState.model_validate(payload)`` returns the concrete
+    variant (RunScopeState / ReplayCaseScopeState / GateRoundScopeState /
+    EvidenceBundleScopeState) selected by the ``scope_kind`` field per
+    VAL-W1-011.
+    """
+
+
+# -----------------------------------------------------------------------------
+# IdempotencyRecord (spec A.12; VAL-W1-013, VAL-W1-014, VAL-W1-050)
+# -----------------------------------------------------------------------------
+
+
+class IdempotencyRecord(_RelayEnvelope):
+    """Request dedupe record.
+
+    VAL-W1-013: ``idempotency_key`` matches the Crockford-base32 ULID grammar
+                ``^[0-9A-HJKMNP-TV-Z]{26}$``.
+    VAL-W1-014: ``request_digest`` matches the canonical sha256-<hex> form
+                (inherited from VAL-W1-009).
+    VAL-W1-050: ``schema_version`` literal pin.
+    """
+
+    schema_version: Literal["relay.idempotency_record.v1"]
+    idempotency_key: Ulid
+    project_id: UUID
+    request_digest: Sha256Hash
+    response_status: NonNegativeEpoch
+    response_ref: str | None = None
+    first_seen_at: datetime
+    expires_at: datetime
+
+
+# -----------------------------------------------------------------------------
+# EventLogEntry (spec A.11; VAL-W1-015, VAL-W1-016, VAL-W1-017, VAL-W1-051)
+# -----------------------------------------------------------------------------
+
+
+class EventLogEntry(_RelayEnvelope):
+    """Append-only audit-trail row.
+
+    VAL-W1-015: ``scope_type`` closed enum.
+    VAL-W1-016: ``actor_kind`` closed enum.
+    VAL-W1-017: ``occurred_at`` is RFC 3339 with a required timezone offset.
+                Naive timestamps (no Z, no +/-HH:MM) MUST fail validation.
+                The original input string is preserved verbatim on a private
+                ``_occurred_at_raw`` attribute so the canonical serializer
+                (``serialize_event_log_entry_canonical``) can emit it
+                byte-for-byte for the cross-language round-trip fixture.
+    VAL-W1-051: ``schema_version`` literal pin.
+    """
+
+    schema_version: Literal["relay.event_log_entry.v1"]
+    event_id: UUID
+    project_id: UUID
+    scope_type: Literal[
+        "run",
+        "replay",
+        "gate",
+        "eval_run",
+        "release",
+        "manifest",
+        "key",
+        "other",
+    ]
+    scope_id: UUID
+    event_type: str
+    actor_kind: Literal[
+        "control_plane",
+        "gate_engine",
+        "worker",
+        "sdk",
+        "user",
+        "cron",
+    ]
+    actor_id: UUID | None = None
+    manifest_commit_hash: Sha256Hash | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    occurred_at: datetime
+    ingest_sequence: NonNegativeEpoch
+
+    # Private sidecar storing the original wire-format string for occurred_at
+    # so the canonical serializer can emit the offset byte-for-byte. Populated
+    # by the wrap-mode model_validator below from the raw input. Not a
+    # model field (no extra_forbidden interaction); declared via PrivateAttr.
+    _occurred_at_raw: str | None = PrivateAttr(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _check_occurred_at_offset_required(cls, data: Any) -> Any:
+        # VAL-W1-017: when occurred_at is a string, reject naive forms here
+        # BEFORE Pydantic's datetime coercion silently produces a tz-naive
+        # datetime. Field-level mode='after' check below catches direct
+        # datetime objects that lack tzinfo.
+        if isinstance(data, dict):
+            raw = data.get("occurred_at")
+            if isinstance(raw, str) and _RFC3339_OFFSET_RE.search(raw) is None:
+                raise ValueError(
+                    "occurred_at: naive RFC 3339 timestamp rejected; wire "
+                    "form MUST carry a timezone offset (Z or +/-HH:MM) per "
+                    f"VAL-W1-017 (observed={raw!r})"
+                )
+        return data
+
+    @field_validator("occurred_at", mode="after")
+    @classmethod
+    def _occurred_at_requires_tzinfo(cls, value: datetime) -> datetime:
+        # VAL-W1-017: a naive ``datetime`` object passed in directly bypasses
+        # the string regex above; assert tzinfo is non-None here.
+        if value.tzinfo is None:
+            raise ValueError(
+                "occurred_at: timezone-naive datetime rejected; tzinfo MUST "
+                "be set per VAL-W1-017"
+            )
+        return value
+
+    @classmethod
+    def model_validate(
+        cls,
+        obj: Any,
+        *,
+        strict: bool | None = None,
+        from_attributes: bool | None = None,
+        context: Any = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> EventLogEntry:
+        # Override to capture the raw occurred_at string on the validated
+        # instance. Pydantic's default model_validate does not expose a
+        # raw-input hook compatible with PrivateAttr population, so we
+        # intercept here, run the parent validator, then stash the raw.
+        raw_occurred_at: str | None = None
+        if isinstance(obj, dict):
+            candidate = obj.get("occurred_at")
+            if isinstance(candidate, str):
+                raw_occurred_at = candidate
+        instance = super().model_validate(
+            obj,
+            strict=strict,
+            from_attributes=from_attributes,
+            context=context,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
+        if raw_occurred_at is not None:
+            instance._occurred_at_raw = raw_occurred_at
+        return instance
+
+
+def serialize_event_log_entry_canonical(entry: EventLogEntry) -> bytes:
+    """Canonical JSON byte serialization for cross-language round-trip.
+
+    Produces the byte stream that both the Python and TypeScript canonical
+    serializers MUST agree on (VAL-W1-017 evidence). Rules:
+
+    1. Sort keys lexicographically (``sort_keys=True``).
+    2. Use compact separators ``(",", ":")`` (no extra whitespace).
+    3. UUID fields rendered as canonical 8-4-4-4-12 lowercase-hex strings.
+    4. ``occurred_at`` rendered as the captured original wire-format string
+       (``_occurred_at_raw``) preserving the timezone offset byte-for-byte.
+    5. Output encoded as UTF-8 bytes.
+
+    The TS canonical serializer in envelopes.ts mirrors these rules so the
+    same fixture produces an identical SHA-256 digest in both languages.
+    """
+    if entry._occurred_at_raw is None:
+        # The model was constructed from a datetime object rather than a
+        # string. Fall back to isoformat with the offset preserved; the
+        # round-trip in this path is best-effort because the original
+        # wire-format string was not supplied.
+        occurred_at_str = entry.occurred_at.isoformat()
+    else:
+        occurred_at_str = entry._occurred_at_raw
+
+    canonical: dict[str, Any] = {
+        "schema_version": entry.schema_version,
+        "event_id": str(entry.event_id),
+        "project_id": str(entry.project_id),
+        "scope_type": entry.scope_type,
+        "scope_id": str(entry.scope_id),
+        "event_type": entry.event_type,
+        "actor_kind": entry.actor_kind,
+        "actor_id": str(entry.actor_id) if entry.actor_id is not None else None,
+        "manifest_commit_hash": entry.manifest_commit_hash,
+        "payload": entry.payload,
+        "occurred_at": occurred_at_str,
+        "ingest_sequence": entry.ingest_sequence,
+    }
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 __all__ = [
     "Actor",
+    "EventLogEntry",
+    "EvidenceBundleScopeState",
     "GateDecision",
     "GateDecisionDraft",
     "GateRound",
+    "GateRoundScopeState",
+    "IdempotencyRecord",
+    "ManifestVersion",
+    "ReplayCaseScopeState",
     "RunResult",
+    "RunScopeState",
+    "ScopeState",
     "Sha256Hash",
     "SHA256_HASH_PATTERN",
+    "ULID_PATTERN",
+    "Ulid",
+    "serialize_event_log_entry_canonical",
 ]

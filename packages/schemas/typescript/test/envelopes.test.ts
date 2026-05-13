@@ -1,8 +1,9 @@
 /**
- * W1.1 envelope schema tests (TypeScript).
+ * W1.1 + W1.2 envelope schema tests (TypeScript).
  *
- * Covers contract assertions VAL-W1-001 through VAL-W1-008, VAL-W1-046,
- * VAL-W1-047, VAL-W1-048, VAL-W1-058, VAL-W1-059 from the TypeScript side.
+ * Covers contract assertions VAL-W1-001 through VAL-W1-017, VAL-W1-046,
+ * VAL-W1-047, VAL-W1-048, VAL-W1-049, VAL-W1-050, VAL-W1-051, VAL-W1-058,
+ * and VAL-W1-059 from the TypeScript side.
  *
  * Each describe block carries the assertion ID in its title so the gate
  * engine can attribute pass/fail to the contract assertion.
@@ -11,27 +12,45 @@
  */
 
 import { describe, it, expect } from "vitest";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   Actor,
+  EventLogEntry,
   GateDecision,
   GateDecisionDraft,
   GateRound,
+  IdempotencyRecord,
+  ManifestVersion,
   RunResult,
+  ScopeStateEvidenceBundle,
+  ScopeStateGateRound,
+  ScopeStateReplayCase,
+  ScopeStateRun,
   isActor,
+  isEventLogEntry,
   isGateDecision,
   isGateDecisionDraft,
   isGateRound,
+  isIdempotencyRecord,
+  isManifestVersion,
   isRunResult,
+  isScopeState,
   parseActor,
+  parseEventLogEntry,
   parseGateDecision,
   parseGateDecisionDraft,
   parseGateRound,
+  parseIdempotencyRecord,
+  parseManifestVersion,
   parseRunResult,
+  parseScopeState,
+  serializeEventLogEntryCanonical,
   SHA256_HASH_PATTERN,
+  ULID_PATTERN,
 } from "../src/envelopes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -660,3 +679,629 @@ describe("extra-field rejection (defense in depth)", () => {
     expect(isGateDecision(baseGateDecision({ unknown_field: "value" }))).toBe(false);
   });
 });
+
+// ===========================================================================
+// W1.2 control-plane envelopes
+// ===========================================================================
+//
+// Covers VAL-W1-009 through VAL-W1-017 plus the schema_version pins
+// VAL-W1-049, VAL-W1-050, VAL-W1-051 from the TypeScript side.
+
+const VALID_ULID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const VALID_REQUEST_DIGEST = "sha256-" + "c".repeat(64);
+const VALID_COMMIT_HASH = "sha256-" + "d".repeat(64);
+
+function baseManifestVersion(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.manifest.v1",
+    manifest_version_id: newUuid(),
+    manifest_id: newUuid(),
+    commit_hash: VALID_COMMIT_HASH,
+    body: { manifest_schema: "relay.manifest.v1" },
+    signed_by: null,
+    signature: null,
+    signature_key_id: null,
+    effective_at: "2026-05-12T00:00:00+00:00",
+    effective_until: null,
+    ...overrides,
+  };
+}
+
+function baseScopeStateRun(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.scope_state.v1",
+    scope_kind: "run",
+    scope_id: newUuid(),
+    project_id: newUuid(),
+    state: "pending",
+    epoch: 0,
+    created_at: "2026-05-12T00:00:00+00:00",
+    updated_at: "2026-05-12T00:00:00+00:00",
+    ...overrides,
+  };
+}
+
+function baseScopeStateReplayCase(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...baseScopeStateRun(),
+    scope_kind: "replay_case",
+    state: "proposed",
+    ...overrides,
+  };
+}
+
+function baseScopeStateGateRound(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...baseScopeStateRun(),
+    scope_kind: "gate_round",
+    state: "open",
+    ...overrides,
+  };
+}
+
+function baseScopeStateEvidenceBundle(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...baseScopeStateRun(),
+    scope_kind: "evidence_bundle",
+    state: "building",
+    ...overrides,
+  };
+}
+
+function baseIdempotencyRecord(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.idempotency_record.v1",
+    idempotency_key: VALID_ULID,
+    project_id: newUuid(),
+    request_digest: VALID_REQUEST_DIGEST,
+    response_status: 200,
+    response_ref: null,
+    first_seen_at: "2026-05-12T00:00:00+00:00",
+    expires_at: "2026-05-13T00:00:00+00:00",
+    ...overrides,
+  };
+}
+
+function baseEventLogEntry(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.event_log_entry.v1",
+    event_id: newUuid(),
+    project_id: newUuid(),
+    scope_type: "run",
+    scope_id: newUuid(),
+    event_type: "run.captured",
+    actor_kind: "control_plane",
+    actor_id: null,
+    manifest_commit_hash: null,
+    payload: {},
+    occurred_at: "2026-05-12T00:00:00+00:00",
+    ingest_sequence: 1,
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// VAL-W1-009: manifest_versions.commit_hash canonical sha256-<hex> form
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-009 manifest_versions.commit_hash canonical sha256 form", () => {
+  it("accepts the canonical sha256-<64 lowercase hex> wire form", () => {
+    expect(isManifestVersion(baseManifestVersion())).toBe(true);
+  });
+
+  it("rejects the colon form (sha256:<hex>)", () => {
+    expect(
+      isManifestVersion(
+        baseManifestVersion({ commit_hash: "sha256:" + "a".repeat(64) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects the bare-hex form (no prefix)", () => {
+    expect(
+      isManifestVersion(baseManifestVersion({ commit_hash: "a".repeat(64) })),
+    ).toBe(false);
+  });
+
+  it("rejects 63-char hex", () => {
+    expect(
+      isManifestVersion(
+        baseManifestVersion({ commit_hash: "sha256-" + "a".repeat(63) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects 64-char non-hex (contains 'g')", () => {
+    expect(
+      isManifestVersion(
+        baseManifestVersion({ commit_hash: "sha256-" + "g" + "a".repeat(63) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("parseManifestVersion error names commit_hash", () => {
+    expect(() =>
+      parseManifestVersion(
+        baseManifestVersion({ commit_hash: "sha256:" + "a".repeat(64) }),
+      ),
+    ).toThrow(/commit_hash/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-010: manifest_versions.schema_version = "relay.manifest.v1"
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-010 manifest_versions.schema_version pinned", () => {
+  it("accepts the canonical schema_version", () => {
+    const parsed = parseManifestVersion(baseManifestVersion());
+    expect(parsed.schema_version).toBe("relay.manifest.v1");
+  });
+
+  it("rejects a non-canonical schema_version", () => {
+    expect(
+      isManifestVersion(
+        baseManifestVersion({ schema_version: "relay.manifest.v2" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("generated TS source contains the manifest.v1 literal", () => {
+    const src = path.resolve(__dirname, "..", "src", "envelopes.ts");
+    const text = fs.readFileSync(src, "utf-8");
+    const occurrences = (text.match(/"relay\.manifest\.v1"/g) ?? []).length;
+    expect(occurrences).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-011: scope_state is a discriminated union on scope_kind
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-011 scope_state discriminated union on scope_kind", () => {
+  it.each([
+    "pending",
+    "captured",
+    "validating",
+    "gated",
+    "result_written",
+    "terminal",
+  ] as const)("scope_kind=run accepts state=%s", (state) => {
+    expect(isScopeState(baseScopeStateRun({ state }))).toBe(true);
+  });
+
+  it.each([
+    "proposed",
+    "fixtures_ready",
+    "executing",
+    "analyzed",
+    "terminal",
+  ] as const)("scope_kind=replay_case accepts state=%s", (state) => {
+    expect(isScopeState(baseScopeStateReplayCase({ state }))).toBe(true);
+  });
+
+  it.each([
+    "open",
+    "draft_received",
+    "evaluating",
+    "decision_written",
+    "restarted",
+    "terminal",
+  ] as const)("scope_kind=gate_round accepts state=%s", (state) => {
+    expect(isScopeState(baseScopeStateGateRound({ state }))).toBe(true);
+  });
+
+  it.each([
+    "building",
+    "signed",
+    "published",
+    "superseded",
+    "revoked",
+  ] as const)("scope_kind=evidence_bundle accepts state=%s", (state) => {
+    expect(isScopeState(baseScopeStateEvidenceBundle({ state }))).toBe(true);
+  });
+
+  it("rejects scope_kind=run with state=building (cross-tag)", () => {
+    expect(isScopeState(baseScopeStateRun({ state: "building" }))).toBe(false);
+  });
+
+  it("rejects scope_kind=evidence_bundle with state=pending (cross-tag)", () => {
+    expect(
+      isScopeState(baseScopeStateEvidenceBundle({ state: "pending" })),
+    ).toBe(false);
+  });
+
+  it("rejects an unknown scope_kind", () => {
+    expect(
+      isScopeState(baseScopeStateRun({ scope_kind: "orchestrator" })),
+    ).toBe(false);
+  });
+
+  it("TS narrowing on the union discriminator returns the variant", () => {
+    const parsed = parseScopeState(baseScopeStateRun()) as ScopeStateRun;
+    expect(parsed.scope_kind).toBe("run");
+    // Type-level narrowing: parsed.state is the run-only literal union.
+    const _state: ScopeStateRun["state"] = parsed.state;
+    expect(_state).toBe("pending");
+  });
+
+  it("narrows correctly across each scope_kind branch", () => {
+    const r = parseScopeState(baseScopeStateReplayCase()) as ScopeStateReplayCase;
+    expect(r.scope_kind).toBe("replay_case");
+    const g = parseScopeState(baseScopeStateGateRound()) as ScopeStateGateRound;
+    expect(g.scope_kind).toBe("gate_round");
+    const e = parseScopeState(
+      baseScopeStateEvidenceBundle(),
+    ) as ScopeStateEvidenceBundle;
+    expect(e.scope_kind).toBe("evidence_bundle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-012: scope_state.epoch non-negative integer
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-012 scope_state.epoch non-negative", () => {
+  it("accepts epoch = 0", () => {
+    expect(isScopeState(baseScopeStateRun({ epoch: 0 }))).toBe(true);
+  });
+
+  it("accepts a large bigint-shaped number", () => {
+    // 2**52 is the safe-integer ceiling; well within TS number's bigint
+    // representational range.
+    expect(isScopeState(baseScopeStateRun({ epoch: 2 ** 52 }))).toBe(true);
+  });
+
+  it("rejects epoch = -1", () => {
+    expect(isScopeState(baseScopeStateRun({ epoch: -1 }))).toBe(false);
+  });
+
+  it("rejects a non-integer epoch", () => {
+    expect(isScopeState(baseScopeStateRun({ epoch: 1.5 }))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-013: idempotency_records.idempotency_key ULID grammar
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-013 idempotency_records.idempotency_key ULID grammar", () => {
+  it("accepts the canonical ULID", () => {
+    expect(isIdempotencyRecord(baseIdempotencyRecord())).toBe(true);
+  });
+
+  it("rejects a 25-char key", () => {
+    expect(
+      isIdempotencyRecord(
+        baseIdempotencyRecord({ idempotency_key: VALID_ULID.slice(0, 25) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a 27-char key", () => {
+    expect(
+      isIdempotencyRecord(
+        baseIdempotencyRecord({ idempotency_key: VALID_ULID + "Z" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a lowercase ULID", () => {
+    expect(
+      isIdempotencyRecord(
+        baseIdempotencyRecord({ idempotency_key: VALID_ULID.toLowerCase() }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects an excluded letter (I) at position 0", () => {
+    expect(
+      isIdempotencyRecord(
+        baseIdempotencyRecord({ idempotency_key: "I" + VALID_ULID.slice(1) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("ULID_PATTERN constant is the canonical Crockford regex", () => {
+    expect(ULID_PATTERN).toBe("^[0-9A-HJKMNP-TV-Z]{26}$");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-014: idempotency_records.request_digest sha256 form (inherited)
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-014 idempotency_records.request_digest sha256 form", () => {
+  it("accepts a canonical request_digest", () => {
+    expect(isIdempotencyRecord(baseIdempotencyRecord())).toBe(true);
+  });
+
+  it("rejects the colon form on request_digest", () => {
+    expect(
+      isIdempotencyRecord(
+        baseIdempotencyRecord({
+          request_digest: "sha256:" + "a".repeat(64),
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects short request_digest", () => {
+    expect(
+      isIdempotencyRecord(
+        baseIdempotencyRecord({
+          request_digest: "sha256-" + "a".repeat(63),
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-015: event_log_entries.scope_type closed enum
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-015 event_log_entries.scope_type closed enum", () => {
+  it.each([
+    "run",
+    "replay",
+    "gate",
+    "eval_run",
+    "release",
+    "manifest",
+    "key",
+    "other",
+  ] as const)("accepts scope_type = %s", (scope_type) => {
+    expect(isEventLogEntry(baseEventLogEntry({ scope_type }))).toBe(true);
+  });
+
+  it("rejects an unknown scope_type", () => {
+    expect(
+      isEventLogEntry(baseEventLogEntry({ scope_type: "unknown_kind" })),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-016: event_log_entries.actor_kind closed enum
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-016 event_log_entries.actor_kind closed enum", () => {
+  it.each([
+    "control_plane",
+    "gate_engine",
+    "worker",
+    "sdk",
+    "user",
+    "cron",
+  ] as const)("accepts actor_kind = %s", (actor_kind) => {
+    expect(isEventLogEntry(baseEventLogEntry({ actor_kind }))).toBe(true);
+  });
+
+  it("rejects an unknown actor_kind", () => {
+    expect(
+      isEventLogEntry(baseEventLogEntry({ actor_kind: "orchestrator" })),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-017: event_log_entries.occurred_at RFC 3339 with timezone offset
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-017 event_log_entries.occurred_at RFC 3339 + offset required", () => {
+  it("accepts the UTC 'Z' form", () => {
+    expect(
+      isEventLogEntry(baseEventLogEntry({ occurred_at: "2026-05-12T00:00:00Z" })),
+    ).toBe(true);
+  });
+
+  it("accepts a positive offset (+05:30)", () => {
+    expect(
+      isEventLogEntry(
+        baseEventLogEntry({ occurred_at: "2026-05-12T10:00:00+05:30" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a negative offset (-08:00)", () => {
+    expect(
+      isEventLogEntry(
+        baseEventLogEntry({ occurred_at: "2026-05-12T00:00:00-08:00" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a naive string (no offset)", () => {
+    expect(
+      isEventLogEntry(
+        baseEventLogEntry({ occurred_at: "2026-05-12T00:00:00" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("parseEventLogEntry error message names occurred_at on naive input", () => {
+    expect(() =>
+      parseEventLogEntry(
+        baseEventLogEntry({ occurred_at: "2026-05-12T00:00:00" }),
+      ),
+    ).toThrow(/occurred_at/);
+  });
+
+  it("canonical serializer preserves the offset string byte-for-byte", () => {
+    for (const offsetStr of [
+      "2026-05-12T10:00:00+05:30",
+      "2026-05-12T10:00:00-08:00",
+      "2026-05-12T10:00:00+00:00",
+    ]) {
+      const e = parseEventLogEntry(baseEventLogEntry({ occurred_at: offsetStr }));
+      const bytes = serializeEventLogEntryCanonical(e);
+      const decoded = JSON.parse(Buffer.from(bytes).toString("utf-8"));
+      expect(decoded.occurred_at).toBe(offsetStr);
+    }
+  });
+
+  it("cross-language fixture digest matches the Python serializer output", () => {
+    // Fixture lives under packages/schemas/python/tests/fixtures/. Locate it
+    // by walking up from this file's directory: dirname(test)=test/,
+    // parent=packages/schemas/typescript/, then to ../python/tests/fixtures.
+    const fixtureDir = path.resolve(
+      __dirname,
+      "..",
+      "..",
+      "python",
+      "tests",
+      "fixtures",
+    );
+    const payload = JSON.parse(
+      fs.readFileSync(path.join(fixtureDir, "event_log_entry.json"), "utf-8"),
+    );
+    const expectedDigest = fs
+      .readFileSync(path.join(fixtureDir, "event_log_entry.sha256"), "utf-8")
+      .trim();
+
+    const e = parseEventLogEntry(payload);
+    const canonical = serializeEventLogEntryCanonical(e);
+    const actualDigest =
+      "sha256-" + crypto.createHash("sha256").update(canonical).digest("hex");
+    expect(actualDigest).toBe(expectedDigest);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-049: scope_state schema_version literal "relay.scope_state.v1"
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-049 scope_state schema_version pinned", () => {
+  it("accepts the canonical schema_version", () => {
+    expect(isScopeState(baseScopeStateRun())).toBe(true);
+  });
+
+  it("rejects a non-canonical schema_version", () => {
+    expect(
+      isScopeState(
+        baseScopeStateRun({ schema_version: "relay.scope_state.v2" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("generated TS source contains the scope_state.v1 literal", () => {
+    const src = path.resolve(__dirname, "..", "src", "envelopes.ts");
+    const text = fs.readFileSync(src, "utf-8");
+    const occurrences = (text.match(/"relay\.scope_state\.v1"/g) ?? []).length;
+    expect(occurrences).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-050: idempotency_record schema_version literal
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-050 idempotency_record schema_version pinned", () => {
+  it("accepts the canonical schema_version", () => {
+    expect(isIdempotencyRecord(baseIdempotencyRecord())).toBe(true);
+  });
+
+  it("rejects a non-canonical schema_version", () => {
+    expect(
+      isIdempotencyRecord(
+        baseIdempotencyRecord({
+          schema_version: "relay.idempotency_record.v2",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("generated TS source contains the idempotency_record.v1 literal", () => {
+    const src = path.resolve(__dirname, "..", "src", "envelopes.ts");
+    const text = fs.readFileSync(src, "utf-8");
+    const occurrences = (
+      text.match(/"relay\.idempotency_record\.v1"/g) ?? []
+    ).length;
+    expect(occurrences).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-W1-051: event_log_entry schema_version literal
+// ---------------------------------------------------------------------------
+
+describe("VAL-W1-051 event_log_entry schema_version pinned", () => {
+  it("accepts the canonical schema_version", () => {
+    expect(isEventLogEntry(baseEventLogEntry())).toBe(true);
+  });
+
+  it("rejects a non-canonical schema_version", () => {
+    expect(
+      isEventLogEntry(
+        baseEventLogEntry({ schema_version: "relay.event_log_entry.v2" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("generated TS source contains the event_log_entry.v1 literal", () => {
+    const src = path.resolve(__dirname, "..", "src", "envelopes.ts");
+    const text = fs.readFileSync(src, "utf-8");
+    const occurrences = (
+      text.match(/"relay\.event_log_entry\.v1"/g) ?? []
+    ).length;
+    expect(occurrences).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Defense-in-depth: extra-field rejection on the W1.2 envelopes
+// ---------------------------------------------------------------------------
+
+describe("extra-field rejection on W1.2 envelopes", () => {
+  it("rejects unknown fields on ManifestVersion", () => {
+    expect(
+      isManifestVersion(baseManifestVersion({ unknown_field: "value" })),
+    ).toBe(false);
+  });
+
+  it("rejects unknown fields on ScopeState (run variant)", () => {
+    expect(
+      isScopeState(baseScopeStateRun({ unknown_field: "value" })),
+    ).toBe(false);
+  });
+
+  it("rejects unknown fields on IdempotencyRecord", () => {
+    expect(
+      isIdempotencyRecord(baseIdempotencyRecord({ unknown_field: "value" })),
+    ).toBe(false);
+  });
+
+  it("rejects unknown fields on EventLogEntry", () => {
+    expect(
+      isEventLogEntry(baseEventLogEntry({ unknown_field: "value" })),
+    ).toBe(false);
+  });
+});
+
+// Avoid TS "declared but never used" by referencing the type-narrowing
+// constants. (Type-level usage suffices for the import to be reachable.)
+const _typeRefs: ReadonlyArray<
+  | ManifestVersion
+  | ScopeStateRun
+  | ScopeStateReplayCase
+  | ScopeStateGateRound
+  | ScopeStateEvidenceBundle
+  | IdempotencyRecord
+  | EventLogEntry
+> = [];
+void _typeRefs;

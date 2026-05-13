@@ -31,6 +31,20 @@ export const SHA256_HASH_PATTERN = "^sha256-[0-9a-f]{64}$";
 const SHA256_HASH_RE = new RegExp(SHA256_HASH_PATTERN);
 
 /**
+ * Canonical Crockford-base32 ULID grammar (spec B.6 line 3517). 26 chars
+ * from the alphabet 0-9 + A-H + J,K,M,N,P-T,V-Z (lowercase, I, L, O, U
+ * are excluded). Used by IdempotencyRecord.idempotency_key (VAL-W1-013).
+ */
+export const ULID_PATTERN = "^[0-9A-HJKMNP-TV-Z]{26}$";
+const ULID_RE = new RegExp(ULID_PATTERN);
+
+/**
+ * RFC 3339 trailing-offset marker (Z or +/-HH:MM). Used by EventLogEntry
+ * occurred_at validation to reject naive timestamps per VAL-W1-017.
+ */
+const RFC3339_OFFSET_RE = /(Z|[+-]\d{2}:\d{2})$/;
+
+/**
  * RFC 4122 UUID string form. Accepts versioned and nil UUIDs in canonical
  * 8-4-4-4-12 lowercase-hex form. We do not validate the version nibble.
  */
@@ -813,4 +827,628 @@ export function isActor(input: unknown): input is Actor {
   } catch {
     return false;
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* W1.2 additional field validators                                            */
+/* -------------------------------------------------------------------------- */
+
+function checkUlid(field: string, value: unknown): asserts value is string {
+  if (typeof value !== "string" || !ULID_RE.test(value)) {
+    throw new ValidationError(
+      field,
+      "must match canonical Crockford-base32 ULID grammar (26 uppercase chars)",
+      value,
+    );
+  }
+}
+
+function checkSha256HashNullable(
+  field: string,
+  value: unknown,
+): asserts value is string | null {
+  if (value === null || value === undefined) return;
+  if (typeof value !== "string" || !SHA256_HASH_RE.test(value)) {
+    throw new ValidationError(
+      field,
+      "must match canonical sha256-<64 lowercase hex> wire form or be null",
+      value,
+    );
+  }
+}
+
+function checkRecordOrObject(
+  field: string,
+  value: unknown,
+): asserts value is Record<string, unknown> {
+  if (
+    typeof value !== "object"
+    || value === null
+    || Array.isArray(value)
+  ) {
+    throw new ValidationError(field, "must be a JSON object", value);
+  }
+}
+
+function checkRfc3339WithOffset(
+  field: string,
+  value: unknown,
+): asserts value is string {
+  if (typeof value !== "string") {
+    throw new ValidationError(
+      field,
+      "must be an RFC 3339 date-time string with a timezone offset",
+      value,
+    );
+  }
+  // Reject naive RFC 3339 (no 'Z' and no '+/-HH:MM' tail).
+  if (RFC3339_OFFSET_RE.exec(value) === null) {
+    throw new ValidationError(
+      field,
+      "RFC 3339 timestamp MUST carry a timezone offset (Z or +/-HH:MM) per VAL-W1-017",
+      value,
+    );
+  }
+  // Verify the overall string parses to a finite Date instant.
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    throw new ValidationError(
+      field,
+      "must be an RFC 3339 date-time string with a timezone offset",
+      value,
+    );
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* ManifestVersion (spec A.9; VAL-W1-009, VAL-W1-010)                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A committed manifest version.
+ *
+ * - VAL-W1-009: commit_hash matches canonical sha256-<hex> wire form
+ * - VAL-W1-010: schema_version pinned to "relay.manifest.v1"
+ */
+export interface ManifestVersion {
+  readonly schema_version: "relay.manifest.v1";
+  readonly manifest_version_id: string;
+  readonly manifest_id: string;
+  readonly commit_hash: string;
+  readonly body: Record<string, unknown>;
+  readonly signed_by: string | null;
+  readonly signature: string | null;
+  readonly signature_key_id: string | null;
+  readonly effective_at: string;
+  readonly effective_until: string | null;
+}
+
+const MANIFEST_VERSION_FIELDS = [
+  "schema_version",
+  "manifest_version_id",
+  "manifest_id",
+  "commit_hash",
+  "body",
+  "signed_by",
+  "signature",
+  "signature_key_id",
+  "effective_at",
+  "effective_until",
+] as const;
+
+export function parseManifestVersion(input: unknown): ManifestVersion {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("ManifestVersion", p, MANIFEST_VERSION_FIELDS);
+  checkLiteral("schema_version", p.schema_version, "relay.manifest.v1");
+  checkUuid("manifest_version_id", p.manifest_version_id);
+  checkUuid("manifest_id", p.manifest_id);
+  checkSha256Hash("commit_hash", p.commit_hash);
+  checkRecordOrObject("body", p.body);
+  checkStringNullable("signed_by", p.signed_by);
+  checkStringNullable("signature", p.signature);
+  checkStringNullable("signature_key_id", p.signature_key_id);
+  checkRfc3339("effective_at", p.effective_at);
+  checkRfc3339Nullable("effective_until", p.effective_until);
+
+  return {
+    schema_version: "relay.manifest.v1",
+    manifest_version_id: p.manifest_version_id as string,
+    manifest_id: p.manifest_id as string,
+    commit_hash: p.commit_hash as string,
+    body: p.body as Record<string, unknown>,
+    signed_by: (p.signed_by ?? null) as string | null,
+    signature: (p.signature ?? null) as string | null,
+    signature_key_id: (p.signature_key_id ?? null) as string | null,
+    effective_at: p.effective_at as string,
+    effective_until: (p.effective_until ?? null) as string | null,
+  };
+}
+
+export function isManifestVersion(input: unknown): input is ManifestVersion {
+  try {
+    parseManifestVersion(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* ScopeState (spec W; VAL-W1-011, VAL-W1-012, VAL-W1-049)                     */
+/* -------------------------------------------------------------------------- */
+//
+// Implemented as a tagged-union type on `scope_kind` so each scope kind's
+// allowed state set (spec C.1 lines 3632-3636) is statically enforced. A
+// document with scope_kind=run carrying state=building (an evidence_bundle
+// state) MUST fail validation per VAL-W1-011.
+
+interface ScopeStateCommon {
+  readonly schema_version: "relay.scope_state.v1";
+  readonly scope_id: string;
+  readonly project_id: string;
+  readonly epoch: number;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+/** scope_kind='run' (spec C.1). */
+export interface ScopeStateRun extends ScopeStateCommon {
+  readonly scope_kind: "run";
+  readonly state:
+    | "pending"
+    | "captured"
+    | "validating"
+    | "gated"
+    | "result_written"
+    | "terminal";
+}
+
+/** scope_kind='replay_case' (spec C.1). */
+export interface ScopeStateReplayCase extends ScopeStateCommon {
+  readonly scope_kind: "replay_case";
+  readonly state:
+    | "proposed"
+    | "fixtures_ready"
+    | "executing"
+    | "analyzed"
+    | "terminal";
+}
+
+/** scope_kind='gate_round' (spec C.1). */
+export interface ScopeStateGateRound extends ScopeStateCommon {
+  readonly scope_kind: "gate_round";
+  readonly state:
+    | "open"
+    | "draft_received"
+    | "evaluating"
+    | "decision_written"
+    | "restarted"
+    | "terminal";
+}
+
+/** scope_kind='evidence_bundle' (spec C.1). */
+export interface ScopeStateEvidenceBundle extends ScopeStateCommon {
+  readonly scope_kind: "evidence_bundle";
+  readonly state:
+    | "building"
+    | "signed"
+    | "published"
+    | "superseded"
+    | "revoked";
+}
+
+/** Tagged union over all four scope_kind variants (VAL-W1-011). */
+export type ScopeState =
+  | ScopeStateRun
+  | ScopeStateReplayCase
+  | ScopeStateGateRound
+  | ScopeStateEvidenceBundle;
+
+const SCOPE_STATE_COMMON_FIELDS = [
+  "schema_version",
+  "scope_kind",
+  "scope_id",
+  "project_id",
+  "state",
+  "epoch",
+  "created_at",
+  "updated_at",
+] as const;
+
+const SCOPE_STATE_RUN_STATES = [
+  "pending",
+  "captured",
+  "validating",
+  "gated",
+  "result_written",
+  "terminal",
+] as const;
+
+const SCOPE_STATE_REPLAY_CASE_STATES = [
+  "proposed",
+  "fixtures_ready",
+  "executing",
+  "analyzed",
+  "terminal",
+] as const;
+
+const SCOPE_STATE_GATE_ROUND_STATES = [
+  "open",
+  "draft_received",
+  "evaluating",
+  "decision_written",
+  "restarted",
+  "terminal",
+] as const;
+
+const SCOPE_STATE_EVIDENCE_BUNDLE_STATES = [
+  "building",
+  "signed",
+  "published",
+  "superseded",
+  "revoked",
+] as const;
+
+const SCOPE_KIND_VALUES = [
+  "run",
+  "replay_case",
+  "gate_round",
+  "evidence_bundle",
+] as const;
+
+export function parseScopeState(input: unknown): ScopeState {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("ScopeState", p, SCOPE_STATE_COMMON_FIELDS);
+  checkLiteral("schema_version", p.schema_version, "relay.scope_state.v1");
+  checkEnum("scope_kind", p.scope_kind, SCOPE_KIND_VALUES);
+  checkUuid("scope_id", p.scope_id);
+  checkUuid("project_id", p.project_id);
+  checkIntegerGe("epoch", p.epoch, 0);
+  checkRfc3339("created_at", p.created_at);
+  checkRfc3339("updated_at", p.updated_at);
+
+  const scopeKind = p.scope_kind as (typeof SCOPE_KIND_VALUES)[number];
+  switch (scopeKind) {
+    case "run":
+      checkEnum("state", p.state, SCOPE_STATE_RUN_STATES);
+      return {
+        schema_version: "relay.scope_state.v1",
+        scope_kind: "run",
+        scope_id: p.scope_id as string,
+        project_id: p.project_id as string,
+        state: p.state as ScopeStateRun["state"],
+        epoch: p.epoch as number,
+        created_at: p.created_at as string,
+        updated_at: p.updated_at as string,
+      };
+    case "replay_case":
+      checkEnum("state", p.state, SCOPE_STATE_REPLAY_CASE_STATES);
+      return {
+        schema_version: "relay.scope_state.v1",
+        scope_kind: "replay_case",
+        scope_id: p.scope_id as string,
+        project_id: p.project_id as string,
+        state: p.state as ScopeStateReplayCase["state"],
+        epoch: p.epoch as number,
+        created_at: p.created_at as string,
+        updated_at: p.updated_at as string,
+      };
+    case "gate_round":
+      checkEnum("state", p.state, SCOPE_STATE_GATE_ROUND_STATES);
+      return {
+        schema_version: "relay.scope_state.v1",
+        scope_kind: "gate_round",
+        scope_id: p.scope_id as string,
+        project_id: p.project_id as string,
+        state: p.state as ScopeStateGateRound["state"],
+        epoch: p.epoch as number,
+        created_at: p.created_at as string,
+        updated_at: p.updated_at as string,
+      };
+    case "evidence_bundle":
+      checkEnum("state", p.state, SCOPE_STATE_EVIDENCE_BUNDLE_STATES);
+      return {
+        schema_version: "relay.scope_state.v1",
+        scope_kind: "evidence_bundle",
+        scope_id: p.scope_id as string,
+        project_id: p.project_id as string,
+        state: p.state as ScopeStateEvidenceBundle["state"],
+        epoch: p.epoch as number,
+        created_at: p.created_at as string,
+        updated_at: p.updated_at as string,
+      };
+  }
+}
+
+export function isScopeState(input: unknown): input is ScopeState {
+  try {
+    parseScopeState(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* IdempotencyRecord (spec A.12; VAL-W1-013, VAL-W1-014, VAL-W1-050)           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Request dedupe record.
+ *
+ * - VAL-W1-013: idempotency_key matches Crockford-base32 ULID grammar
+ * - VAL-W1-014: request_digest inherits canonical sha256-<hex> form
+ * - VAL-W1-050: schema_version pinned to "relay.idempotency_record.v1"
+ */
+export interface IdempotencyRecord {
+  readonly schema_version: "relay.idempotency_record.v1";
+  readonly idempotency_key: string;
+  readonly project_id: string;
+  readonly request_digest: string;
+  readonly response_status: number;
+  readonly response_ref: string | null;
+  readonly first_seen_at: string;
+  readonly expires_at: string;
+}
+
+const IDEMPOTENCY_RECORD_FIELDS = [
+  "schema_version",
+  "idempotency_key",
+  "project_id",
+  "request_digest",
+  "response_status",
+  "response_ref",
+  "first_seen_at",
+  "expires_at",
+] as const;
+
+export function parseIdempotencyRecord(input: unknown): IdempotencyRecord {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("IdempotencyRecord", p, IDEMPOTENCY_RECORD_FIELDS);
+  checkLiteral(
+    "schema_version",
+    p.schema_version,
+    "relay.idempotency_record.v1",
+  );
+  checkUlid("idempotency_key", p.idempotency_key);
+  checkUuid("project_id", p.project_id);
+  checkSha256Hash("request_digest", p.request_digest);
+  checkIntegerGe("response_status", p.response_status, 0);
+  checkStringNullable("response_ref", p.response_ref);
+  checkRfc3339("first_seen_at", p.first_seen_at);
+  checkRfc3339("expires_at", p.expires_at);
+
+  return {
+    schema_version: "relay.idempotency_record.v1",
+    idempotency_key: p.idempotency_key as string,
+    project_id: p.project_id as string,
+    request_digest: p.request_digest as string,
+    response_status: p.response_status as number,
+    response_ref: (p.response_ref ?? null) as string | null,
+    first_seen_at: p.first_seen_at as string,
+    expires_at: p.expires_at as string,
+  };
+}
+
+export function isIdempotencyRecord(
+  input: unknown,
+): input is IdempotencyRecord {
+  try {
+    parseIdempotencyRecord(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* EventLogEntry (spec A.11; VAL-W1-015..017, VAL-W1-051)                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Append-only audit-trail row.
+ *
+ * - VAL-W1-015: scope_type closed enum
+ * - VAL-W1-016: actor_kind closed enum
+ * - VAL-W1-017: occurred_at RFC 3339 with required timezone offset
+ * - VAL-W1-051: schema_version pinned to "relay.event_log_entry.v1"
+ */
+export interface EventLogEntry {
+  readonly schema_version: "relay.event_log_entry.v1";
+  readonly event_id: string;
+  readonly project_id: string;
+  readonly scope_type:
+    | "run"
+    | "replay"
+    | "gate"
+    | "eval_run"
+    | "release"
+    | "manifest"
+    | "key"
+    | "other";
+  readonly scope_id: string;
+  readonly event_type: string;
+  readonly actor_kind:
+    | "control_plane"
+    | "gate_engine"
+    | "worker"
+    | "sdk"
+    | "user"
+    | "cron";
+  readonly actor_id: string | null;
+  readonly manifest_commit_hash: string | null;
+  readonly payload: Record<string, unknown>;
+  readonly occurred_at: string;
+  readonly ingest_sequence: number;
+}
+
+const EVENT_LOG_ENTRY_FIELDS = [
+  "schema_version",
+  "event_id",
+  "project_id",
+  "scope_type",
+  "scope_id",
+  "event_type",
+  "actor_kind",
+  "actor_id",
+  "manifest_commit_hash",
+  "payload",
+  "occurred_at",
+  "ingest_sequence",
+] as const;
+
+const EVENT_LOG_SCOPE_TYPE = [
+  "run",
+  "replay",
+  "gate",
+  "eval_run",
+  "release",
+  "manifest",
+  "key",
+  "other",
+] as const;
+
+const EVENT_LOG_ACTOR_KIND = [
+  "control_plane",
+  "gate_engine",
+  "worker",
+  "sdk",
+  "user",
+  "cron",
+] as const;
+
+export function parseEventLogEntry(input: unknown): EventLogEntry {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("EventLogEntry", p, EVENT_LOG_ENTRY_FIELDS);
+  checkLiteral("schema_version", p.schema_version, "relay.event_log_entry.v1");
+  checkUuid("event_id", p.event_id);
+  checkUuid("project_id", p.project_id);
+  checkEnum("scope_type", p.scope_type, EVENT_LOG_SCOPE_TYPE);
+  checkUuid("scope_id", p.scope_id);
+  checkString("event_type", p.event_type);
+  checkEnum("actor_kind", p.actor_kind, EVENT_LOG_ACTOR_KIND);
+  checkUuidNullable("actor_id", p.actor_id);
+  checkSha256HashNullable("manifest_commit_hash", p.manifest_commit_hash);
+
+  // payload defaults to {} when omitted; otherwise must be a JSON object.
+  let payload = p.payload;
+  if (payload === undefined) {
+    payload = {};
+  } else {
+    checkRecordOrObject("payload", payload);
+  }
+
+  // VAL-W1-017: offset required.
+  checkRfc3339WithOffset("occurred_at", p.occurred_at);
+  checkIntegerGe("ingest_sequence", p.ingest_sequence, 0);
+
+  return {
+    schema_version: "relay.event_log_entry.v1",
+    event_id: p.event_id as string,
+    project_id: p.project_id as string,
+    scope_type: p.scope_type as EventLogEntry["scope_type"],
+    scope_id: p.scope_id as string,
+    event_type: p.event_type as string,
+    actor_kind: p.actor_kind as EventLogEntry["actor_kind"],
+    actor_id: (p.actor_id ?? null) as string | null,
+    manifest_commit_hash: (p.manifest_commit_hash ?? null) as string | null,
+    payload: payload as Record<string, unknown>,
+    occurred_at: p.occurred_at as string,
+    ingest_sequence: p.ingest_sequence as number,
+  };
+}
+
+export function isEventLogEntry(input: unknown): input is EventLogEntry {
+  try {
+    parseEventLogEntry(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Canonical serializer for cross-language round-trip (VAL-W1-017 evidence)    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Canonical JSON byte serialization of an EventLogEntry. Output is byte-equal
+ * to the Python `serialize_event_log_entry_canonical` for the same input.
+ * Rules:
+ *
+ * 1. Keys sorted lexicographically across the top-level object AND any nested
+ *    object inside `payload`. (Arrays preserve order.)
+ * 2. Compact separators (no whitespace).
+ * 3. `occurred_at` rendered as the original wire-format string, preserving
+ *    the timezone offset byte-for-byte.
+ * 4. UTF-8 encoded bytes.
+ */
+export function serializeEventLogEntryCanonical(
+  entry: EventLogEntry,
+): Uint8Array {
+  const canonical: Record<string, unknown> = {
+    schema_version: entry.schema_version,
+    event_id: entry.event_id,
+    project_id: entry.project_id,
+    scope_type: entry.scope_type,
+    scope_id: entry.scope_id,
+    event_type: entry.event_type,
+    actor_kind: entry.actor_kind,
+    actor_id: entry.actor_id,
+    manifest_commit_hash: entry.manifest_commit_hash,
+    payload: entry.payload,
+    occurred_at: entry.occurred_at,
+    ingest_sequence: entry.ingest_sequence,
+  };
+  const text = canonicalJsonStringify(canonical);
+  return new TextEncoder().encode(text);
+}
+
+/**
+ * Sort-keys + compact-separator JSON stringifier. Recurses into nested
+ * objects (NOT arrays -- arrays preserve order). Matches Python's
+ * `json.dumps(..., sort_keys=True, separators=(",", ":"))`.
+ */
+function canonicalJsonStringify(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    // JSON allows integers and finite floats; Infinity/NaN are not JSON.
+    if (!Number.isFinite(value)) {
+      throw new Error("canonicalJsonStringify: non-finite number not allowed");
+    }
+    return String(value);
+  }
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return "[" + value.map(canonicalJsonStringify).join(",") + "]";
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    const parts: string[] = [];
+    for (const k of keys) {
+      parts.push(JSON.stringify(k) + ":" + canonicalJsonStringify(obj[k]));
+    }
+    return "{" + parts.join(",") + "}";
+  }
+  throw new Error(
+    `canonicalJsonStringify: unsupported type ${typeof value}`,
+  );
 }
