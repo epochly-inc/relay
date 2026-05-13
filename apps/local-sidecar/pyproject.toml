@@ -1,0 +1,64 @@
+# Relay local-sidecar (W2 milestone).
+#
+# Houses the local-only FastAPI + aiosqlite sidecar process that the Relay
+# SDK and CLI attach to. Single instance per host, serialized via the
+# four-state lockfile classifier (spec H.5). This pyproject.toml carries the
+# minimal dependency surface needed for the W2.1 sub-feature (lockfile,
+# atomic file writes, /health nonce challenge, FastAPI bootstrap); later W2
+# sub-features (asyncio runtime, aiosqlite WAL, state engine, event log,
+# quiesce, recovery) will land their own deps here.
+#
+# Per CLAUDE.md keystone invariants:
+#   #3 manifest is source of truth, #8 atomic persistence via four primitives.
+# Per W2.1 boundaries.md section 11.1 (ops-worker-backend scope) this package
+# is owned by ops-worker-backend.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-sidecar"
+version = "0.0.0"
+description = "Relay local sidecar (W2.1 lockfile + spawn skeleton)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  # FastAPI + uvicorn power the local HTTP surface (the /health nonce
+  # challenge in W2.1 and the full ingest surface in W2.2+). Pinned with a
+  # conservative upper bound to keep the v0.1 dependency footprint reproducible.
+  "fastapi>=0.115,<0.117",
+  "uvicorn>=0.32,<0.34",
+  # Cross-platform exclusive file locking. portalocker is the standard
+  # portable wrapper around fcntl.flock (POSIX) and msvcrt.locking (Windows).
+  # CLAUDE.md mandates Windows native as a P0 platform; this dependency is
+  # the abstraction that lets local_atomic_file_write hold a shared lock on
+  # all three OSes.
+  "portalocker>=2.10,<3",
+  # Schemas package: the W1 EventLogEntry Pydantic model is reused by the
+  # local JSONL event log writer (spec H.5 "local-only event log").
+  "epochly-relay-schemas",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+  "httpx>=0.27",  # FastAPI TestClient transport
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["relay_sidecar"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "relay_sidecar",
+  "README.md",
+]
+
+[tool.uv.sources]
+epochly-relay-schemas = { workspace = true }

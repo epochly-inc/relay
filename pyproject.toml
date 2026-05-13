@@ -17,7 +17,7 @@ description = "Relay v0.1 OSS workspace root (not published)."
 requires-python = ">=3.12"
 
 [tool.uv.workspace]
-members = ["packages/schemas", "packages/sdk-python"]
+members = ["packages/schemas", "packages/sdk-python", "apps/local-sidecar"]
 
 [tool.uv]
 package = false
@@ -41,6 +41,7 @@ minversion = "8.0"
 testpaths = [
   "tests",
   "packages/schemas/python/tests",
+  "apps/local-sidecar/tests",
 ]
 markers = [
   "plumbing: Tier 1 - offline, every commit, budget <= 60s",
@@ -53,6 +54,11 @@ markers = [
 filterwarnings = [
   "error",
   "ignore::DeprecationWarning:pydantic",
+  # CPython 3.14 deprecated asyncio.iscoroutinefunction; FastAPI 0.115 +
+  # Starlette 0.48 still use it for route-handler detection. Upstream
+  # tracker: fastapi/fastapi#13212. Filter scoped tightly to the
+  # specific message + module so any unrelated deprecation still fails.
+  "ignore:'asyncio.iscoroutinefunction' is deprecated and slated for removal:DeprecationWarning",
 ]
 
 [dependency-groups]
