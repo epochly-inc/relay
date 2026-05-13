@@ -4,11 +4,15 @@ This file records local-only amendments to `.ops/manifest.yaml`.
 
 Why this file exists: `.ops/` is gitignored in this repository (see
 `.gitignore:52`), so direct edits to `.ops/manifest.yaml` are NOT versioned
-by git. That gitignore rule is being tracked separately as SCR-W1-H001.
-Until that is resolved, every functional change to the manifest must be
-mirrored here so git history captures the intent, the before/after diff,
-and the reasoning, even though the canonical manifest lives only on the
-authoring workstation.
+by git. That gitignore is a DELIBERATE convention locked post-W1.6 by
+orchestrator decision 2026-05-13 (SCR-W1-H001 resolution): the manifest
+holds local workstation state (paths, ports, side-effect classes that
+differ between dev environments) and is therefore intentionally not
+versioned. This file is the canonical propagation channel — every
+functional change to the manifest MUST be mirrored here so git history
+captures the intent, the before/after diff, and the reasoning. Workers
+on other workstations replay these entries against their local
+`.ops/manifest.yaml` to stay in sync.
 
 Each entry MUST include:
 

@@ -48,6 +48,32 @@ classes are NOT subclassed by the hand-authored classes. Future W1.6 +
 cross-language fixtures consume both layers and verify them against the same
 JSON canonical form.
 
+### Two-layer convention (LOCKED post-W1.6, orchestrator decision 2026-05-13)
+
+The two-layer architecture is the chosen convention for v0.1 and is not
+provisional. The hand-authored rich-validation layer addresses validation
+shapes that OpenAPI 3.1 cannot express directly (cross-field validators,
+StrictBool semantics, canonical-byte serializers). Folding rich validation
+into OpenAPI vendor extensions is OUT OF SCOPE for v0.1.
+
+To prevent silent drift between `raw/envelopes.yaml` (rich-layer source) and
+`raw/openapi.yaml` (generated-layer source), the CI cross-YAML alignment check
+at `packages/schemas/python/tests/test_yaml_alignment.py` enforces:
+
+- Both YAMLs enumerate exactly the same envelope names.
+- Each shared envelope's `schema_version` Literal is identical across the two
+  sources.
+- Each shared envelope's closed enums (status, action, draft_kind, etc.) carry
+  identical member sets across the two sources.
+
+The alignment check runs under the tier-1 plumbing marker (`-m plumbing`)
+on every commit. A failure means a drift has been introduced and one of the
+two YAMLs needs amendment to restore parity.
+
+When a new canonical envelope is introduced (W2+ milestones), it lands in
+BOTH YAMLs in the same commit, with the alignment check verifying parity
+before merge.
+
 ## Layout
 
 - `raw/openapi.yaml` - canonical OpenAPI 3.1 source-of-truth (W1.5).
