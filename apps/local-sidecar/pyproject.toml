@@ -56,6 +56,10 @@ dependencies = [
   # Schemas package: the W1 EventLogEntry Pydantic model is reused by the
   # local JSONL event log writer (spec H.5 "local-only event log").
   "epochly-relay-schemas",
+  # W2.5: zstandard compression for the rolling event-log archive
+  # (VAL-W2-040). Pinned with a conservative upper bound to keep the wire
+  # format stable across patch releases.
+  "zstandard>=0.22,<0.24",
 ]
 
 [project.optional-dependencies]

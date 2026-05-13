@@ -120,6 +120,7 @@ class RelayErrorCode:
     RELAY_SIDECAR_006: Final[str] = "RELAY-SIDECAR-006"
     RELAY_SIDECAR_007: Final[str] = "RELAY-SIDECAR-007"
     RELAY_SIDECAR_008: Final[str] = "RELAY-SIDECAR-008"
+    RELAY_SIDECAR_009: Final[str] = "RELAY-SIDECAR-009"
     RELAY_SQLITE_001: Final[str] = "RELAY-SQLITE-001"
     RELAY_VENDOR_001: Final[str] = "RELAY-VENDOR-001"
     RELAY_VENDOR_002: Final[str] = "RELAY-VENDOR-002"
@@ -223,6 +224,7 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-SIDECAR-006",
     "RELAY-SIDECAR-007",
     "RELAY-SIDECAR-008",
+    "RELAY-SIDECAR-009",
     "RELAY-SQLITE-001",
     "RELAY-VENDOR-001",
     "RELAY-VENDOR-002",

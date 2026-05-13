@@ -1,0 +1,106 @@
+# Canonical sidecar configuration schema (W2.5).
+#
+# Single source of truth for the environment-variable defaults the local
+# sidecar reads at runtime. Per CLAUDE.md keystone invariant #10 + spec
+# eng-plan A5 + VAL-W2-040 (review pass 1 M-14), every magic-number byte
+# threshold MUST appear in this file so an auditor reading the canonical
+# schemas can see what bound is in effect without reading code.
+#
+# Schema version: relay.sidecar_config.v1
+#
+# This YAML is consumed by:
+#   - apps/local-sidecar/relay_sidecar/blob_storage.py
+#     (DEFAULT_BLOB_SPILLOVER_BYTES must match RELAY_BLOB_SPILLOVER_BYTES.default)
+#   - apps/local-sidecar/relay_sidecar/state_engine/retention.py
+#     (DEFAULT_EVENT_LOG_MAX_BYTES must match RELAY_EVENT_LOG_MAX_BYTES.default)
+#
+# A guard test (apps/local-sidecar/tests/test_retention_pass.py) asserts that
+# the YAML defaults match the Python constants byte-for-byte. Drift between
+# the two surfaces fails CI.
+
+schema: relay.sidecar_config.v1
+
+env_vars:
+
+  RELAY_EVENT_LOG_MAX_BYTES:
+    description: >-
+      Rolling event-log retention byte threshold. When the live
+      event_log_entries table size estimate exceeds this value, the
+      retention pass archives the oldest entries to
+      ${RELAY_HOME}/evidence/event-log-archive/<yyyy-mm>.jsonl.zst and
+      deletes them from the live table. The default is 1 GiB; the CI
+      smoke test overrides to 1 MiB for fast feedback.
+    type: integer
+    units: bytes
+    default: 1073741824   # 1024 * 1024 * 1024 = 1 GiB
+    minimum: 1            # 0 / negative falls back to default at runtime
+    spec_anchor: "eng plan A5 (retention bound) + VAL-W2-040 + review pass 1 M-14"
+    related_assertions:
+      - VAL-W2-040
+      - VAL-W2-042
+
+  RELAY_BLOB_SPILLOVER_BYTES:
+    description: >-
+      Payload spillover threshold for event_log_entries. Payloads whose
+      canonical JSON encoding meets or exceeds this byte count are written
+      to ${RELAY_HOME}/evidence/blobs/<sha256-hex> via
+      local_atomic_file_write and the row's payload column carries only
+      {"_blob_sha256": "<hex>"}.
+    type: integer
+    units: bytes
+    default: 16384        # 16 KiB
+    minimum: 1            # 0 / negative falls back to default at runtime
+    spec_anchor: "eng plan A5 (blob spillover) + VAL-W2-038 + VAL-W2-039"
+    related_assertions:
+      - VAL-W2-038
+      - VAL-W2-039
+
+constants:
+
+  zstd_compression_level: 3   # zstd default; pinned for reproducibility
+  archive_directory_relative: "evidence/event-log-archive"
+  blob_directory_relative: "evidence/blobs"
+  archive_filename_pattern: "{yyyy}-{mm}.jsonl.zst"
+  archive_digest_suffix: ".sha256"
+  digest_algorithm: "sha256"
+
+roles:
+
+  # SQLite role emulation (single-row _sidecar_role table). Triggers in
+  # apps/local-sidecar/migrations/0007_event_log_constraints.sql consult
+  # this table to gate DELETE / UPDATE on event_log_entries.
+  - name: relay_state_engine
+    permits:
+      - INSERT INTO event_log_entries
+      - INSERT INTO scope_state
+      - UPDATE scope_state
+      - INSERT INTO run_results
+      - UPDATE run_results
+    forbids:
+      - DELETE FROM event_log_entries
+      - UPDATE event_log_entries
+  - name: relay_retention_archive
+    permits:
+      - DELETE FROM event_log_entries
+    forbids:
+      - INSERT INTO scope_state
+      - UPDATE scope_state
+      - INSERT INTO run_results
+      - UPDATE run_results
+
+bypass_markers:
+
+  # Canonical token list consulted by
+  # apps/local-sidecar/relay_sidecar/anti_bypass.py (VAL-W2-057).
+  # A payload containing any of these tokens (as exact whitespace- or
+  # JSON-punctuation-delimited tokens) is refused with error envelope
+  # code RELAY-SIDECAR-009 (descriptive: RELAY-SIDECAR-BYPASS-MARKER-DETECTED)
+  # UNLESS event_kind = 'operator_override' and an actor-resolved
+  # operator_override_claim is attached.
+  - "--no-verify"
+  - "--no-gpg-sign"
+  - "--skip-hooks"
+  - "pytest.mark.skip"
+  - "# TODO"
+  - "# FIXME"
+  - "# HACK"

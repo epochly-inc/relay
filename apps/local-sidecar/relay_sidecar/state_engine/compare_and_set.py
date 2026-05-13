@@ -35,6 +35,8 @@ from typing import Any
 
 import aiosqlite
 
+from ..anti_bypass import OPERATOR_OVERRIDE_EVENT_KIND, raise_on_reject, screen_payload
+from ..blob_storage import maybe_spillover
 from ..db import SidecarDatabase
 from .transitions import TRANSITION_TABLE, TransitionTable
 
@@ -392,6 +394,18 @@ async def compare_and_set_state(
                     "rejected_reason": INVALID_TRANSITION,
                 }
                 full_payload.update(payload_in)
+                # W2.5 VAL-W2-057: anti-bypass screen on the caller-supplied
+                # payload portion. The engine-supplied keys above never
+                # contain bypass markers, but ``payload_in`` is caller-
+                # controlled. We screen the merged payload defensively.
+                raise_on_reject(
+                    await screen_payload(
+                        payload=full_payload,
+                        event_kind="state_invalid_transition",
+                    )
+                )
+                # W2.5 VAL-W2-038: blob spillover for oversize payloads.
+                full_payload_on_row = maybe_spillover(full_payload)
                 # Compute next ingest_sequence in a fresh BEGIN IMMEDIATE.
                 await conn.execute("BEGIN IMMEDIATE")
                 try:
@@ -418,7 +432,7 @@ async def compare_and_set_state(
                             actor.kind,
                             actor.identity_hash,
                             manifest_commit_hash,
-                            json.dumps(full_payload, sort_keys=True, separators=(",", ":")),
+                            json.dumps(full_payload_on_row, sort_keys=True, separators=(",", ":")),
                             now,
                             next_seq,
                             "state_invalid_transition",
@@ -488,6 +502,34 @@ async def compare_and_set_state(
                 "applied_at_epoch": current_epoch,
             }
             full_payload.update(payload_in)
+            # W2.5 VAL-W2-057: anti-bypass screen. The engine-supplied keys
+            # are clean; ``payload_in`` is caller-controlled. The
+            # ``operator_override`` event_kind path consults the actors
+            # registry via the writer connection (it's read-only against
+            # actors, so safe to share the conn mid-transaction).
+            if isinstance(payload_in, dict):
+                override_claim_raw = payload_in.get("operator_override_claim")
+            else:
+                override_claim_raw = None
+            override_claim = (
+                override_claim_raw if isinstance(override_claim_raw, dict) else None
+            )
+            override_event_kind = (
+                OPERATOR_OVERRIDE_EVENT_KIND if override_claim is not None else None
+            )
+            override_conn = (
+                conn if override_event_kind == OPERATOR_OVERRIDE_EVENT_KIND else None
+            )
+            raise_on_reject(
+                await screen_payload(
+                    payload=full_payload,
+                    event_kind=override_event_kind,
+                    operator_override_claim=override_claim,
+                    actors_connection=override_conn,
+                )
+            )
+            # W2.5 VAL-W2-038: blob spillover for oversize payloads.
+            full_payload_on_row = maybe_spillover(full_payload)
             async with conn.execute(
                 "SELECT COALESCE(MAX(ingest_sequence), -1) + 1 "
                 "FROM event_log_entries"
@@ -511,7 +553,7 @@ async def compare_and_set_state(
                     actor.kind,
                     actor.identity_hash,
                     manifest_commit_hash,
-                    json.dumps(full_payload, sort_keys=True, separators=(",", ":")),
+                    json.dumps(full_payload_on_row, sort_keys=True, separators=(",", ":")),
                     now,
                     next_seq,
                     "state_transition",
