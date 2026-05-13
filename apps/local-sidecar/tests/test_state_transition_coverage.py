@@ -1,0 +1,155 @@
+"""VAL-W2-059: Exhaustive state-transition table coverage test.
+
+A parameterized pytest test enumerates every (state, event, target_state)
+row in packages/schemas/raw/state-transition-table.yaml for the four
+scope kinds. For each row:
+  (a) seed a scope_state row at ``state``,
+  (b) call compare_and_set_state with expected_from=state, event=event,
+      and a cassette-backed happy-path actor,
+  (c) assert post-call state equals target_state AND one event_log row
+      was written.
+
+Test additionally asserts the IN-MEMORY TRANSITION_TABLE count equals
+the YAML-declared count: drift between YAML and code triggers failure.
+
+ASCII-only per CLAUDE.md.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+import yaml
+from relay_sidecar.db import SidecarDatabase
+from relay_sidecar.state_engine import (
+    TRANSITION_TABLE,
+    ActorRef,
+    compare_and_set_state,
+)
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_YAML_PATH = (
+    _REPO_ROOT / "packages" / "schemas" / "raw" / "state-transition-table.yaml"
+)
+
+
+def _ts() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _load_yaml_transitions() -> list[dict]:
+    """Return a flat list of (scope_kind, from, event, to, actor) tuples."""
+    data = yaml.safe_load(_YAML_PATH.read_text(encoding="utf-8"))
+    rows: list[dict] = []
+    for scope_kind, body in data["scope_kinds"].items():
+        for t in body["transitions"]:
+            rows.append(
+                {
+                    "scope_kind": scope_kind,
+                    "from": t["from"],
+                    "event": t["event"],
+                    "to": t["to"],
+                    "actor": t["actor"],
+                }
+            )
+    return rows
+
+
+_YAML_TRANSITIONS = _load_yaml_transitions()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-059")
+def test_transition_count_matches_yaml() -> None:
+    """In-memory TRANSITION_TABLE row count == YAML row count."""
+    assert TRANSITION_TABLE.transition_count == len(_YAML_TRANSITIONS), (
+        TRANSITION_TABLE.transition_count,
+        len(_YAML_TRANSITIONS),
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-059")
+def test_every_yaml_transition_is_in_table() -> None:
+    """Every YAML row resolves through TransitionTable.lookup."""
+    misses: list[dict] = []
+    for row in _YAML_TRANSITIONS:
+        t = TRANSITION_TABLE.lookup(row["scope_kind"], row["from"], row["event"])
+        if t is None or t.to_state != row["to"]:
+            misses.append(row)
+    assert not misses, misses
+
+
+def _seed_scope_at_state(
+    db_path: Path, scope_kind: str, scope_id: str, state: str, project_id: str
+) -> None:
+    """Insert a scope_state row directly at the given state (test setup)."""
+    import sqlite3 as _sqlite3
+
+    now = _ts()
+    conn = _sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute(
+            "INSERT INTO scope_state "
+            "(scope_kind, scope_id, project_id, state, epoch, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 0, ?, ?)",
+            (scope_kind, scope_id, project_id, state, now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-059")
+@pytest.mark.parametrize(
+    "transition",
+    _YAML_TRANSITIONS,
+    ids=lambda t: f"{t['scope_kind']}.{t['from']}->{t['event']}->{t['to']}",
+)
+@pytest.mark.asyncio
+async def test_every_yaml_transition_executes(tmp_path, transition) -> None:
+    """Every YAML transition successfully advances state when seeded."""
+    db = SidecarDatabase(db_path=tmp_path / "sidecar.db", reader_count=1)
+    try:
+        await db.open()
+        scope_id = str(uuid.uuid4())
+        project_id = str(uuid.uuid4())
+        _seed_scope_at_state(
+            tmp_path / "sidecar.db",
+            transition["scope_kind"],
+            scope_id,
+            transition["from"],
+            project_id,
+        )
+        actor = ActorRef(
+            kind=transition["actor"],
+            identity_hash="sha256-" + "a" * 64,
+        )
+        result = await compare_and_set_state(
+            database=db,
+            scope_kind=transition["scope_kind"],
+            scope_id=scope_id,
+            expected_from=transition["from"],
+            event=transition["event"],
+            actor=actor,
+            project_id=project_id,
+        )
+        assert result.ok is True, (transition, result)
+        assert result.new_state == transition["to"], (transition, result.new_state)
+
+        # Exactly one state_transition event_log row for this scope.
+        reader = db.acquire_reader()
+        async with reader.execute(
+            "SELECT COUNT(*) FROM event_log_entries "
+            "WHERE scope_id = ? AND event_kind = 'state_transition'",
+            (scope_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None and int(row[0]) == 1, (transition, row)
+    finally:
+        await db.close()

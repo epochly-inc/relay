@@ -47,6 +47,7 @@ from .errors import RelaySQLiteBusyExhausted
 from .health import HealthState, _register_health_routes
 from .lockfile import relay_home
 from .primitives.transactional_db_write import set_active_database
+from .state_engine.http_endpoint import build_state_router
 
 # Drain grace window advertised to clients via ``Retry-After``. Matches the
 # manifest service.local-sidecar.quiesce_timeout_ms (30000 ms = 30 s).
@@ -289,6 +290,22 @@ def build_runtime_app(
     # Attach runtime state.
     app.state.runtime = runtime
     app.state.http_client = None  # populated in lifespan startup
+
+    # W2.4: register the state-engine HTTP boundary.
+    # ``POST /v1/state/transition`` validates the three-anchor handoff
+    # (VAL-W2-062) BEFORE forwarding to ``compare_and_set_state``. The
+    # database_getter closure resolves the active SidecarDatabase from
+    # app.state.runtime so the router does not need lifespan visibility.
+    def _get_database() -> SidecarDatabase:
+        db = runtime.database
+        if db is None:
+            raise RuntimeError(
+                "state-transition handler invoked before lifespan startup "
+                "registered SidecarDatabase on app.state.runtime"
+            )
+        return db
+
+    app.include_router(build_state_router(database_getter=_get_database))
 
     @app.get("/diagnostics/sqlite")
     async def diagnostics_sqlite() -> dict[str, Any]:

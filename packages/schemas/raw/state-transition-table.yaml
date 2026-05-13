@@ -1,0 +1,137 @@
+# Canonical machine-readable extract of spec C.3 state-transition table.
+#
+# Per VAL-W2-059 (sub-feature w2.4): the W2.4 state engine MUST enumerate
+# every (state, event, target_state) row in this YAML and assert one-to-one
+# correspondence with the spec C.3 transition table. The test
+# tests/test_state_transition_coverage.py loads this file and parameterises
+# over every transition; if the count diverges from the production
+# TRANSITION_TABLE, the test fails -- meaning either this YAML drifted from
+# spec or the implementation added/removed transitions silently.
+#
+# Schema (relay.state_transition_table.v1):
+#   scope_kinds:
+#     <scope_kind>:
+#       transitions:
+#         - from: <state>
+#           event: <event>
+#           to: <state>
+#           actor: <actor_kind>            # informational; primary enforcement is in TRANSITION_TABLE
+#           event_log_type: <event_type>   # the canonical event_log_entries.event_type emitted
+#
+# Spec anchors:
+#   - spec C.1 (states per scope kind)
+#   - spec C.2 (allowed actors)
+#   - spec C.3 (transition table)
+#   - spec C.4 (compare_and_set_state pseudocode)
+#   - spec W (scope_state table)
+#
+# ASCII-only per CLAUDE.md "ASCII-Safe Source".
+
+schema: relay.state_transition_table.v1
+
+scope_kinds:
+
+  run:
+    initial_state: pending
+    terminal_states: [terminal]
+    transitions:
+      - from: pending
+        event: ingest.run_received
+        to: captured
+        actor: sdk
+        event_log_type: run.captured
+      - from: captured
+        event: validation.start
+        to: validating
+        actor: ingest_worker
+        event_log_type: run.validation_started
+      - from: validating
+        event: validation.complete
+        to: gated
+        actor: validation_worker
+        event_log_type: run.validation_complete
+      - from: gated
+        event: gate.all_decided
+        to: result_written
+        actor: result_writer
+        event_log_type: run.result_written
+      - from: result_written
+        event: auto.terminal
+        to: terminal
+        actor: result_writer
+        event_log_type: run.terminal
+
+  replay_case:
+    initial_state: proposed
+    terminal_states: [terminal]
+    transitions:
+      - from: proposed
+        event: fixtures.uploaded
+        to: fixtures_ready
+        actor: replay_worker
+        event_log_type: replay.fixtures_ready
+      - from: fixtures_ready
+        event: replay.run_started
+        to: executing
+        actor: replay_worker
+        event_log_type: replay.run_started
+      - from: executing
+        event: replay.run_complete
+        to: analyzed
+        actor: replay_worker
+        event_log_type: replay.run_complete
+      - from: analyzed
+        event: auto.terminal
+        to: terminal
+        actor: replay_worker
+        event_log_type: replay.terminal
+
+  gate_round:
+    initial_state: open
+    terminal_states: [terminal, restarted]
+    transitions:
+      - from: open
+        event: draft.submitted
+        to: draft_received
+        actor: worker
+        event_log_type: gate.draft_received
+      - from: draft_received
+        event: engine.start_evaluation
+        to: evaluating
+        actor: gate_engine
+        event_log_type: gate.evaluation_started
+      - from: evaluating
+        event: engine.decide
+        to: decision_written
+        actor: gate_engine
+        event_log_type: gate.decision_written
+      - from: decision_written
+        event: engine.restart_required
+        to: restarted
+        actor: gate_engine
+        event_log_type: gate.restarted
+      - from: decision_written
+        event: auto.terminal
+        to: terminal
+        actor: gate_engine
+        event_log_type: gate.terminal
+
+  evidence_bundle:
+    initial_state: building
+    terminal_states: [superseded, revoked]
+    transitions:
+      - from: building
+        event: bundle.signed
+        to: signed
+        actor: evidence_signer
+        event_log_type: evidence.signed
+      - from: signed
+        event: bundle.published
+        to: published
+        actor: evidence_signer
+        event_log_type: evidence.published
+      - from: published
+        event: retention.expire
+        to: superseded
+        actor: cron
+        event_log_type: evidence.superseded
