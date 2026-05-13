@@ -73,6 +73,25 @@ _PERMITTED_DB_PY_WRITES_FILE = (
     / "db.py"
 )
 
+# Documented W2.6 exception: ``runtime.py::_execute_forced_stop`` writes
+# the forensic ``sidecar.forced_stop`` row (event_kind='sidecar_forced_stop')
+# into event_log_entries on a SEPARATE aiosqlite connection. The state
+# engine writer connection may be holding a CAS transaction's writer
+# lock when force-stop fires; routing the forced-stop emit through the
+# state engine would deadlock. This is also categorically distinct from
+# canonical state transitions (event_kind='state_transition' /
+# 'state_invalid_transition'); VAL-W2-046 requires the row to be written
+# BEFORE killing the in-flight transaction. Like the W2.3 db.py exception,
+# the forced-stop write is forensic post-mortem evidence, not a
+# canonical state-change row.
+_PERMITTED_RUNTIME_PY_WRITES_FILE = (
+    _REPO_ROOT
+    / "apps"
+    / "local-sidecar"
+    / "relay_sidecar"
+    / "runtime.py"
+)
+
 
 def _python_files(root: Path) -> list[Path]:
     if not root.exists():
@@ -100,6 +119,11 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # Documented W2.3 exception: db.py::_flush_retry_buffer writes
             # sqlite_busy_retry observability rows. See _PERMITTED_DB_PY_WRITES_FILE.
             if path == _PERMITTED_DB_PY_WRITES_FILE:
+                continue
+            # Documented W2.6 exception: runtime.py::_execute_forced_stop
+            # writes the forensic sidecar.forced_stop row on a separate
+            # connection. See _PERMITTED_RUNTIME_PY_WRITES_FILE.
+            if path == _PERMITTED_RUNTIME_PY_WRITES_FILE:
                 continue
             text = path.read_text(encoding="utf-8")
             for line_no, line in enumerate(text.splitlines(), start=1):
@@ -175,10 +199,13 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
     offending_lines: list[str] = []
     state_engine_marker = "/relay_sidecar/state_engine/"
     db_py_marker = "/relay_sidecar/db.py:"  # W2.3 retry-flush exception
+    runtime_py_marker = "/relay_sidecar/runtime.py:"  # W2.6 forced-stop forensic
     for line in result.stdout.splitlines():
         if state_engine_marker in line:
             continue
         if db_py_marker in line:
+            continue
+        if runtime_py_marker in line:
             continue
         offending_lines.append(line)
     assert not offending_lines, (

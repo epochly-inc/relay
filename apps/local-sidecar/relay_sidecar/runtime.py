@@ -1,4 +1,4 @@
-"""FastAPI asyncio runtime + lifecycle for the local sidecar (W2.2).
+"""FastAPI asyncio runtime + lifecycle for the local sidecar (W2.2 + W2.6).
 
 Builds on the W2.1 ``health.build_app`` skeleton. W2.2 lands:
 
@@ -22,22 +22,60 @@ Builds on the W2.1 ``health.build_app`` skeleton. W2.2 lands:
   - All route handlers are ``async def`` (VAL-W2-012; grep guard).
   - Zero blocking I/O inside async handler bodies (VAL-W2-016; AST lint).
 
+W2.6 extends the lifespan with the FULL quiesce protocol (VAL-W2-043
+through VAL-W2-048):
+
+  - ``InflightTracker`` registered on ``RuntimeState.quiesce.tracker``;
+    long-running operations (ingest, gate evaluate, replay session,
+    background flush) acquire it via ``async with tracker.acquire(...)``
+    so the idle-countdown task only fires when the sidecar is genuinely
+    idle (VAL-W2-043 + VAL-W2-048).
+  - ``/v1/ingest`` placeholder endpoint that participates in the tracker
+    so VAL-W2-044 (drain rejects new ingest with 503) is exercisable end
+    to end while the full ingest surface lands later in W3+.
+  - Lifespan tear-down ordering on graceful shutdown:
+      1. ``state.draining = True`` (drain middleware now answers 503).
+      2. Wait for tracker.in_flight_count to reach 0 (bounded by
+         ``RELAY_SIDECAR_DRAIN_DEADLINE_S``; defaults to 30s matching the
+         manifest service.local-sidecar.quiesce_timeout_ms).
+      3. ``PRAGMA wal_checkpoint(TRUNCATE)`` on the writer connection
+         BEFORE closing aiosqlite connections (VAL-W2-045 -- WAL file
+         size = 0 post-shutdown).
+      4. Close the SidecarDatabase (cancels writer task, closes
+         connections).
+      5. Close the shared httpx.AsyncClient.
+      6. Clear the lockfile via ``local_atomic_file_write(path, b"")``
+         (VAL-W2-047) so the next ``acquire_or_attach`` classifies it as
+         NO_LOCK rather than STALE_PID.
+  - SIGUSR1 (or SIGTERM on Windows) handler triggers the force-stop path:
+      a. Emit one ``sidecar.forced_stop`` event_log_entries row BEFORE
+         killing any in-flight transaction (VAL-W2-046).
+      b. Set ``state.quiesce.force_stop_requested = True`` so the
+         lifespan tear-down branch SKIPS the WAL checkpoint AND SKIPS
+         the lockfile clear (force-stop deliberately leaves the
+         lockfile in place; the next spawn observes STALE_PID and
+         clears via spawn.py).
+
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import os
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -45,8 +83,15 @@ from . import __version__
 from .db import DEFAULT_READER_COUNT, SidecarDatabase
 from .errors import RelaySQLiteBusyExhausted
 from .health import HealthState, _register_health_routes
-from .lockfile import relay_home
+from .lockfile import relay_home, resolve_lockfile_path
+from .primitives import local_atomic_file_write
 from .primitives.transactional_db_write import set_active_database
+from .quiesce import (
+    InflightTracker,
+    QuiesceState,
+    force_stop_signal_number,
+    resolve_idle_timeout_seconds,
+)
 from .state_engine.http_endpoint import build_state_router
 
 # Drain grace window advertised to clients via ``Retry-After``. Matches the
@@ -56,6 +101,33 @@ DRAIN_RETRY_AFTER_S: int = 30
 # Sidecar SQLite database filename. Lives under ``${RELAY_HOME}``. W2.2
 # only enables WAL on this DB; full schema lands in W2.3+.
 SIDECAR_DB_FILENAME: str = "sidecar.db"
+
+# Drain deadline (seconds): the lifespan tear-down waits at most this long
+# for in-flight operations to complete before forcing the WAL checkpoint
+# and closing connections. Matches the manifest
+# service.local-sidecar.quiesce_timeout_ms (30000 ms = 30 s) by default.
+# Tests override via ``RELAY_SIDECAR_DRAIN_DEADLINE_S``.
+DEFAULT_DRAIN_DEADLINE_S: float = 30.0
+DRAIN_DEADLINE_ENV: str = "RELAY_SIDECAR_DRAIN_DEADLINE_S"
+
+
+def _resolve_drain_deadline_seconds(
+    default: float = DEFAULT_DRAIN_DEADLINE_S,
+) -> float:
+    """Resolve the drain-wait deadline from ``RELAY_SIDECAR_DRAIN_DEADLINE_S``.
+
+    Returns ``default`` when the env var is unset or empty. Raises
+    ``ValueError`` on a non-numeric or non-positive override.
+    """
+    raw = os.environ.get(DRAIN_DEADLINE_ENV, "").strip()
+    if not raw:
+        return float(default)
+    parsed = float(raw)
+    if parsed <= 0.0:
+        raise ValueError(
+            f"{DRAIN_DEADLINE_ENV} must be a positive float; got {raw!r}"
+        )
+    return parsed
 
 # Module-level test counter. Every ``httpx.AsyncClient.__init__`` call
 # through ``build_runtime_app`` increments this; VAL-W2-013 asserts the
@@ -115,6 +187,23 @@ class RuntimeState:
             startup; populated in ``lifespan`` and closed in shutdown.
         reader_count: Number of reader connections to open. Default
             ``DEFAULT_READER_COUNT`` (2) per VAL-W2-023 (>= 2 connections).
+        lockfile_path: Path to ``${RELAY_HOME}/sidecar.lock``. The lifespan
+            tear-down clears this file via ``local_atomic_file_write`` on
+            graceful shutdown (VAL-W2-047). Force-stop intentionally
+            leaves it untouched so the next ``acquire_or_attach`` observes
+            STALE_PID and clears via the spawn path.
+        quiesce: W2.6 quiesce-protocol state (in-flight tracker, force-stop
+            flag, idle-shutdown trigger). Populated in lifespan startup;
+            consumed by the lifespan tear-down + the SIGUSR1 handler.
+        idle_timeout_seconds: Resolved idle-window length (seconds). The
+            lifespan idle-countdown task uses this as the
+            ``asyncio.wait_for`` timeout when waiting on
+            ``quiesce.tracker.idle_event``. None until lifespan startup
+            resolves the env override; see :func:`resolve_idle_timeout_seconds`.
+        drain_deadline_seconds: Upper bound on how long the lifespan
+            tear-down waits for in-flight operations to complete before
+            forcing the WAL checkpoint. Resolved once at lifespan startup
+            via :func:`_resolve_drain_deadline_seconds`.
     """
 
     health: HealthState
@@ -123,26 +212,63 @@ class RuntimeState:
     draining: bool = False
     database: SidecarDatabase | None = None
     reader_count: int = DEFAULT_READER_COUNT
+    lockfile_path: Path | None = None
+    quiesce: QuiesceState = field(default_factory=QuiesceState)
+    idle_timeout_seconds: float | None = None
+    drain_deadline_seconds: float | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """FastAPI lifespan: init SQLite WAL + httpx client BEFORE serving.
+    """FastAPI lifespan: init SQLite WAL + httpx client BEFORE serving;
+    drain + WAL-checkpoint + lockfile-clear on shutdown (W2.6 quiesce).
 
     Order matters for VAL-W2-014: the listener does not begin accepting
     connections until ``yield``. Uvicorn calls the lifespan startup
     portion, awaits its completion, THEN binds the port. Therefore every
     PRAGMA executed here completes strictly before the first request.
 
-    Shutdown: uvicorn installs its own SIGTERM/SIGINT handlers which, on
-    receipt, trigger graceful shutdown and invoke this lifespan's
-    ``__aexit__`` (the ``finally`` block below) BEFORE waiting for
-    in-flight handlers (uvicorn's ``timeout_graceful_shutdown`` controls
-    that wait). We do NOT install our own asyncio signal handler here;
-    doing so would clobber uvicorn's handler and the process would never
-    drain. The ``finally`` block sets the drain flag, briefly yields so
-    other tasks see it (the DrainMiddleware reads it on each request),
-    then closes the httpx client.
+    Startup adds W2.6 quiesce wiring:
+      - Construct an :class:`InflightTracker` and bind it to
+        ``state.quiesce.tracker`` so route handlers can register
+        long-running operations.
+      - Resolve the idle-timeout window from
+        ``RELAY_SIDECAR_IDLE_TIMEOUT_S`` (default 60s) and the drain
+        deadline from ``RELAY_SIDECAR_DRAIN_DEADLINE_S`` (default 30s).
+      - Spawn the idle-countdown task that calls
+        ``await asyncio.wait_for(tracker.idle_event.wait(), timeout=IDLE)``
+        in a loop; on a TimeoutError that fires while the event is still
+        set (i.e. truly idle), it triggers graceful shutdown by setting
+        ``state.quiesce.idle_shutdown_triggered = True`` and
+        ``server.should_exit = True`` (when running under uvicorn).
+      - Install a SIGUSR1 handler (POSIX) that triggers the force-stop
+        path: emit a ``sidecar.forced_stop`` event_log_entries row BEFORE
+        cancelling in-flight transactions, then mark
+        ``state.quiesce.force_stop_requested = True`` so the lifespan
+        tear-down skips the graceful WAL checkpoint AND the lockfile
+        clear.
+
+    Shutdown sequence (graceful path; force-stop branch noted inline):
+      1. ``state.draining = True`` so DrainMiddleware now answers 503.
+      2. Brief asyncio.sleep(0) so concurrent middleware sees the flag.
+      3. Cancel the idle-countdown task (its await will raise
+         CancelledError; we suppress it).
+      4. Wait for ``tracker.idle_event`` with deadline =
+         ``state.drain_deadline_seconds``. Force-stop path skips the
+         wait (operations have already been signalled by the SIGUSR1
+         handler).
+      5. Run ``PRAGMA wal_checkpoint(TRUNCATE)`` on the writer
+         connection BEFORE closing aiosqlite. SKIPPED on force-stop.
+      6. Close the SidecarDatabase (cancels writer task, closes all
+         connections).
+      7. Close the shared ``httpx.AsyncClient``.
+      8. Clear the lockfile via ``local_atomic_file_write(path, b"")``.
+         SKIPPED on force-stop so the next spawn classifies STALE_PID.
+
+    The fundamental ordering invariant for VAL-W2-045 is:
+    WAL CHECKPOINT comes BEFORE database close which comes BEFORE
+    lockfile clear. This guarantees the WAL file is truncated to size
+    zero before any subsequent reader observes the database file.
     """
     state: RuntimeState = app.state.runtime
 
@@ -161,7 +287,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_active_database(state.database)
     # 2. Single shared httpx.AsyncClient.
     app.state.http_client = _make_async_client()
-    # 3. Record bind-ready timestamp. Uvicorn binds AFTER startup yields,
+    # 3. W2.6 quiesce wiring. The tracker lives on the QuiesceState so
+    #    route handlers can reach it via app.state.runtime.quiesce.tracker
+    #    (no module-level globals; one tracker per RuntimeState).
+    tracker = InflightTracker()
+    state.quiesce.tracker = tracker
+    # Resolve env-overrideable timing windows once at startup so they
+    # are immutable for the lifespan duration.
+    state.idle_timeout_seconds = resolve_idle_timeout_seconds()
+    state.drain_deadline_seconds = _resolve_drain_deadline_seconds()
+    # 4. Idle-countdown task: triggers graceful shutdown when the sidecar
+    #    has been continuously idle for state.idle_timeout_seconds. We
+    #    capture a reference to the task on app.state so the lifespan
+    #    tear-down can cancel it.
+    app.state.idle_countdown_task = asyncio.create_task(
+        _idle_countdown_loop(app, state),
+        name="sidecar-idle-countdown",
+    )
+    # 5. SIGUSR1 force-stop handler. POSIX only; on Windows the helper
+    #    falls back to SIGTERM (graceful drain only). We install via
+    #    add_signal_handler so the handler runs on the loop thread (the
+    #    only thread that may touch asyncio primitives).
+    _install_force_stop_signal_handler(app, state)
+    # 6. Record bind-ready timestamp. Uvicorn binds AFTER startup yields,
     #    so the next ``time.monotonic()`` (taken from the handler side) is
     #    strictly greater than this value.
     loop = asyncio.get_running_loop()
@@ -171,16 +319,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         # ---- Shutdown ----
-        # Toggle drain BEFORE closing the client so any concurrent handler
+        # Toggle drain BEFORE closing anything so any concurrent handler
         # sees the flag on its next entry to the middleware.
         state.draining = True
         # Brief yield to let scheduled tasks observe the flag.
         await asyncio.sleep(0)
-        # Close the httpx client. ``aclose`` cancels in-flight outbound
-        # requests gracefully.
-        client: httpx.AsyncClient | None = getattr(app.state, "http_client", None)
-        if client is not None:
-            await client.aclose()
+
+        force_stop = state.quiesce.force_stop_requested
+
+        # Cancel the idle-countdown task. Its CancelledError is benign;
+        # we suppress and await it so the task slot is reaped.
+        idle_task = getattr(app.state, "idle_countdown_task", None)
+        if idle_task is not None and not idle_task.done():
+            idle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await idle_task
+
+        # Uninstall the SIGUSR1 handler so a re-run of the lifespan in
+        # the same process (rare, mostly tests) does not pile up handlers.
+        _uninstall_force_stop_signal_handler()
+
+        # On the graceful path (no force-stop), wait for in-flight
+        # operations to complete up to the drain deadline. Force-stop
+        # has ALREADY emitted its forensic event_log row in the SIGUSR1
+        # handler and SHOULD NOT block on the in-flight tracker (the
+        # operations have been notified that they are being killed).
+        if not force_stop:
+            tracker = state.quiesce.tracker
+            deadline = state.drain_deadline_seconds or DEFAULT_DRAIN_DEADLINE_S
+            if tracker is not None:
+                with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        tracker.idle_event.wait(), timeout=deadline
+                    )
+
+        # WAL CHECKPOINT (VAL-W2-045) -- on graceful path only. Forced
+        # stop deliberately skips so the WAL retains uncommitted bytes
+        # and the next startup runs WAL recovery (covered by W2.7).
+        if not force_stop and state.database is not None:
+            await _wal_checkpoint_truncate(state.database)
+
         # Close the SQLite database manager (cancels the writer task,
         # drains pending requests, closes all connections). Clear the
         # module-level registration so a subsequent
@@ -190,6 +368,295 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await state.database.close()
             state.database = None
         set_active_database(None)
+
+        # Close the httpx client. ``aclose`` cancels in-flight outbound
+        # requests gracefully.
+        client: httpx.AsyncClient | None = getattr(app.state, "http_client", None)
+        if client is not None:
+            await client.aclose()
+
+        # CLEAR LOCKFILE (VAL-W2-047) -- on graceful path only. Force-stop
+        # leaves it in place so the next acquire_or_attach observes
+        # STALE_PID and clears via the spawn path.
+        if not force_stop and state.lockfile_path is not None:
+            with contextlib.suppress(FileNotFoundError, OSError):
+                local_atomic_file_write(
+                    state.lockfile_path, b"", mode=0o600
+                )
+
+
+async def _wal_checkpoint_truncate(database: SidecarDatabase) -> None:
+    """Run ``PRAGMA wal_checkpoint(TRUNCATE)`` on the writer connection.
+
+    Per VAL-W2-045 the WAL file MUST be truncated to size zero before
+    aiosqlite connections close so a subsequent reader observes a
+    fully-checkpointed database file. The TRUNCATE variant blocks until
+    every reader has caught up to the latest commit AND truncates the
+    WAL to zero bytes (vs PASSIVE which is a no-op on contention and
+    FULL which checkpoints without truncating).
+
+    The function borrows the writer connection via the same internal
+    accessor used by the W2.4 state engine (``database._writer``). We
+    do NOT route through ``transactional_db_write`` because PRAGMA is
+    a connection-scoped meta-statement, not a state-mutation row write.
+
+    Errors are surfaced rather than swallowed: a failed checkpoint is
+    a real problem and the lifespan tear-down should observe it. The
+    caller wraps the call in a contextlib.suppress only on tear-down
+    paths where the database is already half-closed.
+    """
+    conn = database._writer
+    if conn is None:
+        return
+    # PRAGMA wal_checkpoint returns a row (busy, log_size, frames_checkpointed).
+    # We don't inspect the values here; aiosqlite consumes them and the
+    # WAL file size on disk is the observable test artifact.
+    async with conn.execute("PRAGMA wal_checkpoint(TRUNCATE)") as cur:
+        await cur.fetchall()
+    # Commit any implicit transaction the PRAGMA opened (defensive).
+    with contextlib.suppress(Exception):
+        await conn.commit()
+
+
+# Module-level reference to the loop slot we installed our SIGUSR1
+# handler on, used by _uninstall_force_stop_signal_handler. We track
+# the loop instead of the handler because asyncio.add_signal_handler
+# overwrites any prior registration on (loop, signal); to "uninstall"
+# we call remove_signal_handler on the same (loop, signal) pair.
+_signal_handler_loop: asyncio.AbstractEventLoop | None = None
+_signal_handler_signum: int | None = None
+
+
+def _install_force_stop_signal_handler(app: FastAPI, state: RuntimeState) -> None:
+    """Install a loop-bound SIGUSR1 handler that triggers force-stop.
+
+    POSIX only. On Windows ``loop.add_signal_handler`` is unavailable;
+    the handler is silently skipped (force-stop on Windows degrades to
+    SIGTERM = graceful drain).
+    """
+    global _signal_handler_loop, _signal_handler_signum
+    if os.name == "nt":  # pragma: no cover (Windows-only)
+        return
+    loop = asyncio.get_running_loop()
+    signum = force_stop_signal_number()
+    try:
+        loop.add_signal_handler(
+            signum, lambda: _on_force_stop(app, state, "signal")
+        )
+    except (NotImplementedError, ValueError, RuntimeError):
+        # Common cases that legitimately skip signal-handler installation
+        # without failing startup:
+        #  - NotImplementedError: certain custom loops do not implement
+        #    add_signal_handler at all (older uvloop versions).
+        #  - ValueError: signum is invalid or unsupported on this platform.
+        #  - RuntimeError: "set_wakeup_fd only works in main thread of
+        #    the main interpreter" -- pytest-asyncio runs the test loop
+        #    on the main thread typically, but some test fixtures (and
+        #    pytest-xdist worker processes) install loops on worker
+        #    threads. The force-stop API still works via the
+        #    request_force_stop helper for in-process tests; only the
+        #    OS-level SIGUSR1 entry is unavailable on those loops.
+        return
+    _signal_handler_loop = loop
+    _signal_handler_signum = signum
+
+
+def _uninstall_force_stop_signal_handler() -> None:
+    """Remove the previously-installed SIGUSR1 handler, if any."""
+    global _signal_handler_loop, _signal_handler_signum
+    if _signal_handler_loop is None or _signal_handler_signum is None:
+        return
+    if os.name == "nt":  # pragma: no cover
+        return
+    with contextlib.suppress(Exception):
+        _signal_handler_loop.remove_signal_handler(_signal_handler_signum)
+    _signal_handler_loop = None
+    _signal_handler_signum = None
+
+
+def _on_force_stop(app: FastAPI, state: RuntimeState, reason: str) -> None:
+    """Loop-bound force-stop entry point. Schedules the async forced-stop work.
+
+    Invoked from the loop's signal-handler slot OR from
+    :func:`request_force_stop` (in-process tests). Idempotent: only the
+    FIRST invocation schedules the async task; subsequent calls no-op.
+    """
+    if state.quiesce.force_stop_requested:
+        return
+    state.quiesce.force_stop_requested = True
+    state.quiesce.force_stop_reason = reason
+    state.draining = True
+    # Schedule the async forced-stop work (event_log row + server.exit).
+    asyncio.get_running_loop().create_task(
+        _execute_forced_stop(app, state),
+        name="sidecar-forced-stop",
+    )
+
+
+async def _execute_forced_stop(app: FastAPI, state: RuntimeState) -> None:
+    """Emit ``sidecar.forced_stop`` event_log row, then signal exit.
+
+    Per VAL-W2-046: the row MUST be emitted BEFORE the in-flight
+    transaction is killed. Since SQLite-on-aiosqlite serialises writes
+    on the writer connection and the W2.4 state engine holds
+    ``_state_engine_writer_lock`` during a CAS transaction, we cannot
+    INSERT the forced_stop row through the same writer while a
+    transaction is open. We instead open a SEPARATE short-lived
+    aiosqlite connection to the same database file (WAL mode permits
+    concurrent read+write across connections) and INSERT directly. This
+    is the ONE place outside the four atomic-persistence primitives
+    where a direct write to event_log_entries is acceptable: it is the
+    forensic post-mortem record of an aborted transaction; routing
+    through transactional_db_write would deadlock against the locked
+    writer queue. The CAS transaction, if any, is then ROLLBACK-ed by
+    the lifespan tear-down's ``database.close()`` which cancels the
+    writer task (any pending future is failed via the W2.3 close path).
+
+    Idempotent: the function checks ``force_stop_reason_recorded`` to
+    avoid double-writing on multiple invocations.
+    """
+    if getattr(state.quiesce, "_force_stop_row_written", False):
+        return
+    db_path = state.sqlite_path
+    if not db_path.exists():
+        # Database file never materialised; nothing to record.
+        state.quiesce._force_stop_row_written = True  # type: ignore[attr-defined]
+        return
+    event_id = str(uuid.uuid4())
+    occurred_at = (
+        datetime.now(tz=UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    payload = {
+        "reason": state.quiesce.force_stop_reason or "signal",
+        "in_flight_count": (
+            state.quiesce.tracker.in_flight_count
+            if state.quiesce.tracker is not None
+            else 0
+        ),
+        "in_flight_descriptions": (
+            state.quiesce.tracker.in_flight_descriptions()
+            if state.quiesce.tracker is not None
+            else []
+        ),
+    }
+    # Sentinel project id matches the W2.3 db.py:_flush_retry_buffer
+    # convention for sidecar-internal observability rows.
+    sentinel_project_id = "00000000-0000-0000-0000-000000000000"
+    sentinel_scope_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        async with aiosqlite.connect(str(db_path)) as conn:
+            # Compute next ingest_sequence in a fresh BEGIN IMMEDIATE so
+            # we don't race with the writer queue. SQLITE_BUSY is
+            # tolerated -- if the writer holds the lock we wait via the
+            # default busy_timeout (0; we set it to 5s here for parity).
+            await conn.execute("PRAGMA busy_timeout = 5000")
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                async with conn.execute(
+                    "SELECT COALESCE(MAX(ingest_sequence), -1) + 1 "
+                    "FROM event_log_entries"
+                ) as cur:
+                    row = await cur.fetchone()
+                next_seq = int(row[0]) if row is not None else 0
+                await conn.execute(
+                    "INSERT INTO event_log_entries ("
+                    "  event_id, schema_version, project_id, scope_type, "
+                    "  scope_id, event_type, actor_kind, payload, "
+                    "  occurred_at, ingest_sequence, event_kind"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        event_id,
+                        "relay.event_log_entry.v1",
+                        sentinel_project_id,
+                        "other",
+                        sentinel_scope_id,
+                        "sidecar.forced_stop",
+                        "control_plane",
+                        json.dumps(
+                            payload, sort_keys=True, separators=(",", ":")
+                        ),
+                        occurred_at,
+                        next_seq,
+                        "sidecar_forced_stop",
+                    ),
+                )
+                await conn.execute("COMMIT")
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    await conn.execute("ROLLBACK")
+                raise
+    except Exception:
+        # Best-effort forensic write. If the database is too contended
+        # to accept the row we proceed with the exit path; the
+        # in-process state of state.quiesce.force_stop_* still records
+        # the forced-stop intent.
+        pass
+    # Mark recorded to avoid double-writes on repeat triggers.
+    state.quiesce._force_stop_row_written = True  # type: ignore[attr-defined]
+    # Signal exit. If running under uvicorn, app.state.uvicorn_server
+    # carries the Server instance and we set should_exit; otherwise
+    # ASGI tests rely on the in-flight tracker + draining flag alone.
+    server = getattr(app.state, "uvicorn_server", None)
+    if server is not None:
+        server.should_exit = True
+
+
+def request_force_stop(app: FastAPI, *, reason: str = "api") -> None:
+    """In-process force-stop trigger (used by tests and the CLI helper).
+
+    Equivalent to receiving SIGUSR1 from outside the process. Safe to
+    call from any coroutine; idempotent.
+    """
+    state: RuntimeState = app.state.runtime
+    _on_force_stop(app, state, reason)
+
+
+async def _idle_countdown_loop(app: FastAPI, state: RuntimeState) -> None:
+    """Idle-countdown task: trigger graceful shutdown when continuously idle.
+
+    Loop:
+      1. Await ``tracker.idle_event`` with timeout = idle_timeout_seconds.
+      2. If wait_for raises TimeoutError -> the sidecar was idle for the
+         entire window. Trigger graceful shutdown.
+      3. Otherwise (the await returned because the event is set; we
+         observed an idle moment) immediately recheck: if the tracker
+         is STILL idle AFTER another idle_timeout_seconds wait, exit.
+         Concretely: we re-await with the timeout each iteration; if
+         operations come and go we keep looping.
+
+    Cancellation: the lifespan tear-down cancels this task; CancelledError
+    unwinds cleanly.
+    """
+    tracker = state.quiesce.tracker
+    if tracker is None:
+        return
+    timeout = state.idle_timeout_seconds or 60.0
+    while True:
+        # Wait for the tracker to be idle. If currently idle, this
+        # returns immediately (the event is set); otherwise we block
+        # until the last in-flight op releases.
+        await tracker.idle_event.wait()
+        # Now we are idle. Sleep for the full timeout window. If a new
+        # operation acquires the tracker mid-sleep, the event will be
+        # cleared but our sleep continues; at the END of the sleep we
+        # check whether we're still idle. Continuously-idle for the
+        # full window -> trigger shutdown.
+        try:
+            await asyncio.sleep(timeout)
+        except asyncio.CancelledError:
+            raise
+        if tracker.in_flight_count == 0 and tracker.idle_event.is_set():
+            # Truly idle for the full window. Trigger graceful shutdown.
+            state.quiesce.idle_shutdown_triggered = True
+            state.draining = True
+            server = getattr(app.state, "uvicorn_server", None)
+            if server is not None:
+                server.should_exit = True
+            return
+        # Otherwise: an op acquired the tracker during the sleep window.
+        # Loop and wait for the next idle moment.
 
 
 class DrainMiddleware:
@@ -261,8 +728,28 @@ def build_runtime_app(
     db_path = (
         sqlite_path if sqlite_path is not None else base_home / SIDECAR_DB_FILENAME
     )
+    # W2.6: resolve the lockfile path so the lifespan tear-down can clear
+    # it on graceful shutdown (VAL-W2-047). The path is purely advisory
+    # at runtime construction time; the spawn-side caller (W5 CLI) is
+    # responsible for writing the lockfile. If the file does not exist
+    # at tear-down time, the clear is a no-op (FileNotFoundError suppressed).
+    #
+    # IMPORTANT: when ``sqlite_path`` is explicitly overridden (test
+    # injection via tmp_path), derive the lockfile path from the db's
+    # parent directory rather than ``relay_home()``. Otherwise tests that
+    # forget to monkeypatch RELAY_HOME would clobber the developer's real
+    # ~/.relay/sidecar.lock on tear-down. Production (sqlite_path=None)
+    # still resolves to ${RELAY_HOME}/sidecar.lock as expected.
+    if sqlite_path is not None:
+        lockfile_path = db_path.parent / "sidecar.lock"
+    else:
+        lockfile_path = resolve_lockfile_path(base_home)
 
-    runtime = RuntimeState(health=health, sqlite_path=db_path)
+    runtime = RuntimeState(
+        health=health,
+        sqlite_path=db_path,
+        lockfile_path=lockfile_path,
+    )
 
     # Construct the FastAPI app with the lifespan attached at __init__.
     # This is critical: starlette captures the lifespan during app
@@ -343,6 +830,81 @@ def build_runtime_app(
             "draining": runtime.draining,
             "port": runtime.health.port,
             "sidecar_version": __version__,
+        }
+
+    @app.post("/v1/ingest")
+    async def v1_ingest(request: Request) -> dict[str, Any]:
+        """W2.6 placeholder ingest endpoint that participates in the
+        in-flight tracker so VAL-W2-044 can exercise the drain path.
+
+        The full ingest surface (envelope validation, schema_version
+        checking, signed-bundle storage, ack semantics) lands in W3+;
+        for W2.6 this handler does the minimum needed to:
+
+          - Acquire the in-flight tracker so the idle-countdown task
+            sees a live operation (VAL-W2-043 evidence path).
+          - Sleep for the caller-controlled ``hold_ms`` query parameter
+            (default 0). Tests use this to keep the tracker busy
+            during the SIGTERM -> drain assertion window.
+          - Respond with 200 + {"accepted": true, "operation_id": ...}.
+
+        When ``state.draining=True``, the DrainMiddleware short-circuits
+        BEFORE this handler runs and returns 503 + Retry-After +
+        RELAY-SIDECAR-DRAINING envelope. So the only entry to this
+        handler is on the non-draining path.
+        """
+        # Read hold_ms from query string. starlette Request lookup keeps
+        # the handler's signature dependency-free (no FastAPI Query
+        # injection needed).
+        hold_ms_raw = request.query_params.get("hold_ms", "0")
+        try:
+            hold_ms = int(hold_ms_raw)
+        except (TypeError, ValueError):
+            hold_ms = 0
+        if hold_ms < 0:
+            hold_ms = 0
+        tracker = runtime.quiesce.tracker
+        if tracker is None:
+            # Lifespan startup never bound a tracker; treat as a degraded
+            # configuration error and reject. Tests would catch this.
+            return {"accepted": False, "reason": "tracker-unbound"}
+        async with tracker.acquire(description="ingest") as op:
+            if hold_ms > 0:
+                await asyncio.sleep(hold_ms / 1000.0)
+            return {
+                "accepted": True,
+                "operation_id": op.operation_id,
+                "held_ms": hold_ms,
+            }
+
+    @app.get("/diagnostics/quiesce")
+    async def diagnostics_quiesce() -> dict[str, Any]:
+        """Return current quiesce state: in-flight count, idle event,
+        force-stop flag, idle-shutdown trigger.
+
+        Used by the W2.6 tests (VAL-W2-043, VAL-W2-046, VAL-W2-048) to
+        observe the tracker without poking private attributes.
+        """
+        tracker = runtime.quiesce.tracker
+        return {
+            "in_flight_count": tracker.in_flight_count if tracker else 0,
+            "in_flight_descriptions": (
+                tracker.in_flight_descriptions() if tracker else []
+            ),
+            "total_acquires": tracker.total_acquires if tracker else 0,
+            "idle_event_set": (
+                tracker.idle_event.is_set() if tracker else True
+            ),
+            "force_stop_requested": runtime.quiesce.force_stop_requested,
+            "force_stop_reason": runtime.quiesce.force_stop_reason,
+            "idle_shutdown_triggered": runtime.quiesce.idle_shutdown_triggered,
+            "idle_timeout_seconds": runtime.idle_timeout_seconds,
+            "drain_deadline_seconds": runtime.drain_deadline_seconds,
+            "lockfile_path": (
+                str(runtime.lockfile_path)
+                if runtime.lockfile_path is not None
+                else None
+            ),
         }
 
     @app.get("/diagnostics/db")
