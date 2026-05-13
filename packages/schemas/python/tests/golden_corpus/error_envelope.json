@@ -1,0 +1,1 @@
+{"blocked_surface":"POST /v1/gates/draft","code":"RELAY-GATE-021","details":{"mismatched_anchor":"manifest_commit_hash"},"http_status":422,"message":"three-anchor handoff rejected: manifest_commit_hash mismatch","request_id":"req_01ARZ3NDEKTSV4RRFFQ69G5FAV","retry_advice":"after_fix","schema_version":"relay.error.v1","trace_id":"trc_01ARZ3NDEKTSV4RRFFQ69G5FAW"}

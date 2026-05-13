@@ -1,0 +1,1 @@
+{"approver_user_id":null,"created_at":"2026-05-12T09:00:00+00:00","dpa_ref":null,"matchers":[{"kind":"json_pointer","paths":["/request/headers/authorization","/response/body/secret"]}],"org_id":"00000000-0000-4000-8000-00000000000a","raw_capture":false,"redaction_policy_id":"00000000-0000-4000-8000-00000000000b","schema_version":"relay.redaction.v1","version":"v1"}

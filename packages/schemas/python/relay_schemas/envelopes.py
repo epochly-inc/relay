@@ -87,6 +87,98 @@ _RFC3339_OFFSET_RE = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
 
 
 # -----------------------------------------------------------------------------
+# W1.6 unknown enum value reader policy (VAL-W1-040; RELAY-SCHEMA-001)
+# -----------------------------------------------------------------------------
+#
+# Locked in packages/schemas/raw/enum-forward-compat.md (Option A: strict
+# reject). When a canonical envelope carries an enum value outside the closed
+# set declared by the canonical YAML, the Py reader raises
+# ``RelayUnknownEnumValueError`` carrying the field, observed value, the
+# allowed set, the envelope name, and the canonical Relay error code
+# ``RELAY-SCHEMA-001``. The TS reader mirrors this behavior at
+# packages/schemas/typescript/src/envelopes.ts.
+
+
+class RelayUnknownEnumValueError(ValueError):
+    """Raised when a reader observes an enum value outside the canonical set.
+
+    Locked policy: packages/schemas/raw/enum-forward-compat.md (Option A).
+    Spec anchor: CLAUDE.md keystone invariant #10 (schema versioning).
+    Contract: VAL-W1-040.
+    Relay error code: ``RELAY-SCHEMA-001`` (registered in
+    packages/schemas/raw/relay-error-codes.yaml).
+
+    Attributes:
+        field: Dotted path to the offending field (e.g. ``"status"``).
+        observed_value: The unknown value verbatim.
+        allowed_values: Sorted tuple of the canonical closed set.
+        envelope_name: The envelope class name (e.g. ``"RunResult"``).
+        relay_error_code: Always ``"RELAY-SCHEMA-001"``.
+    """
+
+    relay_error_code: str = "RELAY-SCHEMA-001"
+
+    def __init__(
+        self,
+        envelope_name: str,
+        field: str,
+        observed_value: str,
+        allowed_values: tuple[str, ...],
+    ) -> None:
+        super().__init__(
+            f"unknown enum value for {envelope_name}.{field}: "
+            f"observed={observed_value!r} allowed={sorted(allowed_values)!r} "
+            f"(VAL-W1-040, {self.relay_error_code})"
+        )
+        self.envelope_name = envelope_name
+        self.field = field
+        self.observed_value = observed_value
+        self.allowed_values = tuple(sorted(allowed_values))
+
+
+# -----------------------------------------------------------------------------
+# W1.6 generic JCS-compatible canonical bytes (VAL-W1-038..044)
+# -----------------------------------------------------------------------------
+#
+# Cross-language golden corpus canonicalizer. RFC 8785 (JCS) canonicalization
+# of the JSON value subset that Relay envelopes use:
+#
+#   - sort object keys lexicographically (recursively)
+#   - compact separators (no whitespace)
+#   - arrays preserve order
+#   - strings emitted verbatim (incl. RFC 3339 timestamps with offset
+#     preserved byte-for-byte per packages/schemas/raw/timestamp-canonicalization.md)
+#   - integers emitted as int; decimals encoded as JSON STRINGS (NOT as
+#     float) so precision survives Py <-> TS round trips per VAL-W1-041
+#   - null preserved as null (used by VAL-W1-038 nullable-field corpus)
+#   - missing optional keys stay missing (VAL-W1-039)
+#
+# The TS mirror is ``canonicalJsonStringify`` at
+# packages/schemas/typescript/src/envelopes.ts; both languages MUST produce
+# byte-identical UTF-8 output for the same input value.
+
+
+def canonical_bytes(value: Any) -> bytes:
+    """Emit RFC-8785-compatible canonical JSON bytes for a Python value.
+
+    Recurses into nested dicts (sort keys lexicographically) and lists
+    (preserve order). Decimals MUST be passed in as strings (the caller is
+    responsible for encoding ``Decimal`` -> string before invoking this
+    function so precision is bit-exact across Py and TS).
+
+    Mirrors ``canonicalJsonStringify`` in envelopes.ts byte-for-byte for
+    the value subset used by Relay envelopes.
+    """
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+# -----------------------------------------------------------------------------
 # Base configuration
 # -----------------------------------------------------------------------------
 
@@ -1091,6 +1183,7 @@ __all__ = [
     "RedactionPolicyMatcherRegex",
     "RELAY_ERROR_CODE_PATTERN",
     "RelayErrorCodeStr",
+    "RelayUnknownEnumValueError",
     "ReplayCase",
     "ReplayCaseScopeState",
     "ReplayFixture",
@@ -1101,6 +1194,7 @@ __all__ = [
     "SHA256_HASH_PATTERN",
     "ULID_PATTERN",
     "Ulid",
+    "canonical_bytes",
     "serialize_event_log_entry_canonical",
     "serialize_replay_fixture_canonical",
 ]

@@ -128,12 +128,20 @@ def test_relay_error_codes_yaml_unreferenced_codes_emit_warning_only() -> None:
     contract_codes = _collect_codes_from_contract_text()
     unreferenced = yaml_codes - contract_codes
     if unreferenced:
-        warnings.warn(
-            f"VAL-W1-057: codes in {ERROR_CODES_YAML.name} never referenced "
-            f"by contract text (warning only, not a failure): "
-            f"{sorted(unreferenced)}",
-            stacklevel=2,
-        )
+        # Test author intent (file docstring lines 9-10): "Codes in the YAML
+        # never referenced emit a warning but do NOT fail." The pyproject.toml
+        # filterwarnings = ["error"] setting would otherwise promote this
+        # warning into a test failure, contradicting the intent. Use a local
+        # warning filter so the warning is observable in stderr but does not
+        # short-circuit the test.
+        with warnings.catch_warnings():
+            warnings.simplefilter("default")
+            warnings.warn(
+                f"VAL-W1-057: codes in {ERROR_CODES_YAML.name} never referenced "
+                f"by contract text (warning only, not a failure): "
+                f"{sorted(unreferenced)}",
+                stacklevel=2,
+            )
     # Assertion: this code path NEVER fails. Unreferenced codes are allowed
     # for spec-locked codes not yet bound in contract assertions.
     assert True

@@ -95,6 +95,75 @@ function describeValue(v: unknown): string {
 }
 
 /* -------------------------------------------------------------------------- */
+/* W1.6 unknown enum value reader policy (VAL-W1-040; RELAY-SCHEMA-001)        */
+/* -------------------------------------------------------------------------- */
+//
+// Locked in packages/schemas/raw/enum-forward-compat.md (Option A: strict
+// reject). Mirror of the Python `RelayUnknownEnumValueError` at
+// packages/schemas/python/relay_schemas/envelopes.py.
+//
+// The existing `parse*` functions throw `ValidationError` on unknown enum
+// values; `RelayUnknownEnumValueError` carries the additional structured
+// metadata (envelope_name, field, observed_value, allowed_values,
+// relay_error_code) required by VAL-W1-040 for cross-language behavior
+// digest comparison. The helper `toRelayUnknownEnumValueError` re-classifies
+// a `ValidationError` raised by an enum mismatch into the typed error.
+
+/**
+ * Raised when a reader observes an enum value outside the canonical closed
+ * set. Locked policy: packages/schemas/raw/enum-forward-compat.md.
+ */
+export class RelayUnknownEnumValueError extends Error {
+  public readonly envelope_name: string;
+  public readonly field: string;
+  public readonly observed_value: string;
+  public readonly allowed_values: readonly string[];
+  public readonly relay_error_code: "RELAY-SCHEMA-001";
+
+  constructor(
+    envelopeName: string,
+    field: string,
+    observedValue: string,
+    allowedValues: readonly string[],
+  ) {
+    const sorted = [...allowedValues].sort();
+    super(
+      `unknown enum value for ${envelopeName}.${field}: ` +
+        `observed=${JSON.stringify(observedValue)} ` +
+        `allowed=${JSON.stringify(sorted)} ` +
+        `(VAL-W1-040, RELAY-SCHEMA-001)`,
+    );
+    this.name = "RelayUnknownEnumValueError";
+    this.envelope_name = envelopeName;
+    this.field = field;
+    this.observed_value = observedValue;
+    this.allowed_values = sorted;
+    this.relay_error_code = "RELAY-SCHEMA-001";
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* W1.6 generic JCS-compatible canonical bytes (VAL-W1-038..044)               */
+/* -------------------------------------------------------------------------- */
+//
+// Cross-language golden corpus canonicalizer. Mirrors the Python
+// `canonical_bytes` helper at envelopes.py. Strings (including RFC 3339
+// timestamps) are emitted verbatim; decimals MUST be passed in as strings.
+// The function name is exposed at module scope so the corpus harness can
+// invoke it without going through any parse* path.
+
+/**
+ * Emit RFC-8785-compatible canonical JSON bytes (UTF-8) for the JSON value
+ * subset Relay envelopes use. Recurses into nested objects (sort keys
+ * lexicographically) and arrays (preserve order). Strings are emitted
+ * verbatim; numbers must be finite integers (decimals are emitted as JSON
+ * strings by the caller per VAL-W1-041).
+ */
+export function canonicalBytes(value: unknown): Uint8Array {
+  return new TextEncoder().encode(canonicalJsonStringify(value));
+}
+
+/* -------------------------------------------------------------------------- */
 /* Field-level validators (private)                                            */
 /* -------------------------------------------------------------------------- */
 
