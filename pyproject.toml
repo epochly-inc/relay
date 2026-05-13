@@ -59,6 +59,13 @@ filterwarnings = [
   # tracker: fastapi/fastapi#13212. Filter scoped tightly to the
   # specific message + module so any unrelated deprecation still fails.
   "ignore:'asyncio.iscoroutinefunction' is deprecated and slated for removal:DeprecationWarning",
+  # CPython 3.14 deprecated asyncio.get_event_loop_policy +
+  # asyncio.set_event_loop_policy; pytest-asyncio 0.25 still calls
+  # both in its event_loop_policy fixture's get/restore path. Upstream
+  # tracker: pytest-dev/pytest-asyncio#1077. Filters scoped tightly to
+  # the specific messages so any unrelated deprecation still fails.
+  "ignore:'asyncio.get_event_loop_policy' is deprecated and slated for removal:DeprecationWarning",
+  "ignore:'asyncio.set_event_loop_policy' is deprecated and slated for removal:DeprecationWarning",
 ]
 
 [dependency-groups]

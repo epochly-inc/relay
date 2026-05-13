@@ -77,8 +77,24 @@ def _proof_of(nonce: str, token: str) -> str:
 
 
 def build_app(state: HealthState) -> FastAPI:
-    """Build the FastAPI app exposing /health and /health/nonce."""
+    """Build a standalone FastAPI app exposing /health and /health/nonce.
+
+    Backward-compat entrypoint used by W2.1 tests. The W2.2 runtime
+    constructs its own FastAPI with a lifespan attached at __init__ time
+    and calls ``_register_health_routes`` to graft the same routes on.
+    """
     app = FastAPI(title="relay-sidecar", version=__version__)
+    _register_health_routes(app, state)
+    return app
+
+
+def _register_health_routes(app: FastAPI, state: HealthState) -> None:
+    """Register /health/nonce and /health on an existing FastAPI app.
+
+    Internal helper so the W2.2 runtime can build a FastAPI with a
+    lifespan captured at __init__ and reuse this route surface without
+    spinning up a second FastAPI instance.
+    """
 
     @app.get("/health/nonce")
     async def issue_nonce(
@@ -171,8 +187,6 @@ def build_app(state: HealthState) -> FastAPI:
         _ = request
 
         return {"ok": True, "port": state.port, "sidecar_version": __version__}
-
-    return app
 
 
 __all__ = [

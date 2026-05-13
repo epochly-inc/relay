@@ -151,51 +151,46 @@ def _probe_linux(path: Path) -> tuple[str, int | str | None]:
 
 
 def _probe_macos(path: Path) -> tuple[str, int | str | None]:
-    """macOS: BSD ``statfs`` exposes ``f_fstypename`` (C string)."""
-    try:
-        # struct statfs on Darwin starts with several uint32_t fields,
-        # then has f_fstypename at offset MNAMELEN (=15) into the type
-        # name array. We use the BSD-compatible C ``statfs64`` to be safe
-        # across macOS versions.
-        class _StatfsDarwin(ctypes.Structure):
-            # The full structure is large; we declare only the fields we
-            # need and pad the rest. From <sys/mount.h>:
-            #   uint32_t f_bsize
-            #   int32_t f_iosize
-            #   uint64_t f_blocks; uint64_t f_bfree; uint64_t f_bavail
-            #   uint64_t f_files; uint64_t f_ffree
-            #   fsid_t f_fsid (two int32_t)
-            #   uid_t f_owner
-            #   uint32_t f_type
-            #   uint32_t f_flags
-            #   uint32_t f_fssubtype
-            #   char f_fstypename[16]
-            _fields_ = [
-                ("f_bsize", ctypes.c_uint32),
-                ("f_iosize", ctypes.c_int32),
-                ("f_blocks", ctypes.c_uint64),
-                ("f_bfree", ctypes.c_uint64),
-                ("f_bavail", ctypes.c_uint64),
-                ("f_files", ctypes.c_uint64),
-                ("f_ffree", ctypes.c_uint64),
-                ("f_fsid", ctypes.c_int32 * 2),
-                ("f_owner", ctypes.c_uint32),
-                ("f_type", ctypes.c_uint32),
-                ("f_flags", ctypes.c_uint32),
-                ("f_fssubtype", ctypes.c_uint32),
-                ("f_fstypename", ctypes.c_char * 16),
-                ("_remainder", ctypes.c_char * 1024),
-            ]
+    """macOS: detect filesystem type via ``df -T`` subprocess.
 
-        libc = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
-        st = _StatfsDarwin()
-        rc = libc.statfs(str(path).encode("utf-8"), ctypes.byref(st))
-        if rc != 0:
-            return ("unknown", None)
-        fstype = st.f_fstypename.decode("ascii", errors="replace").lower()
-        return ("bsd_fstype", fstype)
-    except OSError:
+    The earlier implementation declared a ctypes ``struct statfs`` and
+    called Darwin libc ``statfs()`` directly. That sized the C structure
+    at ~1100 bytes whereas Darwin's actual ``struct statfs`` is ~2400
+    bytes (it includes ``f_mntonname[MAXPATHLEN]`` and
+    ``f_mntfromname[MAXPATHLEN]``); the kernel writes past the declared
+    buffer and corrupts adjacent heap, which manifested as a
+    non-deterministic segfault in ``_PyEval_EvalFrameDefault`` when
+    pytest-asyncio loop teardown or pydantic metaclass state coincided
+    with the next ctypes attribute access on the corrupted structure.
+
+    Subprocess-based detection cannot corrupt parent-process memory.
+    ``df -T`` (BSD) prints the filesystem type as the second column;
+    we parse the data line and lowercase it.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["/bin/df", "-T", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return ("unknown", None)
+    if result.returncode != 0:
+        return ("unknown", None)
+    # Output:
+    #   Filesystem Type   1K-blocks ... Mounted on
+    #   /dev/disk3s1 apfs ...        /
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return ("unknown", None)
+    parts = lines[1].split()
+    if len(parts) < 2:
+        return ("unknown", None)
+    return ("bsd_fstype", parts[1].lower())
 
 
 def _probe_windows(path: Path) -> tuple[str, int | str | None]:  # pragma: no cover
