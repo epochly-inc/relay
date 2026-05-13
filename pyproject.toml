@@ -1,0 +1,50 @@
+# Relay v0.1 OSS - Python workspace root.
+#
+# Defines the uv workspace; per-package configuration lives in each
+# packages/<pkg>/pyproject.toml. uv sync --all-packages installs every member.
+#
+# Per CLAUDE.md and .ops/manifest.yaml:
+#   - Python 3.12+ required; CI matrix tests 3.12, 3.13, 3.14.
+#   - ASCII-only source paths under packages/, apps/, scripts/, tests/.
+#   - Schemas under packages/schemas/raw/ are the single source of truth;
+#     the W1.5 codegen pipeline produces packages/schemas/python/ and
+#     packages/schemas/typescript/ outputs and a CI drift check enforces sync.
+
+[project]
+name = "epochly-relay-workspace"
+version = "0.0.0"
+description = "Relay v0.1 OSS workspace root (not published)."
+requires-python = ">=3.12"
+
+[tool.uv.workspace]
+members = ["packages/schemas"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = []
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = [
+  "tests",
+  "packages/schemas/python/tests",
+]
+markers = [
+  "plumbing: Tier 1 - offline, every commit, budget <= 60s",
+  "smoke: Tier 2 - real APIs, every PR + nightly, budget <= 8min",
+  "eval: Tier 3 - LLM-judged, nightly + pre-release, budget <= 12min",
+  "replay_live: Live replay against real providers; never runs in CI",
+  "cross_platform: Runs on the full 3 OS matrix",
+  "fulfills(assertion_id): Bind a test to a contract assertion (VAL-W{N}-NNN)",
+]
+filterwarnings = [
+  "error",
+  "ignore::DeprecationWarning:pydantic",
+]

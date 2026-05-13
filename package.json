@@ -1,0 +1,19 @@
+{
+  "name": "epochly-relay-workspace-root",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Relay v0.1 OSS - npm workspaces root.",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "packages/schemas/typescript"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present"
+  }
+}
