@@ -2043,6 +2043,326 @@ export function serializeReplayFixtureCanonical(
   return new TextEncoder().encode(text);
 }
 
+/* -------------------------------------------------------------------------- */
+/* W1.4 RedactionPolicy + ErrorEnvelope (spec A.10, G.1, G.2, B.4)              */
+/* -------------------------------------------------------------------------- */
+/*
+ * VAL-W1-026: RedactionPolicy.schema_version pinned to "relay.redaction.v1";
+ *             raw_capture STRICT boolean (string "true"/"false" rejected,
+ *             numeric forms rejected); default false.
+ * VAL-W1-027: cross-field invariant - raw_capture=true REQUIRES non-null
+ *             dpa_ref AND approver_user_id (CLAUDE.md banned pattern #11).
+ * VAL-W1-028: matchers[] tagged discriminated union on `kind`:
+ *               kind="regex"        -> requires `pattern`, forbids `paths`.
+ *               kind="json_pointer" -> requires `paths`,   forbids `pattern`.
+ * VAL-W1-029: ErrorEnvelope closed schema with code matching
+ *             /^RELAY-[A-Z]+-[0-9]{3}$/, http_status in [400, 599],
+ *             blocked_surface non-empty, retry_advice closed enum.
+ * VAL-W1-030: known RELAY-* codes generated as RelayErrorCode constants
+ *             from packages/schemas/raw/relay-error-codes.yaml.
+ * VAL-W1-031: request_id, trace_id required non-empty strings.
+ * VAL-W1-056: ErrorEnvelope.schema_version literal pin.
+ */
+
+export const RELAY_ERROR_CODE_PATTERN = "^RELAY-[A-Z]+-[0-9]{3}$";
+const RELAY_ERROR_CODE_RE = new RegExp(RELAY_ERROR_CODE_PATTERN);
+
+function checkRelayErrorCode(field: string, value: unknown): asserts value is string {
+  if (typeof value !== "string" || !RELAY_ERROR_CODE_RE.test(value)) {
+    throw new ValidationError(
+      field,
+      "must match canonical RELAY-{AREA}-NNN wire form (^RELAY-[A-Z]+-[0-9]{3}$)",
+      value,
+    );
+  }
+}
+
+function checkHttpStatus4xx5xx(field: string, value: unknown): asserts value is number {
+  if (
+    typeof value !== "number"
+    || !Number.isInteger(value)
+    || value < 400
+    || value > 599
+  ) {
+    throw new ValidationError(field, "must be an integer in [400, 599]", value);
+  }
+}
+
+function checkAnyObject(
+  field: string,
+  value: unknown,
+): asserts value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ValidationError(field, "must be a JSON object", value);
+  }
+}
+
+/* ---------- RedactionPolicy matchers --------------------------------------- */
+
+export interface RedactionPolicyMatcherRegex {
+  readonly kind: "regex";
+  readonly pattern: string;
+}
+
+export interface RedactionPolicyMatcherJsonPointer {
+  readonly kind: "json_pointer";
+  readonly paths: readonly string[];
+}
+
+export type RedactionPolicyMatcher =
+  | RedactionPolicyMatcherRegex
+  | RedactionPolicyMatcherJsonPointer;
+
+const REDACTION_MATCHER_REGEX_FIELDS = ["kind", "pattern"] as const;
+const REDACTION_MATCHER_JSON_POINTER_FIELDS = ["kind", "paths"] as const;
+
+function parseRedactionMatcher(
+  field: string,
+  raw: unknown,
+): RedactionPolicyMatcher {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new ValidationError(field, "matcher must be an object", raw);
+  }
+  const m = raw as Record<string, unknown>;
+  const kind = m.kind;
+  if (kind === "regex") {
+    // VAL-W1-028: regex variant requires pattern, forbids paths.
+    checkExtraFields(
+      "RedactionPolicyMatcherRegex",
+      m,
+      REDACTION_MATCHER_REGEX_FIELDS,
+    );
+    checkNonEmptyString(`${field}.pattern`, m.pattern);
+    return { kind: "regex", pattern: m.pattern as string };
+  }
+  if (kind === "json_pointer") {
+    // VAL-W1-028: json_pointer variant requires paths, forbids pattern.
+    checkExtraFields(
+      "RedactionPolicyMatcherJsonPointer",
+      m,
+      REDACTION_MATCHER_JSON_POINTER_FIELDS,
+    );
+    if (!Array.isArray(m.paths) || m.paths.length === 0) {
+      throw new ValidationError(
+        `${field}.paths`,
+        "must be a non-empty list of non-empty strings",
+        m.paths,
+      );
+    }
+    const paths = m.paths as unknown[];
+    for (let i = 0; i < paths.length; i++) {
+      const v = paths[i];
+      if (typeof v !== "string" || v.length === 0) {
+        throw new ValidationError(
+          `${field}.paths[${i}]`,
+          "must be a non-empty string",
+          v,
+        );
+      }
+    }
+    return {
+      kind: "json_pointer",
+      paths: paths as string[],
+    };
+  }
+  throw new ValidationError(
+    `${field}.kind`,
+    'must be one of {"regex", "json_pointer"}',
+    kind,
+  );
+}
+
+/* ---------- RedactionPolicy ------------------------------------------------ */
+
+export interface RedactionPolicy {
+  readonly schema_version: "relay.redaction.v1";
+  readonly redaction_policy_id: string;
+  readonly org_id: string;
+  readonly version: string;
+  readonly raw_capture: boolean;
+  readonly dpa_ref: string | null;
+  readonly approver_user_id: string | null;
+  readonly matchers: readonly RedactionPolicyMatcher[];
+  readonly created_at: string;
+}
+
+const REDACTION_POLICY_FIELDS = [
+  "schema_version",
+  "redaction_policy_id",
+  "org_id",
+  "version",
+  "raw_capture",
+  "dpa_ref",
+  "approver_user_id",
+  "matchers",
+  "created_at",
+] as const;
+
+export function parseRedactionPolicy(input: unknown): RedactionPolicy {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("RedactionPolicy", p, REDACTION_POLICY_FIELDS);
+  checkLiteral("schema_version", p.schema_version, "relay.redaction.v1");
+  checkUuid("redaction_policy_id", p.redaction_policy_id);
+  checkUuid("org_id", p.org_id);
+  checkString("version", p.version);
+
+  // VAL-W1-026: raw_capture STRICT bool. String "true"/"false" and numeric
+  // 0/1 are rejected; default false when omitted.
+  let rawCapture = p.raw_capture;
+  if (rawCapture === undefined) {
+    rawCapture = false;
+  } else {
+    checkStrictBool("raw_capture", rawCapture);
+  }
+
+  checkStringNullable("dpa_ref", p.dpa_ref);
+  checkUuidNullable("approver_user_id", p.approver_user_id);
+
+  let matchersInput = p.matchers;
+  if (matchersInput === undefined) {
+    matchersInput = [];
+  }
+  if (!Array.isArray(matchersInput)) {
+    throw new ValidationError("matchers", "must be a list", matchersInput);
+  }
+  const matchers: RedactionPolicyMatcher[] = [];
+  for (let i = 0; i < matchersInput.length; i++) {
+    matchers.push(parseRedactionMatcher(`matchers[${i}]`, matchersInput[i]));
+  }
+
+  checkRfc3339("created_at", p.created_at);
+
+  // VAL-W1-027 cross-field: raw_capture=true requires non-null dpa_ref
+  // AND approver_user_id. Mirrors hosted invariant spec G.1.
+  if (rawCapture === true) {
+    if (p.dpa_ref === null || p.dpa_ref === undefined) {
+      throw new ValidationError(
+        "dpa_ref",
+        "raw_capture_requires_dpa_and_approver: raw_capture=true requires dpa_ref to be non-null (VAL-W1-027)",
+        p.dpa_ref,
+      );
+    }
+    if (p.approver_user_id === null || p.approver_user_id === undefined) {
+      throw new ValidationError(
+        "approver_user_id",
+        "raw_capture_requires_dpa_and_approver: raw_capture=true requires approver_user_id to be non-null (VAL-W1-027)",
+        p.approver_user_id,
+      );
+    }
+  }
+
+  return {
+    schema_version: "relay.redaction.v1",
+    redaction_policy_id: p.redaction_policy_id as string,
+    org_id: p.org_id as string,
+    version: p.version as string,
+    raw_capture: rawCapture as boolean,
+    dpa_ref: (p.dpa_ref ?? null) as string | null,
+    approver_user_id: (p.approver_user_id ?? null) as string | null,
+    matchers,
+    created_at: p.created_at as string,
+  };
+}
+
+export function isRedactionPolicy(input: unknown): input is RedactionPolicy {
+  try {
+    parseRedactionPolicy(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ---------- ErrorEnvelope -------------------------------------------------- */
+
+export interface ErrorEnvelope {
+  readonly schema_version: "relay.error.v1";
+  readonly code: string;
+  readonly http_status: number;
+  readonly blocked_surface: string;
+  readonly retry_advice:
+    | "do_not_retry"
+    | "after_fix"
+    | "after_retry_after"
+    | "after_split"
+    | "after_recapture"
+    | "after_re_auth";
+  readonly request_id: string;
+  readonly trace_id: string;
+  readonly message: string | null;
+  readonly details: Record<string, unknown>;
+}
+
+const ERROR_ENVELOPE_FIELDS = [
+  "schema_version",
+  "code",
+  "http_status",
+  "blocked_surface",
+  "retry_advice",
+  "request_id",
+  "trace_id",
+  "message",
+  "details",
+] as const;
+
+const ERROR_ENVELOPE_RETRY_ADVICE = [
+  "do_not_retry",
+  "after_fix",
+  "after_retry_after",
+  "after_split",
+  "after_recapture",
+  "after_re_auth",
+] as const;
+
+export function parseErrorEnvelope(input: unknown): ErrorEnvelope {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ValidationError("<root>", "must be an object", input);
+  }
+  const p = input as Record<string, unknown>;
+
+  checkExtraFields("ErrorEnvelope", p, ERROR_ENVELOPE_FIELDS);
+  checkLiteral("schema_version", p.schema_version, "relay.error.v1");
+  checkRelayErrorCode("code", p.code);
+  checkHttpStatus4xx5xx("http_status", p.http_status);
+  checkNonEmptyString("blocked_surface", p.blocked_surface);
+  checkEnum("retry_advice", p.retry_advice, ERROR_ENVELOPE_RETRY_ADVICE);
+  checkNonEmptyString("request_id", p.request_id);
+  checkNonEmptyString("trace_id", p.trace_id);
+  checkStringNullable("message", p.message);
+
+  let details = p.details;
+  if (details === undefined) {
+    details = {};
+  } else {
+    checkAnyObject("details", details);
+  }
+
+  return {
+    schema_version: "relay.error.v1",
+    code: p.code as string,
+    http_status: p.http_status as number,
+    blocked_surface: p.blocked_surface as string,
+    retry_advice: p.retry_advice as ErrorEnvelope["retry_advice"],
+    request_id: p.request_id as string,
+    trace_id: p.trace_id as string,
+    message: (p.message ?? null) as string | null,
+    details: details as Record<string, unknown>,
+  };
+}
+
+export function isErrorEnvelope(input: unknown): input is ErrorEnvelope {
+  try {
+    parseErrorEnvelope(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Sort-keys + compact-separator JSON stringifier. Recurses into nested
  * objects (NOT arrays -- arrays preserve order). Matches Python's

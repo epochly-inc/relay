@@ -46,6 +46,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    StrictBool,
     field_validator,
     model_validator,
 )
@@ -920,8 +921,159 @@ def serialize_replay_fixture_canonical(fixture: ReplayFixture) -> bytes:
     return json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+# -----------------------------------------------------------------------------
+# W1.4 RedactionPolicy + ErrorEnvelope (spec A.10, G.1, G.2, B.4)
+# -----------------------------------------------------------------------------
+#
+# Spec anchors:
+#   A.10 lines 3219-3225  redaction_policies DDL
+#   G.1  lines 4108-4114  raw_capture invariants (hosted; mirrored to wire)
+#   G.2  lines 4127-4133  matcher kinds
+#   B.4  lines 3392-3408  error envelope closed schema + retry_advice table
+#
+# VAL-W1-026 RedactionPolicy.schema_version literal "relay.redaction.v1";
+#            raw_capture StrictBool; default False.
+# VAL-W1-027 cross-field: raw_capture=True REQUIRES dpa_ref AND
+#            approver_user_id non-null (CLAUDE.md banned pattern #11).
+# VAL-W1-028 matchers[] tagged discriminated union on `kind`:
+#              kind="regex"        -> requires `pattern`, forbids `paths`.
+#              kind="json_pointer" -> requires `paths`,   forbids `pattern`.
+# VAL-W1-029 ErrorEnvelope required fields:
+#              schema_version literal "relay.error.v1"
+#              code matches ^RELAY-[A-Z]+-[0-9]{3}$
+#              http_status int in [400, 599]
+#              blocked_surface non-empty string
+#              retry_advice closed enum {do_not_retry, after_fix,
+#                                        after_retry_after, after_split,
+#                                        after_recapture, after_re_auth}
+# VAL-W1-031 request_id, trace_id required non-empty strings.
+# VAL-W1-056 ErrorEnvelope.schema_version literal "relay.error.v1".
+
+# RELAY-* error code wire-form pattern. Bound to the canonical regex declared
+# by VAL-W1-029. Constants generated from packages/schemas/raw/relay-error-codes.yaml
+# live in relay_schemas.error_codes.RelayErrorCode (VAL-W1-030).
+RELAY_ERROR_CODE_PATTERN = r"^RELAY-[A-Z]+-[0-9]{3}$"
+
+RelayErrorCodeStr = Annotated[str, Field(pattern=RELAY_ERROR_CODE_PATTERN)]
+"""Canonical Relay error-code wire form per VAL-W1-029."""
+
+HttpStatus4xx5xx = Annotated[int, Field(ge=400, le=599)]
+"""HTTP status in [400, 599] per VAL-W1-029."""
+
+
+class RedactionPolicyMatcherRegex(_RelayEnvelope):
+    """Regex variant of a redaction matcher (VAL-W1-028).
+
+    kind="regex" requires `pattern` (a regex string). `paths` is FORBIDDEN on
+    this variant; the `extra="forbid"` config inherited from _RelayEnvelope
+    rejects any document carrying `paths` here.
+    """
+
+    kind: Literal["regex"]
+    pattern: NonEmptyStr
+
+
+class RedactionPolicyMatcherJsonPointer(_RelayEnvelope):
+    """JSON-pointer variant of a redaction matcher (VAL-W1-028).
+
+    kind="json_pointer" requires `paths` (a list of non-empty JSON-pointer
+    strings). `pattern` is FORBIDDEN on this variant.
+    """
+
+    kind: Literal["json_pointer"]
+    paths: list[NonEmptyStr] = Field(min_length=1)
+
+
+_RedactionPolicyMatcherUnion = Annotated[
+    RedactionPolicyMatcherRegex | RedactionPolicyMatcherJsonPointer,
+    Field(discriminator="kind"),
+]
+
+
+class RedactionPolicy(_RelayEnvelope):
+    """Per-org redaction policy version (spec A.10 lines 3219-3225).
+
+    VAL-W1-026: ``schema_version`` literal pin to ``relay.redaction.v1``;
+                ``raw_capture`` is StrictBool (Pydantic v2) so the strings
+                ``"true"``/``"false"`` and ints 0/1 are rejected; default
+                False.
+    VAL-W1-027: cross-field invariant ``raw_capture_requires_dpa_and_approver``
+                mirroring spec G.1 hosted invariant + CLAUDE.md banned
+                pattern #11. raw_capture=True REQUIRES both dpa_ref AND
+                approver_user_id to be non-null.
+    VAL-W1-028: ``matchers`` is a tagged union on ``kind`` with regex and
+                json_pointer variants. Mixing fields across kinds fails
+                validation.
+    """
+
+    schema_version: Literal["relay.redaction.v1"]
+    redaction_policy_id: UUID
+    org_id: UUID
+    version: str
+    raw_capture: StrictBool = False
+    dpa_ref: str | None = None
+    approver_user_id: UUID | None = None
+    matchers: list[_RedactionPolicyMatcherUnion] = Field(default_factory=list)
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def _check_raw_capture_requires_dpa_and_approver(self) -> RedactionPolicy:
+        # VAL-W1-027: mirrors spec G.1 hosted invariant at the wire-format
+        # layer. raw_capture=True requires BOTH dpa_ref AND approver_user_id
+        # to be non-null. A True with either field missing fails.
+        if self.raw_capture and (
+            self.dpa_ref is None or self.approver_user_id is None
+        ):
+            raise ValueError(
+                "raw_capture_requires_dpa_and_approver: raw_capture=True "
+                "requires both dpa_ref and approver_user_id to be "
+                "non-null (fields: raw_capture, dpa_ref, "
+                "approver_user_id) per VAL-W1-027 and CLAUDE.md banned "
+                "pattern #11"
+            )
+        return self
+
+
+class ErrorEnvelope(_RelayEnvelope):
+    """Canonical Relay error envelope (spec B.4 lines 3392-3408).
+
+    VAL-W1-029: required fields ``schema_version`` (literal
+                ``"relay.error.v1"``), ``code`` (non-empty string matching
+                ``^RELAY-[A-Z]+-[0-9]{3}$``), ``http_status`` (int in
+                ``[400, 599]``), ``blocked_surface`` (non-empty string),
+                ``retry_advice`` (closed enum).
+    VAL-W1-030: known ``code`` values are enumerated in
+                ``packages/schemas/raw/relay-error-codes.yaml`` and
+                generated as constants on
+                ``relay_schemas.error_codes.RelayErrorCode``.
+    VAL-W1-031: ``request_id`` and ``trace_id`` are required non-empty
+                strings (``Field(min_length=1)``).
+    VAL-W1-056: ``schema_version`` literal pin (mirrors VAL-W1-029 at the
+                dedicated schema_version pin uniformly applied per
+                CLAUDE.md invariant #10).
+    """
+
+    schema_version: Literal["relay.error.v1"]
+    code: RelayErrorCodeStr
+    http_status: HttpStatus4xx5xx
+    blocked_surface: NonEmptyStr
+    retry_advice: Literal[
+        "do_not_retry",
+        "after_fix",
+        "after_retry_after",
+        "after_split",
+        "after_recapture",
+        "after_re_auth",
+    ]
+    request_id: NonEmptyStr
+    trace_id: NonEmptyStr
+    message: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 __all__ = [
     "Actor",
+    "ErrorEnvelope",
     "EventLogEntry",
     "EvidenceBundle",
     "EvidenceBundleScopeState",
@@ -930,9 +1082,15 @@ __all__ = [
     "GateDecisionDraft",
     "GateRound",
     "GateRoundScopeState",
+    "HttpStatus4xx5xx",
     "IdempotencyRecord",
     "ManifestVersion",
     "NonEmptyStr",
+    "RedactionPolicy",
+    "RedactionPolicyMatcherJsonPointer",
+    "RedactionPolicyMatcherRegex",
+    "RELAY_ERROR_CODE_PATTERN",
+    "RelayErrorCodeStr",
     "ReplayCase",
     "ReplayCaseScopeState",
     "ReplayFixture",

@@ -23,6 +23,7 @@ import pytest
 from pydantic import ValidationError
 from relay_schemas.envelopes import (
     Actor,
+    ErrorEnvelope,
     EventLogEntry,
     EvidenceBundle,
     EvidenceClaim,
@@ -31,6 +32,7 @@ from relay_schemas.envelopes import (
     GateRound,
     IdempotencyRecord,
     ManifestVersion,
+    RedactionPolicy,
     ReplayCase,
     ReplayFixture,
     RunResult,
@@ -38,6 +40,7 @@ from relay_schemas.envelopes import (
     serialize_event_log_entry_canonical,
     serialize_replay_fixture_canonical,
 )
+from relay_schemas.error_codes import RelayErrorCode
 
 VALID_ACTOR_HASH = "sha256-" + ("a" * 64)
 VALID_MANIFEST_HASH = "sha256-" + ("b" * 64)
@@ -2281,3 +2284,479 @@ def test_replay_fixture_rejects_unknown_field() -> None:
         "unknown_field" in str(excinfo.value)
         or "extra" in str(excinfo.value).lower()
     )
+
+
+# =============================================================================
+# W1.4 - RedactionPolicy + ErrorEnvelope (VAL-W1-026..031, 056, 057, 060)
+# =============================================================================
+
+
+def _base_redaction_policy(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "relay.redaction.v1",
+        "redaction_policy_id": _new_uuid(),
+        "org_id": _new_uuid(),
+        "version": "v1",
+        "raw_capture": False,
+        "dpa_ref": None,
+        "approver_user_id": None,
+        "matchers": [],
+        "created_at": "2026-05-13T00:00:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _base_error_envelope(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "relay.error.v1",
+        "code": "RELAY-ING-031",
+        "http_status": 422,
+        "blocked_surface": "POST /api/ingest",
+        "retry_advice": "do_not_retry",
+        "request_id": "req-01HMA1ABCDEFG",
+        "trace_id": "trace-01HMA1ABCDEFG",
+    }
+    payload.update(overrides)
+    return payload
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-026: redaction_policies.schema_version + raw_capture StrictBool
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-026")
+def test_redaction_policy_schema_version_pinned() -> None:
+    rp = RedactionPolicy.model_validate(_base_redaction_policy())
+    assert rp.schema_version == "relay.redaction.v1"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-026")
+def test_redaction_policy_rejects_wrong_schema_version() -> None:
+    payload = _base_redaction_policy(schema_version="relay.redaction.v2")
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    assert "schema_version" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-026")
+def test_redaction_policy_raw_capture_default_false() -> None:
+    payload = _base_redaction_policy()
+    payload.pop("raw_capture")
+    rp = RedactionPolicy.model_validate(payload)
+    assert rp.raw_capture is False
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-026")
+@pytest.mark.parametrize("bad_value", ["true", "false", "True", "False", 0, 1])
+def test_redaction_policy_raw_capture_rejects_coercible_forms(bad_value: object) -> None:
+    payload = _base_redaction_policy(raw_capture=bad_value)
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    assert "raw_capture" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-026")
+def test_redaction_policy_raw_capture_accepts_native_bool() -> None:
+    # raw_capture=True is acceptable IF cross-field VAL-W1-027 is satisfied.
+    payload = _base_redaction_policy(
+        raw_capture=True,
+        dpa_ref="DPA-2026-001",
+        approver_user_id=_new_uuid(),
+    )
+    rp = RedactionPolicy.model_validate(payload)
+    assert rp.raw_capture is True
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-027: raw_capture=true requires dpa_ref + approver_user_id
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-027")
+def test_redaction_policy_raw_capture_true_requires_dpa() -> None:
+    payload = _base_redaction_policy(
+        raw_capture=True,
+        dpa_ref=None,
+        approver_user_id=_new_uuid(),
+    )
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    msg = str(excinfo.value)
+    assert "raw_capture" in msg and "dpa_ref" in msg
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-027")
+def test_redaction_policy_raw_capture_true_requires_approver() -> None:
+    payload = _base_redaction_policy(
+        raw_capture=True,
+        dpa_ref="DPA-2026-001",
+        approver_user_id=None,
+    )
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    msg = str(excinfo.value)
+    assert "raw_capture" in msg and "approver_user_id" in msg
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-027")
+def test_redaction_policy_raw_capture_true_requires_both() -> None:
+    payload = _base_redaction_policy(
+        raw_capture=True,
+        dpa_ref=None,
+        approver_user_id=None,
+    )
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    msg = str(excinfo.value)
+    assert "raw_capture" in msg
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-027")
+def test_redaction_policy_raw_capture_false_does_not_require_dpa() -> None:
+    # raw_capture=False is the default; dpa_ref/approver_user_id may be null.
+    payload = _base_redaction_policy(raw_capture=False, dpa_ref=None, approver_user_id=None)
+    rp = RedactionPolicy.model_validate(payload)
+    assert rp.raw_capture is False
+    assert rp.dpa_ref is None
+    assert rp.approver_user_id is None
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-028: matchers[] tagged union on `kind`
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-028")
+def test_redaction_policy_matcher_regex_happy_path() -> None:
+    payload = _base_redaction_policy(matchers=[
+        {"kind": "regex", "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+"},
+    ])
+    rp = RedactionPolicy.model_validate(payload)
+    assert len(rp.matchers) == 1
+    assert rp.matchers[0].kind == "regex"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-028")
+def test_redaction_policy_matcher_json_pointer_happy_path() -> None:
+    payload = _base_redaction_policy(matchers=[
+        {"kind": "json_pointer", "paths": ["/inputs/ssn", "/outputs/email"]},
+    ])
+    rp = RedactionPolicy.model_validate(payload)
+    assert len(rp.matchers) == 1
+    assert rp.matchers[0].kind == "json_pointer"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-028")
+def test_redaction_policy_matcher_regex_with_paths_rejected() -> None:
+    # VAL-W1-028: kind="regex" forbids `paths`.
+    payload = _base_redaction_policy(matchers=[
+        {"kind": "regex", "pattern": "foo", "paths": ["/x"]},
+    ])
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    msg = str(excinfo.value).lower()
+    assert "paths" in msg or "extra" in msg
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-028")
+def test_redaction_policy_matcher_json_pointer_with_pattern_rejected() -> None:
+    # VAL-W1-028: kind="json_pointer" forbids `pattern`.
+    payload = _base_redaction_policy(matchers=[
+        {"kind": "json_pointer", "paths": ["/inputs/ssn"], "pattern": "foo"},
+    ])
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    msg = str(excinfo.value).lower()
+    assert "pattern" in msg or "extra" in msg
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-028")
+def test_redaction_policy_matcher_regex_missing_pattern_rejected() -> None:
+    payload = _base_redaction_policy(matchers=[{"kind": "regex"}])
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    assert "pattern" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-028")
+def test_redaction_policy_matcher_unknown_kind_rejected() -> None:
+    payload = _base_redaction_policy(matchers=[{"kind": "fnmatch", "pattern": "*.txt"}])
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    assert "kind" in str(excinfo.value).lower() or "discriminator" in str(excinfo.value).lower()
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-029: error_envelope required fields + retry_advice closed enum
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-029")
+def test_error_envelope_happy_path() -> None:
+    e = ErrorEnvelope.model_validate(_base_error_envelope())
+    assert e.schema_version == "relay.error.v1"
+    assert e.code == "RELAY-ING-031"
+    assert 400 <= e.http_status <= 599
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-029")
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "schema_version",
+        "code",
+        "http_status",
+        "blocked_surface",
+        "retry_advice",
+        "request_id",
+        "trace_id",
+    ],
+)
+def test_error_envelope_rejects_missing_required_field(missing_field: str) -> None:
+    payload = _base_error_envelope()
+    payload.pop(missing_field)
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    assert missing_field in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-029")
+@pytest.mark.parametrize(
+    "bad_code",
+    [
+        "relay-ing-031",
+        "RELAY_ING_031",
+        "ING-031",
+        "RELAY-ING-31",
+        "RELAY-ing-031",
+        "",
+        "RELAY-ING-0031",
+    ],
+)
+def test_error_envelope_rejects_malformed_code(bad_code: str) -> None:
+    payload = _base_error_envelope(code=bad_code)
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    assert "code" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-029")
+@pytest.mark.parametrize("bad_status", [200, 399, 600, 700, -1])
+def test_error_envelope_rejects_http_status_out_of_range(bad_status: int) -> None:
+    payload = _base_error_envelope(http_status=bad_status)
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    assert "http_status" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-029")
+@pytest.mark.parametrize("bad_status", [400, 422, 499, 500, 599])
+def test_error_envelope_accepts_http_status_in_range(bad_status: int) -> None:
+    payload = _base_error_envelope(http_status=bad_status)
+    e = ErrorEnvelope.model_validate(payload)
+    assert e.http_status == bad_status
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-029")
+def test_error_envelope_rejects_empty_blocked_surface() -> None:
+    payload = _base_error_envelope(blocked_surface="")
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    assert "blocked_surface" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-029")
+@pytest.mark.parametrize(
+    "advice",
+    [
+        "do_not_retry",
+        "after_fix",
+        "after_retry_after",
+        "after_split",
+        "after_recapture",
+        "after_re_auth",
+    ],
+)
+def test_error_envelope_accepts_each_retry_advice(advice: str) -> None:
+    payload = _base_error_envelope(retry_advice=advice)
+    e = ErrorEnvelope.model_validate(payload)
+    assert e.retry_advice == advice
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-029")
+@pytest.mark.parametrize(
+    "bad_advice",
+    ["After fix", "After Retry-After", "RETRY", "yes", "no", "", "do-not-retry"],
+)
+def test_error_envelope_rejects_non_canonical_retry_advice(bad_advice: str) -> None:
+    payload = _base_error_envelope(retry_advice=bad_advice)
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    assert "retry_advice" in str(excinfo.value)
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-030: RELAY-* codes generated as constants in BOTH Py and TS
+# -----------------------------------------------------------------------------
+
+
+REQUIRED_B4_CODES = [
+    "RELAY-ING-001",
+    "RELAY-ING-014",
+    "RELAY-ING-021",
+    "RELAY-ING-031",
+    "RELAY-AUTH-001",
+    "RELAY-AUTH-014",
+    "RELAY-RATE-001",
+    "RELAY-RATE-014",
+    "RELAY-GATE-001",
+    "RELAY-GATE-014",
+    "RELAY-GATE-021",
+    "RELAY-EVID-001",
+    "RELAY-EVID-014",
+    "RELAY-REPLAY-001",
+    "RELAY-REPLAY-014",
+]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-030")
+def test_required_15_b4_codes_present_on_python_class() -> None:
+    for code in REQUIRED_B4_CODES:
+        attr = code.replace("-", "_")
+        assert hasattr(RelayErrorCode, attr), f"RelayErrorCode missing attribute {attr}"
+        assert getattr(RelayErrorCode, attr) == code
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-030")
+def test_required_15_b4_codes_in_python_module_text() -> None:
+    src = Path(__file__).resolve().parents[1] / "relay_schemas" / "error_codes.py"
+    text = src.read_text(encoding="utf-8")
+    count = sum(1 for c in REQUIRED_B4_CODES if f'"{c}"' in text)
+    assert count == 15, f"expected 15 spec B.4 codes in {src.name}, found {count}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-030")
+def test_required_15_b4_codes_in_typescript_module_text() -> None:
+    ts_src = (
+        Path(__file__).resolve().parents[2]
+        / "typescript"
+        / "src"
+        / "error_codes.ts"
+    )
+    text = ts_src.read_text(encoding="utf-8")
+    count = sum(1 for c in REQUIRED_B4_CODES if f'"{c}"' in text)
+    assert count == 15, f"expected 15 spec B.4 codes in {ts_src.name}, found {count}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-030")
+def test_error_envelope_accepts_known_relay_error_code() -> None:
+    e = ErrorEnvelope.model_validate(_base_error_envelope(code=RelayErrorCode.RELAY_GATE_021))
+    assert e.code == "RELAY-GATE-021"
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-031: request_id + trace_id required non-empty strings
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-031")
+def test_error_envelope_rejects_empty_request_id() -> None:
+    payload = _base_error_envelope(request_id="")
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    assert "request_id" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-031")
+def test_error_envelope_rejects_empty_trace_id() -> None:
+    payload = _base_error_envelope(trace_id="")
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    assert "trace_id" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-031")
+def test_error_envelope_rejects_non_string_request_id() -> None:
+    payload = _base_error_envelope(request_id=12345)
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    assert "request_id" in str(excinfo.value)
+
+
+# -----------------------------------------------------------------------------
+# VAL-W1-056: error_envelope.schema_version literal "relay.error.v1"
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-056")
+def test_error_envelope_rejects_wrong_schema_version() -> None:
+    payload = _base_error_envelope(schema_version="relay.error.v2")
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    assert "schema_version" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-056")
+def test_generated_python_contains_error_envelope_v1_literal() -> None:
+    src = Path(__file__).resolve().parents[1] / "relay_schemas" / "envelopes.py"
+    text = src.read_text(encoding="utf-8")
+    assert text.count('"relay.error.v1"') >= 1
+
+
+# -----------------------------------------------------------------------------
+# Defense-in-depth: extra-field rejection on W1.4 envelopes
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-026")
+def test_redaction_policy_rejects_unknown_field() -> None:
+    payload = _base_redaction_policy(unknown_field="value")
+    with pytest.raises(ValidationError) as excinfo:
+        RedactionPolicy.model_validate(payload)
+    msg = str(excinfo.value).lower()
+    assert "unknown_field" in str(excinfo.value) or "extra" in msg
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-029")
+def test_error_envelope_rejects_unknown_field() -> None:
+    payload = _base_error_envelope(unknown_field="value")
+    with pytest.raises(ValidationError) as excinfo:
+        ErrorEnvelope.model_validate(payload)
+    msg = str(excinfo.value).lower()
+    assert "unknown_field" in str(excinfo.value) or "extra" in msg

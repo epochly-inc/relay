@@ -1,0 +1,35 @@
+# Canonical owner-email deny-prefix registry (W1.4 / VAL-W1-060).
+#
+# Default deny patterns for group-alias owner emails. `rly contract publish`
+# (W6.6) loads patterns from this file at publish time and refuses to accept
+# a contract assertion whose `owner_email` local part begins with any of the
+# listed prefixes (case-insensitive match).
+#
+# Spec anchor: D.6 line 3886 (group-alias deny pattern narrative).
+# Contract anchors: CW-003 resolution, G-09 disposition.
+#
+# Operators may EXTEND the canonical defaults with a workspace-local override
+# file pointed to by `RELAY_OWNER_DENY_OVERRIDE_PATH`. The override is
+# COMPOSED with (not REPLACES) the canonical defaults: every prefix below is
+# always denied even when an override file is loaded. The override file uses
+# the same shape (`additional_deny_prefixes: [...]`).
+#
+# Matching semantics:
+#   - Case-insensitive prefix match against the LOCAL PART of the email
+#     (the portion before the '@'). E.g., "Team-Sec@example.com" matches
+#     "team-" (case-insensitive) -> denied.
+#   - Prefixes include the trailing separator (typically '-') because
+#     "team1@example.com" must NOT match "team-" (the trailing hyphen is
+#     load-bearing for the disambiguation).
+#
+# VAL-W1-060 enforcement: a CI tier-1 plumbing test asserts the file exists,
+# parses, and every one of the four prefixes below appears in
+# `default_deny_prefixes`. CI lint exit 0.
+
+schema: relay.owner_email_deny.v1
+
+default_deny_prefixes:
+  - "team-"
+  - "group-"
+  - "dl-"
+  - "all-"

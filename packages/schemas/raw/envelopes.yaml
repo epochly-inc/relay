@@ -557,6 +557,133 @@ schemas:
       occurred_at:           { type: timestamptz_offset_required, required: true }
       ingest_sequence:       { type: int_ge_zero, required: true }
 
+  # ---------------------------------------------------------------------------
+  # W1.4 policy + error envelopes (spec A.10, G.1, G.2, B.4)
+  # ---------------------------------------------------------------------------
+  #
+  # VAL-W1-026 RedactionPolicy.schema_version literal "relay.redaction.v1".
+  # VAL-W1-026 raw_capture strict bool (string "true"/"false" rejected,
+  #            int 0/1 rejected), default false.
+  # VAL-W1-027 cross-field: raw_capture=true REQUIRES dpa_ref AND
+  #            approver_user_id non-null. Mirrors spec G.1 hosted invariant
+  #            at the wire-format layer (CLAUDE.md banned pattern #11).
+  # VAL-W1-028 matchers[] tagged discriminated union on `kind`:
+  #              kind="regex"        -> requires `pattern`, forbids `paths`.
+  #              kind="json_pointer" -> requires `paths`,   forbids `pattern`.
+  #
+  # VAL-W1-029 ErrorEnvelope required fields and retry_advice closed enum
+  #            (locked per Gaps disposition).
+  # VAL-W1-030 RELAY-* error codes generated from raw/relay-error-codes.yaml.
+  # VAL-W1-031 request_id, trace_id non-empty strings.
+  # VAL-W1-056 ErrorEnvelope.schema_version literal "relay.error.v1".
+
+  RedactionPolicy:
+    schema_version: relay.redaction.v1
+    spec: A.10, G.1, G.2
+    description: |
+      Per-org redaction policy version (spec A.10 lines 3219-3225).
+      schema_version pins to relay.redaction.v1 (VAL-W1-026).
+      raw_capture is STRICT bool (default false) and may not be coerced
+      from "true"/"false" strings or numeric 0/1 (VAL-W1-026).
+      raw_capture=true REQUIRES dpa_ref AND approver_user_id to be non-null
+      (VAL-W1-027); the wire-format layer mirrors the hosted invariant
+      from spec G.1 lines 4108-4114 and CLAUDE.md banned pattern #11.
+      matchers[] is a tagged discriminated union on `kind` (VAL-W1-028)
+      per spec G.2 lines 4127-4133 and eng plan A3 unions corpus dimension.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.redaction.v1
+        required: true
+      redaction_policy_id:   { type: uuid, required: true }
+      org_id:                { type: uuid, required: true }
+      version:               { type: string, required: true }
+      raw_capture:
+        type: strict_bool
+        required: false
+        default: false
+      dpa_ref:               { type: string, required: false, nullable: true }
+      approver_user_id:      { type: uuid, required: false, nullable: true }
+      matchers:
+        type: list_discriminated_union
+        discriminator: kind
+        variants:
+          regex:
+            kind:    { type: literal, value: regex, required: true }
+            pattern: { type: string,  required: true }
+          json_pointer:
+            kind:    { type: literal, value: json_pointer, required: true }
+            paths:
+              type: list_str
+              required: true
+        required: false
+        default: []
+      created_at:            { type: timestamptz, required: true }
+    constraints:
+      - name: raw_capture_requires_dpa_and_approver
+        kind: cross_field
+        rule: |
+          If raw_capture == true then BOTH dpa_ref and approver_user_id
+          MUST be non-null. Mirrors the hosted-ingest invariant from
+          spec G.1 lines 4108-4114; defense-in-depth at the wire-format
+          layer per CLAUDE.md banned pattern #11.
+
+  ErrorEnvelope:
+    schema_version: relay.error.v1
+    spec: B.4
+    description: |
+      Canonical Relay error envelope (spec B.4 lines 3392-3408).
+      schema_version pins to relay.error.v1 (VAL-W1-029, VAL-W1-056).
+      code MUST be a non-empty string matching ^RELAY-[A-Z]+-[0-9]{3}$
+      (VAL-W1-029); known codes are enumerated in raw/relay-error-codes.yaml
+      and generated as RelayErrorCode.* constants (VAL-W1-030).
+      http_status integer in [400, 599] (VAL-W1-029).
+      blocked_surface non-empty string naming the call that failed
+      (VAL-W1-029).
+      retry_advice closed enum locked at:
+        do_not_retry         -- error is terminal; submitter MUST NOT retry
+        after_fix            -- caller fixes the input then retries
+        after_retry_after    -- caller honors the server's Retry-After header
+        after_split          -- caller splits the payload and retries pieces
+        after_recapture      -- caller re-captures fresh evidence
+        after_re_auth        -- caller re-authenticates with fresh credentials
+      Values are snake_case renderings of the spec B.4 table text; the
+      spec narrative ("After fix" / "After Retry-After" / "After split" /
+      "After re-capture" / "After re-auth") is queued for post-v0.1
+      amendment to match the wire form. See contract.md VAL-W1-029
+      Gap-flag for the locked mapping.
+      request_id and trace_id are required non-empty strings
+      (VAL-W1-031).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.error.v1
+        required: true
+      code:
+        type: string_pattern
+        pattern: '^RELAY-[A-Z]+-[0-9]{3}$'
+        required: true
+      http_status:
+        type: int_in_range
+        min: 400
+        max: 599
+        required: true
+      blocked_surface:       { type: non_empty_string, required: true }
+      retry_advice:
+        type: enum
+        values:
+          - do_not_retry
+          - after_fix
+          - after_retry_after
+          - after_split
+          - after_recapture
+          - after_re_auth
+        required: true
+      request_id:            { type: non_empty_string, required: true }
+      trace_id:              { type: non_empty_string, required: true }
+      message:               { type: string, required: false, nullable: true }
+      details:               { type: any_object, required: false, default: {} }
+
 # -----------------------------------------------------------------------------
 # Type definitions
 # -----------------------------------------------------------------------------

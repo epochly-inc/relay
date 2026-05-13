@@ -1,0 +1,130 @@
+# Canonical Relay error-code registry (W1.4 / VAL-W1-057).
+#
+# Single source of truth for every `RELAY-{AREA}-NNN` error code referenced
+# anywhere in the Relay v0.1 contract surface (contract.md + contract-drafts/).
+#
+# Generated outputs (this YAML is the source; outputs are DERIVED, not authored):
+#   - packages/schemas/python/relay_schemas/error_codes.py  (RelayErrorCode constants)
+#   - packages/schemas/typescript/src/error_codes.ts        (RelayErrorCode object literal)
+#
+# W1.4 generator: packages/schemas/scripts/gen_error_codes.py (minimal Python
+# script). The W1.5 codegen pipeline (datamodel-code-generator + openapi-
+# typescript + drift check) will replace this minimal generator step. The
+# YAML format here is deliberately compatible with the W1.5 pipeline (flat
+# string list per code; W1.5 only needs to re-emit the constant tables).
+#
+# Spec anchors:
+#   B.4 lines 3392-3428      closed error envelope + per-code retry_advice table
+#   contract preamble CW-003 namespace allocation
+#
+# VAL-W1-057 enforcement: a CI tier-1 plumbing test runs
+#   grep -roE 'RELAY-[A-Z]+-[0-9]{3}' contract.md contract-drafts/
+# and diffs the captured code set against `codes[]` below. Codes referenced
+# in contract text but missing from this YAML fail the test. Codes in this
+# YAML never referenced by any contract surface emit a warning but do NOT
+# fail (room for spec-locked codes not yet bound in contract assertions).
+#
+# Convention:
+#   - YAML key `codes` is a flat list of strings. Each string is an exact
+#     `RELAY-{AREA}-NNN` token.
+#   - The generated Py constant for `RELAY-ING-031` is
+#     `RelayErrorCode.RELAY_ING_031` (uppercase + underscore + numeric tail);
+#     the TS form is `RelayErrorCode.RELAY_ING_031`. Both mirror the YAML
+#     token verbatim modulo hyphen->underscore.
+#   - Codes are sorted lexicographically within `codes`.
+#
+# VAL-W1-030 requirement: the 15 documented spec B.4 codes (RELAY-ING-001,
+# RELAY-ING-014, RELAY-ING-021, RELAY-ING-031, RELAY-AUTH-001, RELAY-AUTH-014,
+# RELAY-RATE-001, RELAY-RATE-014, RELAY-GATE-001, RELAY-GATE-014,
+# RELAY-GATE-021, RELAY-EVID-001, RELAY-EVID-014, RELAY-REPLAY-001,
+# RELAY-REPLAY-014) MUST all be present in this list. Their generated
+# constants are checked by VAL-W1-030 tests.
+
+schema: relay.error_codes.v1
+
+codes:
+  - RELAY-AUTH-001
+  - RELAY-AUTH-014
+  - RELAY-CLI-070
+  - RELAY-COVERAGE-001
+  - RELAY-COVERAGE-002
+  - RELAY-COVERAGE-003
+  - RELAY-COVERAGE-004
+  - RELAY-EVID-001
+  - RELAY-EVID-002
+  - RELAY-EVID-014
+  - RELAY-EVID-024
+  - RELAY-EVID-031
+  - RELAY-EVID-038
+  - RELAY-FUTURE-999
+  - RELAY-GATE-001
+  - RELAY-GATE-014
+  - RELAY-GATE-021
+  - RELAY-GATE-024
+  - RELAY-GATE-041
+  - RELAY-GATE-051
+  - RELAY-GATE-061
+  - RELAY-IDEMPOTENCY-001
+  - RELAY-ING-001
+  - RELAY-ING-014
+  - RELAY-ING-021
+  - RELAY-ING-022
+  - RELAY-ING-031
+  - RELAY-RATE-001
+  - RELAY-RATE-014
+  - RELAY-RELEASE-001
+  - RELAY-RELEASE-002
+  - RELAY-RELEASE-004
+  - RELAY-RELEASE-005
+  - RELAY-RELEASE-006
+  - RELAY-RELEASE-007
+  - RELAY-RELEASE-008
+  - RELAY-RELEASE-009
+  - RELAY-RELEASE-010
+  - RELAY-RELEASE-011
+  - RELAY-RELEASE-012
+  - RELAY-RELEASE-013
+  - RELAY-RELEASE-014
+  - RELAY-RELEASE-015
+  - RELAY-RELEASE-016
+  - RELAY-RELEASE-017
+  - RELAY-RELEASE-018
+  - RELAY-RELEASE-019
+  - RELAY-RELEASE-020
+  - RELAY-RELEASE-021
+  - RELAY-RELEASE-022
+  - RELAY-RELEASE-023
+  - RELAY-RELEASE-024
+  - RELAY-RELEASE-025
+  - RELAY-RELEASE-026
+  - RELAY-RELEASE-028
+  - RELAY-RELEASE-029
+  - RELAY-RELEASE-030
+  - RELAY-RELEASE-032
+  - RELAY-RELEASE-033
+  - RELAY-RELEASE-034
+  - RELAY-RELEASE-035
+  - RELAY-RELEASE-036
+  - RELAY-RELEASE-037
+  - RELAY-RELEASE-038
+  - RELAY-RELEASE-039
+  - RELAY-RELEASE-040
+  - RELAY-RELEASE-041
+  - RELAY-RELEASE-042
+  - RELAY-RELEASE-043
+  - RELAY-RELEASE-044
+  - RELAY-RELEASE-045
+  - RELAY-RELEASE-046
+  - RELAY-RELEASE-047
+  - RELAY-REPLAY-001
+  - RELAY-REPLAY-002
+  - RELAY-REPLAY-014
+  - RELAY-SCHEMA-011
+  - RELAY-SCHEMA-014
+  - RELAY-SCHEMA-017
+  - RELAY-SCHEMA-018
+  - RELAY-SCHEMA-023
+  - RELAY-VENDOR-001
+  - RELAY-VENDOR-002
+  - RELAY-VERIFY-001
+  - RELAY-VERIFY-050

@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   Actor,
+  ErrorEnvelope,
   EventLogEntry,
   EvidenceBundle,
   EvidenceClaim,
@@ -27,6 +28,7 @@ import {
   GateRound,
   IdempotencyRecord,
   ManifestVersion,
+  RedactionPolicy,
   ReplayCase,
   ReplayFixture,
   RunResult,
@@ -35,6 +37,7 @@ import {
   ScopeStateReplayCase,
   ScopeStateRun,
   isActor,
+  isErrorEnvelope,
   isEventLogEntry,
   isEvidenceBundle,
   isEvidenceClaim,
@@ -43,11 +46,13 @@ import {
   isGateRound,
   isIdempotencyRecord,
   isManifestVersion,
+  isRedactionPolicy,
   isReplayCase,
   isReplayFixture,
   isRunResult,
   isScopeState,
   parseActor,
+  parseErrorEnvelope,
   parseEventLogEntry,
   parseEvidenceBundle,
   parseEvidenceClaim,
@@ -56,15 +61,18 @@ import {
   parseGateRound,
   parseIdempotencyRecord,
   parseManifestVersion,
+  parseRedactionPolicy,
   parseReplayCase,
   parseReplayFixture,
   parseRunResult,
   parseScopeState,
+  RELAY_ERROR_CODE_PATTERN,
   serializeEventLogEntryCanonical,
   serializeReplayFixtureCanonical,
   SHA256_HASH_PATTERN,
   ULID_PATTERN,
 } from "../src/envelopes.js";
+import { RelayErrorCode } from "../src/error_codes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -2024,5 +2032,382 @@ const _typeRefs: ReadonlyArray<
   | EvidenceClaim
   | ReplayCase
   | ReplayFixture
+  | RedactionPolicy
+  | ErrorEnvelope
 > = [];
 void _typeRefs;
+
+// ===========================================================================
+// W1.4 - RedactionPolicy + ErrorEnvelope (VAL-W1-026..031, 056)
+// ===========================================================================
+
+function baseRedactionPolicy(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.redaction.v1",
+    redaction_policy_id: newUuid(),
+    org_id: newUuid(),
+    version: "v1",
+    raw_capture: false,
+    dpa_ref: null,
+    approver_user_id: null,
+    matchers: [],
+    created_at: "2026-05-13T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function baseErrorEnvelope(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.error.v1",
+    code: "RELAY-ING-031",
+    http_status: 422,
+    blocked_surface: "POST /api/ingest",
+    retry_advice: "do_not_retry",
+    request_id: "req-01HMA1ABCDEFG",
+    trace_id: "trace-01HMA1ABCDEFG",
+    ...overrides,
+  };
+}
+
+describe("VAL-W1-026 RedactionPolicy schema_version + raw_capture StrictBool", () => {
+  it("accepts the canonical schema_version literal", () => {
+    const p = parseRedactionPolicy(baseRedactionPolicy());
+    expect(p.schema_version).toBe("relay.redaction.v1");
+  });
+
+  it("rejects a wrong schema_version literal", () => {
+    expect(() =>
+      parseRedactionPolicy(baseRedactionPolicy({ schema_version: "relay.redaction.v2" })),
+    ).toThrow(/schema_version/);
+  });
+
+  it("defaults raw_capture to false when omitted", () => {
+    const payload = baseRedactionPolicy();
+    delete payload.raw_capture;
+    const p = parseRedactionPolicy(payload);
+    expect(p.raw_capture).toBe(false);
+  });
+
+  it.each(["true", "false", "True", "False", 0, 1])(
+    "rejects coercible raw_capture %p",
+    (bad) => {
+      expect(() =>
+        parseRedactionPolicy(baseRedactionPolicy({ raw_capture: bad })),
+      ).toThrow(/raw_capture/);
+    },
+  );
+
+  it("accepts native true with required cross-fields", () => {
+    const p = parseRedactionPolicy(
+      baseRedactionPolicy({
+        raw_capture: true,
+        dpa_ref: "DPA-2026-001",
+        approver_user_id: newUuid(),
+      }),
+    );
+    expect(p.raw_capture).toBe(true);
+  });
+});
+
+describe("VAL-W1-027 raw_capture=true requires dpa_ref + approver_user_id", () => {
+  it("rejects when dpa_ref is null", () => {
+    expect(() =>
+      parseRedactionPolicy(
+        baseRedactionPolicy({
+          raw_capture: true,
+          dpa_ref: null,
+          approver_user_id: newUuid(),
+        }),
+      ),
+    ).toThrow(/raw_capture_requires_dpa_and_approver/);
+  });
+
+  it("rejects when approver_user_id is null", () => {
+    expect(() =>
+      parseRedactionPolicy(
+        baseRedactionPolicy({
+          raw_capture: true,
+          dpa_ref: "DPA-2026-001",
+          approver_user_id: null,
+        }),
+      ),
+    ).toThrow(/raw_capture_requires_dpa_and_approver/);
+  });
+
+  it("rejects when both are null", () => {
+    expect(() =>
+      parseRedactionPolicy(
+        baseRedactionPolicy({
+          raw_capture: true,
+          dpa_ref: null,
+          approver_user_id: null,
+        }),
+      ),
+    ).toThrow(/raw_capture_requires_dpa_and_approver/);
+  });
+
+  it("allows raw_capture=false with null dpa_ref and null approver", () => {
+    const p = parseRedactionPolicy(
+      baseRedactionPolicy({
+        raw_capture: false,
+        dpa_ref: null,
+        approver_user_id: null,
+      }),
+    );
+    expect(p.raw_capture).toBe(false);
+  });
+});
+
+describe("VAL-W1-028 matchers[] tagged discriminated union on `kind`", () => {
+  it("accepts a regex matcher with pattern", () => {
+    const p = parseRedactionPolicy(
+      baseRedactionPolicy({
+        matchers: [{ kind: "regex", pattern: "[a-z]+@example.com" }],
+      }),
+    );
+    expect(p.matchers).toHaveLength(1);
+    expect(p.matchers[0]!.kind).toBe("regex");
+  });
+
+  it("accepts a json_pointer matcher with paths", () => {
+    const p = parseRedactionPolicy(
+      baseRedactionPolicy({
+        matchers: [{ kind: "json_pointer", paths: ["/inputs/ssn"] }],
+      }),
+    );
+    expect(p.matchers[0]!.kind).toBe("json_pointer");
+  });
+
+  it("rejects regex matcher carrying paths", () => {
+    expect(() =>
+      parseRedactionPolicy(
+        baseRedactionPolicy({
+          matchers: [{ kind: "regex", pattern: "foo", paths: ["/x"] }],
+        }),
+      ),
+    ).toThrow(/paths|extra/);
+  });
+
+  it("rejects json_pointer matcher carrying pattern", () => {
+    expect(() =>
+      parseRedactionPolicy(
+        baseRedactionPolicy({
+          matchers: [
+            { kind: "json_pointer", paths: ["/inputs/ssn"], pattern: "foo" },
+          ],
+        }),
+      ),
+    ).toThrow(/pattern|extra/);
+  });
+
+  it("rejects regex matcher missing pattern", () => {
+    expect(() =>
+      parseRedactionPolicy(
+        baseRedactionPolicy({ matchers: [{ kind: "regex" }] }),
+      ),
+    ).toThrow(/pattern/);
+  });
+
+  it("rejects unknown matcher kind", () => {
+    expect(() =>
+      parseRedactionPolicy(
+        baseRedactionPolicy({
+          matchers: [{ kind: "fnmatch", pattern: "*.txt" }],
+        }),
+      ),
+    ).toThrow(/kind/);
+  });
+
+  it("rejects json_pointer matcher with empty paths", () => {
+    expect(() =>
+      parseRedactionPolicy(
+        baseRedactionPolicy({
+          matchers: [{ kind: "json_pointer", paths: [] }],
+        }),
+      ),
+    ).toThrow(/paths/);
+  });
+
+  it("type-narrowing: isRedactionPolicy returns false for bad input", () => {
+    expect(isRedactionPolicy({ schema_version: "wrong" })).toBe(false);
+  });
+});
+
+describe("VAL-W1-029 ErrorEnvelope required fields + retry_advice closed enum", () => {
+  it("happy path", () => {
+    const e = parseErrorEnvelope(baseErrorEnvelope());
+    expect(e.schema_version).toBe("relay.error.v1");
+    expect(e.code).toBe("RELAY-ING-031");
+    expect(e.http_status).toBeGreaterThanOrEqual(400);
+    expect(e.http_status).toBeLessThanOrEqual(599);
+  });
+
+  it.each([
+    "schema_version",
+    "code",
+    "http_status",
+    "blocked_surface",
+    "retry_advice",
+    "request_id",
+    "trace_id",
+  ])("rejects missing required field %s", (field) => {
+    const payload = baseErrorEnvelope();
+    delete payload[field];
+    expect(() => parseErrorEnvelope(payload)).toThrow(new RegExp(field));
+  });
+
+  it.each([
+    "relay-ing-031",
+    "RELAY_ING_031",
+    "ING-031",
+    "RELAY-ING-31",
+    "RELAY-ing-031",
+    "",
+    "RELAY-ING-0031",
+  ])("rejects malformed code %p", (bad) => {
+    expect(() => parseErrorEnvelope(baseErrorEnvelope({ code: bad }))).toThrow(
+      /code/,
+    );
+  });
+
+  it.each([200, 399, 600, 700, -1])(
+    "rejects http_status %p outside [400,599]",
+    (bad) => {
+      expect(() =>
+        parseErrorEnvelope(baseErrorEnvelope({ http_status: bad })),
+      ).toThrow(/http_status/);
+    },
+  );
+
+  it.each([400, 422, 499, 500, 599])(
+    "accepts http_status %p in [400,599]",
+    (good) => {
+      const e = parseErrorEnvelope(baseErrorEnvelope({ http_status: good }));
+      expect(e.http_status).toBe(good);
+    },
+  );
+
+  it("rejects empty blocked_surface", () => {
+    expect(() =>
+      parseErrorEnvelope(baseErrorEnvelope({ blocked_surface: "" })),
+    ).toThrow(/blocked_surface/);
+  });
+
+  it.each([
+    "do_not_retry",
+    "after_fix",
+    "after_retry_after",
+    "after_split",
+    "after_recapture",
+    "after_re_auth",
+  ])("accepts retry_advice %p", (advice) => {
+    const e = parseErrorEnvelope(baseErrorEnvelope({ retry_advice: advice }));
+    expect(e.retry_advice).toBe(advice);
+  });
+
+  it.each(["After fix", "After Retry-After", "RETRY", "yes", "", "do-not-retry"])(
+    "rejects non-canonical retry_advice %p",
+    (bad) => {
+      expect(() =>
+        parseErrorEnvelope(baseErrorEnvelope({ retry_advice: bad })),
+      ).toThrow(/retry_advice/);
+    },
+  );
+
+  it("rejects unknown field on ErrorEnvelope", () => {
+    expect(
+      isErrorEnvelope(baseErrorEnvelope({ extra_field: "x" })),
+    ).toBe(false);
+  });
+});
+
+describe("VAL-W1-030 known RELAY-* codes generated as constants", () => {
+  const REQUIRED_B4_CODES = [
+    "RELAY-ING-001",
+    "RELAY-ING-014",
+    "RELAY-ING-021",
+    "RELAY-ING-031",
+    "RELAY-AUTH-001",
+    "RELAY-AUTH-014",
+    "RELAY-RATE-001",
+    "RELAY-RATE-014",
+    "RELAY-GATE-001",
+    "RELAY-GATE-014",
+    "RELAY-GATE-021",
+    "RELAY-EVID-001",
+    "RELAY-EVID-014",
+    "RELAY-REPLAY-001",
+    "RELAY-REPLAY-014",
+  ];
+
+  it.each(REQUIRED_B4_CODES)("RelayErrorCode contains constant for %s", (code) => {
+    const attr = code.replace(/-/g, "_") as keyof typeof RelayErrorCode;
+    expect(RelayErrorCode[attr]).toBe(code);
+  });
+
+  it("generated TS source contains all 15 spec B.4 codes", () => {
+    const tsSrc = path.resolve(__dirname, "..", "src", "error_codes.ts");
+    const text = fs.readFileSync(tsSrc, "utf-8");
+    let count = 0;
+    for (const c of REQUIRED_B4_CODES) {
+      if (text.includes(`"${c}"`)) count++;
+    }
+    expect(count).toBe(15);
+  });
+
+  it("ErrorEnvelope accepts a code referenced via the generated constant", () => {
+    const e = parseErrorEnvelope(
+      baseErrorEnvelope({ code: RelayErrorCode.RELAY_GATE_021 }),
+    );
+    expect(e.code).toBe("RELAY-GATE-021");
+  });
+});
+
+describe("VAL-W1-031 request_id + trace_id required non-empty strings", () => {
+  it("rejects empty request_id", () => {
+    expect(() =>
+      parseErrorEnvelope(baseErrorEnvelope({ request_id: "" })),
+    ).toThrow(/request_id/);
+  });
+
+  it("rejects empty trace_id", () => {
+    expect(() =>
+      parseErrorEnvelope(baseErrorEnvelope({ trace_id: "" })),
+    ).toThrow(/trace_id/);
+  });
+
+  it("rejects non-string request_id", () => {
+    expect(() =>
+      parseErrorEnvelope(baseErrorEnvelope({ request_id: 12345 })),
+    ).toThrow(/request_id/);
+  });
+});
+
+describe("VAL-W1-056 ErrorEnvelope.schema_version literal 'relay.error.v1'", () => {
+  it("rejects wrong schema_version", () => {
+    expect(() =>
+      parseErrorEnvelope(baseErrorEnvelope({ schema_version: "relay.error.v2" })),
+    ).toThrow(/schema_version/);
+  });
+
+  it("generated TS source contains the 'relay.error.v1' literal at least once", () => {
+    const tsSrc = path.resolve(__dirname, "..", "src", "envelopes.ts");
+    const text = fs.readFileSync(tsSrc, "utf-8");
+    const matches = text.match(/"relay\.error\.v1"/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("W1.4 RELAY_ERROR_CODE_PATTERN exported", () => {
+  it("matches canonical RELAY-{AREA}-NNN wire form", () => {
+    const re = new RegExp(RELAY_ERROR_CODE_PATTERN);
+    expect(re.test("RELAY-ING-031")).toBe(true);
+    expect(re.test("RELAY-GATE-021")).toBe(true);
+    expect(re.test("relay-ing-031")).toBe(false);
+    expect(re.test("RELAY-ING-31")).toBe(false);
+  });
+});
