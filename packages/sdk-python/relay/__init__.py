@@ -34,10 +34,20 @@ from .errors import (
     RelaySidecarVersionMismatch,
 )
 from .flush import FlushPolicy
+from .redaction import (
+    DEFAULT_APPLIES_TO_FIELDS,
+    RedactionEngine,
+    RedactionPolicy,
+    SaltProvider,
+    redact_capture_payload,
+)
 from .run import Run
 
 __all__ = [
+    "DEFAULT_APPLIES_TO_FIELDS",
     "FlushPolicy",
+    "RedactionEngine",
+    "RedactionPolicy",
     "Relay",
     "RelayAuthMismatch",
     "RelayCanonicalStatusForbidden",
@@ -51,4 +61,6 @@ __all__ = [
     "RelaySidecarNotReachable",
     "RelaySidecarVersionMismatch",
     "Run",
+    "SaltProvider",
+    "redact_capture_payload",
 ]

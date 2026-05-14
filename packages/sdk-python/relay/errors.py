@@ -69,6 +69,13 @@ RELAY_REPLAY_002_CODE: Final[str] = "RELAY-REPLAY-002"
 # RELAY-EVID-002 is the sidecar-side "evidence envelope incomplete" code
 # (per contract Gaps note); maps to :class:`RelayEvidenceIncomplete`.
 RELAY_EVID_002_CODE: Final[str] = "RELAY-EVID-002"
+# RELAY-ING-RAW-PAYLOAD is the sidecar-side "raw plaintext detected;
+# redaction policy violated" code (W3.3 / VAL-W3-027 defense-in-depth).
+# The contract Gaps note (contract.md line 1547) flagged this code as
+# pending addition to the spec inventory; the SDK side stabilises it
+# here so the W3.3 surface can map it to a typed RelayPolicyError. The
+# code is registered in packages/schemas/raw/relay-error-codes.yaml.
+RELAY_ING_RAW_PAYLOAD_CODE: Final[str] = "RELAY-ING-032"
 
 # Retry-advice modes. Mirrors the spec B.4 error-envelope ``retry_advice``
 # vocabulary. Only the values the W3.1 surface emits are enumerated here.
@@ -280,6 +287,7 @@ __all__ = [
     "RELAY_EVID_002_CODE",
     "RELAY_ING_022_CODE",
     "RELAY_ING_031_CODE",
+    "RELAY_ING_RAW_PAYLOAD_CODE",
     "RELAY_REPLAY_002_CODE",
     "RELAY_SDK_AUTH_MISMATCH_CLASS",
     "RELAY_SDK_AUTH_MISMATCH_CODE",

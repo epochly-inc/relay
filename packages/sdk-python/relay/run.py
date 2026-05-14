@@ -41,12 +41,14 @@ from .errors import (
     RELAY_EVID_002_CODE,
     RELAY_ING_022_CODE,
     RELAY_ING_031_CODE,
+    RELAY_ING_RAW_PAYLOAD_CODE,
     RELAY_REPLAY_002_CODE,
     RelayCanonicalStatusForbidden,
     RelayConfigError,
     RelayError,
     RelayEvidenceIncomplete,
     RelayHandoffIncomplete,
+    RelayPolicyError,
     RelayReplayPrecondition,
 )
 from .flush import AsyncFlushDispatcher, FlushPolicy
@@ -191,6 +193,18 @@ class _LifecycleHTTPClient:
         if code == RELAY_EVID_002_CODE:
             raise RelayEvidenceIncomplete(
                 message or "evidence envelope rejected by sidecar",
+                details=details,
+            )
+        if code == RELAY_ING_RAW_PAYLOAD_CODE:
+            # W3.3 defense-in-depth: the sidecar re-parsed the active
+            # redaction policy and rejected a raw plaintext payload
+            # that should have been redacted at the SDK boundary. The
+            # SDK surfaces this as a typed RelayPolicyError so the
+            # caller has a single exception class for any policy
+            # violation regardless of which side detected it
+            # (VAL-W3-027, CLAUDE.md keystone invariant #7).
+            raise RelayPolicyError(
+                message or "raw plaintext payload rejected by sidecar",
                 details=details,
             )
         # Generic fall-through.
