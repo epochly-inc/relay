@@ -60,6 +60,9 @@ export {
   RelayPolicyError,
   RelaySideEffectMissingFieldsError,
   RelayReplayLiveModeUnacknowledgedError,
+  // W4.3 redaction typed leaves (VAL-W4-022, VAL-W4-024).
+  RelayRedactionPolicyError,
+  RelayRedactionRawCaptureDeniedError,
   // Sidecar-bundle (npx wrapper) typed leaves.
   RelaySidecarBundleUnverified,
   RelaySidecarBundleDigestMismatch,

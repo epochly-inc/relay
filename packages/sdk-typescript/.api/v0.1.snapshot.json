@@ -20,6 +20,8 @@
     "RelayLifecycleInvalid",
     "RelayPolicyError",
     "RelayRateLimitError",
+    "RelayRedactionPolicyError",
+    "RelayRedactionRawCaptureDeniedError",
     "RelayReplayError",
     "RelayReplayLiveModeUnacknowledgedError",
     "RelayReplayPrecondition",

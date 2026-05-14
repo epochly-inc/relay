@@ -75,6 +75,11 @@ export const RELAY_SDK_BUNDLE_VERIFY_TIMEOUT_CODE = "RELAY-SDK-013";
 // W4.2 lifecycle codes (VAL-W4-013, VAL-W4-017).
 export const RELAY_SDK_SIDE_EFFECT_FIELDS_MISSING_CODE = "RELAY-SDK-014";
 export const RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CODE = "RELAY-SDK-015";
+// W4.3 redaction codes (VAL-W4-022). Default-deny on raw_capture without
+// signed DPA + approver_user_id is enforced at the SDK boundary; the wire
+// code carries a distinct namespace from the generic policy-invalid code so
+// callers can branch on the specific failure class.
+export const RELAY_SDK_RAW_CAPTURE_DENIED_CODE = "RELAY-SDK-016";
 
 // Descriptive error_class tokens (contract.md prose).
 export const RELAY_SDK_CONFIG_CLASS = "RELAY-SDK-CONFIG-001";
@@ -103,6 +108,9 @@ export const RELAY_SDK_SIDE_EFFECT_FIELDS_MISSING_CLASS =
   "RELAY-SDK-SIDE-EFFECT-FIELDS-MISSING";
 export const RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CLASS =
   "RELAY-SDK-REPLAY-LIVE-MODE-UNACKNOWLEDGED";
+// W4.3 redaction classes (VAL-W4-022, VAL-W4-024).
+export const RELAY_SDK_RAW_CAPTURE_DENIED_CLASS = "RELAY-SDK-RAW-CAPTURE-DENIED";
+export const RELAY_SDK_REDACTION_POLICY_CLASS = "RELAY-SDK-REDACTION-POLICY";
 
 const DEFAULT_DOC_URL_PREFIX = "https://relay.epochly.com/docs/errors/";
 
@@ -499,6 +507,43 @@ export class RelayReplayLiveModeUnacknowledgedError extends RelaySdkError {
   static override defaultRetryAdvice: RetryAdviceMode = "no_retry";
 }
 
+/**
+ * VAL-W4-024: redaction policy parse error fails closed.
+ *
+ * Subclass of :class:`RelayPolicyError` so existing catch blocks keyed on
+ * the policy-invalid base type continue to fire. The dedicated subclass
+ * lets callers branch on "this was a redaction-policy schema failure"
+ * without sniffing the details map. The SDK constructor refuses to open
+ * any spans when this is raised; spans MUST NOT be created in a no-policy
+ * state (CQ2 mitigation).
+ */
+export class RelayRedactionPolicyError extends RelayPolicyError {
+  static override defaultCode = RELAY_SDK_POLICY_INVALID_CODE;
+  static override defaultErrorClass = RELAY_SDK_REDACTION_POLICY_CLASS;
+  static override defaultHttpStatus = 422;
+  static override defaultBlockedSurface = "relay-sdk-redaction";
+  static override defaultRetryAdvice: RetryAdviceMode = "no_retry";
+}
+
+/**
+ * VAL-W4-022: raw_capture: true without DPA + approver -- TS refuses to
+ * construct.
+ *
+ * Subclass of :class:`RelayRedactionPolicyError` so callers that catch
+ * the broader redaction-policy error still receive it; sites that need
+ * to surface the specific raw-capture-denied case can branch on the
+ * narrower type. The wire ``error_class`` is RELAY-SDK-RAW-CAPTURE-DENIED
+ * (per the contract; CLAUDE.md banned pattern #11). The SDK constructor
+ * raises synchronously, before any HTTP call.
+ */
+export class RelayRedactionRawCaptureDeniedError extends RelayRedactionPolicyError {
+  static override defaultCode = RELAY_SDK_RAW_CAPTURE_DENIED_CODE;
+  static override defaultErrorClass = RELAY_SDK_RAW_CAPTURE_DENIED_CLASS;
+  static override defaultHttpStatus = 422;
+  static override defaultBlockedSurface = "relay-sdk-redaction";
+  static override defaultRetryAdvice: RetryAdviceMode = "no_retry";
+}
+
 // -----------------------------------------------------------------------------
 // W4 sidecar-bundle typed leaves (used by npx wrapper).
 // -----------------------------------------------------------------------------
@@ -592,6 +637,8 @@ const CODE_LEAF_REGISTRY: Record<string, typeof RelayError> = {
   [RELAY_SDK_POLICY_INVALID_CODE]: RelayPolicyError,
   [RELAY_SDK_SIDE_EFFECT_FIELDS_MISSING_CODE]: RelaySideEffectMissingFieldsError,
   [RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CODE]: RelayReplayLiveModeUnacknowledgedError,
+  // W4.3 redaction code → narrowest typed leaf (VAL-W4-022).
+  [RELAY_SDK_RAW_CAPTURE_DENIED_CODE]: RelayRedactionRawCaptureDeniedError,
 };
 
 // Order matters: longest namespace prefix first.

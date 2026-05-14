@@ -1,0 +1,236 @@
+{
+  "fixtures": [
+    {
+      "canonical_redacted_hex": "7b226d6f64656c5f63616c6c223a7b22696e707574223a22706c6561736520656d61696c20343339323264396632643163383834336563646538616237386439666132613638303766303734336533303030383635613432366331666162646339313162372061626f7574203c72656461637465643e222c226f7574707574223a226f6b6179227d2c22736368656d615f76657273696f6e223a2272656c61792e74726163652e6576656e742e7631227d",
+      "canonical_redacted_sha256": "fab76a11739afaf0a943fb01744b4f984b76d06e2d6182f454564f79bf937c38",
+      "input": {
+        "model_call": {
+          "input": "please email alice@example.com about sk-ABCDEFGHIJKLMNOPQRSTUV",
+          "output": "okay"
+        },
+        "schema_version": "relay.trace.event.v1"
+      },
+      "name": "ascii-email-and-api-key-in-model-call",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    },
+    {
+      "canonical_redacted_hex": "7b226d6f64656c5f63616c6c223a7b22696e707574223a226b6579203c72656461637465643e222c226f7574707574223a226563686f203c72656461637465643e227d2c2272657472696576616c223a7b22646f63756d656e7473223a5b7b2274657874223a22646f632d6120636f6e7461696e73203c72656461637465643e227d2c7b2274657874223a22646f632d6220697320636c65616e227d5d7d2c22746f6f6c5f63616c6c223a7b2261726773223a7b2271223a22757365203c72656461637465643e227d2c22726573756c74223a7b2274657874223a22676f74203c72656461637465643e227d7d7d",
+      "canonical_redacted_sha256": "dc2e1285dfee7fabe632776f99ed82b4a85fececdd2a2fa80a51e4908061d402",
+      "input": {
+        "model_call": {
+          "input": "key sk-ZZZZZZZZZZZZZZZZZZZZ",
+          "output": "echo sk-ZZZZZZZZZZZZZZZZZZZZ"
+        },
+        "retrieval": {
+          "documents": [
+            {
+              "text": "doc-a contains sk-ZZZZZZZZZZZZZZZZZZZZ"
+            },
+            {
+              "text": "doc-b is clean"
+            }
+          ]
+        },
+        "tool_call": {
+          "args": {
+            "q": "use sk-ZZZZZZZZZZZZZZZZZZZZ"
+          },
+          "result": {
+            "text": "got sk-ZZZZZZZZZZZZZZZZZZZZ"
+          }
+        }
+      },
+      "name": "secret-across-five-applies-to-fields",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    },
+    {
+      "canonical_redacted_hex": "7b226d6f64656c5f63616c6c223a7b22696e707574223a226b6579206973203c72656461637465643e20656e64227d7d",
+      "canonical_redacted_sha256": "d924cc1b7492b50da81610e71b934a143837e19aa1f049ba38aa5ec49e178172",
+      "input": {
+        "model_call": {
+          "input": "key is sk-\u0410BCDEFGHIJKLMNOPQRSTU end"
+        }
+      },
+      "name": "cyrillic-A-homoglyph-api-key",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    },
+    {
+      "canonical_redacted_hex": "7b226d6f64656c5f63616c6c223a7b22696e707574223a226b6579206973203c72656461637465643e20656e64227d7d",
+      "canonical_redacted_sha256": "d924cc1b7492b50da81610e71b934a143837e19aa1f049ba38aa5ec49e178172",
+      "input": {
+        "model_call": {
+          "input": "key is sk-\u0391BCDEFGHIJKLMNOPQRSTU end"
+        }
+      },
+      "name": "greek-A-homoglyph-api-key",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    },
+    {
+      "canonical_redacted_hex": "7b22746f6f6c5f63616c6c223a7b2261726773223a7b2271223a22656d61696c206973203433393232643966326431633838343365636465386162373864396661326136383037663037343365333030303836356134323663316661626463393131623720706c65617365227d7d7d",
+      "canonical_redacted_sha256": "34064a9bc3e9641d8fe1801f87f1b4d8905ca8b476f6694aaf19f2a1026e82f1",
+      "input": {
+        "tool_call": {
+          "args": {
+            "q": "email is \u0430lice@example.com please"
+          }
+        }
+      },
+      "name": "cyrillic-a-homoglyph-email-hash",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    },
+    {
+      "canonical_redacted_hex": "7b22746f6f6c5f63616c6c223a7b2261726773223a7b226e6f7465223a227365652073736e203c72656461637465643e20616e642070686f6e65203c64726f707065643e222c2270686f6e65223a223c64726f707065643e222c2273736e223a223c72656461637465643e227d7d7d",
+      "canonical_redacted_sha256": "72c579f0e94f2896bc927ade169471e7d4dec7eb5d86eeecebd70af919d5e2f2",
+      "input": {
+        "tool_call": {
+          "args": {
+            "note": "see ssn 987-65-4321 and phone 555-123-4567",
+            "phone": "555-867-5309",
+            "ssn": "123-45-6789"
+          }
+        }
+      },
+      "name": "ssn-and-phone-in-tool-args",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    },
+    {
+      "canonical_redacted_hex": "7b226d6f64656c5f63616c6c223a7b22696e707574223a2274656c6c206d652061626f7574207468652077656174686572222c226f7574707574223a2269742069732073756e6e79227d7d",
+      "canonical_redacted_sha256": "067cceb76c4c8e9d8bfe8990cdc539805f92744762f33df2344e8fb489f13fbf",
+      "input": {
+        "model_call": {
+          "input": "tell me about the weather",
+          "output": "it is sunny"
+        }
+      },
+      "name": "no-match-clean-payload",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    },
+    {
+      "canonical_redacted_hex": "7b22615f746f70223a22776f726c64222c226d5f746f70223a7b22625f696e6e6572223a322c226e5f696e6e6572223a5b332c322c315d2c22795f696e6e6572223a317d2c227a5f746f70223a2268656c6c6f227d",
+      "canonical_redacted_sha256": "e4634a7c7033c2289b50de7a492b13003b833276e1a6b170f75f1a8f562bf4d9",
+      "input": {
+        "a_top": "world",
+        "m_top": {
+          "b_inner": 2,
+          "n_inner": [
+            3,
+            2,
+            1
+          ],
+          "y_inner": 1
+        },
+        "z_top": "hello"
+      },
+      "name": "deterministic-keys-mixed-case",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    },
+    {
+      "canonical_redacted_hex": "7b22746f6f6c5f63616c6c223a7b2261726773223a7b226974656d73223a5b7b226e616d65223a22616c706861222c22736563726574223a223c72656461637465643e227d2c7b22656d61696c223a2263313566343934353366636531356132323835646136383131663331303837656565323366623837623736626537663534316233626430343931376235336132222c226e616d65223a2262657461227d2c7b226e616d65223a2267616d6d61222c2274616773223a5b2278222c2279222c227a225d7d5d7d7d7d",
+      "canonical_redacted_sha256": "5416804a5406a98a3bf0ed940984e664bd7844530f612d45bc24dda63dd67c58",
+      "input": {
+        "tool_call": {
+          "args": {
+            "items": [
+              {
+                "name": "alpha",
+                "secret": "sk-aaaaaaaaaaaaaaaaaaaaa"
+              },
+              {
+                "email": "bob@example.com",
+                "name": "beta"
+              },
+              {
+                "name": "gamma",
+                "tags": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "name": "nested-arrays-and-objects",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    },
+    {
+      "canonical_redacted_hex": "7b226d6f64656c5f63616c6c223a7b22696e707574223a2274776f3a203433393232643966326431633838343365636465386162373864396661326136383037663037343365333030303836356134323663316661626463393131623720616e642034333932326439663264316338383433656364653861623738643966613261363830376630373433653330303038363561343236633166616264633931316237227d7d",
+      "canonical_redacted_sha256": "33d0c4d8891d8ce12d0f16c8d5608fd88ff5103cf815ca0993bf56ff0d69469c",
+      "input": {
+        "model_call": {
+          "input": "two: alice@example.com and alice@example.com"
+        }
+      },
+      "name": "ascii-only-email-hash-determinism",
+      "policy": "BASE_POLICY",
+      "salt_ref": "tenant_salt_v3"
+    }
+  ],
+  "policies": {
+    "BASE_POLICY": {
+      "action_policy": {
+        "drop": {
+          "placeholder": "<dropped>"
+        },
+        "hash": {
+          "algorithm": "hmac-sha256",
+          "salt_ref": "tenant_salt_v3"
+        },
+        "redact": {
+          "placeholder": "<redacted>"
+        }
+      },
+      "applies_to_fields": [
+        "model_call.input",
+        "model_call.output",
+        "tool_call.args",
+        "tool_call.result",
+        "retrieval.documents"
+      ],
+      "approver_user_id": null,
+      "dpa_ref": null,
+      "matchers": [
+        {
+          "action": "redact",
+          "id": "api_key",
+          "kind": "regex",
+          "pattern": "(sk-|key_)[A-Za-z0-9]{20,}"
+        },
+        {
+          "action": "hash",
+          "id": "email",
+          "kind": "regex",
+          "pattern": "[\\w.+-]+@[\\w-]+\\.[\\w.-]+"
+        },
+        {
+          "action": "redact",
+          "id": "ssn_us",
+          "kind": "regex",
+          "pattern": "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+        },
+        {
+          "action": "drop",
+          "id": "phone_us",
+          "kind": "regex",
+          "pattern": "\\b\\d{3}-\\d{3}-\\d{4}\\b"
+        }
+      ],
+      "policy_version": "2026-05-12.001",
+      "raw_capture": false,
+      "retention_days": 30,
+      "schema_version": "relay.redaction.v1"
+    }
+  },
+  "schema_version": "relay.redaction_parity.v1",
+  "tenant_salt_b64": "dGVzdC10ZW5hbnQtc2FsdC12My1kby1ub3QtdXNlLWluLXByb2Q="
+}

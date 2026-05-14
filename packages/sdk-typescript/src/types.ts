@@ -40,16 +40,46 @@ export interface RedactionPolicyShape {
 }
 
 /**
- * Public ``RedactionPolicy`` namespace.
+ * Public ``RedactionPolicy`` namespace (widened by W4.3).
  *
- * Frozen runtime object; tests assert this is the value referred to by
- * ``Object.keys(require('@epochly/relay'))[...].includes('RedactionPolicy')``.
- * W4.3 widens this with a real ``parse`` / ``apply`` factory.
+ * Frozen runtime object; the snapshot test pins ``RedactionPolicy`` as a
+ * named export. Now exposes the W4.3 factory surface alongside the W4.1
+ * SCHEMA_VERSION constant: ``parse`` builds a validated policy from a
+ * wire dict, ``createEngine`` returns a redactor bound to the policy and
+ * a salt provider, ``redactPayload`` is the canonical JCS-bytes entry
+ * point used by the SDK transport before any HTTP body leaves the
+ * process (VAL-W4-019, VAL-W4-020, VAL-W4-021).
+ *
+ * Calling ``parse`` on a policy that requests ``raw_capture: true``
+ * without both ``dpa_ref`` and ``approver_user_id`` throws
+ * :class:`RelayRedactionRawCaptureDeniedError` synchronously
+ * (VAL-W4-022, CLAUDE.md banned pattern #11).
  */
+import {
+  loadRedactionPolicy,
+  redactCapturePayload,
+  RedactionEngine,
+  type RedactionPolicyImpl,
+  type SaltProvider,
+} from "./redaction.js";
+
 export const RedactionPolicy: Readonly<{
   readonly SCHEMA_VERSION: "relay.redaction_policy.v1";
+  readonly parse: (body: unknown) => RedactionPolicyImpl;
+  readonly createEngine: (args: {
+    policy: RedactionPolicyImpl;
+    saltProvider: SaltProvider;
+  }) => RedactionEngine;
+  readonly redactPayload: (
+    engine: RedactionEngine,
+    payload: Record<string, unknown>,
+  ) => Uint8Array;
 }> = Object.freeze({
   SCHEMA_VERSION: "relay.redaction_policy.v1" as const,
+  parse: loadRedactionPolicy,
+  createEngine: (args: { policy: RedactionPolicyImpl; saltProvider: SaltProvider }) =>
+    new RedactionEngine(args),
+  redactPayload: redactCapturePayload,
 });
 
 /**
