@@ -41,6 +41,7 @@ minversion = "8.0"
 testpaths = [
   "tests",
   "packages/schemas/python/tests",
+  "packages/sdk-python/tests",
   "apps/local-sidecar/tests",
 ]
 markers = [

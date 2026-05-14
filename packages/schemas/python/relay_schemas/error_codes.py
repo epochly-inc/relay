@@ -112,6 +112,10 @@ class RelayErrorCode:
     RELAY_SCHEMA_017: Final[str] = "RELAY-SCHEMA-017"
     RELAY_SCHEMA_018: Final[str] = "RELAY-SCHEMA-018"
     RELAY_SCHEMA_023: Final[str] = "RELAY-SCHEMA-023"
+    RELAY_SDK_001: Final[str] = "RELAY-SDK-001"
+    RELAY_SDK_002: Final[str] = "RELAY-SDK-002"
+    RELAY_SDK_003: Final[str] = "RELAY-SDK-003"
+    RELAY_SDK_004: Final[str] = "RELAY-SDK-004"
     RELAY_SIDECAR_001: Final[str] = "RELAY-SIDECAR-001"
     RELAY_SIDECAR_002: Final[str] = "RELAY-SIDECAR-002"
     RELAY_SIDECAR_003: Final[str] = "RELAY-SIDECAR-003"
@@ -220,6 +224,10 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-SCHEMA-017",
     "RELAY-SCHEMA-018",
     "RELAY-SCHEMA-023",
+    "RELAY-SDK-001",
+    "RELAY-SDK-002",
+    "RELAY-SDK-003",
+    "RELAY-SDK-004",
     "RELAY-SIDECAR-001",
     "RELAY-SIDECAR-002",
     "RELAY-SIDECAR-003",

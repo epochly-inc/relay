@@ -25,10 +25,19 @@ Behavior contract:
     trail. Acquires an exclusive portalocker lock for the duration of
     the read-modify-write to serialize concurrent append calls (VAL-
     W2-006 expects exactly-one ``sidecar.spawned`` row under N=10
-    concurrent contention).
-  - The exclusive portalocker lock is held on the destination ``path``
-    itself, not on a sibling lockfile, so concurrent writers see a
-    consistent view of the file's content.
+    concurrent contention; W3.1 VAL-W3-006 additionally requires that
+    nine concurrent ``sidecar.attached`` appends are ALL retained).
+  - The exclusive portalocker lock is held on a STABLE sibling lock
+    file ``<path>.wlock`` -- NOT on the destination ``path`` itself.
+    This is load-bearing for concurrent appends: ``os.replace`` swaps
+    the destination's inode on every write, so a peer process that was
+    blocked waiting for a lock held on the OLD destination fd would,
+    on acquiring it, be holding a lock on an orphaned (already-renamed-
+    away) inode and would then read stale content -- silently dropping
+    the previous writer's appended line. A sibling lock file whose
+    inode is never renamed gives every writer a single consistent
+    serialization point; each writer reads the destination's CURRENT
+    content fresh inside the critical section.
 
 Cross-platform:
 
@@ -93,22 +102,31 @@ def local_atomic_file_write(
             f"local_atomic_file_write: parent directory missing: {parent}"
         )
 
-    # Acquire an exclusive portalocker lock on the destination so concurrent
-    # writers serialize. We must create the destination if it doesn't exist
-    # so portalocker has something to lock. portalocker.Lock handles both
-    # POSIX (fcntl.flock) and Windows (msvcrt.locking) under the hood.
+    # Acquire an exclusive portalocker lock on a STABLE sibling lock file
+    # so concurrent writers serialize. portalocker.Lock handles both POSIX
+    # (fcntl.flock) and Windows (msvcrt.locking) under the hood.
     #
-    # Strategy: open the destination in r+b mode (read+write, no truncate)
-    # to acquire the lock; on FileNotFoundError create it as b"" first.
-    # This keeps the lock acquisition independent of the body content.
-    lock_target = destination
-    if not lock_target.exists():
-        # Create an empty file we can immediately lock. Mode is applied
-        # below in the same atomic write; this initial create is followed
-        # by the rename so the visible mode is correct end-to-end.
+    # Why a sibling lock file and NOT the destination itself: this
+    # primitive writes the payload to a tempfile and then ``os.replace``s
+    # it over the destination. ``os.replace`` swaps the destination's
+    # inode. A peer process that blocked waiting for a lock held on the
+    # OLD destination fd would, on acquiring it, hold a lock on an inode
+    # that has already been renamed away -- losing mutual exclusion and,
+    # for append mode, silently dropping the previous writer's line. The
+    # sibling lock file's inode is created once and NEVER renamed, so it
+    # is a single consistent serialization point for every writer.
+    #
+    # The lock file name is ``.<destination-name>.wlock``: the leading dot
+    # keeps it OUT of the ``<destination-name>.`` mkstemp-prefix space, so
+    # ``recovery.recover_partial_lockfile`` (which unlinks orphan
+    # ``<lockfile>.*`` tempfiles) never removes the live lock file.
+    lock_path = parent / ("." + destination.name + ".wlock")
+    if not lock_path.exists():
+        # Create the stable lock file once. It is intentionally never
+        # unlinked: it carries no data, only the advisory lock.
         with contextlib.suppress(FileExistsError):
             fd = os.open(
-                str(lock_target),
+                str(lock_path),
                 os.O_CREAT | os.O_RDWR | os.O_CLOEXEC,
                 0o600 if os.name != "nt" else 0o666,
             )
@@ -120,12 +138,19 @@ def local_atomic_file_write(
     # pyproject has filterwarnings=['error'] (treats warnings as failures).
     # Concurrent contention is bounded by the caller's external timeout.
     with portalocker.Lock(
-        str(lock_target),
+        str(lock_path),
         mode="r+b",
         flags=portalocker.LOCK_EX,
-    ) as locked:
+    ):
         if append:
-            existing = locked.read()
+            # Read the destination's CURRENT content fresh inside the
+            # critical section -- NOT through the lock-file fd. Because
+            # the lock is held, no peer can be mid-replace, so this read
+            # observes a fully-committed prior write.
+            try:
+                existing = destination.read_bytes()
+            except FileNotFoundError:
+                existing = b""
             payload = existing + body
         else:
             payload = body

@@ -29,12 +29,32 @@ authors = [
 ]
 dependencies = [
   "pydantic>=2.7,<3",
+  # W3.1: the SDK calls the local sidecar over loopback HTTP (the /health
+  # nonce challenge on attach, the lifecycle-metadata ingest surface in
+  # W3.2). A single shared httpx.Client is created per Relay instance.
+  # Pinned to match the sidecar's range so the workspace resolves one
+  # httpx version.
+  "httpx>=0.27,<0.29",
+  # W3.1: SDK auto-spawn reuses relay_sidecar.spawn.acquire_or_attach,
+  # whose race serialization is built on portalocker. Pinned to match the
+  # sidecar package's range.
+  "portalocker>=2.10,<3",
+  # W3.1: the SDK reuses the canonical, race-safe sidecar spawn path
+  # (relay_sidecar.spawn.acquire_or_attach) plus the file-based event log.
+  # This is a workspace dependency: uv resolves it from the workspace
+  # tree, never from a published-index copy (CLAUDE.md import-boundary
+  # rule -- the SDK consumes the sidecar package, it does not fork it).
+  "epochly-relay-sidecar",
+  # W1.5: the generated + hand-authored canonical schema models the SDK
+  # composes on top of. Also a workspace dependency.
+  "epochly-relay-schemas",
 ]
 
 [project.optional-dependencies]
 test = [
   "pytest>=8.0",
   "pytest-timeout>=2.3",
+  "httpx>=0.27,<0.29",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -45,3 +65,7 @@ include = [
   "relay",
   "README.md",
 ]
+
+[tool.uv.sources]
+epochly-relay-sidecar = { workspace = true }
+epochly-relay-schemas = { workspace = true }

@@ -112,7 +112,15 @@ def test_identical_payload_same_digest(relay_home_tmp: Path) -> None:
     a = maybe_spillover(big, home=relay_home_tmp)
     b = maybe_spillover(dict(big), home=relay_home_tmp)
     assert a[BLOB_REF_KEY] == b[BLOB_REF_KEY]
-    files = list((relay_home_tmp / "evidence" / "blobs").iterdir())
+    # Exclude the sibling ``.<name>.wlock`` advisory-lock files introduced
+    # by local_atomic_file_write in W3.1 (stable lock-file inode required
+    # for VAL-W3-006 concurrent append serialization). The wlock file is
+    # bookkeeping, not a blob.
+    files = [
+        p
+        for p in (relay_home_tmp / "evidence" / "blobs").iterdir()
+        if not p.name.endswith(".wlock")
+    ]
     assert len(files) == 1, files
 
 

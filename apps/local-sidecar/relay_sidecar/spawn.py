@@ -125,13 +125,26 @@ def _bind_ephemeral_port(host: str = "127.0.0.1") -> tuple[int, socket.socket]:
     return port, s
 
 
-def _make_bearer_token_pair() -> tuple[str, str]:
-    """Return (token, digest) where digest is the canonical sha256 form."""
+def _digest_of_token(token: str) -> str:
+    """Return the canonical ``sha256-<hex>`` digest of ``token``."""
     import hashlib
 
-    token = secrets.token_urlsafe(BEARER_TOKEN_BYTES)
     digest_hex = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    return token, f"sha256-{digest_hex}"
+    return f"sha256-{digest_hex}"
+
+
+def _make_bearer_token_pair(token: str | None = None) -> tuple[str, str]:
+    """Return (token, digest) where digest is the canonical sha256 form.
+
+    When ``token`` is provided the caller has already generated the
+    plaintext bearer token (the SDK auto-spawn path does this so it can
+    hand the SAME token to the spawned ``run_uvicorn`` subprocess BEFORE
+    ``acquire_or_attach`` writes the lockfile). When ``token`` is ``None``
+    a fresh 256-bit token is minted -- the original W2.1 behaviour.
+    """
+    if token is None:
+        token = secrets.token_urlsafe(BEARER_TOKEN_BYTES)
+    return token, _digest_of_token(token)
 
 
 def _ensure_relay_home(home: Path) -> None:
@@ -207,6 +220,7 @@ def acquire_or_attach(
     *,
     home: Path | None = None,
     process_runner: ProcessRunner | None = None,
+    bearer_token: str | None = None,
 ) -> SpawnDecision:
     """Run the four-state lockfile classifier and return the decision.
 
@@ -215,6 +229,13 @@ def acquire_or_attach(
             Defaults to ``relay_home()`` (RELAY_HOME env or ``~/.relay``).
         process_runner: Callable returning (pid, port) for the spawn
             branch. Defaults to ``_default_process_runner``.
+        bearer_token: Optional pre-generated plaintext bearer token. When
+            provided, the SPAWN branch records its digest in the lockfile
+            instead of minting a fresh token. The SDK auto-spawn path
+            (W3.1) uses this so the spawned ``run_uvicorn`` subprocess and
+            the lockfile agree on the same bearer token. When ``None``
+            (the W2.1 default) a fresh 256-bit token is minted. Ignored on
+            the ATTACH branch (the attacher learns nothing).
 
     Raises:
         SidecarError: VAL-W2-011 (NONLOCAL_FS), VAL-W2-003 (LOCKFILE-INSECURE),
@@ -273,6 +294,7 @@ def acquire_or_attach(
             lockfile_path=lockfile_path,
             home=base,
             runner=runner,
+            bearer_token=bearer_token,
         )
 
 
@@ -281,6 +303,7 @@ def _classify_and_act(
     lockfile_path: Path,
     home: Path,
     runner: ProcessRunner,
+    bearer_token: str | None = None,
 ) -> SpawnDecision:
     """Inner classifier; assumes the decision lock is held."""
     # NO_LOCKFILE branch.
@@ -290,6 +313,7 @@ def _classify_and_act(
             home=home,
             runner=runner,
             action="spawned",
+            bearer_token=bearer_token,
         )
 
     # Validate mode before reading (VAL-W2-003).
@@ -327,6 +351,7 @@ def _classify_and_act(
             home=home,
             runner=runner,
             action="stale_pid_cleared_and_spawned",
+            bearer_token=bearer_token,
         )
 
     # ZOMBIE_PORT branch (VAL-W2-010): pid alive but port unbound.
@@ -344,6 +369,7 @@ def _classify_and_act(
         home=home,
         runner=runner,
         action="zombie_port_terminated_and_spawned",
+        bearer_token=bearer_token,
     )
 
 
@@ -353,10 +379,11 @@ def _spawn_and_write(
     home: Path,
     runner: ProcessRunner,
     action: SpawnAction,
+    bearer_token: str | None = None,
 ) -> SpawnDecision:
     """Run the process runner, persist the lockfile, emit sidecar.spawned."""
     pid, port = runner()
-    token, digest = _make_bearer_token_pair()
+    token, digest = _make_bearer_token_pair(bearer_token)
     body = LockfileBody(
         pid=pid,
         port=port,
