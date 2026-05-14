@@ -92,6 +92,7 @@ from .quiesce import (
     force_stop_signal_number,
     resolve_idle_timeout_seconds,
 )
+from .recovery import recover_or_refuse
 from .state_engine.http_endpoint import build_state_router
 
 # Drain grace window advertised to clients via ``Retry-After``. Matches the
@@ -273,6 +274,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state: RuntimeState = app.state.runtime
 
     # ---- Startup ----
+    # 0. STARTUP RECOVERY (VAL-W2-049, -050, -051, -054, -055).
+    #    Probe ``state.sqlite_path`` BEFORE creating SidecarDatabase or
+    #    opening any aiosqlite connection. ``recover_or_refuse`` runs the
+    #    fast-path quick_check (<= 2s budget) -> slow-path integrity_check
+    #    -> WAL replay -> schema_version compare. On corruption, schema
+    #    mismatch, or WAL-replay failure, it calls
+    #    ``exit_with_structured_error`` which writes the structured JSON
+    #    envelope to stderr and ``sys.exit``s with the appropriate code (3,
+    #    5). The synchronous call is intentional: we MUST refuse to open
+    #    the database before the migration runner blindly stamps a
+    #    pristine schema on top of a corrupt file.
+    #
+    #    For production exit-code propagation through uvicorn, the
+    #    ``run_uvicorn`` entrypoint runs this same probe BEFORE entering
+    #    the asyncio loop -- a SystemExit raised from inside the lifespan
+    #    coroutine is caught by uvicorn and would not preserve the exit
+    #    code. The lifespan-side call here is the defensive backstop for
+    #    callers that build the runtime app directly (tests +
+    #    in-process embedders) and rely on the recovery contract.
+    recover_or_refuse(state.sqlite_path)
     # 1. SQLite database manager (writer + N readers, WAL + busy_timeout
     #    + migrations + single-writer queue). Per VAL-W2-014 ALL of this
     #    completes BEFORE the listener binds the port. Per VAL-W2-017/-018
@@ -1131,21 +1152,59 @@ def run_uvicorn(
     host: str = "127.0.0.1",
     port: int = 0,
     sqlite_path: Path | None = None,
+    relay_home_override: Path | None = None,
 ) -> None:  # pragma: no cover (exercised by subprocess tests, not in-process)
     """Run the sidecar under uvicorn.
 
-    Used by W5's CLI entrypoint and by the W2.2 shutdown-drain tests
-    (which spawn this via ``subprocess.Popen`` so SIGTERM is real).
+    Used by W5's CLI entrypoint and by the W2.7 subprocess tests (which
+    spawn this via ``subprocess.Popen`` so SIGTERM + structured exit
+    codes are real).
+
+    Startup contract (W2.7 wiring; STR-001 fix):
+      - Resolve the same ``sqlite_path`` the lifespan would resolve.
+      - Synchronously invoke :func:`recover_or_refuse` BEFORE constructing
+        the FastAPI app or entering the asyncio loop. On corruption,
+        schema-version mismatch, or WAL-replay failure, recovery calls
+        :func:`exit_with_structured_error` which writes the JSON envelope
+        to stderr and ``sys.exit``s with the appropriate code (3, 5, or
+        6). Doing this OUTSIDE the asyncio loop is critical: a SystemExit
+        raised inside a uvicorn lifespan coroutine is caught and the
+        custom exit code is lost; raising here causes the Python
+        interpreter to honour the code verbatim. The lifespan still
+        re-invokes recovery defensively for in-process callers of
+        :func:`build_runtime_app`.
 
     Args:
         health: HealthState for the bearer/nonce surface.
         host: Bind host. Defaults to 127.0.0.1 (loopback-only; never 0.0.0.0).
         port: Bind port. 0 means ephemeral.
         sqlite_path: SQLite DB path override.
+        relay_home_override: Override ``${RELAY_HOME}`` discovery; passed
+            through to :func:`build_runtime_app` so tests can run a real
+            sidecar subprocess against a tmpdir.
     """
     import uvicorn
 
-    app = build_runtime_app(health=health, sqlite_path=sqlite_path)
+    # Resolve the effective SQLite path with the SAME fall-through that
+    # ``build_runtime_app`` applies, so the pre-launch recovery probe and
+    # the lifespan-startup recovery probe inspect the same file.
+    base_home = (
+        relay_home_override
+        if relay_home_override is not None
+        else relay_home()
+    )
+    effective_db_path = (
+        sqlite_path if sqlite_path is not None else base_home / SIDECAR_DB_FILENAME
+    )
+    # STR-001 fix: probe BEFORE entering asyncio. Recovery sys.exit on
+    # corruption / schema mismatch propagates the exit code unmolested.
+    recover_or_refuse(effective_db_path)
+
+    app = build_runtime_app(
+        health=health,
+        sqlite_path=sqlite_path,
+        relay_home_override=relay_home_override,
+    )
     config = uvicorn.Config(
         app,
         host=host,

@@ -75,6 +75,7 @@ from .lockfile import (
 )
 from .primitives import local_atomic_file_write
 from .process import pid_is_alive, terminate_pid
+from .recovery import recover_partial_lockfile
 
 # Bearer token entropy. 256 bits = 32 bytes -> secrets.token_urlsafe(32)
 # produces 43 URL-safe characters. The plaintext token is RETURNED to the
@@ -235,6 +236,15 @@ def acquire_or_attach(
         )
 
     lockfile_path = resolve_lockfile_path(base)
+    # VAL-W2-050 / STR-001 fix: detect and clear an orphan
+    # ``<lockfile>.<random>`` left behind by a process that died between
+    # ``local_atomic_file_write``'s tempfile fsync and ``os.replace``.
+    # Doing this BEFORE the four-state classifier ensures the classifier
+    # observes a clean directory and runs the standard NO_LOCKFILE /
+    # STALE_PID / ZOMBIE_PORT / ALREADY_RUNNING decision against the
+    # canonical lockfile only. ``recover_partial_lockfile`` is idempotent
+    # and a no-op when no orphan tmpfile exists.
+    recover_partial_lockfile(lockfile_path)
     runner = process_runner if process_runner is not None else _default_process_runner
 
     # Open a separate decision-level lockfile so the read-classify-act
