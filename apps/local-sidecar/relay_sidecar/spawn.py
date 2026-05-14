@@ -237,14 +237,6 @@ def acquire_or_attach(
 
     lockfile_path = resolve_lockfile_path(base)
     # VAL-W2-050 / STR-001 fix: detect and clear an orphan
-    # ``<lockfile>.<random>`` left behind by a process that died between
-    # ``local_atomic_file_write``'s tempfile fsync and ``os.replace``.
-    # Doing this BEFORE the four-state classifier ensures the classifier
-    # observes a clean directory and runs the standard NO_LOCKFILE /
-    # STALE_PID / ZOMBIE_PORT / ALREADY_RUNNING decision against the
-    # canonical lockfile only. ``recover_partial_lockfile`` is idempotent
-    # and a no-op when no orphan tmpfile exists.
-    recover_partial_lockfile(lockfile_path)
     runner = process_runner if process_runner is not None else _default_process_runner
 
     # Open a separate decision-level lockfile so the read-classify-act
@@ -265,6 +257,18 @@ def acquire_or_attach(
         mode="r+b",
         flags=portalocker.LOCK_EX,
     ):
+        # VAL-W2-050 partial-lockfile recovery — runs UNDER the decision
+        # lock, NOT before it (STR-002 fix). ``recover_partial_lockfile``
+        # iterates the parent dir and unlinks any ``<lockfile>.*`` orphan
+        # tmpfile. Without the decision lock held, a concurrent process
+        # mid-``local_atomic_file_write`` (between mkstemp+fsync and
+        # os.replace) could have its in-flight tmpfile unlinked, causing
+        # FileNotFoundError on os.replace and breaking VAL-W2-006
+        # serialization. Holding the decision lock guarantees no peer
+        # process is between mkstemp and os.replace on the canonical
+        # lockfile. ``recover_partial_lockfile`` is idempotent and a
+        # no-op when no orphan tmpfile exists.
+        recover_partial_lockfile(lockfile_path)
         return _classify_and_act(
             lockfile_path=lockfile_path,
             home=base,
