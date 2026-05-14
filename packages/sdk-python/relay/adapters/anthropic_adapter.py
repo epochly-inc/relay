@@ -1,0 +1,288 @@
+"""Anthropic adapter (W3.5).
+
+Wraps an Anthropic Python SDK client (``anthropic.Anthropic`` instance)
+so every ``client.messages.create(...)`` invocation emits Relay spans
+describing the model call, embedded tool_use blocks, and (for streaming)
+ordered chunk children.
+
+Like :mod:`.openai_adapter` the adapter is duck-typed; it never imports
+the ``anthropic`` package at module load. Apache 2.0 install of relay
+does NOT pull commercial provider SDKs.
+
+ASCII-only per CLAUDE.md "ASCII-Safe Source".
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from collections.abc import Iterator
+from typing import Any
+
+from ._spans import Span, SpanRecorder
+from .openai_adapter import _scrub  # reuse the same secret-scrubber
+
+_ANTHROPIC_PROVIDER: str = "anthropic"
+
+# Per-million pricing (USD per 1M tokens). Best-effort estimate.
+_ANTHROPIC_PRICE_TABLE: dict[str, tuple[float, float]] = {
+    "claude-opus-4-7": (15.00, 75.00),
+    "claude-opus-4": (15.00, 75.00),
+    "claude-sonnet-4": (3.00, 15.00),
+    "claude-3-7-sonnet": (3.00, 15.00),
+    "claude-3-5-sonnet": (3.00, 15.00),
+    "claude-3-5-haiku": (0.80, 4.00),
+}
+
+
+def _safe_anthropic_sdk_version() -> str:
+    try:
+        import importlib
+
+        mod = importlib.import_module("anthropic")
+        ver = getattr(mod, "__version__", None)
+        if isinstance(ver, str) and ver:
+            return f"anthropic@{ver}"
+    except (ImportError, AttributeError, ValueError):
+        pass
+    return "anthropic@unknown"
+
+
+def _model_signature(model: str) -> str:
+    """``anthropic:<model>`` -- Anthropic does not expose system_fingerprint.
+
+    Per VAL-W3-043 the signature is deterministic across calls with the
+    same model. The refresh policy detects drift by observing a change
+    in this string.
+    """
+    return f"{_ANTHROPIC_PROVIDER}:{model}"
+
+
+def _estimate_cost_usd(
+    model: str, input_tokens: int, output_tokens: int
+) -> float:
+    price = _ANTHROPIC_PRICE_TABLE.get(model)
+    if price is None:
+        return 0.0
+    input_per_m, output_per_m = price
+    return round(
+        (input_tokens / 1_000_000.0) * input_per_m
+        + (output_tokens / 1_000_000.0) * output_per_m,
+        6,
+    )
+
+
+def _get(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _redact_tool_input(value: Any) -> tuple[Any, str]:
+    """Redact Anthropic tool input and compute its args_hash."""
+    redacted = _scrub(value)
+    canon = json.dumps(redacted, sort_keys=True, default=str).encode("utf-8")
+    return redacted, hashlib.sha256(canon).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Public wrapper
+# ---------------------------------------------------------------------------
+
+
+class _WrappedMessages:
+    def __init__(
+        self, inner: Any, recorder: SpanRecorder, sdk_version: str
+    ) -> None:
+        self._inner = inner
+        self._recorder = recorder
+        self._sdk_version = sdk_version
+
+    def create(self, *args: Any, **kwargs: Any) -> Any:
+        is_stream = bool(kwargs.get("stream", False))
+        model = kwargs.get("model", "")
+        parent = self._recorder.new_span(
+            "model_call",
+            provider=_ANTHROPIC_PROVIDER,
+            model=model,
+            sdk_version=self._sdk_version,
+            input_tokens=0,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+            total_cost_usd=0.0,
+            model_signature=_model_signature(model),
+        )
+        start_t = time.monotonic()
+
+        if is_stream:
+            iterator = self._inner.create(*args, **kwargs)
+            return _StreamWrapper(iterator, self._recorder, parent, start_t, model)
+
+        result = self._inner.create(*args, **kwargs)
+        duration_ms = (time.monotonic() - start_t) * 1000.0
+        _populate_parent_from_response(parent, result)
+        parent.attributes["duration_ms"] = duration_ms
+        _emit_tool_use_spans_from_response(self._recorder, parent, result)
+        return result
+
+
+class _WrappedAnthropicClient:
+    def __init__(
+        self, inner: Any, recorder: SpanRecorder, sdk_version: str
+    ) -> None:
+        self._inner = inner
+        self._recorder = recorder
+        self._sdk_version = sdk_version
+        self.messages = _WrappedMessages(inner.messages, recorder, sdk_version)
+
+    @property
+    def recorder(self) -> SpanRecorder:
+        return self._recorder
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def wrap_anthropic(
+    client: Any,
+    *,
+    recorder: SpanRecorder | None = None,
+    sdk_version: str | None = None,
+) -> _WrappedAnthropicClient:
+    """Wrap an Anthropic client so every call records Relay spans."""
+    if recorder is None:
+        recorder = SpanRecorder()
+    if sdk_version is None:
+        sdk_version = _safe_anthropic_sdk_version()
+    return _WrappedAnthropicClient(client, recorder, sdk_version)
+
+
+# ---------------------------------------------------------------------------
+# Response -> span population
+# ---------------------------------------------------------------------------
+
+
+def _populate_parent_from_response(parent: Span, response: Any) -> None:
+    model = _get(response, "model", parent.attributes.get("model", ""))
+    usage = _get(response, "usage")
+    input_tokens = int(_get(usage, "input_tokens", 0) or 0)
+    output_tokens = int(_get(usage, "output_tokens", 0) or 0)
+    cache_creation = int(_get(usage, "cache_creation_input_tokens", 0) or 0)
+    cache_read = int(_get(usage, "cache_read_input_tokens", 0) or 0)
+    parent.attributes["model"] = model
+    parent.attributes["input_tokens"] = input_tokens
+    parent.attributes["output_tokens"] = output_tokens
+    parent.attributes["cache_creation_input_tokens"] = cache_creation
+    parent.attributes["cache_read_input_tokens"] = cache_read
+    parent.attributes["total_cost_usd"] = _estimate_cost_usd(
+        model, input_tokens, output_tokens
+    )
+    parent.attributes["model_signature"] = _model_signature(model)
+    parent.attributes["stop_reason"] = _get(response, "stop_reason")
+
+
+def _emit_tool_use_spans_from_response(
+    recorder: SpanRecorder, parent: Span, response: Any
+) -> None:
+    content = _get(response, "content") or []
+    for block in content:
+        btype = _get(block, "type")
+        if btype != "tool_use":
+            continue
+        tool_name = _get(block, "name", "")
+        tool_input = _get(block, "input", {})
+        args_red, args_hash = _redact_tool_input(tool_input)
+        recorder.new_span(
+            "tool_call",
+            tool_name=str(tool_name),
+            parent_span_id=parent.span_id,
+            args_redacted=args_red,
+            args_hash=args_hash,
+            result_hash="",
+            status="pending",
+            duration_ms=0.0,
+            retry_count=0,
+            side_effect_marker=False,
+            normalized_error_class=None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Streaming
+# ---------------------------------------------------------------------------
+
+
+_STREAM_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+        "ping",
+    }
+)
+
+
+class _StreamWrapper:
+    def __init__(
+        self,
+        inner: Iterator[Any],
+        recorder: SpanRecorder,
+        parent: Span,
+        start_t: float,
+        model: str,
+    ) -> None:
+        self._inner = iter(inner)
+        self._recorder = recorder
+        self._parent = parent
+        self._sequence = 0
+        self._start_t = start_t
+        self._model = model
+        self._cum_input = 0
+        self._cum_output = 0
+
+    def __iter__(self) -> _StreamWrapper:
+        return self
+
+    def __next__(self) -> Any:
+        try:
+            event = next(self._inner)
+        except StopIteration:
+            duration_ms = (time.monotonic() - self._start_t) * 1000.0
+            self._parent.attributes["duration_ms"] = duration_ms
+            self._parent.attributes["input_tokens"] = self._cum_input
+            self._parent.attributes["output_tokens"] = self._cum_output
+            self._parent.attributes["total_cost_usd"] = _estimate_cost_usd(
+                self._model, self._cum_input, self._cum_output
+            )
+            raise
+
+        event_type = _get(event, "type", "")
+        if not isinstance(event_type, str):
+            event_type = ""
+
+        # Aggregate usage from message_delta events if present.
+        usage = _get(event, "usage")
+        if usage is not None:
+            in_tok = _get(usage, "input_tokens")
+            out_tok = _get(usage, "output_tokens")
+            if isinstance(in_tok, int):
+                self._cum_input += in_tok
+            if isinstance(out_tok, int):
+                self._cum_output += out_tok
+
+        self._recorder.new_span(
+            "stream_chunk",
+            parent_span_id=self._parent.span_id,
+            chunk_sequence=self._sequence,
+            event_type=event_type,
+        )
+        self._sequence += 1
+        return event
+
+
+__all__ = ["wrap_anthropic"]
