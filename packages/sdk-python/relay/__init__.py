@@ -22,17 +22,33 @@ from __future__ import annotations
 from .client import Relay
 from .errors import (
     RelayAuthMismatch,
+    RelayCanonicalStatusForbidden,
     RelayConfigError,
     RelayError,
+    RelayEvidenceIncomplete,
+    RelayHandoffIncomplete,
+    RelayLifecycleInvalid,
+    RelayPolicyError,
+    RelayReplayPrecondition,
     RelaySidecarNotReachable,
     RelaySidecarVersionMismatch,
 )
+from .flush import FlushPolicy
+from .run import Run
 
 __all__ = [
+    "FlushPolicy",
     "Relay",
     "RelayAuthMismatch",
+    "RelayCanonicalStatusForbidden",
     "RelayConfigError",
     "RelayError",
+    "RelayEvidenceIncomplete",
+    "RelayHandoffIncomplete",
+    "RelayLifecycleInvalid",
+    "RelayPolicyError",
+    "RelayReplayPrecondition",
     "RelaySidecarNotReachable",
     "RelaySidecarVersionMismatch",
+    "Run",
 ]

@@ -33,12 +33,42 @@ RELAY_SDK_CONFIG_CODE: Final[str] = "RELAY-SDK-001"
 RELAY_SDK_VERSION_MISMATCH_CODE: Final[str] = "RELAY-SDK-002"
 RELAY_SDK_NO_SIDECAR_CODE: Final[str] = "RELAY-SDK-003"
 RELAY_SDK_AUTH_MISMATCH_CODE: Final[str] = "RELAY-SDK-004"
+# W3.2 SDK-local codes for the lifecycle / evidence / replay surface.
+RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CODE: Final[str] = "RELAY-SDK-005"
+RELAY_SDK_LIFECYCLE_INVALID_CODE: Final[str] = "RELAY-SDK-006"
+RELAY_SDK_HANDOFF_INCOMPLETE_CODE: Final[str] = "RELAY-SDK-007"
+RELAY_SDK_EVIDENCE_INCOMPLETE_CODE: Final[str] = "RELAY-SDK-008"
+RELAY_SDK_REPLAY_PRECONDITION_CODE: Final[str] = "RELAY-SDK-009"
+RELAY_SDK_POLICY_INVALID_CODE: Final[str] = "RELAY-SDK-010"
 
 # --- Descriptive error_class tokens (contract.md prose) ----------------------
 RELAY_SDK_CONFIG_CLASS: Final[str] = "RELAY-SDK-CONFIG-001"
 RELAY_SDK_VERSION_MISMATCH_CLASS: Final[str] = "RELAY-SDK-VERSION-MISMATCH"
 RELAY_SDK_NO_SIDECAR_CLASS: Final[str] = "RELAY-SDK-NO-SIDECAR"
 RELAY_SDK_AUTH_MISMATCH_CLASS: Final[str] = "RELAY-SDK-AUTH-MISMATCH"
+RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CLASS: Final[str] = (
+    "RELAY-SDK-CANONICAL-STATUS-FORBIDDEN"
+)
+RELAY_SDK_LIFECYCLE_INVALID_CLASS: Final[str] = "RELAY-SDK-LIFECYCLE-INVALID"
+RELAY_SDK_HANDOFF_INCOMPLETE_CLASS: Final[str] = "RELAY-SDK-HANDOFF-INCOMPLETE"
+RELAY_SDK_EVIDENCE_INCOMPLETE_CLASS: Final[str] = "RELAY-SDK-EVIDENCE-INCOMPLETE"
+RELAY_SDK_REPLAY_PRECONDITION_CLASS: Final[str] = "RELAY-SDK-REPLAY-PRECONDITION"
+RELAY_SDK_POLICY_INVALID_CLASS: Final[str] = "RELAY-SDK-POLICY-INVALID"
+
+# Wire codes for sidecar-side ingest rejection that the SDK surfaces back to
+# callers. RELAY-ING-031 is the canonical "client tried to set a canonical-
+# result field" code (spec line 1966); the SDK maps a sidecar HTTP 422 carrying
+# this code to :class:`RelayCanonicalStatusForbidden` for the caller.
+RELAY_ING_031_CODE: Final[str] = "RELAY-ING-031"
+# RELAY-ING-022 is the scope-anchor-missing ingest-side code (per contract
+# Gaps note); the SDK maps it to :class:`RelayHandoffIncomplete`.
+RELAY_ING_022_CODE: Final[str] = "RELAY-ING-022"
+# RELAY-REPLAY-002 is the "run_result not yet written" precondition code
+# (spec line 2125); maps to :class:`RelayReplayPrecondition`.
+RELAY_REPLAY_002_CODE: Final[str] = "RELAY-REPLAY-002"
+# RELAY-EVID-002 is the sidecar-side "evidence envelope incomplete" code
+# (per contract Gaps note); maps to :class:`RelayEvidenceIncomplete`.
+RELAY_EVID_002_CODE: Final[str] = "RELAY-EVID-002"
 
 # Retry-advice modes. Mirrors the spec B.4 error-envelope ``retry_advice``
 # vocabulary. Only the values the W3.1 surface emits are enumerated here.
@@ -152,18 +182,134 @@ class RelayAuthMismatch(RelayError):
     default_retry_advice: RetryAdviceMode = "no_retry"
 
 
+class RelayCanonicalStatusForbidden(RelayError):
+    """SDK refused to submit an envelope containing a canonical-result field.
+
+    Per VAL-W3-010 the SDK MUST reject any ingest envelope carrying any of
+    ``status``, ``primary_failure_class``, ``written_by``, ``accepted_at``,
+    or ``finalized_at`` BEFORE the request is sent. The sidecar enforces
+    the same invariant with HTTP 422 + ``RELAY-ING-031``; when the SDK
+    receives that response it raises this same exception type so callers
+    have a single typed surface.
+
+    This is keystone invariant #1: the control plane is the SOLE writer of
+    canonical results.
+    """
+
+    code = RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CODE
+    error_class = RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CLASS
+    default_retry_advice: RetryAdviceMode = "no_retry"
+
+
+class RelayLifecycleInvalid(RelayError):
+    """``client_lifecycle_status`` value is outside the closed enum.
+
+    Per VAL-W3-012 only ``{started, client_succeeded, client_failed,
+    client_aborted}`` are valid; any other value is rejected at the SDK
+    boundary BEFORE the request is sent.
+    """
+
+    code = RELAY_SDK_LIFECYCLE_INVALID_CODE
+    error_class = RELAY_SDK_LIFECYCLE_INVALID_CLASS
+    default_retry_advice: RetryAdviceMode = "no_retry"
+
+
+class RelayHandoffIncomplete(RelayError):
+    """Three-anchor handoff is missing or stale.
+
+    Per VAL-W3-011 every SDK-submitted envelope MUST carry all three of
+    ``scope_id`` (``run_id`` / ``gate_id`` / ...),
+    ``actor_identity_hash``, and ``manifest_commit_hash``. A missing,
+    empty, revoked, or stale anchor raises this error; the offending
+    anchor(s) are listed in ``details.mismatched_anchor`` so tests and
+    callers can attribute the failure precisely.
+    """
+
+    code = RELAY_SDK_HANDOFF_INCOMPLETE_CODE
+    error_class = RELAY_SDK_HANDOFF_INCOMPLETE_CLASS
+    default_retry_advice: RetryAdviceMode = "after_state_change"
+
+
+class RelayEvidenceIncomplete(RelayError):
+    """Evidence envelope is missing one or more required binding fields.
+
+    Per VAL-W3-015 and CLAUDE.md invariant #2, an evidence claim is only
+    a pass when it binds artifact digest + command + exit code + span IDs
+    + assertion IDs + actor identity + manifest commit hash + redaction
+    policy version. A claim missing any of these is ``invalid``, not
+    ``accepted``. The SDK refuses to submit at the boundary.
+    """
+
+    code = RELAY_SDK_EVIDENCE_INCOMPLETE_CODE
+    error_class = RELAY_SDK_EVIDENCE_INCOMPLETE_CLASS
+    default_retry_advice: RetryAdviceMode = "no_retry"
+
+
+class RelayReplayPrecondition(RelayError):
+    """Replay creation precondition failed.
+
+    Per VAL-W3-014 the SDK's ``replay_create`` requires the canonical
+    ``run_result`` to exist for the source run; the SDK refuses to create
+    a replay case from raw SDK lifecycle. Raised when the sidecar
+    responds with ``RELAY-REPLAY-002`` ("run_result not yet written")
+    OR an equivalent precondition failure.
+    """
+
+    code = RELAY_SDK_REPLAY_PRECONDITION_CODE
+    error_class = RELAY_SDK_REPLAY_PRECONDITION_CLASS
+    default_retry_advice: RetryAdviceMode = "after_state_change"
+
+
+class RelayPolicyError(RelayError):
+    """Redaction policy failed to parse or violated a structural invariant.
+
+    Per VAL-W3-025 the SDK refuses to capture under a malformed policy
+    (bad regex, unknown matcher kind, missing required field). Per
+    VAL-W3-026 the SDK refuses ``raw_capture=true`` without both
+    ``dpa_ref`` and ``approver_user_id``. This is the typed surface for
+    both failure shapes; ``error_class`` discriminates further via
+    ``details.reason``.
+    """
+
+    code = RELAY_SDK_POLICY_INVALID_CODE
+    error_class = RELAY_SDK_POLICY_INVALID_CLASS
+    default_retry_advice: RetryAdviceMode = "no_retry"
+
+
 __all__ = [
+    "RELAY_EVID_002_CODE",
+    "RELAY_ING_022_CODE",
+    "RELAY_ING_031_CODE",
+    "RELAY_REPLAY_002_CODE",
     "RELAY_SDK_AUTH_MISMATCH_CLASS",
     "RELAY_SDK_AUTH_MISMATCH_CODE",
+    "RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CLASS",
+    "RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CODE",
     "RELAY_SDK_CONFIG_CLASS",
     "RELAY_SDK_CONFIG_CODE",
+    "RELAY_SDK_EVIDENCE_INCOMPLETE_CLASS",
+    "RELAY_SDK_EVIDENCE_INCOMPLETE_CODE",
+    "RELAY_SDK_HANDOFF_INCOMPLETE_CLASS",
+    "RELAY_SDK_HANDOFF_INCOMPLETE_CODE",
+    "RELAY_SDK_LIFECYCLE_INVALID_CLASS",
+    "RELAY_SDK_LIFECYCLE_INVALID_CODE",
     "RELAY_SDK_NO_SIDECAR_CLASS",
     "RELAY_SDK_NO_SIDECAR_CODE",
+    "RELAY_SDK_POLICY_INVALID_CLASS",
+    "RELAY_SDK_POLICY_INVALID_CODE",
+    "RELAY_SDK_REPLAY_PRECONDITION_CLASS",
+    "RELAY_SDK_REPLAY_PRECONDITION_CODE",
     "RELAY_SDK_VERSION_MISMATCH_CLASS",
     "RELAY_SDK_VERSION_MISMATCH_CODE",
     "RelayAuthMismatch",
+    "RelayCanonicalStatusForbidden",
     "RelayConfigError",
     "RelayError",
+    "RelayEvidenceIncomplete",
+    "RelayHandoffIncomplete",
+    "RelayLifecycleInvalid",
+    "RelayPolicyError",
+    "RelayReplayPrecondition",
     "RelaySidecarNotReachable",
     "RelaySidecarVersionMismatch",
     "RetryAdviceMode",

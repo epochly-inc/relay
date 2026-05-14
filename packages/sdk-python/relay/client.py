@@ -27,6 +27,8 @@ from relay_sidecar.lockfile import relay_home as _default_relay_home
 
 from ._transport import SidecarConnection, SidecarTransport
 from .errors import RelayConfigError
+from .flush import FlushPolicy
+from .run import Run, _coerce_run_id
 
 # A syntactically valid ``project_key`` is either:
 #   - a Crockford-base32 ULID (26 chars, the canonical scope/identifier
@@ -106,6 +108,11 @@ class Relay:
         project_key: str,
         *,
         relay_home: Path | None = None,
+        flush_policy: FlushPolicy | dict[str, Any] | None = None,
+        actor_identity_hash: str | None = None,
+        manifest_commit_hash: str | None = None,
+        redaction_policy_version: str | None = None,
+        endpoint_url: str | None = None,
     ) -> None:
         # VAL-W3-005: validate FIRST, synchronously, before anything else.
         self._project_key = _validate_project_key(project_key)
@@ -118,6 +125,14 @@ class Relay:
         # side-effect-free until ``ensure_attached`` is called. No spawn,
         # no lockfile touch, no port bind happens here (VAL-W3-003).
         self._transport = SidecarTransport(relay_home=self._relay_home)
+        # W3.2 lifecycle-surface defaults. These propagate into every
+        # :class:`relay.run.Run` created from this client. They can be
+        # overridden per-call on :meth:`Relay.run`.
+        self._flush_policy: FlushPolicy = FlushPolicy.from_mapping(flush_policy)
+        self._actor_identity_hash: str | None = actor_identity_hash
+        self._manifest_commit_hash: str | None = manifest_commit_hash
+        self._redaction_policy_version: str | None = redaction_policy_version
+        self._endpoint_url: str | None = endpoint_url
 
     # -- read-only accessors -------------------------------------------------
 
@@ -181,6 +196,113 @@ class Relay:
             )
         _ = attributes  # W3.2 ingest surface consumes these.
         return self._ensure_sidecar()
+
+    def run(
+        self,
+        *,
+        agent: dict[str, Any],
+        run_id: str | None = None,
+        actor_identity_hash: str | None = None,
+        manifest_commit_hash: str | None = None,
+        redaction_policy_version: str | None = None,
+        flush_policy: FlushPolicy | dict[str, Any] | None = None,
+        endpoint_url: str | None = None,
+        project_id: str | None = None,
+    ) -> Run:
+        """Start a W3.2 lifecycle run.
+
+        Returns a :class:`relay.run.Run` context manager. The caller's
+        ``with`` block records lifecycle events via
+        :meth:`Run.capture`, evaluates gates via
+        :meth:`Run.gate_evaluate`, creates replay cases via
+        :meth:`Run.replay_create`, and submits evidence via
+        :meth:`Run.submit_evidence`. On ``__exit__`` the SDK flushes
+        the lifecycle envelope per the configured
+        :class:`FlushPolicy`.
+
+        Per CLAUDE.md keystone invariant #1 the SDK NEVER writes
+        canonical results -- the :class:`Run` only submits drafts and
+        reads canonical decisions the control plane writes.
+
+        Args:
+            agent: Non-empty dict describing the agent (``name``,
+                ``version`` at minimum). Carried verbatim in every
+                lifecycle envelope.
+            run_id: Optional caller-supplied run identifier; defaults
+                to a fresh ULID. Slots into the three-anchor handoff's
+                ``scope_id`` (spec C.5).
+            actor_identity_hash: SHA-256-prefixed identity hash of the
+                actor (worker/agent/SDK installation). Required for
+                the three-anchor handoff. May be supplied per-call OR
+                set on the :class:`Relay` instance.
+            manifest_commit_hash: SHA-256-over-JCS-canonicalized bytes
+                of ``.ops/manifest.yaml``. Required for the
+                three-anchor handoff. May be supplied per-call OR set
+                on the :class:`Relay` instance.
+            redaction_policy_version: The active redaction policy
+                version string. Required by spec line 1947.
+            flush_policy: Per-run override of the client's flush
+                policy. Defaults to the client's policy.
+            endpoint_url: Per-run override of the lifecycle endpoint
+                URL. Defaults to the sidecar's loopback ``base_url``;
+                tests use this to bypass sidecar spawn entirely.
+            project_id: Optional project UUID; defaults to a fresh
+                UUIDv4. Carried verbatim in the envelope.
+
+        Returns:
+            A :class:`Run` context manager.
+
+        Raises:
+            RelayConfigError: ``agent`` is missing/empty; one of the
+                handoff anchors is missing and no client-level default
+                is set; flush_policy is malformed.
+            RelayHandoffIncomplete: One of the three handoff anchors
+                resolves to an empty/missing value at envelope-build
+                time.
+        """
+        if not isinstance(agent, dict) or not agent:
+            raise RelayConfigError(
+                "agent must be a non-empty dict",
+                details={"field": "agent", "received_type": type(agent).__name__},
+            )
+        resolved_actor = actor_identity_hash or self._actor_identity_hash
+        resolved_manifest = manifest_commit_hash or self._manifest_commit_hash
+        resolved_policy = (
+            redaction_policy_version or self._redaction_policy_version
+        )
+        if resolved_actor is None:
+            raise RelayConfigError(
+                "actor_identity_hash is required (pass to Relay(...) or to .run(...))",
+                details={"field": "actor_identity_hash"},
+            )
+        if resolved_manifest is None:
+            raise RelayConfigError(
+                "manifest_commit_hash is required (pass to Relay(...) or to .run(...))",
+                details={"field": "manifest_commit_hash"},
+            )
+        if resolved_policy is None:
+            raise RelayConfigError(
+                "redaction_policy_version is required "
+                "(pass to Relay(...) or to .run(...))",
+                details={"field": "redaction_policy_version"},
+            )
+        coerced_run_id = _coerce_run_id(run_id)
+        flush = (
+            FlushPolicy.from_mapping(flush_policy)
+            if flush_policy is not None
+            else self._flush_policy
+        )
+        return Run(
+            relay=self,
+            run_id=coerced_run_id,
+            agent=agent,
+            actor_identity_hash=resolved_actor,
+            manifest_commit_hash=resolved_manifest,
+            redaction_policy_version=resolved_policy,
+            project_id=project_id,
+            flush_policy=flush,
+            endpoint_url=endpoint_url or self._endpoint_url,
+        )
 
     # -- lifecycle -----------------------------------------------------------
 
