@@ -88,6 +88,10 @@ RELAY_ING_031_CODE: Final[str] = "RELAY-ING-031"
 RELAY_ING_RAW_PAYLOAD_CODE: Final[str] = "RELAY-ING-032"
 RELAY_REPLAY_002_CODE: Final[str] = "RELAY-REPLAY-002"
 RELAY_EVID_002_CODE: Final[str] = "RELAY-EVID-002"
+# Spec B.4 stale-handoff wire code surfaced via the typed
+# RelayHandoffIncomplete leaf for cross-language parity with the TS leaf
+# registry (VAL-W4-028 / VAL-W4-029).
+RELAY_GATE_021_CODE: Final[str] = "RELAY-GATE-021"
 
 # Namespace-intermediate default codes. When a namespace class is
 # instantiated without specifying ``code``, it uses these defaults.
@@ -605,13 +609,34 @@ class RelayUnknownError(RelayError):
 # =============================================================================
 
 # Specific known leaves (most-specific first). Wire codes the SDK has a
-# typed leaf for.
+# typed leaf for. Mirrors the TS leaf registry in
+# packages/sdk-typescript/src/errors.ts CODE_LEAF_REGISTRY byte-for-byte
+# so the cross-language error envelope parity (VAL-W4-029) holds: a
+# wire code routed via Python ``from_envelope`` MUST produce the same
+# typed leaf (and therefore the same ``error_class`` envelope field) as
+# the TypeScript ``RelayError.fromEnvelope`` would for the identical
+# input.
 _CODE_LEAF_REGISTRY: dict[str, type[RelayError]] = {
+    # Sidecar wire codes the SDK surfaces back as typed leaves.
     RELAY_ING_031_CODE: RelayCanonicalStatusForbidden,
     RELAY_ING_022_CODE: RelayHandoffIncomplete,
     RELAY_ING_RAW_PAYLOAD_CODE: RelayPolicyError,
     RELAY_REPLAY_002_CODE: RelayReplayPrecondition,
     RELAY_EVID_002_CODE: RelayEvidenceIncomplete,
+    # RELAY-GATE-021 (stale handoff) -> typed leaf, parity with TS.
+    RELAY_GATE_021_CODE: RelayHandoffIncomplete,
+    # SDK-local codes the Py SDK also surfaces as typed leaves so the
+    # ``error_class`` envelope field matches the TS leaf class default.
+    RELAY_SDK_CONFIG_CODE: RelayConfigError,
+    RELAY_SDK_VERSION_MISMATCH_CODE: RelaySidecarVersionMismatch,
+    RELAY_SDK_NO_SIDECAR_CODE: RelaySidecarNotReachable,
+    RELAY_SDK_AUTH_MISMATCH_CODE: RelayAuthMismatch,
+    RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CODE: RelayCanonicalStatusForbidden,
+    RELAY_SDK_LIFECYCLE_INVALID_CODE: RelayLifecycleInvalid,
+    RELAY_SDK_HANDOFF_INCOMPLETE_CODE: RelayHandoffIncomplete,
+    RELAY_SDK_EVIDENCE_INCOMPLETE_CODE: RelayEvidenceIncomplete,
+    RELAY_SDK_REPLAY_PRECONDITION_CODE: RelayReplayPrecondition,
+    RELAY_SDK_POLICY_INVALID_CODE: RelayPolicyError,
 }
 
 # Namespace prefix -> intermediate class. Ordered so the longer prefixes

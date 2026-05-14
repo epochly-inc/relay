@@ -1,0 +1,654 @@
+{
+  "description": "Cross-language error envelope parity corpus (VAL-W4-029). Each fixture is the JCS-canonical hex of the Py-emitted RelayError.to_envelope(). The TS SDK MUST deserialize the envelope into the expected typed leaf and re-serialize byte-equal canonical bytes.",
+  "fixtures": [
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d494e472d303031222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d494e472d303031222c226572726f725f636c617373223a2252454c41592d494e472d4552524f52222c22687474705f737461747573223a3430302c226d657373616765223a22696e6765737420656e76656c6f70652072656a6563746564222c22726571756573745f6964223a227265715f303031222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f303031227d",
+      "canonical_sha256": "f5c0000a2f458fb619baefa3ae42d6bb480d9842fe4f11a0f0424aa1186c9d13",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-ING-001",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-ING-001",
+        "error_class": "RELAY-ING-ERROR",
+        "http_status": 400,
+        "message": "ingest envelope rejected",
+        "request_id": "req_001",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_001"
+      },
+      "expected_ts_class": "RelayIngestError",
+      "name": "RelayIngestError__RELAY-ING-001",
+      "wire_code": "RELAY-ING-001"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d494e472d303134222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d494e472d303134222c226572726f725f636c617373223a2252454c41592d494e472d4552524f52222c22687474705f737461747573223a3430302c226d657373616765223a22696e67657374207061796c6f616420657863656564732073697a65206c696d6974222c22726571756573745f6964223a227265715f303134222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f303134227d",
+      "canonical_sha256": "262d385fa70b612478a8c3531efc9fb0048c09c71abefc43671e95944e5d50d2",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-ING-014",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-ING-014",
+        "error_class": "RELAY-ING-ERROR",
+        "http_status": 400,
+        "message": "ingest payload exceeds size limit",
+        "request_id": "req_014",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_014"
+      },
+      "expected_ts_class": "RelayIngestError",
+      "name": "RelayIngestError__RELAY-ING-014",
+      "wire_code": "RELAY-ING-014"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d494e472d303231222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d494e472d303231222c226572726f725f636c617373223a2252454c41592d494e472d4552524f52222c22687474705f737461747573223a3430302c226d657373616765223a22696e6765737420736368656d6120696e76616c6964222c22726571756573745f6964223a227265715f303231222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f303231227d",
+      "canonical_sha256": "067015c27c4821b20e652aa2749c7aa6b652a5a158e92c02a1e44ff587e3b45a",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-ING-021",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-ING-021",
+        "error_class": "RELAY-ING-ERROR",
+        "http_status": 400,
+        "message": "ingest schema invalid",
+        "request_id": "req_021",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_021"
+      },
+      "expected_ts_class": "RelayIngestError",
+      "name": "RelayIngestError__RELAY-ING-021",
+      "wire_code": "RELAY-ING-021"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d494e472d303331222c2264657461696c73223a7b22666f726765645f6669656c64223a22737461747573227d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d494e472d303331222c226572726f725f636c617373223a2252454c41592d53444b2d43414e4f4e4943414c2d5354415455532d464f5242494444454e222c22687474705f737461747573223a3432322c226d657373616765223a2263616e6f6e6963616c2d726573756c74206669656c64732061726520636f6e74726f6c2d706c616e65206f776e6564222c22726571756573745f6964223a227265715f303331222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f303331227d",
+      "canonical_sha256": "bac0d003f19e6ae1f8c8746e17e5e4cbe7cfbdfb6ec11ebfef30a8503a186874",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-ING-031",
+        "details": {
+          "forged_field": "status"
+        },
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-ING-031",
+        "error_class": "RELAY-SDK-CANONICAL-STATUS-FORBIDDEN",
+        "http_status": 422,
+        "message": "canonical-result fields are control-plane owned",
+        "request_id": "req_031",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_031"
+      },
+      "expected_ts_class": "RelayCanonicalStatusForbidden",
+      "name": "RelayCanonicalStatusForbidden__RELAY-ING-031",
+      "wire_code": "RELAY-ING-031"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d415554482d303031222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d415554482d303031222c226572726f725f636c617373223a2252454c41592d415554482d4552524f52222c22687474705f737461747573223a3430312c226d657373616765223a226d697373696e672070726f6a65637420746f6b656e222c22726571756573745f6964223a227265715f613031222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f613031227d",
+      "canonical_sha256": "090ab8f6c0b64324210dfe1d2dbe38c325bef3bb4ed444f3fb3d226c784c9a69",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-AUTH-001",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-AUTH-001",
+        "error_class": "RELAY-AUTH-ERROR",
+        "http_status": 401,
+        "message": "missing project token",
+        "request_id": "req_a01",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_a01"
+      },
+      "expected_ts_class": "RelayAuthError",
+      "name": "RelayAuthError__RELAY-AUTH-001",
+      "wire_code": "RELAY-AUTH-001"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d415554482d303134222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d415554482d303134222c226572726f725f636c617373223a2252454c41592d415554482d4552524f52222c22687474705f737461747573223a3430312c226d657373616765223a22657870697265642070726f6a65637420746f6b656e222c22726571756573745f6964223a227265715f613134222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f613134227d",
+      "canonical_sha256": "446174155c56e5829374b5e06b38392c3ba8d0e4135eff5c3714d5fc9f200c7d",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-AUTH-014",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-AUTH-014",
+        "error_class": "RELAY-AUTH-ERROR",
+        "http_status": 401,
+        "message": "expired project token",
+        "request_id": "req_a14",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_a14"
+      },
+      "expected_ts_class": "RelayAuthError",
+      "name": "RelayAuthError__RELAY-AUTH-014",
+      "wire_code": "RELAY-AUTH-014"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d524154452d303031222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d524154452d303031222c226572726f725f636c617373223a2252454c41592d524154452d4552524f52222c22687474705f737461747573223a3432392c226d657373616765223a2272617465206c696d6974206578636565646564222c22726571756573745f6964223a227265715f723031222c2272657472795f616476696365223a7b226d6f6465223a2261667465725f72657472795f6166746572227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f723031227d",
+      "canonical_sha256": "f76d0a2dc6a528a85ae7c4dd5d57e7526b9c0cc27cb7e701af0f1c41ec5e9494",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-RATE-001",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-RATE-001",
+        "error_class": "RELAY-RATE-ERROR",
+        "http_status": 429,
+        "message": "rate limit exceeded",
+        "request_id": "req_r01",
+        "retry_advice": {
+          "mode": "after_retry_after"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_r01"
+      },
+      "expected_ts_class": "RelayRateLimitError",
+      "name": "RelayRateLimitError__RELAY-RATE-001",
+      "wire_code": "RELAY-RATE-001"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d524154452d303134222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d524154452d303134222c226572726f725f636c617373223a2252454c41592d524154452d4552524f52222c22687474705f737461747573223a3432392c226d657373616765223a2262757273742072617465206578636565646564222c22726571756573745f6964223a227265715f723134222c2272657472795f616476696365223a7b226d6f6465223a2261667465725f72657472795f6166746572227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f723134227d",
+      "canonical_sha256": "bcc2799c69d4fc35ff969336ebcfe2d1b39e6eca7cfe040404a154504392d1c0",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-RATE-014",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-RATE-014",
+        "error_class": "RELAY-RATE-ERROR",
+        "http_status": 429,
+        "message": "burst rate exceeded",
+        "request_id": "req_r14",
+        "retry_advice": {
+          "mode": "after_retry_after"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_r14"
+      },
+      "expected_ts_class": "RelayRateLimitError",
+      "name": "RelayRateLimitError__RELAY-RATE-014",
+      "wire_code": "RELAY-RATE-014"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f67617465732f7b676174655f69647d2f647261667473222c22636f6465223a2252454c41592d474154452d303031222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d474154452d303031222c226572726f725f636c617373223a2252454c41592d474154452d4552524f52222c22687474705f737461747573223a3430342c226d657373616765223a2267617465206e6f7420666f756e64222c22726571756573745f6964223a227265715f673031222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f673031227d",
+      "canonical_sha256": "b0e83fe87a1ff69394090779e0b4e87be6fd4d2283b027df3f5e507b433f41c5",
+      "envelope": {
+        "blocked_surface": "POST /v1/gates/{gate_id}/drafts",
+        "code": "RELAY-GATE-001",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-GATE-001",
+        "error_class": "RELAY-GATE-ERROR",
+        "http_status": 404,
+        "message": "gate not found",
+        "request_id": "req_g01",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_g01"
+      },
+      "expected_ts_class": "RelayGateError",
+      "name": "RelayGateError__RELAY-GATE-001",
+      "wire_code": "RELAY-GATE-001"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f67617465732f7b676174655f69647d2f647261667473222c22636f6465223a2252454c41592d474154452d303134222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d474154452d303134222c226572726f725f636c617373223a2252454c41592d474154452d4552524f52222c22687474705f737461747573223a3430342c226d657373616765223a2267617465206576616c756174696f6e206661696c6564222c22726571756573745f6964223a227265715f673134222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f673134227d",
+      "canonical_sha256": "959b6de714842a73554dd6118f6b1cd4a1fa5527aed1f9b9aeb980d5cdab94b2",
+      "envelope": {
+        "blocked_surface": "POST /v1/gates/{gate_id}/drafts",
+        "code": "RELAY-GATE-014",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-GATE-014",
+        "error_class": "RELAY-GATE-ERROR",
+        "http_status": 404,
+        "message": "gate evaluation failed",
+        "request_id": "req_g14",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_g14"
+      },
+      "expected_ts_class": "RelayGateError",
+      "name": "RelayGateError__RELAY-GATE-014",
+      "wire_code": "RELAY-GATE-014"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d474154452d303231222c2264657461696c73223a7b226d69736d6174636865645f616e63686f72223a226d616e69666573745f636f6d6d69745f68617368227d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d474154452d303231222c226572726f725f636c617373223a2252454c41592d53444b2d48414e444f46462d494e434f4d504c455445222c22687474705f737461747573223a3432322c226d657373616765223a227374616c652074687265652d616e63686f722068616e646f6666222c22726571756573745f6964223a227265715f673231222c2272657472795f616476696365223a7b226d6f6465223a2261667465725f73746174655f6368616e6765227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f673231227d",
+      "canonical_sha256": "be2ea3c8d7fde107ac09d00fc9742adc7600e9e0acf83bbf89709e730214e81d",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-GATE-021",
+        "details": {
+          "mismatched_anchor": "manifest_commit_hash"
+        },
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-GATE-021",
+        "error_class": "RELAY-SDK-HANDOFF-INCOMPLETE",
+        "http_status": 422,
+        "message": "stale three-anchor handoff",
+        "request_id": "req_g21",
+        "retry_advice": {
+          "mode": "after_state_change"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_g21"
+      },
+      "expected_ts_class": "RelayHandoffIncomplete",
+      "name": "RelayHandoffIncomplete__RELAY-GATE-021",
+      "wire_code": "RELAY-GATE-021"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f65766964656e6365222c22636f6465223a2252454c41592d455649442d303031222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d455649442d303031222c226572726f725f636c617373223a2252454c41592d455649442d4552524f52222c22687474705f737461747573223a3432322c226d657373616765223a2265766964656e63652062756e646c652072656a6563746564222c22726571756573745f6964223a227265715f653031222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f653031227d",
+      "canonical_sha256": "1b0b7d1eb3417f317c0ce18ac87ca016c3fbf4f8a54f06666000a0e520b7e96e",
+      "envelope": {
+        "blocked_surface": "POST /v1/evidence",
+        "code": "RELAY-EVID-001",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-EVID-001",
+        "error_class": "RELAY-EVID-ERROR",
+        "http_status": 422,
+        "message": "evidence bundle rejected",
+        "request_id": "req_e01",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_e01"
+      },
+      "expected_ts_class": "RelayEvidenceError",
+      "name": "RelayEvidenceError__RELAY-EVID-001",
+      "wire_code": "RELAY-EVID-001"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f65766964656e6365222c22636f6465223a2252454c41592d455649442d303134222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d455649442d303134222c226572726f725f636c617373223a2252454c41592d455649442d4552524f52222c22687474705f737461747573223a3432322c226d657373616765223a2265766964656e6365207369676e617475726520696e76616c6964222c22726571756573745f6964223a227265715f653134222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f653134227d",
+      "canonical_sha256": "68c4571a81ac36858d59eb56fe4f2a0c97df4f3b72c0987e7e9c7215c6c59c87",
+      "envelope": {
+        "blocked_surface": "POST /v1/evidence",
+        "code": "RELAY-EVID-014",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-EVID-014",
+        "error_class": "RELAY-EVID-ERROR",
+        "http_status": 422,
+        "message": "evidence signature invalid",
+        "request_id": "req_e14",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_e14"
+      },
+      "expected_ts_class": "RelayEvidenceError",
+      "name": "RelayEvidenceError__RELAY-EVID-014",
+      "wire_code": "RELAY-EVID-014"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f72756e732f7b72756e5f69647d2f7265706c617973222c22636f6465223a2252454c41592d5245504c41592d303031222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d5245504c41592d303031222c226572726f725f636c617373223a2252454c41592d5245504c41592d4552524f52222c22687474705f737461747573223a3432322c226d657373616765223a227265706c617920636f6e66696775726174696f6e20696e76616c6964222c22726571756573745f6964223a227265715f703031222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f703031227d",
+      "canonical_sha256": "a3d55922e49dc3c104fd375b6ea0d626655707f9dc1465bf84e2b0c28ef792c5",
+      "envelope": {
+        "blocked_surface": "POST /v1/runs/{run_id}/replays",
+        "code": "RELAY-REPLAY-001",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-REPLAY-001",
+        "error_class": "RELAY-REPLAY-ERROR",
+        "http_status": 422,
+        "message": "replay configuration invalid",
+        "request_id": "req_p01",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_p01"
+      },
+      "expected_ts_class": "RelayReplayError",
+      "name": "RelayReplayError__RELAY-REPLAY-001",
+      "wire_code": "RELAY-REPLAY-001"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f72756e732f7b72756e5f69647d2f7265706c617973222c22636f6465223a2252454c41592d5245504c41592d303134222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d5245504c41592d303134222c226572726f725f636c617373223a2252454c41592d5245504c41592d4552524f52222c22687474705f737461747573223a3432322c226d657373616765223a22636173736574746520706c61796261636b206661696c6564222c22726571756573745f6964223a227265715f703134222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f703134227d",
+      "canonical_sha256": "f948c981274c4d11abe49ed0f0cc684609984b2c6577bda91dfe328f8f47cdc6",
+      "envelope": {
+        "blocked_surface": "POST /v1/runs/{run_id}/replays",
+        "code": "RELAY-REPLAY-014",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-REPLAY-014",
+        "error_class": "RELAY-REPLAY-ERROR",
+        "http_status": 422,
+        "message": "cassette playback failed",
+        "request_id": "req_p14",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_p14"
+      },
+      "expected_ts_class": "RelayReplayError",
+      "name": "RelayReplayError__RELAY-REPLAY-014",
+      "wire_code": "RELAY-REPLAY-014"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d494e472d303232222c2264657461696c73223a7b226d69736d6174636865645f616e63686f72223a226163746f725f6964656e746974795f68617368227d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d494e472d303232222c226572726f725f636c617373223a2252454c41592d53444b2d48414e444f46462d494e434f4d504c455445222c22687474705f737461747573223a3432322c226d657373616765223a2268616e646f666620616e63686f7273206d697373696e67222c22726571756573745f6964223a227265715f303232222c2272657472795f616476696365223a7b226d6f6465223a2261667465725f73746174655f6368616e6765227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f303232227d",
+      "canonical_sha256": "cc946b6e63eb60ace4c628688e520b7227ceed7b39a4555372c25941a9fb3634",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-ING-022",
+        "details": {
+          "mismatched_anchor": "actor_identity_hash"
+        },
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-ING-022",
+        "error_class": "RELAY-SDK-HANDOFF-INCOMPLETE",
+        "http_status": 422,
+        "message": "handoff anchors missing",
+        "request_id": "req_022",
+        "retry_advice": {
+          "mode": "after_state_change"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_022"
+      },
+      "expected_ts_class": "RelayHandoffIncomplete",
+      "name": "RelayHandoffIncomplete__RELAY-ING-022",
+      "wire_code": "RELAY-ING-022"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d494e472d303332222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d494e472d303332222c226572726f725f636c617373223a2252454c41592d53444b2d504f4c4943592d494e56414c4944222c22687474705f737461747573223a3432322c226d657373616765223a22726177207061796c6f61642072656a656374656420627920726564616374696f6e20706f6c696379222c22726571756573745f6964223a227265715f303332222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f303332227d",
+      "canonical_sha256": "d3d096bbc19ac82c1705b0e6553e97a6a3e6952f62418b6f0f24fd8646d3cb63",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-ING-032",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-ING-032",
+        "error_class": "RELAY-SDK-POLICY-INVALID",
+        "http_status": 422,
+        "message": "raw payload rejected by redaction policy",
+        "request_id": "req_032",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_032"
+      },
+      "expected_ts_class": "RelayPolicyError",
+      "name": "RelayPolicyError__RELAY-ING-032",
+      "wire_code": "RELAY-ING-032"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f72756e732f7b72756e5f69647d2f7265706c617973222c22636f6465223a2252454c41592d5245504c41592d303032222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d5245504c41592d303032222c226572726f725f636c617373223a2252454c41592d53444b2d5245504c41592d505245434f4e444954494f4e222c22687474705f737461747573223a3432322c226d657373616765223a227265706c617920707265636f6e646974696f6e20756e6d6574222c22726571756573745f6964223a227265715f703032222c2272657472795f616476696365223a7b226d6f6465223a2261667465725f73746174655f6368616e6765227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f703032227d",
+      "canonical_sha256": "b785d3a36570cbdbec5ef79c154bdb2dc5ee92205b3fd115ce288ee487dca150",
+      "envelope": {
+        "blocked_surface": "POST /v1/runs/{run_id}/replays",
+        "code": "RELAY-REPLAY-002",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-REPLAY-002",
+        "error_class": "RELAY-SDK-REPLAY-PRECONDITION",
+        "http_status": 422,
+        "message": "replay precondition unmet",
+        "request_id": "req_p02",
+        "retry_advice": {
+          "mode": "after_state_change"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_p02"
+      },
+      "expected_ts_class": "RelayReplayPrecondition",
+      "name": "RelayReplayPrecondition__RELAY-REPLAY-002",
+      "wire_code": "RELAY-REPLAY-002"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f65766964656e6365222c22636f6465223a2252454c41592d455649442d303032222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d455649442d303032222c226572726f725f636c617373223a2252454c41592d53444b2d45564944454e43452d494e434f4d504c455445222c22687474705f737461747573223a3432322c226d657373616765223a2265766964656e636520656e76656c6f7065206d697373696e672072657175697265642062696e64696e67222c22726571756573745f6964223a227265715f653032222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f653032227d",
+      "canonical_sha256": "f9c9dccd94099f51a77636cf7c103cf6632816686b6447785d18c0fd19fdeeeb",
+      "envelope": {
+        "blocked_surface": "POST /v1/evidence",
+        "code": "RELAY-EVID-002",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-EVID-002",
+        "error_class": "RELAY-SDK-EVIDENCE-INCOMPLETE",
+        "http_status": 422,
+        "message": "evidence envelope missing required binding",
+        "request_id": "req_e02",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_e02"
+      },
+      "expected_ts_class": "RelayEvidenceIncomplete",
+      "name": "RelayEvidenceIncomplete__RELAY-EVID-002",
+      "wire_code": "RELAY-EVID-002"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a2272656c61792d73646b222c22636f6465223a2252454c41592d53444b2d303031222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d53444b2d303031222c226572726f725f636c617373223a2252454c41592d53444b2d434f4e4649472d303031222c22687474705f737461747573223a3430302c226d657373616765223a22696e76616c69642053444b20636f6e66696775726174696f6e222c22726571756573745f6964223a6e756c6c2c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a6e756c6c7d",
+      "canonical_sha256": "b36fa347898f84340128fedcb58765604fa8f1ef94ad376305f84403730d386c",
+      "envelope": {
+        "blocked_surface": "relay-sdk",
+        "code": "RELAY-SDK-001",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-SDK-001",
+        "error_class": "RELAY-SDK-CONFIG-001",
+        "http_status": 400,
+        "message": "invalid SDK configuration",
+        "request_id": null,
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": null
+      },
+      "expected_ts_class": "RelayConfigError",
+      "name": "RelayConfigError__RELAY-SDK-001",
+      "wire_code": "RELAY-SDK-001"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22474554202f6865616c7468222c22636f6465223a2252454c41592d53444b2d303032222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d53444b2d303032222c226572726f725f636c617373223a2252454c41592d53444b2d56455253494f4e2d4d49534d41544348222c22687474705f737461747573223a3530332c226d657373616765223a22736964656361722076657273696f6e206d69736d61746368222c22726571756573745f6964223a6e756c6c2c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a6e756c6c7d",
+      "canonical_sha256": "afad4eff43b749d479b2198e3ab07c7b178c94ce334cf27bddb33b927513fdd9",
+      "envelope": {
+        "blocked_surface": "GET /health",
+        "code": "RELAY-SDK-002",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-SDK-002",
+        "error_class": "RELAY-SDK-VERSION-MISMATCH",
+        "http_status": 503,
+        "message": "sidecar version mismatch",
+        "request_id": null,
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": null
+      },
+      "expected_ts_class": "RelaySidecarVersionMismatch",
+      "name": "RelaySidecarVersionMismatch__RELAY-SDK-002",
+      "wire_code": "RELAY-SDK-002"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22474554202f6865616c7468222c22636f6465223a2252454c41592d53444b2d303033222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d53444b2d303033222c226572726f725f636c617373223a2252454c41592d53444b2d4e4f2d53494445434152222c22687474705f737461747573223a3530332c226d657373616765223a2273696465636172206e6f7420726561636861626c65222c22726571756573745f6964223a6e756c6c2c2272657472795f616476696365223a7b226d6f6465223a2261667465725f73746174655f6368616e6765227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a6e756c6c7d",
+      "canonical_sha256": "ecd67b899e64cca5a2256360b27f040bf247df47541ef74886053f7d8284467d",
+      "envelope": {
+        "blocked_surface": "GET /health",
+        "code": "RELAY-SDK-003",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-SDK-003",
+        "error_class": "RELAY-SDK-NO-SIDECAR",
+        "http_status": 503,
+        "message": "sidecar not reachable",
+        "request_id": null,
+        "retry_advice": {
+          "mode": "after_state_change"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": null
+      },
+      "expected_ts_class": "RelaySidecarNotReachable",
+      "name": "RelaySidecarNotReachable__RELAY-SDK-003",
+      "wire_code": "RELAY-SDK-003"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22474554202f6865616c7468222c22636f6465223a2252454c41592d53444b2d303034222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d53444b2d303034222c226572726f725f636c617373223a2252454c41592d53444b2d415554482d4d49534d41544348222c22687474705f737461747573223a3430312c226d657373616765223a226e6f6e63652d6368616c6c656e67652061757468206661696c6564222c22726571756573745f6964223a6e756c6c2c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a6e756c6c7d",
+      "canonical_sha256": "1bbbf7ca678918505dde144dea97ccc7096dcdc6701eb7d0de4ae57a62738938",
+      "envelope": {
+        "blocked_surface": "GET /health",
+        "code": "RELAY-SDK-004",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-SDK-004",
+        "error_class": "RELAY-SDK-AUTH-MISMATCH",
+        "http_status": 401,
+        "message": "nonce-challenge auth failed",
+        "request_id": null,
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": null
+      },
+      "expected_ts_class": "RelaySidecarAuthError",
+      "name": "RelayAuthMismatch__RELAY-SDK-004",
+      "wire_code": "RELAY-SDK-004"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d53444b2d303036222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d53444b2d303036222c226572726f725f636c617373223a2252454c41592d53444b2d4c4946454359434c452d494e56414c4944222c22687474705f737461747573223a3430302c226d657373616765223a226c6966656379636c6520737461747573206f75747369646520636c6f73656420656e756d222c22726571756573745f6964223a6e756c6c2c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a6e756c6c7d",
+      "canonical_sha256": "c0a2d7edd968689e0b60cc6d3e542b5ac8faf721c9e6ec45e7907639f86c9a48",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-SDK-006",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-SDK-006",
+        "error_class": "RELAY-SDK-LIFECYCLE-INVALID",
+        "http_status": 400,
+        "message": "lifecycle status outside closed enum",
+        "request_id": null,
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": null
+      },
+      "expected_ts_class": "RelayLifecycleInvalid",
+      "name": "RelayLifecycleInvalid__RELAY-SDK-006",
+      "wire_code": "RELAY-SDK-006"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a2272656c61792d756e6b6e6f776e222c22636f6465223a2252454c41592d4655545552452d393939222c2264657461696c73223a7b227261775f7061796c6f6164223a7b22666f7277617264223a747275657d7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d4655545552452d393939222c226572726f725f636c617373223a2252454c41592d554e4b4e4f574e2d4552524f52222c22687474705f737461747573223a3530302c226d657373616765223a22756e6b6e6f776e20666f72776172642d636f6d70617420636f6465222c22726571756573745f6964223a227265715f393939222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f393939227d",
+      "canonical_sha256": "cf77c208f84d959a253e280bcca03267809b0217b12cb1f418efc8b1d1da6b66",
+      "envelope": {
+        "blocked_surface": "relay-unknown",
+        "code": "RELAY-FUTURE-999",
+        "details": {
+          "raw_payload": {
+            "forward": true
+          }
+        },
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-FUTURE-999",
+        "error_class": "RELAY-UNKNOWN-ERROR",
+        "http_status": 500,
+        "message": "unknown forward-compat code",
+        "request_id": "req_999",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_999"
+      },
+      "expected_ts_class": "RelayUnknownError",
+      "name": "RelayUnknownError__RELAY-FUTURE-999",
+      "wire_code": "RELAY-FUTURE-999"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d534348454d412d303134222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d534348454d412d303134222c226572726f725f636c617373223a2252454c41592d534348454d412d4552524f52222c22687474705f737461747573223a3432322c226d657373616765223a22736368656d612072656a656374696f6e222c22726571756573745f6964223a227265715f733134222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f733134227d",
+      "canonical_sha256": "4b2ca812619ac07a30b1c20215e0f8bc3b7fdb1aa1285dc73a5e4be19793b16d",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-SCHEMA-014",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-SCHEMA-014",
+        "error_class": "RELAY-SCHEMA-ERROR",
+        "http_status": 422,
+        "message": "schema rejection",
+        "request_id": "req_s14",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_s14"
+      },
+      "expected_ts_class": "RelaySchemaError",
+      "name": "RelaySchemaError__RELAY-SCHEMA-014",
+      "wire_code": "RELAY-SCHEMA-014"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a2272656c61792d73696465636172222c22636f6465223a2252454c41592d534944454341522d303032222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d534944454341522d303032222c226572726f725f636c617373223a2252454c41592d534944454341522d4552524f52222c22687474705f737461747573223a3530332c226d657373616765223a2273696465636172206c6966656379636c65206661756c74222c22726571756573745f6964223a227265715f736332222c2272657472795f616476696365223a7b226d6f6465223a2261667465725f73746174655f6368616e6765227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f736332227d",
+      "canonical_sha256": "97ecff2b3d6e8df5874d450590ce1077bc2a3378add9ebfa45739b35433d2957",
+      "envelope": {
+        "blocked_surface": "relay-sidecar",
+        "code": "RELAY-SIDECAR-002",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-SIDECAR-002",
+        "error_class": "RELAY-SIDECAR-ERROR",
+        "http_status": 503,
+        "message": "sidecar lifecycle fault",
+        "request_id": "req_sc2",
+        "retry_advice": {
+          "mode": "after_state_change"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_sc2"
+      },
+      "expected_ts_class": "RelaySidecarError",
+      "name": "RelaySidecarError__RELAY-SIDECAR-002",
+      "wire_code": "RELAY-SIDECAR-002"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a2272656c61792d736964656361722d73716c697465222c22636f6465223a2252454c41592d53514c4954452d303031222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d53514c4954452d303031222c226572726f725f636c617373223a2252454c41592d53514c4954452d4552524f52222c22687474705f737461747573223a3530302c226d657373616765223a2273716c6974652d6c61796572206661756c74222c22726571756573745f6964223a227265715f737131222c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a2274726163655f737131227d",
+      "canonical_sha256": "e0178a5d4ae1b3659fbd94d5cff9f519943a4cbe3a12ee616799571d2bcc6567",
+      "envelope": {
+        "blocked_surface": "relay-sidecar-sqlite",
+        "code": "RELAY-SQLITE-001",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-SQLITE-001",
+        "error_class": "RELAY-SQLITE-ERROR",
+        "http_status": 500,
+        "message": "sqlite-layer fault",
+        "request_id": "req_sq1",
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": "trace_sq1"
+      },
+      "expected_ts_class": "RelaySQLiteError",
+      "name": "RelaySQLiteError__RELAY-SQLITE-001",
+      "wire_code": "RELAY-SQLITE-001"
+    },
+    {
+      "canonical_hex": "7b22626c6f636b65645f73757266616365223a22504f5354202f76312f696e676573742f72756e73222c22636f6465223a2252454c41592d53444b2d303130222c2264657461696c73223a7b7d2c22646f63756d656e746174696f6e5f75726c223a2268747470733a2f2f72656c61792e65706f63686c792e636f6d2f646f63732f6572726f72732f52454c41592d53444b2d303130222c226572726f725f636c617373223a2252454c41592d53444b2d504f4c4943592d494e56414c4944222c22687474705f737461747573223a3432322c226d657373616765223a2273646b20706f6c69637920696e76616c6964222c22726571756573745f6964223a6e756c6c2c2272657472795f616476696365223a7b226d6f6465223a226e6f5f7265747279227d2c22736368656d615f76657273696f6e223a2272656c61792e73646b5f6572726f722e7631222c2274726163655f6964223a6e756c6c7d",
+      "canonical_sha256": "110d901ce38ee4fcb060da5563aac796b1f8bcb97916ce2e18005e7a00898dd8",
+      "envelope": {
+        "blocked_surface": "POST /v1/ingest/runs",
+        "code": "RELAY-SDK-010",
+        "details": {},
+        "documentation_url": "https://relay.epochly.com/docs/errors/RELAY-SDK-010",
+        "error_class": "RELAY-SDK-POLICY-INVALID",
+        "http_status": 422,
+        "message": "sdk policy invalid",
+        "request_id": null,
+        "retry_advice": {
+          "mode": "no_retry"
+        },
+        "schema_version": "relay.sdk_error.v1",
+        "trace_id": null
+      },
+      "expected_ts_class": "RelayPolicyError",
+      "name": "RelaySdkError__RELAY-SDK-010",
+      "wire_code": "RELAY-SDK-010"
+    }
+  ],
+  "schema_version": "relay.error_envelope_parity.v1"
+}

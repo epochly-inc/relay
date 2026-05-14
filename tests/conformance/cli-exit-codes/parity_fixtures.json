@@ -1,0 +1,131 @@
+{
+  "canonical_exit_code_table": {
+    "EXIT_4XX_AUTH_HANDOFF": 3,
+    "EXIT_4XX_BLOCK": 1,
+    "EXIT_4XX_REMEDIATE": 2,
+    "EXIT_5XX_TRANSIENT": 5,
+    "EXIT_CASSETTE_MISS": 4,
+    "EXIT_CLI_USAGE": 64,
+    "EXIT_EVAL_DEFERRED": 8,
+    "EXIT_GATE_TTL_EXPIRED": 7,
+    "EXIT_SUCCESS": 0,
+    "EXIT_UNCAUGHT_INTERNAL": 70,
+    "EXIT_WAL_STORAGE": 6
+  },
+  "description": "Cross-language CLI exit-code parity corpus (VAL-W4-031 + VAL-W5-006). Each row pins (wire_code, http_status, retry_advice_mode) -> expected_exit per the canonical Relay exit-code table. Both Py (relay.exit_codes) and TS (@epochly/relay/exit_codes) resolvers MUST produce the same exit code for every row.",
+  "fixtures": [
+    {
+      "expected_exit": 0,
+      "http_status": 200,
+      "name": "row_exit_0_success_2xx",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-ING-001"
+    },
+    {
+      "expected_exit": 1,
+      "http_status": 422,
+      "name": "row_exit_1_4xx_block",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-SDK-005"
+    },
+    {
+      "expected_exit": 1,
+      "http_status": 400,
+      "name": "row_exit_1_config_block",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-SDK-001"
+    },
+    {
+      "expected_exit": 2,
+      "http_status": 422,
+      "name": "row_exit_2_4xx_remediate",
+      "retry_advice_mode": "after_state_change",
+      "wire_code": "RELAY-ING-022"
+    },
+    {
+      "expected_exit": 2,
+      "http_status": 429,
+      "name": "row_exit_2_rate_limited",
+      "retry_advice_mode": "after_retry_after",
+      "wire_code": "RELAY-RATE-001"
+    },
+    {
+      "expected_exit": 3,
+      "http_status": 422,
+      "name": "row_exit_3_handoff_stale",
+      "retry_advice_mode": "after_state_change",
+      "wire_code": "RELAY-GATE-021"
+    },
+    {
+      "expected_exit": 3,
+      "http_status": 401,
+      "name": "row_exit_3_auth_missing",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-AUTH-001"
+    },
+    {
+      "expected_exit": 3,
+      "http_status": 401,
+      "name": "row_exit_3_auth_expired",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-AUTH-014"
+    },
+    {
+      "expected_exit": 4,
+      "http_status": 422,
+      "name": "row_exit_4_cassette_miss",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-CASSETTE-MISS"
+    },
+    {
+      "expected_exit": 5,
+      "http_status": 503,
+      "name": "row_exit_5_5xx_transient",
+      "retry_advice_mode": "after_state_change",
+      "wire_code": "RELAY-SIDECAR-013"
+    },
+    {
+      "expected_exit": 6,
+      "http_status": 500,
+      "name": "row_exit_6_storage_wal",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-SIDECAR-STORAGE-001"
+    },
+    {
+      "expected_exit": 6,
+      "http_status": 500,
+      "name": "row_exit_6_sqlite",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-SQLITE-001"
+    },
+    {
+      "expected_exit": 7,
+      "http_status": 422,
+      "name": "row_exit_7_gate_ttl",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-GATE-024"
+    },
+    {
+      "expected_exit": 8,
+      "http_status": 422,
+      "name": "row_exit_8_eval_deferred",
+      "retry_advice_mode": "no_retry",
+      "wire_code": "RELAY-EVAL-EVALUATOR-DEFERRED"
+    },
+    {
+      "expected_exit": 70,
+      "http_status": null,
+      "name": "row_exit_70_uncaught_unknown",
+      "retry_advice_mode": null,
+      "wire_code": "RELAY-FUTURE-999"
+    },
+    {
+      "expected_exit": 70,
+      "http_status": 999,
+      "name": "row_exit_70_unknown_status",
+      "retry_advice_mode": null,
+      "wire_code": "RELAY-FUTURE-999"
+    }
+  ],
+  "schema_version": "relay.cli_exit_code_parity.v1"
+}

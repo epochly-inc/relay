@@ -293,6 +293,13 @@ export class RelayError extends Error {
       envelope.details && typeof envelope.details === "object" && !Array.isArray(envelope.details)
         ? (envelope.details as Record<string, unknown>)
         : undefined;
+    // VAL-W4-030: forward-compat unknown sidecar codes deserialize to
+    // RelayUnknownError AND emit a structured warning to stderr in the
+    // relay.error.v1 shape so operators have a paper trail of every
+    // unrecognised code the SDK encountered.
+    if (targetCls === RelayUnknownError) {
+      _emitUnknownCodeWarning(code, envelope);
+    }
     return new targetCls(message, {
       code,
       httpStatus,
@@ -303,6 +310,33 @@ export class RelayError extends Error {
       documentationUrl,
       details,
     });
+  }
+}
+
+// VAL-W4-030: structured warning emitter. Writes a single ASCII line of
+// JSON to stderr (no newline-aware formatting) so log aggregators can
+// parse the warning per-line. The shape mirrors the relay.error.v1
+// envelope so tooling that already understands the wire format can
+// consume the warning verbatim.
+function _emitUnknownCodeWarning(code: string, envelope: ErrorEnvelopeWire): void {
+  try {
+    const payload = JSON.stringify({
+      schema_version: "relay.error.v1",
+      level: "warn",
+      message: `relay-sdk: unknown error code ${code}; deserialized to RelayUnknownError`,
+      code,
+      observed_envelope: envelope,
+    });
+    // process.stderr is the canonical sink; fall back to console.warn if
+    // process is unavailable (browser-like runtimes).
+    if (typeof process !== "undefined" && typeof process.stderr?.write === "function") {
+      process.stderr.write(payload + "\n");
+    } else {
+      // eslint-disable-next-line no-console
+      console.warn(payload);
+    }
+  } catch {
+    // Never throw from a forward-compat warning emitter.
   }
 }
 

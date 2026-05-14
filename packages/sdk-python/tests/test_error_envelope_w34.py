@@ -106,7 +106,12 @@ def test_hierarchy_namespace_intermediates_cover_required_prefixes() -> None:
         ("RELAY-ING-032", RelayIngestError),
         ("RELAY-AUTH-001", RelayAuthError),
         ("RELAY-RATE-001", RelayRateLimitError),
-        ("RELAY-GATE-021", RelayGateError),
+        # W4.4: RELAY-GATE-021 routes to the typed RelayHandoffIncomplete
+        # leaf (extends RelayIngestError) for cross-language parity with
+        # the TS leaf registry (VAL-W4-028). The legacy namespace assertion
+        # is preserved on the typed leaf's parent chain by the
+        # test_existing_leaf_exceptions_inherit_from_namespace_class case.
+        ("RELAY-GATE-021", RelayIngestError),
         ("RELAY-EVID-002", RelayEvidenceError),
         ("RELAY-EVID-014", RelayEvidenceError),
         ("RELAY-REPLAY-002", RelayReplayError),
