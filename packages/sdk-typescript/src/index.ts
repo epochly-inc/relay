@@ -55,6 +55,11 @@ export {
   RelayAuthMismatch,
   // Adversarial canonical-write subclass (VAL-W4-010 surface).
   RelayControlPlaneOwnershipError,
+  // W4.2 lifecycle typed leaves.
+  RelayLifecycleInvalid,
+  RelayPolicyError,
+  RelaySideEffectMissingFieldsError,
+  RelayReplayLiveModeUnacknowledgedError,
   // Sidecar-bundle (npx wrapper) typed leaves.
   RelaySidecarBundleUnverified,
   RelaySidecarBundleDigestMismatch,

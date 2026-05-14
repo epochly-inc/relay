@@ -46,6 +46,9 @@ export const RELAY_ING_031_CODE = "RELAY-ING-031";
 export const RELAY_ING_032_CODE = "RELAY-ING-032";
 export const RELAY_REPLAY_002_CODE = "RELAY-REPLAY-002";
 export const RELAY_EVID_002_CODE = "RELAY-EVID-002";
+// Gate-handoff stale (spec B.4 RELAY-GATE-021). Maps to RelayHandoffIncomplete
+// per VAL-W4-015 (stale handoff surface).
+export const RELAY_GATE_021_CODE = "RELAY-GATE-021";
 
 // Namespace defaults.
 export const RELAY_ING_DEFAULT_CODE = "RELAY-ING-001";
@@ -69,6 +72,9 @@ export const RELAY_SIDECAR_BUNDLE_ARCH_UNSUPPORTED_CODE = "RELAY-SIDECAR-023";
 export const RELAY_SDK_SIDECAR_LOCATOR_CODE = "RELAY-SDK-011";
 export const RELAY_SDK_TRUST_ROOT_OVERRIDE_DENIED_CODE = "RELAY-SDK-012";
 export const RELAY_SDK_BUNDLE_VERIFY_TIMEOUT_CODE = "RELAY-SDK-013";
+// W4.2 lifecycle codes (VAL-W4-013, VAL-W4-017).
+export const RELAY_SDK_SIDE_EFFECT_FIELDS_MISSING_CODE = "RELAY-SDK-014";
+export const RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CODE = "RELAY-SDK-015";
 
 // Descriptive error_class tokens (contract.md prose).
 export const RELAY_SDK_CONFIG_CLASS = "RELAY-SDK-CONFIG-001";
@@ -92,6 +98,11 @@ export const RELAY_SDK_SIDECAR_LOCATOR_CLASS = "RELAY-SDK-SIDECAR-LOCATOR";
 export const RELAY_SDK_TRUST_ROOT_OVERRIDE_DENIED_CLASS =
   "RELAY-SDK-TRUST-ROOT-OVERRIDE-DENIED";
 export const RELAY_SDK_BUNDLE_VERIFY_TIMEOUT_CLASS = "RELAY-SDK-BUNDLE-VERIFY-TIMEOUT";
+// W4.2 lifecycle classes.
+export const RELAY_SDK_SIDE_EFFECT_FIELDS_MISSING_CLASS =
+  "RELAY-SDK-SIDE-EFFECT-FIELDS-MISSING";
+export const RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CLASS =
+  "RELAY-SDK-REPLAY-LIVE-MODE-UNACKNOWLEDGED";
 
 const DEFAULT_DOC_URL_PREFIX = "https://relay.epochly.com/docs/errors/";
 
@@ -457,6 +468,37 @@ export class RelayPolicyError extends RelayIngestError {
   static override defaultRetryAdvice: RetryAdviceMode = "no_retry";
 }
 
+/**
+ * VAL-W4-013: side-effecting tool_call missing idempotencyKey or replayPolicy.
+ *
+ * The SDK refuses to open the span when ``side_effect: true`` is set
+ * without both companion fields. The control plane never sees the
+ * malformed span (defense-in-depth: spec X side-effect idempotency,
+ * CLAUDE.md keystone invariant #6).
+ */
+export class RelaySideEffectMissingFieldsError extends RelaySdkError {
+  static override defaultCode = RELAY_SDK_SIDE_EFFECT_FIELDS_MISSING_CODE;
+  static override defaultErrorClass = RELAY_SDK_SIDE_EFFECT_FIELDS_MISSING_CLASS;
+  static override defaultHttpStatus = 422;
+  static override defaultBlockedSurface = "relay-sdk-tool-call";
+  static override defaultRetryAdvice: RetryAdviceMode = "no_retry";
+}
+
+/**
+ * VAL-W4-017: live replay called without explicit acknowledgement.
+ *
+ * Live mode is a "degraded approximation" (CLAUDE.md keystone invariant
+ * #9). The SDK refuses to dispatch the request unless the caller passes
+ * ``acknowledgeDegradedApproximation: true``.
+ */
+export class RelayReplayLiveModeUnacknowledgedError extends RelaySdkError {
+  static override defaultCode = RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CODE;
+  static override defaultErrorClass = RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CLASS;
+  static override defaultHttpStatus = 422;
+  static override defaultBlockedSurface = "POST /v1/replay-cases/{case_id}/run";
+  static override defaultRetryAdvice: RetryAdviceMode = "no_retry";
+}
+
 // -----------------------------------------------------------------------------
 // W4 sidecar-bundle typed leaves (used by npx wrapper).
 // -----------------------------------------------------------------------------
@@ -544,9 +586,12 @@ const CODE_LEAF_REGISTRY: Record<string, typeof RelayError> = {
   [RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CODE]: RelayCanonicalStatusForbidden,
   [RELAY_SDK_LIFECYCLE_INVALID_CODE]: RelayLifecycleInvalid,
   [RELAY_SDK_HANDOFF_INCOMPLETE_CODE]: RelayHandoffIncomplete,
+  [RELAY_GATE_021_CODE]: RelayHandoffIncomplete,
   [RELAY_SDK_EVIDENCE_INCOMPLETE_CODE]: RelayEvidenceIncomplete,
   [RELAY_SDK_REPLAY_PRECONDITION_CODE]: RelayReplayPrecondition,
   [RELAY_SDK_POLICY_INVALID_CODE]: RelayPolicyError,
+  [RELAY_SDK_SIDE_EFFECT_FIELDS_MISSING_CODE]: RelaySideEffectMissingFieldsError,
+  [RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CODE]: RelayReplayLiveModeUnacknowledgedError,
 };
 
 // Order matters: longest namespace prefix first.
