@@ -46,7 +46,7 @@ from typing import Any
 
 import aiosqlite
 
-from .errors import RelaySQLiteBusyExhausted
+from .errors import RelayDiskFullError, RelaySQLiteBusyExhausted
 
 # Default reader-pool size. Configurable via ``SidecarDatabase`` ctor.
 DEFAULT_READER_COUNT: int = 2
@@ -148,6 +148,44 @@ def _next_backoff_ms(attempt: int) -> int:
     # 20, 40, 80, 160, 320, 640, then cap.
     raw = INITIAL_BACKOFF_MS * (2 ** (attempt - 1))
     return min(raw, MAX_BACKOFF_MS)
+
+
+# W2.7: ENOSPC (POSIX) and ERROR_DISK_FULL (Windows errno 39 / 112) all
+# surface from SQLite as ``sqlite3.OperationalError`` with one of these
+# substrings (lowercased). The integer errno embedded in the exception
+# is captured separately by ``_extract_errno`` for forensic detail.
+_DISK_FULL_MESSAGE_TOKENS: tuple[str, ...] = (
+    "database or disk is full",
+    "disk full",
+    "no space left on device",
+    "enospc",
+)
+
+
+def _is_disk_full_message(lowercased_msg: str) -> bool:
+    """Return True iff ``lowercased_msg`` carries a disk-full marker.
+
+    Cross-version: SQLite has emitted the message in various forms. The
+    detector matches any of the canonical substrings.
+    """
+    return any(token in lowercased_msg for token in _DISK_FULL_MESSAGE_TOKENS)
+
+
+def _extract_errno(exc: BaseException) -> int | None:
+    """Best-effort extract of an OS errno from ``exc.__cause__`` or args.
+
+    sqlite3.OperationalError chains may carry an OSError with a
+    ``errno`` attribute. When unavailable returns None; the caller
+    surfaces None in the structured envelope.
+    """
+    cause = getattr(exc, "__cause__", None)
+    if isinstance(cause, OSError) and cause.errno is not None:
+        return int(cause.errno)
+    # Some sqlite builds set the errno directly on the OperationalError.
+    direct = getattr(exc, "errno", None)
+    if isinstance(direct, int):
+        return direct
+    return None
 
 
 def _now_rfc3339_utc() -> str:
@@ -511,6 +549,21 @@ class SidecarDatabase:
                 return result
             except sqlite3.OperationalError as e:
                 msg = str(e).lower()
+                # VAL-W2-052: SQLite surfaces disk-full as
+                # "database or disk is full" / "disk i/o error"
+                # carrying the underlying ENOSPC errno. We catch BEFORE
+                # the busy/locked branch so a disk-full error never
+                # masquerades as a transient retry.
+                if _is_disk_full_message(msg):
+                    raise RelayDiskFullError(
+                        message=(
+                            f"SQLite write to table {req.table!r} failed: "
+                            f"disk full (no space left on device)"
+                        ),
+                        table=req.table,
+                        scope_id=req.scope_id,
+                        os_errno=_extract_errno(e),
+                    ) from e
                 # SQLITE_BUSY / SQLITE_LOCKED surface as OperationalError
                 # with these prefixes. We retry on both; any other
                 # OperationalError (e.g. malformed SQL) escapes.

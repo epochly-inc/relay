@@ -226,6 +226,16 @@ class QuiesceState:
     # SIGTERM" or "force-stop". Used for diagnostics + the
     # ``sidecar.idle_shutdown`` event_log row emitted in lifespan.
     idle_shutdown_triggered: bool = False
+    # W2.7 VAL-W2-053: True when the lifespan tear-down's
+    # ``PRAGMA wal_checkpoint(TRUNCATE)`` failed (e.g., a reader held an
+    # old snapshot beyond the timeout). The lifespan emits the
+    # ``RELAY-SIDECAR-WAL-CHECKPOINT-FAILED`` envelope to stderr +
+    # signals exit code 6 when running under uvicorn; in-process tests
+    # observe this flag.
+    wal_checkpoint_failed: bool = False
+    # Optional message from the failed checkpoint (PRAGMA returned
+    # busy=1 OR raised an exception). Empty when checkpoint succeeded.
+    wal_checkpoint_failure_reason: str = ""
     # Reference to the in-flight tracker. Populated in lifespan startup.
     tracker: InflightTracker | None = field(default=None)
 

@@ -22,6 +22,10 @@ The numeric allocation is locked here:
     RELAY-SIDECAR-007 -> DRAINING             (VAL-W2-015)
     RELAY-SIDECAR-008 -> CONTEXT-NOT-REHYDRATED (VAL-W2-056)
     RELAY-SIDECAR-009 -> BYPASS-MARKER-DETECTED (VAL-W2-057)
+    RELAY-SIDECAR-010 -> DB-CORRUPT              (VAL-W2-051)
+    RELAY-SIDECAR-011 -> DISK-FULL               (VAL-W2-052)
+    RELAY-SIDECAR-012 -> WAL-CHECKPOINT-FAILED   (VAL-W2-053)
+    RELAY-SIDECAR-013 -> SCHEMA-VERSION-UNKNOWN  (VAL-W2-054)
     RELAY-SQLITE-001  -> SQLITE-BUSY-EXHAUSTED (VAL-W2-020)
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
@@ -46,6 +50,11 @@ RELAY_SIDECAR_DRAINING_CODE: Final[str] = "RELAY-SIDECAR-007"
 # Emitted when a resumed worker submits a state transition with a stale
 # manifest/contract/procedure hash relative to the on-disk active version.
 RELAY_SIDECAR_CONTEXT_NOT_REHYDRATED_CODE: Final[str] = "RELAY-SIDECAR-008"
+# W2.7 numeric codes for sidecar recovery surfaces (VAL-W2-051..054).
+RELAY_SIDECAR_DB_CORRUPT_CODE: Final[str] = "RELAY-SIDECAR-010"
+RELAY_SIDECAR_DISK_FULL_CODE: Final[str] = "RELAY-SIDECAR-011"
+RELAY_SIDECAR_WAL_CHECKPOINT_FAILED_CODE: Final[str] = "RELAY-SIDECAR-012"
+RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN_CODE: Final[str] = "RELAY-SIDECAR-013"
 # W2.3 numeric code for SQLITE BUSY exhaustion (VAL-W2-020).
 RELAY_SQLITE_BUSY_EXHAUSTED_CODE: Final[str] = "RELAY-SQLITE-001"
 
@@ -61,6 +70,11 @@ RELAY_SIDECAR_NONLOCAL_FS: Final[str] = "RELAY-SIDECAR-NONLOCAL-FS"
 RELAY_SIDECAR_DRAINING: Final[str] = "RELAY-SIDECAR-DRAINING"
 # W2.4 descriptive token for context-reinjection guard (VAL-W2-056 prose).
 RELAY_SIDECAR_CONTEXT_NOT_REHYDRATED: Final[str] = "RELAY-SIDECAR-CONTEXT-NOT-REHYDRATED"
+# W2.7 descriptive tokens for sidecar recovery surfaces (VAL-W2-051..054).
+RELAY_SIDECAR_DB_CORRUPT: Final[str] = "RELAY-SIDECAR-DB-CORRUPT"
+RELAY_SIDECAR_DISK_FULL: Final[str] = "RELAY-SIDECAR-DISK-FULL"
+RELAY_SIDECAR_WAL_CHECKPOINT_FAILED: Final[str] = "RELAY-SIDECAR-WAL-CHECKPOINT-FAILED"
+RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN: Final[str] = "RELAY-SIDECAR-SCHEMA-VERSION-UNKNOWN"
 # Contract-text descriptive token used in VAL-W2-020 prose.
 RELAY_SQLITE_BUSY_EXHAUSTED: Final[str] = "RELAY-SQLITE-BUSY-EXHAUSTED"
 
@@ -74,6 +88,10 @@ _CODE_TO_CLASS: Final[dict[str, str]] = {
     RELAY_SIDECAR_NONLOCAL_FS_CODE: RELAY_SIDECAR_NONLOCAL_FS,
     RELAY_SIDECAR_DRAINING_CODE: RELAY_SIDECAR_DRAINING,
     RELAY_SIDECAR_CONTEXT_NOT_REHYDRATED_CODE: RELAY_SIDECAR_CONTEXT_NOT_REHYDRATED,
+    RELAY_SIDECAR_DB_CORRUPT_CODE: RELAY_SIDECAR_DB_CORRUPT,
+    RELAY_SIDECAR_DISK_FULL_CODE: RELAY_SIDECAR_DISK_FULL,
+    RELAY_SIDECAR_WAL_CHECKPOINT_FAILED_CODE: RELAY_SIDECAR_WAL_CHECKPOINT_FAILED,
+    RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN_CODE: RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN,
     RELAY_SQLITE_BUSY_EXHAUSTED_CODE: RELAY_SQLITE_BUSY_EXHAUSTED,
 }
 _CLASS_TO_CODE: Final[dict[str, str]] = {v: k for k, v in _CODE_TO_CLASS.items()}
@@ -184,11 +202,65 @@ class RelaySQLiteBusyExhausted(Exception):
         }
 
 
+class RelayDiskFullError(Exception):
+    """Disk-full mid-write maps to ``RELAY-SIDECAR-DISK-FULL`` (VAL-W2-052).
+
+    Raised by ``transactional_db_write`` when the underlying SQLite write
+    fails with ``sqlite3.OperationalError`` whose message identifies the
+    POSIX ``ENOSPC`` (or platform-specific equivalent) condition. The
+    transaction is rolled back BEFORE this exception surfaces so no
+    partial rows remain and ``PRAGMA integrity_check`` returns ``ok``
+    on the database after the failure.
+
+    Not a ``SidecarError`` subclass because SidecarError is dataclass-
+    frozen with the strict ``(code, error_class)`` pair check; this
+    exception additionally carries ``table`` and ``scope_id`` for the
+    observability surface and is constructed deep inside the writer
+    queue retry loop.
+    """
+
+    code: Final[str] = RELAY_SIDECAR_DISK_FULL_CODE
+    error_class: Final[str] = RELAY_SIDECAR_DISK_FULL
+    http_status: Final[int] = 507  # 507 Insufficient Storage; RFC 4918
+
+    def __init__(
+        self,
+        *,
+        message: str,
+        table: str,
+        scope_id: str,
+        os_errno: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.table = table
+        self.scope_id = scope_id
+        self.os_errno = os_errno
+
+    def to_envelope(self) -> dict[str, object]:
+        """Return a JSON-serialisable error envelope payload."""
+        return {
+            "code": self.code,
+            "error_class": self.error_class,
+            "http_status": self.http_status,
+            "message": self.message,
+            "details": {
+                "table": self.table,
+                "scope_id": self.scope_id,
+                "os_errno": self.os_errno,
+            },
+        }
+
+
 __all__ = [
     "RELAY_SIDECAR_AUTH_MISMATCH",
     "RELAY_SIDECAR_AUTH_MISMATCH_CODE",
     "RELAY_SIDECAR_CONTEXT_NOT_REHYDRATED",
     "RELAY_SIDECAR_CONTEXT_NOT_REHYDRATED_CODE",
+    "RELAY_SIDECAR_DB_CORRUPT",
+    "RELAY_SIDECAR_DB_CORRUPT_CODE",
+    "RELAY_SIDECAR_DISK_FULL",
+    "RELAY_SIDECAR_DISK_FULL_CODE",
     "RELAY_SIDECAR_DRAINING",
     "RELAY_SIDECAR_DRAINING_CODE",
     "RELAY_SIDECAR_LOCKFILE_INSECURE",
@@ -201,8 +273,13 @@ __all__ = [
     "RELAY_SIDECAR_NONCE_EXPIRED_CODE",
     "RELAY_SIDECAR_NONLOCAL_FS",
     "RELAY_SIDECAR_NONLOCAL_FS_CODE",
+    "RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN",
+    "RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN_CODE",
+    "RELAY_SIDECAR_WAL_CHECKPOINT_FAILED",
+    "RELAY_SIDECAR_WAL_CHECKPOINT_FAILED_CODE",
     "RELAY_SQLITE_BUSY_EXHAUSTED",
     "RELAY_SQLITE_BUSY_EXHAUSTED_CODE",
+    "RelayDiskFullError",
     "RelaySQLiteBusyExhausted",
     "SidecarError",
     "make_error",

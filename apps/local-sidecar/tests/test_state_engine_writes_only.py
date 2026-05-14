@@ -92,6 +92,27 @@ _PERMITTED_RUNTIME_PY_WRITES_FILE = (
     / "runtime.py"
 )
 
+# Documented W2.7 exception: ``recovery.py::emit_crash_recovery_event``
+# writes a single ``sidecar.crash_recovered`` event_log row using a
+# fresh sqlite3 connection BEFORE the SidecarDatabase + writer queue
+# are initialised in lifespan startup. Routing through the state
+# engine is impossible here because the state engine itself is not yet
+# running. Like the W2.3 db.py retry-flush exception and the W2.6
+# runtime.py forced-stop exception, the crash-recovery row is forensic
+# post-mortem evidence (event_kind='sidecar_crash_recovered') and is
+# categorically distinct from canonical state-transition rows
+# (event_kind='state_transition' / 'state_invalid_transition'). Per
+# VAL-W2-049 the row MUST be emitted as part of the recovery summary
+# after WAL replay; the lifespan calls into recovery.py BEFORE
+# database.open() runs.
+_PERMITTED_RECOVERY_PY_WRITES_FILE = (
+    _REPO_ROOT
+    / "apps"
+    / "local-sidecar"
+    / "relay_sidecar"
+    / "recovery.py"
+)
+
 
 def _python_files(root: Path) -> list[Path]:
     if not root.exists():
@@ -124,6 +145,12 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # writes the forensic sidecar.forced_stop row on a separate
             # connection. See _PERMITTED_RUNTIME_PY_WRITES_FILE.
             if path == _PERMITTED_RUNTIME_PY_WRITES_FILE:
+                continue
+            # Documented W2.7 exception: recovery.py::emit_crash_recovery_event
+            # writes the forensic sidecar.crash_recovered row using a fresh
+            # sqlite3 connection BEFORE the SidecarDatabase opens. See
+            # _PERMITTED_RECOVERY_PY_WRITES_FILE.
+            if path == _PERMITTED_RECOVERY_PY_WRITES_FILE:
                 continue
             text = path.read_text(encoding="utf-8")
             for line_no, line in enumerate(text.splitlines(), start=1):
@@ -200,12 +227,17 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
     state_engine_marker = "/relay_sidecar/state_engine/"
     db_py_marker = "/relay_sidecar/db.py:"  # W2.3 retry-flush exception
     runtime_py_marker = "/relay_sidecar/runtime.py:"  # W2.6 forced-stop forensic
+    recovery_py_marker = (
+        "/relay_sidecar/recovery.py:"  # W2.7 crash-recovered forensic
+    )
     for line in result.stdout.splitlines():
         if state_engine_marker in line:
             continue
         if db_py_marker in line:
             continue
         if runtime_py_marker in line:
+            continue
+        if recovery_py_marker in line:
             continue
         offending_lines.append(line)
     assert not offending_lines, (

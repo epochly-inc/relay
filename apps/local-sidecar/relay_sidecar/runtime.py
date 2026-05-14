@@ -356,14 +356,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # WAL CHECKPOINT (VAL-W2-045) -- on graceful path only. Forced
         # stop deliberately skips so the WAL retains uncommitted bytes
         # and the next startup runs WAL recovery (covered by W2.7).
+        #
+        # W2.7 VAL-W2-053: detect a failed checkpoint (busy != 0 or raised
+        # exception) and surface it. We invoke BOTH helpers: the existing
+        # ``_wal_checkpoint_truncate`` (kept for VAL-W2-045's monkeypatch
+        # surface) AND the new ``_wal_checkpoint_truncate_with_status``
+        # whose return value the lifespan inspects for busy-flag failures.
         if not force_stop and state.database is not None:
             await _wal_checkpoint_truncate(state.database)
+            ok, reason = await _wal_checkpoint_truncate_with_status(
+                state.database
+            )
+            if not ok:
+                state.quiesce.wal_checkpoint_failed = True
+                state.quiesce.wal_checkpoint_failure_reason = reason
+                # Per VAL-W2-053: emit the structured envelope to stderr
+                # so subprocess-based runs observe the error AND preserve
+                # the WAL file (do NOT delete the WAL or close
+                # connections any more aggressively than the normal path).
+                # The exit code 6 is signalled via uvicorn's should_exit
+                # when running under uvicorn; in-process tests assert
+                # the flag on state.quiesce instead.
+                _surface_wal_checkpoint_failure(app, state, reason)
 
         # Close the SQLite database manager (cancels the writer task,
         # drains pending requests, closes all connections). Clear the
         # module-level registration so a subsequent
         # ``transactional_db_write`` call surfaces a clean RuntimeError
         # rather than touching a closed connection.
+        #
+        # W2.7 VAL-W2-053: SQLite's libsqlite removes the WAL file on
+        # the LAST connection close UNLESS uncheckpointed frames remain
+        # AND the file was opened with FCNTL_PERSIST_WAL. aiosqlite does
+        # not expose a portable PERSIST_WAL switch, so we side-step the
+        # ambiguity by copying the WAL bytes to a sentinel preserved
+        # path BEFORE closing connections when checkpoint failed. The
+        # next-startup recovery path (recovery.py) inspects both
+        # ``<db>-wal`` AND ``<db>-wal.preserved``; presence of either
+        # triggers the WAL replay branch.
+        wal_cp_failed = state.quiesce.wal_checkpoint_failed
+        if wal_cp_failed and state.database is not None:
+            _preserve_wal_for_next_startup(state.sqlite_path)
         if state.database is not None:
             await state.database.close()
             state.database = None
@@ -376,9 +409,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await client.aclose()
 
         # CLEAR LOCKFILE (VAL-W2-047) -- on graceful path only. Force-stop
-        # leaves it in place so the next acquire_or_attach observes
-        # STALE_PID and clears via the spawn path.
-        if not force_stop and state.lockfile_path is not None:
+        # AND wal-checkpoint-failure paths both leave it in place so the
+        # next acquire_or_attach observes STALE_PID and clears via the
+        # spawn path.
+        if not force_stop and not wal_cp_failed and state.lockfile_path is not None:
             with contextlib.suppress(FileNotFoundError, OSError):
                 local_atomic_file_write(
                     state.lockfile_path, b"", mode=0o600
@@ -416,6 +450,146 @@ async def _wal_checkpoint_truncate(database: SidecarDatabase) -> None:
     # Commit any implicit transaction the PRAGMA opened (defensive).
     with contextlib.suppress(Exception):
         await conn.commit()
+
+
+def _preserve_wal_for_next_startup(db_path: Path) -> None:
+    """W2.7 VAL-W2-053: copy ``<db>-wal`` to a sentinel preserved path.
+
+    SQLite removes ``<db>-wal`` on the last connection close (no
+    standard PRAGMA exposes ``SQLITE_FCNTL_PERSIST_WAL``). To honour
+    VAL-W2-053's "preserve the WAL" contract we copy the WAL bytes
+    to ``<db>-wal.preserved`` BEFORE the close call removes them. The
+    next-startup recovery path inspects both names.
+
+    Best-effort: failure to copy is non-fatal. Without the preserve
+    copy, the failed-checkpoint warning is still emitted on stderr;
+    only the next-startup replay loses the in-flight frames.
+    """
+    wal_path = db_path.parent / (db_path.name + "-wal")
+    if not wal_path.exists():
+        return
+    try:
+        body = wal_path.read_bytes()
+    except OSError:
+        return
+    if not body:
+        return
+    preserved = wal_path.parent / (wal_path.name + ".preserved")
+    with contextlib.suppress(OSError):
+        local_atomic_file_write(preserved, body, mode=0o600)
+
+
+def _surface_wal_checkpoint_failure(
+    app: FastAPI, state: RuntimeState, reason: str
+) -> None:
+    """W2.7 VAL-W2-053: emit structured envelope + signal exit code 6.
+
+    The lifespan tear-down calls this when
+    ``_wal_checkpoint_truncate_with_status`` reports failure. Behaviour:
+
+      - Mark ``state.quiesce.wal_checkpoint_failed = True`` (the caller
+        already does this; we re-assert defensively).
+      - Emit the JSON envelope to stderr (subprocess tests parse it).
+      - When running under uvicorn (``app.state.uvicorn_server`` set),
+        set ``server.should_exit = True`` so the process exits with the
+        configured code on the next loop iteration. Direct sys.exit(6)
+        would crash in-process tests; uvicorn's should_exit path lets
+        the loop unwind cleanly.
+
+    Exit code 6 itself is enforced by the CLI entrypoint (W5) which
+    inspects ``state.quiesce.wal_checkpoint_failed`` after the lifespan
+    exits and calls ``sys.exit(6)`` accordingly. For pure-asgi tests the
+    flag on ``state.quiesce`` is the observable evidence.
+    """
+    from .errors import (
+        RELAY_SIDECAR_WAL_CHECKPOINT_FAILED,
+        RELAY_SIDECAR_WAL_CHECKPOINT_FAILED_CODE,
+    )
+    from .recovery import (
+        EXIT_CODE_WAL_CHECKPOINT_FAILED,
+        _wal_size,
+    )
+
+    state.quiesce.wal_checkpoint_failed = True
+    state.quiesce.wal_checkpoint_failure_reason = reason
+    db_path = state.sqlite_path
+    wal_path = db_path.parent / (db_path.name + "-wal")
+    envelope = {
+        "code": RELAY_SIDECAR_WAL_CHECKPOINT_FAILED_CODE,
+        "error_class": RELAY_SIDECAR_WAL_CHECKPOINT_FAILED,
+        "exit_code": EXIT_CODE_WAL_CHECKPOINT_FAILED,
+        "message": (
+            "sidecar shutdown: PRAGMA wal_checkpoint(TRUNCATE) failed; "
+            "WAL preserved for next-startup recovery"
+        ),
+        "details": {
+            "db_path": str(db_path),
+            "wal_path": str(wal_path),
+            "wal_present": wal_path.exists(),
+            "wal_size_bytes": _wal_size(db_path),
+            "underlying_error": reason,
+        },
+    }
+    line = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+    import sys as _sys
+
+    _sys.stderr.write(line + "\n")
+    _sys.stderr.flush()
+    server = getattr(app.state, "uvicorn_server", None)
+    if server is not None:
+        server.should_exit = True
+
+
+async def _wal_checkpoint_truncate_with_status(
+    database: SidecarDatabase,
+) -> tuple[bool, str]:
+    """W2.7 VAL-W2-053: run TRUNCATE checkpoint and report success.
+
+    Returns ``(success, reason)``:
+
+      - ``(True, "")`` -- the PRAGMA returned ``(busy=0, ...)`` and no
+        exception was raised. The WAL has been truncated to size 0 (or
+        is empty pending the final connection close).
+      - ``(False, <reason>)`` -- the PRAGMA returned ``busy=1`` (a
+        reader held an old snapshot beyond the busy_timeout window) OR
+        raised an exception. ``reason`` carries the failure detail.
+
+    Why TWO helpers: the original ``_wal_checkpoint_truncate`` is used
+    by VAL-W2-045 tests that monkeypatch the function name and inspect
+    the call order. Adding the status detection there would change the
+    return type and break those tests. The new helper wraps the same
+    PRAGMA but with a (success, reason) return contract.
+    """
+    conn = database._writer
+    if conn is None:
+        return (True, "")
+    try:
+        async with conn.execute("PRAGMA wal_checkpoint(TRUNCATE)") as cur:
+            rows = await cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        return (False, f"{type(e).__name__}: {e}")
+    with contextlib.suppress(Exception):
+        await conn.commit()
+    # PRAGMA wal_checkpoint(TRUNCATE) returns a single row
+    # ``(busy, log_size, frames_checkpointed)``. busy=1 means SQLite
+    # could not acquire the writer/reader lock to truncate. busy=0
+    # means the truncate succeeded. We treat busy != 0 as failure.
+    if not rows:
+        return (True, "")
+    first = rows[0]
+    try:
+        busy_flag = int(first[0])
+    except (TypeError, ValueError, IndexError):
+        return (True, "")
+    if busy_flag != 0:
+        return (
+            False,
+            (
+                f"PRAGMA wal_checkpoint(TRUNCATE) returned busy={busy_flag}; "
+                f"a reader holds an old snapshot beyond the busy_timeout window"
+            ),
+        )
+    return (True, "")
 
 
 # Module-level reference to the loop slot we installed our SIGUSR1
