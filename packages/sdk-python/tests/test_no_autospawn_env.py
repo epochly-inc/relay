@@ -23,6 +23,7 @@ _VALID_KEY = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-008")
 def test_no_autospawn_with_no_sidecar_raises_not_reachable(
     relay_home_tmp,
     monkeypatch: pytest.MonkeyPatch,
@@ -57,6 +58,7 @@ def test_no_autospawn_with_no_sidecar_raises_not_reachable(
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-008")
 def test_no_autospawn_with_stale_lockfile_raises_not_reachable(
     relay_home_tmp,
     monkeypatch: pytest.MonkeyPatch,
@@ -86,6 +88,7 @@ def test_no_autospawn_with_stale_lockfile_raises_not_reachable(
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-008")
 def test_no_autospawn_attaches_to_running_sidecar(
     relay_home_tmp,
     stop_sidecar,

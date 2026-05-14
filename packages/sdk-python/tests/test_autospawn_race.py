@@ -119,6 +119,7 @@ def _stop_sidecar(relay_home: Path) -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-006")
 def test_ten_concurrent_first_ops_yield_one_spawn_nine_attach(
     tmp_path: Path,
 ) -> None:

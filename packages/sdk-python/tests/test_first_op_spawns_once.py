@@ -30,6 +30,7 @@ def _spawn_or_attach_count(relay_home) -> int:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-002")
 def test_first_trace_triggers_exactly_one_spawn_or_attach(
     relay_home_tmp,
     stop_sidecar,
@@ -67,6 +68,7 @@ def test_first_trace_triggers_exactly_one_spawn_or_attach(
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-002")
 def test_second_client_same_home_attaches_not_respawns(
     relay_home_tmp,
     stop_sidecar,

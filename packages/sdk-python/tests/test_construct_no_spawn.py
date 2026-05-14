@@ -39,6 +39,7 @@ def _port_is_bound(port: int) -> bool:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-003")
 def test_construction_does_not_spawn_but_trace_does(
     relay_home_tmp,
     stop_sidecar,
@@ -72,6 +73,7 @@ def test_construction_does_not_spawn_but_trace_does(
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-003")
 def test_construction_with_invalid_key_still_no_spawn(relay_home_tmp) -> None:
     """A construction that raises also leaves no spawn artifact behind."""
     from relay import RelayConfigError

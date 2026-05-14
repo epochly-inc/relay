@@ -112,6 +112,7 @@ def _sys_path_arg() -> str:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-001")
 def test_import_relay_does_not_spawn_sidecar(tmp_path: Path) -> None:
     """A fresh subprocess importing relay spawns nothing and writes no lockfile."""
     relay_home = tmp_path / "relay-home"

@@ -34,6 +34,7 @@ _VALID_KEY = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-004")
 def test_sdk_nonce_proof_matches_sidecar_verification() -> None:
     """The SDK's nonce-signing function is byte-identical to the sidecar's.
 
@@ -51,6 +52,7 @@ def test_sdk_nonce_proof_matches_sidecar_verification() -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-004")
 def test_attach_completes_nonce_challenge_happy_path(
     relay_home_tmp,
     stop_sidecar,
@@ -79,6 +81,7 @@ def test_attach_completes_nonce_challenge_happy_path(
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-004")
 def test_nonce_proof_rejected_surfaces_auth_mismatch(
     relay_home_tmp,
     stop_sidecar,
@@ -114,6 +117,7 @@ def test_nonce_proof_rejected_surfaces_auth_mismatch(
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-004")
 def test_attach_issues_health_with_auth_header(
     relay_home_tmp,
     stop_sidecar,
@@ -144,6 +148,7 @@ def test_attach_issues_health_with_auth_header(
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-004")
 def test_transport_is_import_side_effect_free() -> None:
     """Constructing a SidecarTransport spawns nothing and binds nothing."""
     import tempfile

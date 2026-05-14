@@ -28,6 +28,7 @@ _VALID_KEY = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-007")
 def test_version_compat_helper_accepts_in_range() -> None:
     """The pinned in-range version(s) are accepted."""
     assert is_sidecar_version_compatible(MIN_COMPATIBLE_SIDECAR_VERSION)
@@ -35,6 +36,7 @@ def test_version_compat_helper_accepts_in_range() -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-007")
 @pytest.mark.parametrize(
     "bad_version",
     [
@@ -51,6 +53,7 @@ def test_version_compat_helper_rejects_out_of_range(bad_version: str) -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-007")
 def test_attach_with_out_of_range_version_raises(
     relay_home_tmp,
     stop_sidecar,

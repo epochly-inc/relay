@@ -22,6 +22,7 @@ _WIRE_CODE_RE = re.compile(r"^RELAY-[A-Z]+-[0-9]{3}$")
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-005")
 @pytest.mark.parametrize(
     "bad_key",
     [
@@ -50,6 +51,7 @@ def test_invalid_project_key_raises_relay_config_error(bad_key: object) -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-005")
 def test_invalid_project_key_no_spawn_no_lockfile_no_http(
     relay_home_tmp,
     monkeypatch: pytest.MonkeyPatch,
@@ -85,6 +87,7 @@ def test_invalid_project_key_no_spawn_no_lockfile_no_http(
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-005")
 def test_valid_project_key_constructs_without_error(relay_home_tmp) -> None:
     """A syntactically valid ULID or relay_pk_ token constructs cleanly."""
     ulid_client = Relay(project_key="01ARZ3NDEKTSV4RRFFQ69G5FAV")
