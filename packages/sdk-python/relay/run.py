@@ -38,6 +38,7 @@ import httpx
 
 from . import _ulid, lifecycle
 from .errors import (
+    _NAMESPACE_PREFIX_REGISTRY,
     RELAY_EVID_002_CODE,
     RELAY_ING_022_CODE,
     RELAY_ING_031_CODE,
@@ -46,10 +47,8 @@ from .errors import (
     RelayCanonicalStatusForbidden,
     RelayConfigError,
     RelayError,
-    RelayEvidenceIncomplete,
-    RelayHandoffIncomplete,
-    RelayPolicyError,
-    RelayReplayPrecondition,
+    RelayUnknownError,
+    resolve_class_for_code,
 )
 from .flush import AsyncFlushDispatcher, FlushPolicy
 
@@ -156,60 +155,126 @@ class _LifecycleHTTPClient:
     ) -> None:
         """Translate a non-2xx HTTP response into the right RelayError.
 
-        Maps wire-format codes back to the SDK's typed exceptions:
+        Maps wire-format codes back to the SDK's typed exceptions via
+        :func:`relay.errors.resolve_class_for_code`:
 
           * ``RELAY-ING-031``    -> :class:`RelayCanonicalStatusForbidden`
           * ``RELAY-ING-022``    -> :class:`RelayHandoffIncomplete`
           * ``RELAY-REPLAY-002`` -> :class:`RelayReplayPrecondition`
           * ``RELAY-EVID-002``   -> :class:`RelayEvidenceIncomplete`
+          * ``RELAY-ING-032``    -> :class:`RelayPolicyError` (W3.3
+            defense-in-depth; the sidecar rejected a raw plaintext
+            payload that should have been redacted at the SDK
+            boundary, VAL-W3-027 / CLAUDE.md keystone invariant #7)
+          * Any other known prefix -> the namespace-intermediate class
+            (e.g. ``RELAY-RATE-*`` -> ``RelayRateLimitError``).
+          * Unknown code -> :class:`RelayUnknownError` with the original
+            code preserved (VAL-W3-035).
 
-        Other 4xx/5xx surface as a generic :class:`RelayError` carrying
-        the envelope code in ``details``.
+        Every raised exception carries ``request_id`` and ``trace_id``
+        sourced from the envelope body if present, falling back to the
+        ``X-Request-ID`` / ``X-Trace-ID`` response headers (VAL-W3-033).
+        ``blocked_surface`` is sourced from the envelope or defaults to
+        the request URL path (VAL-W3-032). ``retry_advice`` is the wire
+        enum string when present and is coerced to the SDK structured
+        dict shape inside the exception (VAL-W3-031).
         """
         if resp.is_success:
             return
         body = self._decode_body(resp)
         code = str(body.get("code") or body.get("error", {}).get("code") or "")
-        message = str(body.get("message") or body.get("error", {}).get("message") or resp.text)
+        message = str(
+            body.get("message") or body.get("error", {}).get("message") or resp.text
+        )
+
+        request_url = str(resp.request.url) if resp.request is not None else None
+        # request_id / trace_id: body first, then headers (VAL-W3-033).
+        body_request_id = body.get("request_id")
+        if not isinstance(body_request_id, str) or not body_request_id:
+            body_request_id = None
+        body_trace_id = body.get("trace_id")
+        if not isinstance(body_trace_id, str) or not body_trace_id:
+            body_trace_id = None
+        request_id = body_request_id or resp.headers.get("X-Request-ID")
+        if request_id is not None and not request_id:
+            request_id = None
+        trace_id = body_trace_id or resp.headers.get("X-Trace-ID")
+        if trace_id is not None and not trace_id:
+            trace_id = None
+
+        # blocked_surface: body first, then derive from request URL path
+        # (VAL-W3-032 -- must be populated on every non-2xx exception).
+        body_blocked_surface = body.get("blocked_surface")
+        if isinstance(body_blocked_surface, str) and body_blocked_surface:
+            blocked_surface: str | None = body_blocked_surface
+        elif resp.request is not None:
+            method = resp.request.method or "REQUEST"
+            path = resp.request.url.path or "/"
+            blocked_surface = f"{method} {path}"
+        else:
+            blocked_surface = None
+
+        retry_advice = body.get("retry_advice")
+        http_status = resp.status_code
 
         details = {
-            "http_status": resp.status_code,
+            "http_status": http_status,
             "code": code,
-            "url": str(resp.request.url) if resp.request is not None else None,
+            "url": request_url,
             "response_body": body,
         }
-        if code == RELAY_ING_031_CODE:
-            raise on_canonical_status(message or "canonical-write field rejected", details=details)
         if code == RELAY_ING_022_CODE:
-            raise RelayHandoffIncomplete(
-                message or "three-anchor handoff rejected by sidecar",
-                details={**details, "mismatched_anchor": body.get("mismatched_anchor", [])},
-            )
-        if code == RELAY_REPLAY_002_CODE:
-            raise RelayReplayPrecondition(
-                message or "run_result not yet written; cannot create replay",
-                details=details,
-            )
-        if code == RELAY_EVID_002_CODE:
-            raise RelayEvidenceIncomplete(
-                message or "evidence envelope rejected by sidecar",
-                details=details,
-            )
-        if code == RELAY_ING_RAW_PAYLOAD_CODE:
-            # W3.3 defense-in-depth: the sidecar re-parsed the active
-            # redaction policy and rejected a raw plaintext payload
-            # that should have been redacted at the SDK boundary. The
-            # SDK surfaces this as a typed RelayPolicyError so the
-            # caller has a single exception class for any policy
-            # violation regardless of which side detected it
-            # (VAL-W3-027, CLAUDE.md keystone invariant #7).
-            raise RelayPolicyError(
-                message or "raw plaintext payload rejected by sidecar",
-                details=details,
-            )
-        # Generic fall-through.
-        raise RelayError(
-            message or f"sidecar returned HTTP {resp.status_code}",
+            details = {
+                **details,
+                "mismatched_anchor": body.get("mismatched_anchor", []),
+            }
+
+        # Route by exact code first (so test fixtures using
+        # ``on_canonical_status`` to override the default
+        # RelayCanonicalStatusForbidden still work), then by prefix.
+        if code == RELAY_ING_031_CODE:
+            target_cls: type[RelayError] = on_canonical_status
+        else:
+            target_cls = resolve_class_for_code(code)
+
+        # Default-message fallbacks per typed leaf.
+        if not message:
+            if code == RELAY_ING_031_CODE:
+                message = "canonical-write field rejected"
+            elif code == RELAY_ING_022_CODE:
+                message = "three-anchor handoff rejected by sidecar"
+            elif code == RELAY_REPLAY_002_CODE:
+                message = "run_result not yet written; cannot create replay"
+            elif code == RELAY_EVID_002_CODE:
+                message = "evidence envelope rejected by sidecar"
+            elif code == RELAY_ING_RAW_PAYLOAD_CODE:
+                message = "raw plaintext payload rejected by sidecar"
+            else:
+                message = f"sidecar returned HTTP {resp.status_code}"
+
+        # Code precedence: typed leaves keep their SDK-local class default
+        # (e.g. RelayCanonicalStatusForbidden -> "RELAY-SDK-005") so the
+        # SDK exposes a stable typed surface even when the wire code is
+        # the spec form ("RELAY-ING-031"). For namespace intermediates
+        # and RelayUnknownError we pass the wire code through so the
+        # raised exception preserves the original token (VAL-W3-035
+        # forward-compat; namespace-level visibility for codes the SDK
+        # does not have a typed leaf for). The wire code is always
+        # captured in ``details["code"]`` regardless.
+        namespace_classes = {cls for _, cls in _NAMESPACE_PREFIX_REGISTRY}
+        if target_cls is RelayUnknownError or target_cls in namespace_classes:
+            instance_code = code or target_cls.code
+        else:
+            instance_code = target_cls.code
+
+        raise target_cls(
+            message,
+            code=instance_code,
+            http_status=http_status,
+            blocked_surface=blocked_surface,
+            retry_advice=retry_advice,
+            request_id=request_id,
+            trace_id=trace_id,
             details=details,
         )
 
