@@ -2,14 +2,19 @@
   "name": "@epochly/relay",
   "version": "0.0.0",
   "private": true,
-  "description": "Relay TypeScript SDK (placeholder; W4 wires the client surface). For W1.5, carries generated canonical control-plane envelope types under src/_generated/.",
+  "description": "Relay TypeScript SDK. v0.1 public surface: Relay client, sidecar locator + handshake (W4.1), trace lifecycle, redaction policy schema, error envelopes, and the npx @epochly/relay sidecar bundle wrapper.",
   "license": "Apache-2.0",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "relay": "./dist/src/bin/relay-sidecar.js"
+  },
   "files": [
     "dist",
     "src",
+    ".api/v0.1.snapshot.json",
+    "release-manifest.url",
     "README.md"
   ],
   "scripts": {
