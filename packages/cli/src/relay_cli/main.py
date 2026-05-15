@@ -421,23 +421,50 @@ def _replay_root(ctx: typer.Context) -> None:
         _emit_not_implemented("replay", "w5.3")
 
 
-# --- sidecar group -----------------------------------------------------------
+# --- sidecar group (W5.2 wired) ---------------------------------------------
+# Per VAL-W5-008b/011..018 the sidecar group ships start/stop/status/
+# restart/install in W5.2. The subcommand module owns its own Typer app;
+# we re-cls the app to _RelayTyperGroup here so the JSON-help override
+# in this module covers ``rly sidecar --help`` consistently with the rest
+# of the tree.
+
+from .commands.sidecar import (  # noqa: E402 - local import to avoid cycle
+    _cmd_install,
+    _cmd_restart,
+    _cmd_start,
+    _cmd_status,
+    _cmd_stop,
+)
 
 sidecar_app = typer.Typer(
     name="sidecar",
     cls=_RelayTyperGroup,
-    help="Manage the local Relay sidecar (start, stop, status, restart, install).",
+    help=(
+        "Manage the local Relay sidecar: start, stop, status, restart, install. "
+        "Lifecycle commands NEVER kill processes by name; PID is read from "
+        "the sidecar lockfile."
+    ),
     no_args_is_help=False,
     rich_markup_mode=None,
+    add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+sidecar_app.command("start", cls=_RelayTyperCommand)(_cmd_start)
+sidecar_app.command("status", cls=_RelayTyperCommand)(_cmd_status)
+sidecar_app.command("stop", cls=_RelayTyperCommand)(_cmd_stop)
+sidecar_app.command("restart", cls=_RelayTyperCommand)(_cmd_restart)
+sidecar_app.command("install", cls=_RelayTyperCommand)(_cmd_install)
 app.add_typer(sidecar_app, name="sidecar")
 
 
 @sidecar_app.callback(invoke_without_command=True)
 def _sidecar_root(ctx: typer.Context) -> None:
-    """Stub root for ``rly sidecar``. Lands in W5.2."""
+    """``rly sidecar`` root: defer to subcommand or show help envelope."""
     if ctx.invoked_subcommand is None:
+        # Bare ``rly sidecar`` with no subcommand: emit the canonical
+        # not-implemented envelope so machine consumers see a structured
+        # signal that they passed no subcommand. Keeps parity with the
+        # W5.1 stub-test (test_stub_command_emits_structured_envelope).
         _emit_not_implemented("sidecar", "w5.2")
 
 

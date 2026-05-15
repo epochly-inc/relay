@@ -236,6 +236,8 @@ dependencies = [
     { name = "click" },
     { name = "epochly-relay" },
     { name = "epochly-relay-schemas" },
+    { name = "epochly-relay-sidecar" },
+    { name = "httpx" },
     { name = "typer" },
 ]
 
@@ -250,6 +252,8 @@ requires-dist = [
     { name = "click", specifier = "==8.1.7" },
     { name = "epochly-relay", editable = "packages/sdk-python" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
+    { name = "epochly-relay-sidecar", editable = "apps/local-sidecar" },
+    { name = "httpx", specifier = ">=0.27,<0.29" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
     { name = "typer", specifier = "==0.12.5" },

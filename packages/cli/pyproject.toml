@@ -45,6 +45,16 @@ dependencies = [
   # canonical relay.error.v1 schema (ErrorEnvelope) defined in
   # packages/schemas/raw/envelopes.yaml. Workspace dependency.
   "epochly-relay-schemas",
+  # VAL-W5-011..014: sidecar lifecycle commands reuse the W2.1 four-state
+  # classifier (apps/local-sidecar) and the local atomic file primitive.
+  # Workspace dependency: per CLAUDE.md import-boundary rule the CLI
+  # consumes the OSS sidecar package via uv workspace resolution rather
+  # than re-implementing the spawn/lockfile machinery.
+  "epochly-relay-sidecar",
+  # VAL-W5-015..018: bundle install path uses httpx for the HTTPS fetch
+  # against the pinned manifest URL. Pinned conservatively to keep the
+  # CLI install footprint deterministic.
+  "httpx>=0.27,<0.29",
 ]
 
 [project.optional-dependencies]
@@ -71,3 +81,4 @@ include = [
 [tool.uv.sources]
 epochly-relay = { workspace = true }
 epochly-relay-schemas = { workspace = true }
+epochly-relay-sidecar = { workspace = true }

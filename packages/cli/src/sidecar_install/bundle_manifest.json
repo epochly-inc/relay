@@ -1,0 +1,50 @@
+{
+  "schema_version": "relay.cli.sidecar_install_manifest.v1",
+  "sidecar_version": "0.0.0",
+  "trust_root": "relay.epochly.com",
+  "expected_oidc_issuer": "https://token.actions.githubusercontent.com",
+  "expected_identity": "https://github.com/epochly-inc/relay/.github/workflows/release-sidecar.yml@refs/tags/v0.0.0",
+  "manifest_url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/manifest.json",
+  "bundles": [
+    {
+      "os": "darwin",
+      "arch": "arm64",
+      "url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-darwin-arm64.tar.gz",
+      "expected_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1,
+      "sigstore_url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-darwin-arm64.tar.gz.sigstore"
+    },
+    {
+      "os": "darwin",
+      "arch": "x64",
+      "url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-darwin-x64.tar.gz",
+      "expected_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1,
+      "sigstore_url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-darwin-x64.tar.gz.sigstore"
+    },
+    {
+      "os": "linux",
+      "arch": "x64",
+      "url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-linux-x64.tar.gz",
+      "expected_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1,
+      "sigstore_url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-linux-x64.tar.gz.sigstore"
+    },
+    {
+      "os": "linux",
+      "arch": "arm64",
+      "url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-linux-arm64.tar.gz",
+      "expected_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1,
+      "sigstore_url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-linux-arm64.tar.gz.sigstore"
+    },
+    {
+      "os": "win32",
+      "arch": "x64",
+      "url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-win32-x64.zip",
+      "expected_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1,
+      "sigstore_url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-win32-x64.zip.sigstore"
+    }
+  ]
+}
