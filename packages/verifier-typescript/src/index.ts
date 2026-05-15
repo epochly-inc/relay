@@ -8,6 +8,12 @@
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 export {
+  JCSEncodeError,
+  bundleDigest,
+  jcsCanonicalize,
+} from "./canonical.js";
+
+export {
   RELAY_EVID_014,
   RELAY_VERIFY_ALG_MISMATCH,
   RELAY_VERIFY_BUNDLED_MISSING,

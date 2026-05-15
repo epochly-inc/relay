@@ -1,0 +1,313 @@
+{
+  "cases": [
+    {
+      "category": "sort",
+      "expected_canonical_b64": "e30=",
+      "expected_canonical_utf8": "{}",
+      "expected_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "input": {},
+      "kind": "value",
+      "name": "empty_object"
+    },
+    {
+      "category": "sort",
+      "expected_canonical_b64": "eyJhIjoxfQ==",
+      "expected_canonical_utf8": "{\"a\":1}",
+      "expected_sha256": "015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862",
+      "input": {
+        "a": 1
+      },
+      "kind": "value",
+      "name": "single_key_simple"
+    },
+    {
+      "category": "sort",
+      "expected_canonical_b64": "eyJhIjoxLCJiIjoyLCJjIjozfQ==",
+      "expected_canonical_utf8": "{\"a\":1,\"b\":2,\"c\":3}",
+      "expected_sha256": "e6a3385fb77c287a712e7f406a451727f0625041823ecf23bea7ef39b2e39805",
+      "input": {
+        "a": 1,
+        "b": 2,
+        "c": 3
+      },
+      "kind": "value",
+      "name": "keys_lex_sorted"
+    },
+    {
+      "category": "sort",
+      "expected_canonical_b64": "eyJhIjp0cnVlLCJvdXRlciI6eyJhIjoyLCJ6IjoxfX0=",
+      "expected_canonical_utf8": "{\"a\":true,\"outer\":{\"a\":2,\"z\":1}}",
+      "expected_sha256": "6df1171f1cac903d5fbdf71064f90d2033827d5e37e90424fa42b819bd52f6c8",
+      "input": {
+        "a": true,
+        "outer": {
+          "a": 2,
+          "z": 1
+        }
+      },
+      "kind": "value",
+      "name": "nested_object_keys"
+    },
+    {
+      "category": "sort",
+      "expected_canonical_b64": "WzMsMSwyXQ==",
+      "expected_canonical_utf8": "[3,1,2]",
+      "expected_sha256": "51bda7ab4e44726cde71fcb6e4b515357059bb6b6dd5146d1fc50f73f11678c6",
+      "input": [
+        3,
+        1,
+        2
+      ],
+      "kind": "value",
+      "name": "array_preserves_order"
+    },
+    {
+      "category": "numeric",
+      "expected_canonical_b64": "MQ==",
+      "expected_canonical_utf8": "1",
+      "expected_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "input": 1.0,
+      "kind": "value",
+      "name": "whole_valued_float"
+    },
+    {
+      "category": "numeric",
+      "expected_canonical_b64": "MA==",
+      "expected_canonical_utf8": "0",
+      "expected_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "input": -0.0,
+      "kind": "value",
+      "name": "negative_zero"
+    },
+    {
+      "category": "numeric",
+      "expected_canonical_b64": "MTIzNDU2Nzg5MDEyMzQ=",
+      "expected_canonical_utf8": "12345678901234",
+      "expected_sha256": "c17c025fb9ed44eae8a9d5c9df0312af5c6161bd79bd669692364fc5ecaf108a",
+      "input": 12345678901234,
+      "kind": "value",
+      "name": "large_int"
+    },
+    {
+      "category": "numeric",
+      "expected_canonical_b64": "LTQy",
+      "expected_canonical_utf8": "-42",
+      "expected_sha256": "fec80006df0542549b4cbaafb8987eee00bb49bca396eefe9ac8be5b5928e8f6",
+      "input": -42,
+      "kind": "value",
+      "name": "negative_int"
+    },
+    {
+      "category": "numeric",
+      "expected_canonical_b64": "MTAwMDAwMDAwMDA=",
+      "expected_canonical_utf8": "10000000000",
+      "expected_sha256": "e476a1537b03d06db3ffffdbe4ac07a137333c5f6ef58d7375a4238751d7c3d8",
+      "input": 10000000000.0,
+      "kind": "value",
+      "name": "large_decimal_float"
+    },
+    {
+      "category": "numeric",
+      "expected_canonical_b64": "MC41",
+      "expected_canonical_utf8": "0.5",
+      "expected_sha256": "d2cbad71ff333de67d07ec676e352ab7f38248eb69c942950157220607c55e84",
+      "input": 0.5,
+      "kind": "value",
+      "name": "fractional_float"
+    },
+    {
+      "category": "escape",
+      "expected_canonical_b64": "ImFcImJcXGNcbmQi",
+      "expected_canonical_utf8": "\"a\\\"b\\\\c\\nd\"",
+      "expected_sha256": "fb98c62fc7f2c72cf89bf4f20e7088abc3c487f78a109aaf7168823550117a2b",
+      "input": "a\"b\\c\nd",
+      "kind": "value",
+      "name": "string_escapes_required"
+    },
+    {
+      "category": "escape",
+      "expected_canonical_b64": "IlxiXHRcZlxyIg==",
+      "expected_canonical_utf8": "\"\\b\\t\\f\\r\"",
+      "expected_sha256": "8682a30e28654d2c8fb62a620ba6397651bc163d4137d2e1808ae8e31ba148b6",
+      "input": "\b\t\f\r",
+      "kind": "value",
+      "name": "control_char_short_form"
+    },
+    {
+      "category": "escape",
+      "expected_canonical_b64": "Ilx1MDAwMSI=",
+      "expected_canonical_utf8": "\"\\u0001\"",
+      "expected_sha256": "b81cfb0a6715e53b373345b49e8ad94eb55fd777519dc539373d0634973c186e",
+      "input": "\u0001",
+      "kind": "value",
+      "name": "control_char_hex_form"
+    },
+    {
+      "category": "escape",
+      "expected_canonical_b64": "ImNhZsOpIg==",
+      "expected_canonical_utf8": "\"café\"",
+      "expected_sha256": "28380feb8724d669bc8d4cf5b5a5bb1adbdc61b81ebd06f3fabc567b4f3b0fc5",
+      "input": "café",
+      "kind": "value",
+      "name": "non_ascii_passes_through"
+    },
+    {
+      "category": "escape",
+      "expected_canonical_b64": "In8i",
+      "expected_canonical_utf8": "\"\"",
+      "expected_sha256": "6fe76740e12a93d5598fe685cb6ad3d3c94e44609065a56866b69647772026ec",
+      "input": "",
+      "kind": "value",
+      "name": "delete_not_escaped"
+    },
+    {
+      "category": "key_sort_utf16",
+      "expected_canonical_b64": "eyJBIjoiQSIsItCQIjoiY3lyLUEifQ==",
+      "expected_canonical_utf8": "{\"A\":\"A\",\"А\":\"cyr-A\"}",
+      "expected_sha256": "e811ce424633f1fc2c126357023782ade3c0c172f9cce36085393410edf61b3b",
+      "input": {
+        "A": "A",
+        "А": "cyr-A"
+      },
+      "kind": "value",
+      "name": "bmp_key_sort_ascii_vs_cyrillic"
+    },
+    {
+      "category": "key_sort_utf16",
+      "expected_canonical_b64": "eyJBIjo0LCJCIjoyLCJhIjozLCJiIjoxfQ==",
+      "expected_canonical_utf8": "{\"A\":4,\"B\":2,\"a\":3,\"b\":1}",
+      "expected_sha256": "07ef08f01b496e1c02f78ac6ff33df9938cec88da07c3c15b317776325597d79",
+      "input": {
+        "A": 4,
+        "B": 2,
+        "a": 3,
+        "b": 1
+      },
+      "kind": "value",
+      "name": "bmp_key_sort_ordering"
+    },
+    {
+      "category": "digest_stable",
+      "expected_canonical_b64": "eyJjb3VudCI6MywiaXRlbXMiOlsxLDIsM10sIm5hbWUiOiJyZWxheSIsIm9rIjp0cnVlfQ==",
+      "expected_canonical_utf8": "{\"count\":3,\"items\":[1,2,3],\"name\":\"relay\",\"ok\":true}",
+      "expected_sha256": "4119c9065ee479f2f9f04901708d728bb77c3c24b89f52f764a41df5d821bdb1",
+      "input": {
+        "count": 3,
+        "items": [
+          1,
+          2,
+          3
+        ],
+        "name": "relay",
+        "ok": true
+      },
+      "kind": "value",
+      "name": "bundle_claim_digest_stable"
+    },
+    {
+      "expected_canonical_b64": "eyJraWQiOiJrMSIsInBheWxvYWQiOnsiYSI6MSwiYiI6Mn19",
+      "expected_canonical_utf8": "{\"kid\":\"k1\",\"payload\":{\"a\":1,\"b\":2}}",
+      "expected_sha256": "1e3a7fea332e8c12053a621770144f1ff0c4ff2529cf7f2df0c8220c756a9c53",
+      "input": {
+        "kid": "k1",
+        "payload": {
+          "a": 1,
+          "b": 2
+        },
+        "signatures": [
+          {
+            "alg": "EdDSA",
+            "sig": "xxx"
+          }
+        ]
+      },
+      "kind": "bundle_digest",
+      "name": "bundle_digest_strips_signatures",
+      "strip_signatures": true
+    },
+    {
+      "expected_canonical_b64": "eyJhIjoxLCJiIjoyfQ==",
+      "expected_canonical_utf8": "{\"a\":1,\"b\":2}",
+      "expected_sha256": "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777",
+      "input": {
+        "a": 1,
+        "b": 2
+      },
+      "kind": "bundle_digest",
+      "name": "bundle_digest_no_strip_when_no_signatures",
+      "strip_signatures": true
+    },
+    {
+      "category": "sort",
+      "expected_canonical_b64": "W3siYSI6WzEseyJiIjpmYWxzZSwieiI6dHJ1ZX1dfSxbXSx7fSx7ImsiOm51bGx9XQ==",
+      "expected_canonical_utf8": "[{\"a\":[1,{\"b\":false,\"z\":true}]},[],{},{\"k\":null}]",
+      "expected_sha256": "1d49c906a2499bf5f0f64a6c7bf0ecf76382f29de7b65f968f3f1ff09505b1b7",
+      "input": [
+        {
+          "a": [
+            1,
+            {
+              "b": false,
+              "z": true
+            }
+          ]
+        },
+        [],
+        {},
+        {
+          "k": null
+        }
+      ],
+      "kind": "value",
+      "name": "nested_arrays_and_objects"
+    },
+    {
+      "category": "sort",
+      "expected_canonical_b64": "eyJmIjpmYWxzZSwibiI6bnVsbCwidCI6dHJ1ZX0=",
+      "expected_canonical_utf8": "{\"f\":false,\"n\":null,\"t\":true}",
+      "expected_sha256": "22e00dc2f7b01420f940fbdbfbdf34fa0667cc6500186495023ba37722cbd05e",
+      "input": {
+        "f": false,
+        "n": null,
+        "t": true
+      },
+      "kind": "value",
+      "name": "boolean_and_null"
+    },
+    {
+      "category": "escape",
+      "expected_canonical_b64": "eyJtc2ciOiJoZWxsbyDDqSDDsSDkuK3mlocifQ==",
+      "expected_canonical_utf8": "{\"msg\":\"hello é ñ 中文\"}",
+      "expected_sha256": "99648df17294b997fcb681da57f09c0a53551105267038a9e59b2e90b8de8c3b",
+      "input": {
+        "msg": "hello é ñ 中文"
+      },
+      "kind": "value",
+      "name": "unicode_bmp_value_passthrough"
+    }
+  ],
+  "description": "RFC 8785 JCS conformance corpus for VAL-W10-016..020. Each case pins the canonical UTF-8 byte string and SHA-256 digest. Both relay_verifier (Python) and @epochly/relay-verifier (TS) MUST produce byte-equal canonical output and the same digest. Reject cases assert that NaN/Inf raise the JCS-encode error.",
+  "reject_cases": [
+    {
+      "kind": "reject",
+      "name": "reject_nan",
+      "reason": "nan_not_canonicalizable"
+    },
+    {
+      "kind": "reject",
+      "name": "reject_positive_infinity",
+      "reason": "inf_not_canonicalizable"
+    },
+    {
+      "kind": "reject",
+      "name": "reject_negative_infinity",
+      "reason": "inf_not_canonicalizable"
+    }
+  ],
+  "rfc_anchors": [
+    "RFC 8785 sec 3.2.2",
+    "RFC 8785 sec 3.2.2.1",
+    "RFC 8785 sec 3.2.3"
+  ],
+  "schema": "relay.conformance.jcs.v1"
+}

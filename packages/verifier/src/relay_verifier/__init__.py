@@ -21,6 +21,11 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+from .canonical import (
+    JCSEncodeError,
+    bundle_digest,
+    jcs_canonicalize,
+)
 from .constants import (
     DEFAULT_JWKS_URL,
     DEFAULT_TRUST_ANCHOR_URL,
@@ -84,6 +89,7 @@ __all__ = [
     "ALG_RS256",
     "DEFAULT_JWKS_URL",
     "DEFAULT_TRUST_ANCHOR_URL",
+    "JCSEncodeError",
     "JWKS_CACHE_DIRNAME",
     "JWKS_CACHE_SCHEMA_VERSION",
     "JWKSLoadResult",
@@ -110,7 +116,9 @@ __all__ = [
     "VERIFIER_PACKAGE_NAME",
     "VERIFIER_RESULT_SCHEMA",
     "VerificationResult",
+    "bundle_digest",
     "canonical_json_bytes",
+    "jcs_canonicalize",
     "jwk_from_ec_p256_public_key",
     "jwk_from_ed25519_public_key",
     "jwk_from_rsa_public_key",
