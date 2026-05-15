@@ -47,6 +47,13 @@ mitmproxy = [
 test = [
   "pytest>=8.0",
   "pytest-timeout>=2.3",
+  # W7.5 egress-denial matrix needs the canonical Python HTTP clients
+  # under test: requests (most popular), aiohttp (asyncio), urllib3
+  # (transitive). urllib (stdlib) and the raw socket module need no
+  # install. These are test-only and never imported by the harness
+  # itself.
+  "requests>=2.31",
+  "aiohttp>=3.9",
 ]
 
 [tool.hatch.build.targets.wheel]
