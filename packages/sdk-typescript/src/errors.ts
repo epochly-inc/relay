@@ -89,6 +89,14 @@ export const RELAY_REPLAY_EGRESS_DENIED_CODE = "RELAY-REPLAY-EGRESS-DENIED";
 export const RELAY_REPLAY_PROXY_MISSING_CODE = "RELAY-REPLAY-PROXY-MISSING";
 export const RELAY_SDK_UNINSTRUMENTED_HTTP_CLIENT_CODE =
   "RELAY-SDK-UNINSTRUMENTED-HTTP-CLIENT";
+// W7.4 replay-session codes (VAL-W7-060, VAL-W7-062, VAL-W7-065). Distinct
+// descriptive tokens; the contract names them verbatim. The W4.5 codes
+// above (RELAY-REPLAY-PROXY-MISSING / RELAY-SDK-UNINSTRUMENTED-HTTP-CLIENT)
+// remain stable for the W4.5 surfaces; W7.4 introduces the
+// `relay.replay.enterSession()` entry point with its own code vocabulary.
+export const RELAY_REPLAY_PROXY_NOT_SET_CODE = "RELAY-REPLAY-PROXY-NOT-SET";
+export const RELAY_REPLAY_BYPASS_CODE = "RELAY-REPLAY-BYPASS";
+export const RELAY_REPLAY_UNINSTRUMENTED_CODE = "RELAY-REPLAY-UNINSTRUMENTED";
 export const RELAY_SDK_ADAPTER_VERSION_UNSUPPORTED_CODE =
   "RELAY-SDK-ADAPTER-VERSION-UNSUPPORTED";
 
@@ -128,6 +136,10 @@ export const RELAY_REPLAY_EGRESS_DENIED_CLASS = "RELAY-REPLAY-EGRESS-DENIED";
 export const RELAY_REPLAY_PROXY_MISSING_CLASS = "RELAY-REPLAY-PROXY-MISSING";
 export const RELAY_SDK_UNINSTRUMENTED_HTTP_CLIENT_CLASS =
   "RELAY-SDK-UNINSTRUMENTED-HTTP-CLIENT";
+// W7.4 replay-session classes (VAL-W7-060, VAL-W7-062, VAL-W7-065).
+export const RELAY_REPLAY_PROXY_NOT_SET_CLASS = "RELAY-REPLAY-PROXY-NOT-SET";
+export const RELAY_REPLAY_BYPASS_CLASS = "RELAY-REPLAY-BYPASS";
+export const RELAY_REPLAY_UNINSTRUMENTED_CLASS = "RELAY-REPLAY-UNINSTRUMENTED";
 export const RELAY_SDK_ADAPTER_VERSION_UNSUPPORTED_CLASS =
   "RELAY-SDK-ADAPTER-VERSION-UNSUPPORTED";
 
@@ -651,6 +663,52 @@ export class RelaySdkUninstrumentedHttpClientError extends RelaySdkError {
 }
 
 /**
+ * VAL-W7-060 + VAL-W7-065: replay-session init detected an uninstrumented
+ * HTTP client OR a missing HTTPS_PROXY env var.
+ *
+ * Per the W7.4 contract assertions, the SDK ``relay.replay.enterSession()``
+ * entry point throws this typed leaf synchronously when:
+ *
+ *   - ``HTTPS_PROXY`` (or ``https_proxy``) is unset (VAL-W7-060) -- the
+ *     wire ``code`` is ``RELAY-REPLAY-PROXY-NOT-SET`` and the
+ *     ``error_class`` is ``RELAY-REPLAY-PROXY-NOT-SET``.
+ *   - A known uninstrumented HTTP-client module that the undici
+ *     interceptor cannot wrap (e.g. ``got``, ``request``) is loaded
+ *     (VAL-W7-065) -- the wire ``code`` is ``RELAY-REPLAY-UNINSTRUMENTED``
+ *     and the ``error_class`` is ``RELAY-REPLAY-UNINSTRUMENTED``.
+ *
+ * Both surfaces are init-time refusal, never warning. The class is shared
+ * because both failure modes are "the SDK refuses to enter replay mode
+ * because cassette playback would not be enforceable"; callers branch on
+ * the wire ``code`` to surface the specific remediation.
+ */
+export class RelayReplayUninstrumentedError extends RelayReplayError {
+  static override defaultCode = RELAY_REPLAY_PROXY_NOT_SET_CODE;
+  static override defaultErrorClass = RELAY_REPLAY_PROXY_NOT_SET_CLASS;
+  static override defaultHttpStatus = 400;
+  static override defaultBlockedSurface = "relay-sdk-replay-enter-session";
+  static override defaultRetryAdvice: RetryAdviceMode = "after_state_change";
+}
+
+/**
+ * VAL-W7-062: replay-session init detected user code attempting to bypass
+ * the proxy via a custom undici ``Dispatcher``.
+ *
+ * When ``setGlobalDispatcher`` is called inside an active replay session
+ * with a non-Relay-managed dispatcher, the SDK either reroutes the call
+ * through the session proxy (preferred) OR throws this typed leaf so the
+ * caller observes the bypass attempt explicitly rather than silently
+ * leaking egress to a non-cassette destination.
+ */
+export class RelayReplayBypassError extends RelayReplayError {
+  static override defaultCode = RELAY_REPLAY_BYPASS_CODE;
+  static override defaultErrorClass = RELAY_REPLAY_BYPASS_CLASS;
+  static override defaultHttpStatus = 403;
+  static override defaultBlockedSurface = "relay-sdk-replay-set-global-dispatcher";
+  static override defaultRetryAdvice: RetryAdviceMode = "no_retry";
+}
+
+/**
  * VAL-W4-040: adapter constructor refused to wrap an unsupported provider
  * SDK version.
  *
@@ -766,6 +824,10 @@ const CODE_LEAF_REGISTRY: Record<string, typeof RelayError> = {
   [RELAY_REPLAY_EGRESS_DENIED_CODE]: RelayReplayEgressDeniedError,
   [RELAY_REPLAY_PROXY_MISSING_CODE]: RelayReplayProxyMissingError,
   [RELAY_SDK_UNINSTRUMENTED_HTTP_CLIENT_CODE]: RelaySdkUninstrumentedHttpClientError,
+  // W7.4 replay-session typed leaves (VAL-W7-060, VAL-W7-062, VAL-W7-065).
+  [RELAY_REPLAY_PROXY_NOT_SET_CODE]: RelayReplayUninstrumentedError,
+  [RELAY_REPLAY_UNINSTRUMENTED_CODE]: RelayReplayUninstrumentedError,
+  [RELAY_REPLAY_BYPASS_CODE]: RelayReplayBypassError,
   [RELAY_SDK_ADAPTER_VERSION_UNSUPPORTED_CODE]: RelayAdapterUnsupportedVersionError,
 };
 
