@@ -1,0 +1,183 @@
+{
+  "_doc": "Vendored subset of upstream cel-spec/cel-conformance test vectors (https://github.com/google/cel-spec/tree/master/tests). Restricted to the subset Relay implements: non-dyn, non-native-timestamp, non-protobuf-message. Each entry maps a stable cel-spec vector ID to the Relay-corpus case ID that mirrors it. The drift checker (scripts/check-cel-spec-drift.py) loads this file and asserts every vector here resolves to a corpus case whose expression matches. Bumping cel-python or cel-js to a release that ships new conformance vectors requires either (a) adding the new vector to this file with a corresponding corpus mirror, or (b) recording a deliberate skip with a written reason.",
+  "_schema_version": 1,
+  "_source": "https://github.com/google/cel-spec/tree/master/tests/simple/testdata",
+  "_source_revision": "v0.20.0",
+  "vectors": [
+    {
+      "vector_id": "basic/self_eval_zeroish/self_eval_zero_int",
+      "expression": "0",
+      "expected_value_kind": "int",
+      "corpus_case_id": "celspec_arith_add_zero_int",
+      "_note": "celspec_arith_add_zero_int evaluates 0 + 0 which has the same canonical form 0; mirror is exact"
+    },
+    {
+      "vector_id": "basic/self_eval_zeroish/self_eval_zero_double",
+      "expression": "0.0",
+      "expected_value_kind": "double",
+      "corpus_case_id": "coerce_dbl_zero",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "basic/self_eval_zeroish/self_eval_zero_string",
+      "expression": "\"\"",
+      "expected_value_kind": "string",
+      "corpus_case_id": "str_concat_both_empty",
+      "_note": "celspec mirror uses '' + '' which canonicalises identically"
+    },
+    {
+      "vector_id": "basic/self_eval_zeroish/self_eval_empty_list",
+      "expression": "[]",
+      "expected_value_kind": "list",
+      "corpus_case_id": "list_literal_empty",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "basic/self_eval_zeroish/self_eval_empty_map",
+      "expression": "{}",
+      "expected_value_kind": "map",
+      "corpus_case_id": "map_literal_empty",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "basic/variables/self_eval_bound_lookup",
+      "expression": "x",
+      "expected_value_kind": "any",
+      "corpus_case_id": "coerce_int_var_pos",
+      "_note": "x bound to 5 returns 5"
+    },
+    {
+      "vector_id": "comparisons/eq_literal/eq_int",
+      "expression": "1 == 1",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_cmp_eq_true",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "comparisons/lt_literal/lt_int",
+      "expression": "1 < 2",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_cmp_lt_true",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "logic/conditional/conditional_true",
+      "expression": "true ? 'a' : 'b'",
+      "expected_value_kind": "string",
+      "corpus_case_id": "celspec_cond_true_branch",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "logic/conditional/conditional_false",
+      "expression": "false ? 'a' : 'b'",
+      "expected_value_kind": "string",
+      "corpus_case_id": "celspec_cond_false_branch",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "logic/AND/and_true_true",
+      "expression": "true && true",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_basic_and_true",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "logic/OR/or_true_false",
+      "expression": "true || false",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_basic_or_true",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "logic/NOT/not_true",
+      "expression": "!true",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_basic_not_true",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "lists/index/index_zero",
+      "expression": "[1, 2, 3][0]",
+      "expected_value_kind": "int",
+      "corpus_case_id": "celspec_list_index_zero",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "lists/in/list_in_int_present",
+      "expression": "1 in [1, 2, 3]",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_in_int_present",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "lists/in/list_in_str_absent",
+      "expression": "'z' in ['a', 'b']",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_in_str_absent",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "lists/size/size_one",
+      "expression": "size([42])",
+      "expected_value_kind": "int",
+      "corpus_case_id": "celspec_list_size_one",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "fields/map_fields/string_value_lookup",
+      "expression": "{'name': 'x'}.name",
+      "expected_value_kind": "string",
+      "corpus_case_id": "celspec_map_field_str",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "string/concatenation/concat_three",
+      "expression": "'hello' + ' ' + 'world'",
+      "expected_value_kind": "string",
+      "corpus_case_id": "celspec_string_concat",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "string/equality/string_eq_unicode",
+      "expression": "'caf\\u00e9' == 'caf\\u00e9'",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_string_eq_unicode",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "arith/add/int_add_one",
+      "expression": "1 * 1",
+      "expected_value_kind": "int",
+      "corpus_case_id": "celspec_arith_mul_one",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "arith/integer_max_safe/int_max_safe_add_one",
+      "expression": "9007199254740990 + 1",
+      "expected_value_kind": "int",
+      "corpus_case_id": "celspec_int_max_safe_add",
+      "_note": "MAX_SAFE_INTEGER - 1, then +1, lands exactly on MAX_SAFE_INTEGER. JS Number can represent this without loss; exact mirror"
+    },
+    {
+      "vector_id": "arith/integer_min_safe/int_min_safe_neg",
+      "expression": "-9007199254740991",
+      "expected_value_kind": "int",
+      "corpus_case_id": "celspec_int_min_safe_neg",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "logic/short_circuit/and_short_false",
+      "expression": "false && true",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_short_circuit_and_false",
+      "_note": "exact mirror"
+    },
+    {
+      "vector_id": "logic/short_circuit/or_short_true",
+      "expression": "true || false",
+      "expected_value_kind": "bool",
+      "corpus_case_id": "celspec_short_circuit_or_true",
+      "_note": "exact mirror"
+    }
+  ]
+}

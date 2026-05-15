@@ -1,0 +1,8 @@
+{
+  "_doc": "Recorded upstream package pins as of the last cel-spec vendor refresh. The drift checker (scripts/check-cel-spec-drift.py) compares these to the live pins in packages/contracts/pyproject.toml and packages/contracts-typescript/package.json. Bumping either package WITHOUT updating both this file and tests/conformance/cel/vendor/cel_spec_vectors.json triggers VAL-W6-055 drift failure.",
+  "_schema_version": 1,
+  "celpy": "cel-python>=0.5.0,<0.6",
+  "cel-js": "0.8.2",
+  "vendored_cel_spec_revision": "v0.20.0",
+  "last_refreshed_at": "2026-05-14"
+}
