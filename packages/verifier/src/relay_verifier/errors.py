@@ -51,6 +51,44 @@ value type, missing required field). Surfaced by
 NOT silently fall back to the default URL -- an operator who supplied a
 config explicitly stated their intent."""
 
+RELAY_VERIFY_ALG_MISMATCH: Final[str] = "RELAY-VERIFY-010"
+"""VAL-W10-011: JWS header ``alg`` is HS256 (or any symmetric MAC alg)
+but the ``kid`` resolves to an asymmetric public JWK (kty=EC or kty=OKP
+or kty=RSA). Surfacing this distinctly defeats the RFC 8725 section 3
+RSA-public-key-as-HMAC-secret attack: a verifier that naively forwarded
+the public-key bytes as an HMAC secret would accept attacker-forged
+HMACs over a stolen public key.
+
+Contract narrative spells this as ``RELAY-VERIFY-ALG-MISMATCH``; the
+wire code is the canonical ``RELAY-VERIFY-NNN`` form. The two strings
+are equivalent for contract-citation purposes (contract.md spells
+``or equivalent``)."""
+
+RELAY_VERIFY_UNSUPPORTED_ALG: Final[str] = "RELAY-VERIFY-011"
+"""VAL-W10-014: JWS header ``alg`` is not in the allow-list
+``{EdDSA, ES256, RS256}``. Includes ``none``, ``HS256``, ``RS1``,
+unknown vendor algorithms, and any other identifier outside the closed
+set. Rejection MUST occur BEFORE any signature-verification primitive
+is invoked; the ``none`` alg in particular MUST never reach a verify
+call (RFC 8725 section 3.1).
+
+Contract narrative spells this as ``RELAY-VERIFY-UNSUPPORTED-ALG``."""
+
+RELAY_VERIFY_DETACHED_PAYLOAD_MISMATCH: Final[str] = "RELAY-VERIFY-012"
+"""VAL-W10-012: detached-JWS payload digest does not match the digest
+of the claim it is bound to. The verifier recomputes the JCS canonical
+bytes of the claim payload, hashes them, and compares to the digest
+recorded in the signature record. A signature that verifies against
+arbitrary bytes but whose payload no longer matches the stored claim
+MUST be rejected: a tampered claim with a re-signed signature is the
+attack this defeats.
+
+Contract: VAL-W10-012 names ``RELAY-EVID-014`` as the public-facing
+error code for evidence-bundle integrity failures. This local wire code
+identifies the specific underlying cause; both are emitted in the
+``details`` of an envelope so consumers branching on the public code
+can still inspect the structured cause."""
+
 
 # -----------------------------------------------------------------------------
 # Exception hierarchy
@@ -126,9 +164,12 @@ class RelayConfigInvalidError(RelayVerifierError):
 
 
 __all__ = [
+    "RELAY_VERIFY_ALG_MISMATCH",
     "RELAY_VERIFY_BUNDLED_MISSING",
     "RELAY_VERIFY_CONFIG_INVALID",
+    "RELAY_VERIFY_DETACHED_PAYLOAD_MISMATCH",
     "RELAY_VERIFY_JWKS_UNAVAILABLE",
+    "RELAY_VERIFY_UNSUPPORTED_ALG",
     "RelayBundledJWKSMissingError",
     "RelayConfigInvalidError",
     "RelayJWKSUnavailableError",

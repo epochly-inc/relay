@@ -1,0 +1,24 @@
+{
+  "digests": {
+    "detached-negative-tampered-claim": "231451f229386688198eccc65d863b3df2143d41cf2744aeff30e3ccb5d5fe67",
+    "detached-positive-eddsa": "0b7cc261ac10036364e1ce07f03447e2105717cd590db69e46b0468bbb3eec8e",
+    "multisig-n2-both-valid": "a313d1d2241c206a3b51c27c487dfb7ea38f88d62e5b1ac5ffd2338e0e6fcadb",
+    "multisig-n2-mixed": "af9c76e98a951b6c4d84b710ee48eee0b54735995ab2be0ccfd69b612bf2238b",
+    "multisig-n6-all-valid": "0ece5535c853968a01e26875bb5ee91df64456736af09404a50287269194d591",
+    "neg-alg-hs256-over-eddsa-public-key": "63591f4119d9aca4e3800f9de0a49d78e3ebdcedc9d6162a5ec8b20134d84559",
+    "neg-alg-hs256-over-rsa-public-key": "39ba61c5969a7875d2afd855b8818bd751732a6f0674c2f8857c5c7112c20385",
+    "neg-alg-missing": "cf9385896170a775b160f3dd6bc76b9b7814600dfcb364c790638ab022be2a2b",
+    "neg-alg-none-empty-sig": "67fa6305f9cc309e0806ce9ef3eb8c81e90764b93cd700fad147b97532a98d27",
+    "neg-alg-none-garbage-sig": "533e09a338bd475baa5d03603fe48b22b7d99cfff696d0bdf396ddf76970e91b",
+    "neg-alg-rs1-disallowed": "10a1c696bfbcaaf4987fa400b5225572415530cabf9e6f8856219864891ccff3",
+    "neg-alg-vendor-disallowed": "934663443f985d67ae6a5649ed118a837bc346a6376eac9e8ef4052fdff49fc3",
+    "neg-malformed-two-segments": "2e0ce6e3b3ed82f48cfcb7080a29b8b64931f8d0d7b4b0e6597b012626857af5",
+    "neg-tamper-header-wrong-kid": "f139d750c903a4f105997348e191a5a2f38a997d2ee8fde274cd94b85a92b62e",
+    "neg-tamper-payload-eddsa": "194e1e7163cf7ec03cf0d508653c6e08606ed558797c2b470c5f0cfe6bcc74ef",
+    "neg-unknown-kid": "532e0854793315796e024968ca9b3faacf152cbe74bcf236d02872c2559c0d87",
+    "positive-eddsa": "8ef7bdf05993970aff0c8f2456e350616eac64bda4a793b09bd996ddb07b78dd",
+    "positive-es256": "07edc7719ada7e7674ada873d33a0927038fa01cf93aac00a48c05155e0e5bc3",
+    "positive-rs256": "8c81114eaae8792a5f988957b8253eae46d9b67455063c7ce0efb6ba202b3c2a"
+  },
+  "schema": "relay.conformance.jws.py_verdict_digests.v1"
+}

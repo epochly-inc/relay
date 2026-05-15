@@ -7,7 +7,8 @@
   "workspaces": [
     "packages/schemas/typescript",
     "packages/sdk-typescript",
-    "packages/contracts-typescript"
+    "packages/contracts-typescript",
+    "packages/verifier-typescript"
   ],
   "engines": {
     "node": ">=22"

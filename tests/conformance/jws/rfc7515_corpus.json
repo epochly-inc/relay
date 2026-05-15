@@ -1,0 +1,414 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "alg": "EdDSA",
+        "kid": "kid-eddsa-2026-05",
+        "ok": true
+      },
+      "input": "eyJhbGciOiJFZERTQSIsImtpZCI6ImtpZC1lZGRzYS0yMDI2LTA1IiwidHlwIjoiSldUIn0.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.ntMI4n_KUr2HgiWCgVog5SdR3aGCJoYp1xvCGQw0Wncpvl7cV45dBKDOjOPslZvSul4GiPt5lhTiPbfqVhtQAw",
+      "kind": "compact",
+      "name": "positive-eddsa"
+    },
+    {
+      "expected": {
+        "alg": "ES256",
+        "kid": "kid-es256-2026-05",
+        "ok": true
+      },
+      "input": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZC1lczI1Ni0yMDI2LTA1IiwidHlwIjoiSldUIn0.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.PrUj-t37oUQES1ADV46NhzrzUatR_FwbfM9q1Ns8_c5c4N3RUArBLXdhBh_TUo5tTdjuoEG9PvWiiCcNz8xfzA",
+      "kind": "compact",
+      "name": "positive-es256"
+    },
+    {
+      "expected": {
+        "alg": "RS256",
+        "kid": "kid-rs256-2026-05",
+        "ok": true
+      },
+      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImtpZC1yczI1Ni0yMDI2LTA1IiwidHlwIjoiSldUIn0.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.Jqw5QeYPmM-L8U8WrwiiTPs0PGWxWYqCmMrn4yYjYHrY9CZ7fpxUEGJQBDH8dCqKhEFDq90JZvPjT7ijDSfe3vthU-HYEwUnNmG64qR7nOsX6FKYkb-sBDjkuLTPfKFxIwzNGxPiIPbtCr6WzzSBfbPkMDZphss0cigLKPimuw5SeoZfq4C8tvrP5QDSn8874sr_pgEKHGYL1iUMnGD5WPc1xPz5H63vCOUjYPzjdxeFCDZQtcKesJtSfbwnS7o2jLDIR1qKz234ftOUh8BnkKxoX1PmeRnXzZ8cfRxisALTAv0QAMtBYRPByFhhXOZxiNvEqiDjZMjej8D7-uowEw",
+      "kind": "compact",
+      "name": "positive-rs256"
+    },
+    {
+      "expected": {
+        "ok": false,
+        "reason_substring": "signature did not verify"
+      },
+      "input": "eyJhbGciOiJFZERTQSIsImtpZCI6ImtpZC1lZGRzYS0yMDI2LTA1IiwidHlwIjoiSldUIn0.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxInw.ntMI4n_KUr2HgiWCgVog5SdR3aGCJoYp1xvCGQw0Wncpvl7cV45dBKDOjOPslZvSul4GiPt5lhTiPbfqVhtQAw",
+      "kind": "compact",
+      "name": "neg-tamper-payload-eddsa"
+    },
+    {
+      "expected": {
+        "ok": false,
+        "reason_substring": "signature did not verify"
+      },
+      "input": "eyJhbGciOiJFZERTQSIsImtpZCI6ImtpZC1lZGRzYS13cm9uZy0yMDI2LTA1IiwidHlwIjoiSldUIn0.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.zSENAwVtW_X0dNba7B8I0IHEGi0IbzSufaSp1MvFZFtQ_ZqeducUcwPkuRttrSccQDRJuRpjdozF-DJS2DybCQ",
+      "kind": "compact",
+      "name": "neg-tamper-header-wrong-kid"
+    },
+    {
+      "expected": {
+        "ok": false,
+        "reason_substring": "no JWK in trust anchor matches kid"
+      },
+      "input": "eyJhbGciOiJFZERTQSIsImtpZCI6ImtpZC1ub3QtaW4tandrcyIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.TSV_xCpVMnoqBPRwUFnr2fZ2asi4GuFMDzXNdwcPtq5fDydf4EjSzpG1JjBM95rzsOVe-VmSqnYEFhIDDm9fDQ",
+      "kind": "compact",
+      "name": "neg-unknown-kid"
+    },
+    {
+      "expected": {
+        "error_code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJub25lIiwia2lkIjoia2lkLWVkZHNhLTIwMjYtMDUiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.",
+      "kind": "compact",
+      "name": "neg-alg-none-empty-sig"
+    },
+    {
+      "expected": {
+        "error_code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJub25lIiwia2lkIjoia2lkLWVkZHNhLTIwMjYtMDUiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.R0FSQkFHRQ",
+      "kind": "compact",
+      "name": "neg-alg-none-garbage-sig"
+    },
+    {
+      "expected": {
+        "error_code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJIUzI1NiIsImtpZCI6ImtpZC1yczI1Ni0yMDI2LTA1IiwidHlwIjoiSldUIn0.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.n2Kh41Bzl6Vd5p-RzeZGJXnlP-ZZgGzo5jvWYL7y1Eo",
+      "kind": "compact",
+      "name": "neg-alg-hs256-over-rsa-public-key"
+    },
+    {
+      "expected": {
+        "error_code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJIUzI1NiIsImtpZCI6ImtpZC1lZGRzYS0yMDI2LTA1IiwidHlwIjoiSldUIn0.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.cE7MdmRvIVOCYVdZsr9kEl87Vb1HvLgFj5_MQ2JMB_k",
+      "kind": "compact",
+      "name": "neg-alg-hs256-over-eddsa-public-key"
+    },
+    {
+      "expected": {
+        "error_code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJSUzEiLCJraWQiOiJraWQtcnMyNTYtMjAyNi0wNSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.cCki3CUr_P_hv3cJWABNn7PqydSZ5ggcPDDtSVDGSbR9rt7NoedfDfhlB5vyS8xebeDNNImvOp1hHQw-hCyts0_PXLbjZvOYaHcpBNk2rIsRQhVIYuhW_C9q_lQYaCKiiqNY_WuOkbPh8zYKs9oq-j3AmJPCGVKh1tyjXrTGzO-QdBmb3YfjzetPCHJrtcuIyU-EMED44GlUBKMxjiA11t_bJpWhIu9arSWjxv_KFmADaAkLykhG8dgsRtDjtL6Z-EnysK0xvM3eIXtoFRRBAisbneeDL9WUuxXMHJzmz35-PU1iZq7ElRzlIyhLTiSVcxPX4lT-JMUJfATE2XRaXg",
+      "kind": "compact",
+      "name": "neg-alg-rs1-disallowed"
+    },
+    {
+      "expected": {
+        "error_code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJ2ZW5kb3IuY3VzdG9tLTEiLCJraWQiOiJraWQtZWRkc2EtMjAyNi0wNSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA",
+      "kind": "compact",
+      "name": "neg-alg-vendor-disallowed"
+    },
+    {
+      "expected": {
+        "error_code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJraWQiOiJraWQtZWRkc2EtMjAyNi0wNSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0.eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA",
+      "kind": "compact",
+      "name": "neg-alg-missing"
+    },
+    {
+      "expected": {
+        "ok": false,
+        "reason_substring": "compact JWS must have 3 segments"
+      },
+      "input": "eyJhbGciOiJ2ZW5kb3IuY3VzdG9tLTEiLCJraWQiOiJraWQtZWRkc2EtMjAyNi0wNSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJyZWxheS1jb3JwdXMiLCJuIjoxLCJzdWIiOiJ2ZWN0b3ItMDAxIn0",
+      "kind": "compact",
+      "name": "neg-malformed-two-segments"
+    },
+    {
+      "expected": {
+        "alg": "EdDSA",
+        "kid": "kid-eddsa-2026-05",
+        "ok": true
+      },
+      "input": {
+        "claim": {
+          "claim_id": "c-001",
+          "kind": "artifact",
+          "value": "abc"
+        },
+        "protected_b64u": "eyJhbGciOiJFZERTQSIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il0sImtpZCI6ImtpZC1lZGRzYS0yMDI2LTA1In0",
+        "signature_b64u": "XiuBZown2jWbBB1qfuvrVeW5p0EqX6rbhfhvwuur-yzkBBPwNpsAMfrGmtyFfvCQjslW_5HiA5Rq23Sv3Et7AA"
+      },
+      "kind": "detached",
+      "name": "detached-positive-eddsa"
+    },
+    {
+      "expected": {
+        "error_code": "RELAY-EVID-014",
+        "ok": false,
+        "reason_substring": "detached payload digest"
+      },
+      "input": {
+        "claim": {
+          "claim_id": "c-001",
+          "kind": "artifact",
+          "value": "XYZ"
+        },
+        "protected_b64u": "eyJhbGciOiJFZERTQSIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il0sImtpZCI6ImtpZC1lZGRzYS0yMDI2LTA1In0",
+        "signature_b64u": "XiuBZown2jWbBB1qfuvrVeW5p0EqX6rbhfhvwuur-yzkBBPwNpsAMfrGmtyFfvCQjslW_5HiA5Rq23Sv3Et7AA"
+      },
+      "kind": "detached",
+      "name": "detached-negative-tampered-claim"
+    },
+    {
+      "expected": {
+        "ok": true,
+        "verdicts": [
+          {
+            "alg": "EdDSA",
+            "kid": "kid-eddsa-2026-05",
+            "ok": true
+          },
+          {
+            "alg": "ES256",
+            "kid": "kid-es256-2026-05",
+            "ok": true
+          }
+        ]
+      },
+      "input": {
+        "payload": {
+          "bundle_id": "b-001",
+          "kind": "multisig"
+        },
+        "signatures": [
+          {
+            "alg": "EdDSA",
+            "kid": "kid-eddsa-2026-05",
+            "signature_b64u": "QOsVNxnjU3amrlwwSvwn6RYSIVnzACpki-kCTgkE1OgISlukpVFSvgrbn5cQyMP8tVJTh4O__injLKkYwEefCg"
+          },
+          {
+            "alg": "ES256",
+            "kid": "kid-es256-2026-05",
+            "signature_b64u": "c6HZ7aeKEN_9EFDbNyFhcOq61XUNFJ4FUA44bUxRbg-7d7Z2_D2joWAxtxdsrt3sMXVcZohe6CpgA9lO7xTGIA"
+          }
+        ]
+      },
+      "kind": "multisig",
+      "name": "multisig-n2-both-valid"
+    },
+    {
+      "expected": {
+        "aggregate": "mixed",
+        "ok": false,
+        "verdicts": [
+          {
+            "alg": "EdDSA",
+            "kid": "kid-eddsa-2026-05",
+            "ok": true
+          },
+          {
+            "alg": "ES256",
+            "kid": "kid-es256-2026-05",
+            "ok": false
+          }
+        ]
+      },
+      "input": {
+        "payload": {
+          "bundle_id": "b-001",
+          "kind": "multisig"
+        },
+        "signatures": [
+          {
+            "alg": "EdDSA",
+            "kid": "kid-eddsa-2026-05",
+            "signature_b64u": "QOsVNxnjU3amrlwwSvwn6RYSIVnzACpki-kCTgkE1OgISlukpVFSvgrbn5cQyMP8tVJTh4O__injLKkYwEefCg"
+          },
+          {
+            "alg": "ES256",
+            "kid": "kid-es256-2026-05",
+            "signature_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          }
+        ]
+      },
+      "kind": "multisig",
+      "name": "multisig-n2-mixed"
+    },
+    {
+      "expected": {
+        "ok": true,
+        "verdicts": [
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-0",
+            "ok": true
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-1",
+            "ok": true
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-2",
+            "ok": true
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-3",
+            "ok": true
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-4",
+            "ok": true
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-5",
+            "ok": true
+          }
+        ]
+      },
+      "input": {
+        "payload": {
+          "bundle_id": "b-002",
+          "kind": "multisig-6"
+        },
+        "signatures": [
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-0",
+            "signature_b64u": "uzcxMc065X8pyV-tvxcPwlL55k9OvHPWSy1uA4oTzMxKvgyC8FLx8UMaT0lkYkYrC0n_MEzIwWMIS1soY0qOBA"
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-1",
+            "signature_b64u": "mlUQavYDtURP4PNOdsD_Ugwnrb2YPFXmopUd9RrDAgYh1favino6EEnsOXi4qCqKHxOPN0jX5EyivyuyLcJJAA"
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-2",
+            "signature_b64u": "lqV1066GQpcRr3I2zyIqqKg80Stgm6LxbssRGHNyjS9kbfJH-fmuBhrpWpBTF7rrB1h58QIY-CbfrwbY1smVAw"
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-3",
+            "signature_b64u": "v_nJRn5LCEBhaAztxZKUnTgfh1NMfATVGrI-QO8VCq86J4Z1Zmy8NQ_6dXnfXHX65g2_vsqEabDQ_-vvrG8qDA"
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-4",
+            "signature_b64u": "1P1oSZHkEJdQmbd9X5xi8ydJwIykGjdWqS2WfADGlZyxC8SFtS1oo4C_MdMxhpDJZHo1Jk2EWzlO6bim209fAw"
+          },
+          {
+            "alg": "EdDSA",
+            "kid": "kid-multisig-5",
+            "signature_b64u": "D9bFuILObBJeXEdVRNM8eOKVJGwqnSxEsxFKL0EpIJQXDllohq_CBbfd03Rj4-6SchPst4ZdbXVbS1NjhMJwDQ"
+          }
+        ]
+      },
+      "kind": "multisig",
+      "name": "multisig-n6-all-valid"
+    }
+  ],
+  "jwks": {
+    "keys": [
+      {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "kid-eddsa-2026-05",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "WuBqb-_s8R0eTLlHmbb8lKsKCMfVeSap8rSH1Wyl_QM"
+      },
+      {
+        "alg": "ES256",
+        "crv": "P-256",
+        "kid": "kid-es256-2026-05",
+        "kty": "EC",
+        "use": "sig",
+        "x": "TYS34u4QSwT3zCiZ93vqu9LvQhjCPPH7-rH0VKtaOWs",
+        "y": "UJEArBXTrXyyfB_LkTaDsTVCJtC0ojsV18KcFkf3kYA"
+      },
+      {
+        "alg": "RS256",
+        "e": "AQAB",
+        "kid": "kid-rs256-2026-05",
+        "kty": "RSA",
+        "n": "urkYcoabBILUWAmhWz7KJxky-vrDlns-wQSw1cGIxUhS1-6huKQyiKbWV48QpVeUka7S-Jz9m0epfEkUQ1PKfWHRRo9zO7dFlO2080av0cpCLVHjNelwr8HMwYu4fLeHLMh16Opcl6lfpDdd9PPGQSeZm68Fur00bgJg5BFtbZ76HI9FsgLoBTyPxGU7ceQ3QEkXEDNW4xoYTv_n4AAzTovsV76GJDQA_iKfEB5C-0aIuYwTDTEluKj1ueUlGJD2Wvr2WPeL9q2G_zxykmRpF7wnVswRzjHf6484Wa6lnFc0xjlvWUy2KMRIcEnGhDnUVq5BvGUe0Widk-uVTfRt6Q",
+        "use": "sig"
+      },
+      {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "kid-eddsa-wrong-2026-05",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "nqcFr4_hcptmOjGWCk1GeDbaVMFDRKYHwcEeFj6WbC4"
+      },
+      {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "kid-multisig-0",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "EdSYqwQN--deK-ytdRCrUdSniE-ngn6GUAMxq8LH3qA"
+      },
+      {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "kid-multisig-1",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "pRatILuELmfKNpl9aUXRmMuK_aerOJOLNMP98KpODBA"
+      },
+      {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "kid-multisig-2",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "rOZwHyOsSkgu49axBA6vtEj9-ypBZyEqed9oXEFMdfQ"
+      },
+      {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "kid-multisig-3",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "Bwi4ZvKImOoaQRBR_0FjxR4yyhTG0GRHMZ5pZFJk1KY"
+      },
+      {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "kid-multisig-4",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "2ptXf9OsJFPXcO7YXXcJPRamnBYhwgt4u1jhOO46X8I"
+      },
+      {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "kid-multisig-5",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "hKtpFa7snbOqHH2Ky447y6PYuYtc-jasBvsZAWraQmQ"
+      }
+    ]
+  },
+  "schema": "relay.conformance.jws.v1"
+}
