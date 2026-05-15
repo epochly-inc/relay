@@ -1,0 +1,75 @@
+# epochly-relay-evals (Python eval runner primitives package).
+#
+# Houses the W9.1 eval runner primitives: a deterministic, single-process
+# eval runner that consumes a synthetic or fixture-loaded EvalDataset,
+# evaluates each case against an injected evaluator callable, writes
+# per-case evidence-bound eval_results rows, aggregates into a single
+# canonical eval_runs row, and supports eval-delta computation against
+# a baseline run.
+#
+# The runner is forbidden from writing run_results or gate_decisions
+# (VAL-W9-008; CLAUDE.md keystone invariant #1). The canonical control-
+# plane tables remain owned by the state engine in apps/local-sidecar/.
+#
+# Spec anchors:
+#   A    eval_runs schema (line 1899)
+#   AM.3 eval-delta + eval_run_deltas (line 5876)
+#   AM.6 tier-3 budget (line 5941); tier-3 marker policy (eng plan A6)
+#   D.5  EvalAssertion (line 3860) -- consumed by w9.2/w9.3 not w9.1
+#   K    Evidence binding (artifact hash, command id, exit code, span ids,
+#         manifest commit hash)
+#   S    Evals primitives row
+# Eng plan anchors:
+#   W9 (line 127-128)         packages/evals/
+#   A6 (line 290-291)         tier-3 matrix slice + env var marker
+# CLAUDE.md anchors:
+#   keystone invariant #1     control plane writes the result (NOT the runner)
+#   keystone invariant #2     pass without evidence is not a pass
+#   keystone invariant #3     manifest is the source of truth
+#   keystone invariant #8     atomic-persistence primitives
+#   guard tests               RunResult ownership, evidence pairing,
+#                             stale handoff, manifest source-of-truth
+#
+# Contract assertions: VAL-W9-001 .. VAL-W9-008 + VAL-W9-021 (w9.1).
+# w9.2 (assertion templates) and w9.3 (LLM-judge stub) are deferred to
+# their own commits; this package's __init__.py reserves slots only.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-evals"
+version = "0.0.0"
+description = "Relay eval runner primitives (Python; pass/fail + eval-delta, evidence-bound)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  # Generated RelayErrorCode constants and canonical schema id strings
+  # live here. Workspace dependency; uv resolves from the workspace
+  # tree, never from a published index (CLAUDE.md import-boundary rule).
+  "epochly-relay-schemas",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/relay_evals"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/relay_evals",
+  "migrations",
+  "README.md",
+]
+
+[tool.uv.sources]
+epochly-relay-schemas = { workspace = true }

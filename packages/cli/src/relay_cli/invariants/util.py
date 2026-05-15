@@ -113,6 +113,7 @@ _BASE_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = (
     "packages/sdk-typescript/test",
     "packages/sdk-typescript/.api",
     "packages/schemas/python/tests",
+    "packages/evals/tests",
     "apps/local-sidecar/tests",
     "apps/replay-proxy/tests",
     # Generated codegen

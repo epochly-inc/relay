@@ -17,7 +17,7 @@ description = "Relay v0.1 OSS workspace root (not published)."
 requires-python = ">=3.12"
 
 [tool.uv.workspace]
-members = ["packages/schemas", "packages/sdk-python", "packages/cli", "packages/contracts", "packages/gate", "apps/local-sidecar", "apps/replay-proxy"]
+members = ["packages/schemas", "packages/sdk-python", "packages/cli", "packages/contracts", "packages/gate", "packages/evals", "apps/local-sidecar", "apps/replay-proxy"]
 
 [tool.uv]
 package = false
@@ -45,6 +45,7 @@ testpaths = [
   "packages/cli/tests",
   "packages/contracts/tests",
   "packages/gate/tests",
+  "packages/evals/tests",
   "apps/local-sidecar/tests",
   "apps/replay-proxy/tests",
 ]
@@ -55,6 +56,7 @@ markers = [
   "replay_live: Live replay against real providers; never runs in CI",
   "cross_platform: Runs on the full 3 OS matrix",
   "fulfills(assertion_id): Bind a test to a contract assertion (VAL-W{N}-NNN)",
+  "tier3: VAL-W9-021 canonical tier-3 marker; gated on RELAY_TIER3_RUNNER=linux-py3.14-node24",
 ]
 filterwarnings = [
   "error",

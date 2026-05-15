@@ -12,6 +12,7 @@ members = [
     "epochly-relay",
     "epochly-relay-cli",
     "epochly-relay-contracts",
+    "epochly-relay-evals",
     "epochly-relay-gate-engine",
     "epochly-relay-replay-proxy",
     "epochly-relay-schemas",
@@ -725,6 +726,28 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "cel-python", specifier = ">=0.5.0,<0.6" },
+    { name = "epochly-relay-schemas", editable = "packages/schemas" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
+    { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
+]
+provides-extras = ["test"]
+
+[[package]]
+name = "epochly-relay-evals"
+version = "0.0.0"
+source = { editable = "packages/evals" }
+dependencies = [
+    { name = "epochly-relay-schemas" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-timeout" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
