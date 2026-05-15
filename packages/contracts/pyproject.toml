@@ -1,0 +1,62 @@
+# epochly-relay-contracts (Python contract DSL evaluator package).
+#
+# Houses the Python side of the Relay contract DSL (spec D): the cel-python
+# evaluator wrapper bound to the Relay CEL profile, the pure-only UDF
+# registry, the RFC 8785 JCS canonicalizer, and the structured error
+# envelope. The TypeScript mirror (cel-js) ships in W6.2.
+#
+# Spec anchors:
+#   D                       contract DSL surface
+#   AM.6                    conformance corpus tier
+# Eng plan anchors:
+#   CQ1 (lines 145-157)     single-source CEL evaluator per language;
+#                           dyn/timestamp/duration disabled; RE2-only regex;
+#                           wall-clock timeout-bounded
+#   X4  (line 216)          UDFs MUST be registered with pure=True
+# CLAUDE.md anchors:
+#   keystone invariant 6    side-effect idempotency (UDFs are pure subset)
+#   banned pattern #16      non-deterministic UDF registration is a P0 bug
+#
+# Contract assertions: VAL-W6-001 .. VAL-W6-007 (w6.1 sub-feature).
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-contracts"
+version = "0.0.0"
+description = "Relay contract DSL evaluator (Python; cel-python wrapper, JCS canonicalizer, pure UDF registry)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  # CQ1 line 145: cel-python is the single Python CEL evaluator.
+  # Pinned to a tested minor; bumped via the W6 release process only.
+  "cel-python>=0.5.0,<0.6",
+  # Generated RelayErrorCode constants live here. Workspace dependency;
+  # uv resolves from the workspace tree, never from a published index
+  # (CLAUDE.md import-boundary rule).
+  "epochly-relay-schemas",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/relay_contracts"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/relay_contracts",
+  "README.md",
+]
+
+[tool.uv.sources]
+epochly-relay-schemas = { workspace = true }
