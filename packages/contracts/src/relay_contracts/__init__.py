@@ -32,9 +32,54 @@ from .errors import (
 )
 from .evaluator import RelayCelEvaluator
 from .udf import PureUdf, register_udf
+from .udfs import (
+    RELAY_COVERAGE_NAME,
+    RELAY_SCHEMA_MATCH_NAME,
+    RELAY_TOOL_ARG_NAME,
+    relay_coverage,
+    relay_schema_match,
+    relay_tool_arg,
+)
+from .udfs.coverage import RELAY_COVERAGE_ARITY
+from .udfs.schema_match import RELAY_SCHEMA_MATCH_ARITY
+from .udfs.tool_arg import RELAY_TOOL_ARG_ARITY
+
+# w6.3 production UDF registry: every Relay UDF that ships in v0.1.
+# Constructed at import time via the pure-only register_udf entry
+# point so the purity flag is enforced structurally (CLAUDE.md banned
+# pattern #16). Workers passing this iterable to RelayCelEvaluator(
+# udfs=RELAY_UDFS) get a fully-wired evaluator with no risk of
+# accidentally registering an impure callable.
+RELAY_UDFS: tuple[PureUdf, ...] = (
+    register_udf(
+        name=RELAY_COVERAGE_NAME,
+        fn=relay_coverage,
+        pure=True,
+        arity=RELAY_COVERAGE_ARITY,
+    ),
+    register_udf(
+        name=RELAY_TOOL_ARG_NAME,
+        fn=relay_tool_arg,
+        pure=True,
+        arity=RELAY_TOOL_ARG_ARITY,
+    ),
+    register_udf(
+        name=RELAY_SCHEMA_MATCH_NAME,
+        fn=relay_schema_match,
+        pure=True,
+        arity=RELAY_SCHEMA_MATCH_ARITY,
+    ),
+)
 
 __all__ = [
     "PureUdf",
+    "RELAY_COVERAGE_ARITY",
+    "RELAY_COVERAGE_NAME",
+    "RELAY_SCHEMA_MATCH_ARITY",
+    "RELAY_SCHEMA_MATCH_NAME",
+    "RELAY_TOOL_ARG_ARITY",
+    "RELAY_TOOL_ARG_NAME",
+    "RELAY_UDFS",
     "RelayCelError",
     "RelayCelEvaluator",
     "RelayCelNumericOutOfBoundsError",
@@ -43,4 +88,7 @@ __all__ = [
     "RelayUdfPurityError",
     "jcs_canonicalize",
     "register_udf",
+    "relay_coverage",
+    "relay_schema_match",
+    "relay_tool_arg",
 ]

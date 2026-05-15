@@ -14,6 +14,25 @@ export {
 } from "./evaluator.js";
 export type { PureUdf, RegisterUdfOptions } from "./udf.js";
 export { registerUdf } from "./udf.js";
+
+// w6.3 production UDFs.
+export {
+  RELAY_COVERAGE_ARITY,
+  RELAY_COVERAGE_NAME,
+  relayCoverage,
+} from "./udfs/coverage.js";
+export {
+  RELAY_TOOL_ARG_ARITY,
+  RELAY_TOOL_ARG_NAME,
+  relayToolArg,
+} from "./udfs/tool_arg.js";
+export {
+  MAX_DEPTH as RELAY_SCHEMA_MATCH_MAX_DEPTH,
+  RELAY_SCHEMA_MATCH_ARITY,
+  RELAY_SCHEMA_MATCH_NAME,
+  relaySchemaMatch,
+} from "./udfs/schema_match.js";
+export { RELAY_UDFS } from "./udfs/registry.js";
 export {
   CODE_RELAY_CEL_002,
   CODE_RELAY_CEL_003,

@@ -1,0 +1,464 @@
+{
+  "cases": [
+    {
+      "args": [
+        {
+          "steps": [
+            {
+              "name": "a"
+            },
+            {
+              "name": "b"
+            },
+            {
+              "name": "c"
+            }
+          ]
+        },
+        "b"
+      ],
+      "name": "coverage_match",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.coverage"
+    },
+    {
+      "args": [
+        {
+          "steps": [
+            {
+              "name": "a"
+            },
+            {
+              "name": "b"
+            },
+            {
+              "name": "c"
+            }
+          ]
+        },
+        "z"
+      ],
+      "name": "coverage_no_match",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.coverage"
+    },
+    {
+      "args": [
+        {
+          "steps": []
+        },
+        "a"
+      ],
+      "name": "coverage_empty_steps",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.coverage"
+    },
+    {
+      "args": [
+        {},
+        "a"
+      ],
+      "name": "coverage_no_steps_field",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.coverage"
+    },
+    {
+      "args": [
+        [
+          1,
+          2
+        ],
+        "a"
+      ],
+      "name": "coverage_non_mapping_trace",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.coverage"
+    },
+    {
+      "args": [
+        {
+          "steps": [
+            null,
+            1,
+            "x",
+            {
+              "name": "match"
+            },
+            {
+              "other": "no"
+            }
+          ]
+        },
+        "match"
+      ],
+      "name": "coverage_skips_malformed",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.coverage"
+    },
+    {
+      "args": [
+        {
+          "steps": [
+            {
+              "name": "Foo"
+            }
+          ]
+        },
+        "foo"
+      ],
+      "name": "coverage_case_sensitive",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.coverage"
+    },
+    {
+      "args": [
+        {
+          "args": {
+            "b": true,
+            "k": "v",
+            "n": 1,
+            "x": null
+          },
+          "tool_name": "t"
+        },
+        "k"
+      ],
+      "name": "tool_arg_string",
+      "py_jcs_b64": "InYi",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "args": [
+        {
+          "args": {
+            "b": true,
+            "k": "v",
+            "n": 1,
+            "x": null
+          },
+          "tool_name": "t"
+        },
+        "n"
+      ],
+      "name": "tool_arg_int",
+      "py_jcs_b64": "MQ==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "args": [
+        {
+          "args": {
+            "b": true,
+            "k": "v",
+            "n": 1,
+            "x": null
+          },
+          "tool_name": "t"
+        },
+        "b"
+      ],
+      "name": "tool_arg_bool",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "args": [
+        {
+          "args": {
+            "b": true,
+            "k": "v",
+            "n": 1,
+            "x": null
+          },
+          "tool_name": "t"
+        },
+        "x"
+      ],
+      "name": "tool_arg_null_value",
+      "py_jcs_b64": "bnVsbA==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "args": [
+        {
+          "args": {
+            "b": true,
+            "k": "v",
+            "n": 1,
+            "x": null
+          },
+          "tool_name": "t"
+        },
+        "missing"
+      ],
+      "name": "tool_arg_missing_key",
+      "py_jcs_b64": "bnVsbA==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "args": [
+        {
+          "tool_name": "x"
+        },
+        "k"
+      ],
+      "name": "tool_arg_no_args_field",
+      "py_jcs_b64": "bnVsbA==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "args": [
+        [
+          1,
+          2
+        ],
+        "k"
+      ],
+      "name": "tool_arg_non_mapping_call",
+      "py_jcs_b64": "bnVsbA==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "args": [
+        {
+          "args": {
+            "obj": {
+              "a": [
+                1,
+                2,
+                3
+              ]
+            }
+          }
+        },
+        "obj"
+      ],
+      "name": "tool_arg_nested_object",
+      "py_jcs_b64": "eyJhIjpbMSwyLDNdfQ==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "args": [
+        {
+          "x": 1
+        },
+        {}
+      ],
+      "name": "schema_empty",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        "hello",
+        {
+          "type": "string"
+        }
+      ],
+      "name": "schema_string_match",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        1,
+        {
+          "type": "string"
+        }
+      ],
+      "name": "schema_string_mismatch",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        true,
+        {
+          "type": "integer"
+        }
+      ],
+      "name": "schema_integer_excludes_bool",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        42,
+        {
+          "type": "number"
+        }
+      ],
+      "name": "schema_number_accepts_int",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        3.14,
+        {
+          "type": "number"
+        }
+      ],
+      "name": "schema_number_accepts_float",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        null,
+        {
+          "type": "null"
+        }
+      ],
+      "name": "schema_null_match",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        {
+          "a": 1,
+          "b": "x"
+        },
+        {
+          "required": [
+            "a",
+            "b"
+          ],
+          "type": "object"
+        }
+      ],
+      "name": "schema_object_required_present",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        {
+          "a": 1
+        },
+        {
+          "required": [
+            "a",
+            "b"
+          ],
+          "type": "object"
+        }
+      ],
+      "name": "schema_object_required_missing",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        {
+          "a": 1,
+          "b": "x",
+          "extra": true
+        },
+        {
+          "properties": {
+            "a": {
+              "type": "integer"
+            },
+            "b": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "name": "schema_object_properties_match",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        [
+          1,
+          2,
+          3
+        ],
+        {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      ],
+      "name": "schema_array_items_match",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        [
+          1,
+          "two"
+        ],
+        {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      ],
+      "name": "schema_array_items_mismatch",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        "x",
+        {
+          "type": "rainbow"
+        }
+      ],
+      "name": "schema_unknown_type",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        "x",
+        "not-a-schema"
+      ],
+      "name": "schema_non_mapping",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        {
+          "owner": {
+            "id": 7,
+            "name": "alice"
+          }
+        },
+        {
+          "properties": {
+            "owner": {
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "name": "schema_nested_object",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    }
+  ],
+  "version": 1
+}
