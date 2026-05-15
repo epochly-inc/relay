@@ -381,22 +381,41 @@ def _gate_root(ctx: typer.Context) -> None:
         _emit_not_implemented("gate", "w5.4")
 
 
-# --- evidence group ----------------------------------------------------------
+# --- evidence group (W5.4 wired) --------------------------------------------
+# Per VAL-W5-025..030 the evidence group ships list/show/verify in W5.4. The
+# subcommand module owns the implementation; main.py re-cls the group app
+# to _RelayTyperGroup so the JSON-help override in this module covers
+# ``rly evidence --help`` consistently with the rest of the tree.
+
+from .commands.evidence import (  # noqa: E402 - late import keeps load order stable
+    _cmd_evidence_list,
+    _cmd_evidence_show,
+    _cmd_evidence_verify,
+)
 
 evidence_app = typer.Typer(
     name="evidence",
     cls=_RelayTyperGroup,
-    help="List, verify, and inspect evidence bundles.",
+    help=(
+        "List, show, and verify evidence bundles. The verifier defaults "
+        "to the spec-pinned trust anchor; --trust-anchor accepts a BYO "
+        "JWKS URL for forks and self-hosters and emits a structured "
+        "stderr WARN when used."
+    ),
     no_args_is_help=False,
     rich_markup_mode=None,
+    add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+evidence_app.command("list", cls=_RelayTyperCommand)(_cmd_evidence_list)
+evidence_app.command("show", cls=_RelayTyperCommand)(_cmd_evidence_show)
+evidence_app.command("verify", cls=_RelayTyperCommand)(_cmd_evidence_verify)
 app.add_typer(evidence_app, name="evidence")
 
 
 @evidence_app.callback(invoke_without_command=True)
 def _evidence_root(ctx: typer.Context) -> None:
-    """Stub root for ``rly evidence``. Lands in W5.4."""
+    """``rly evidence`` root: defer to subcommand or emit not-implemented stub."""
     if ctx.invoked_subcommand is None:
         _emit_not_implemented("evidence", "w5.4")
 

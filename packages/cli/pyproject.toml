@@ -55,6 +55,13 @@ dependencies = [
   # against the pinned manifest URL. Pinned conservatively to keep the
   # CLI install footprint deterministic.
   "httpx>=0.27,<0.29",
+  # VAL-W5-027/028: ``rly evidence verify`` performs offline JWS signature
+  # verification (Ed25519 + ECDSA P-256) against a cached JWKS. Stdlib has
+  # no asymmetric public-key primitives; ``cryptography`` is the canonical
+  # dependency the OSS verifier (packages/verifier/) will share once it
+  # lands. Pinned conservatively to keep the offline-verifier footprint
+  # deterministic across the supported Python matrix (3.12 / 3.13 / 3.14).
+  "cryptography>=44,<46",
 ]
 
 [project.optional-dependencies]
