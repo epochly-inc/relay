@@ -1,12 +1,15 @@
-"""SDK replay-mode primitives (W3.5, VAL-W3-048 / VAL-W3-049 / VAL-W3-051).
+"""SDK replay-mode primitives (W3.5 + W7.3).
 
 Per eng plan A4 ("defense in depth for replay isolation") this module
 owns two of the four layers:
 
   Layer 2: ``install_socket_deny`` monkey-patches ``socket.socket`` so
-           connect() to any non-loopback IP raises
-           :class:`RelaySocketDenyError`. ``uninstall_socket_deny``
-           restores the original method.
+           any non-loopback I/O (``connect``/``connect_ex``/``sendto``/
+           ``bind``) raises :class:`RelaySocketDenyError`. ``socket.
+           create_connection`` is patched the same way. ``socket.
+           getaddrinfo`` is left intact (informational); the patch
+           catches the resolved-address connect via the connect gate.
+           ``uninstall_socket_deny`` restores every original reference.
 
   Layer 4: ``require_instrumented_http_clients`` scans ``sys.modules``
            for uninstrumented HTTP-client modules (``requests``,
@@ -15,6 +18,26 @@ owns two of the four layers:
            without a Relay wrapper. The function is intended to be
            called by the SDK's replay-mode entry point so callers see
            an init ERROR (not warning) before any cassette/live work.
+
+W7.3 extensions (VAL-W7-040 .. VAL-W7-047):
+  * Coverage now includes ``AF_UNIX`` (denied unless target path is the
+    registered local sidecar socket), ``SOCK_RAW``, ``SOCK_DGRAM``
+    (UDP ``sendto`` and ``connect``), and ``socket.create_connection``.
+  * :class:`RelaySocketDenyError` carries structured fields
+    ``dest_address``, ``dest_port``, ``family``, ``socktype``, plus a
+    ``remediation`` hint pointing at the cassette-recording flow
+    (VAL-W7-044). The legacy ``details["target"]`` field is preserved
+    for back-compat with W3.5 tests.
+  * :func:`replay_session` is a context manager that installs the gate
+    on ``__enter__`` and restores on ``__exit__`` (VAL-W7-043).
+  * The patch is re-applied automatically on import when the
+    ``RELAY_REPLAY_SESSION`` environment variable is set, which lets
+    the gate survive ``multiprocessing.spawn`` on Windows
+    (VAL-W7-046). The env var's value (when non-empty) is the
+    allowed sidecar UNIX-socket path; an empty string means "no
+    sidecar UNIX socket allowed, only loopback IP".
+  * Outside an active session the SDK does NOT touch ``socket``
+    (VAL-W7-047).
 
 VAL-W3-051: :func:`replay_run` defaults to cassette mode and refuses
 live mode unless the caller passes both ``mode="live"`` AND
@@ -27,10 +50,13 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
+import os
 import socket
 import sys
 import threading
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, ClassVar, Final
 
@@ -53,6 +79,23 @@ RELAY_SDK_REPLAY_DEGRADED_MODE_NOT_ACKNOWLEDGED_CLASS: Final[str] = (
     "RELAY-SDK-REPLAY-DEGRADED-MODE-NOT-ACKNOWLEDGED"
 )
 
+# Environment variable that signals "we are inside a replay session". When
+# set (even to the empty string) at module import the gate is installed
+# eagerly so that processes started via ``multiprocessing.spawn`` --
+# which on Windows re-import this module from a fresh interpreter --
+# inherit the patch (VAL-W7-046). The value, when non-empty, is the
+# allowed sidecar UNIX-socket path.
+RELAY_REPLAY_SESSION_ENV: Final[str] = "RELAY_REPLAY_SESSION"
+
+# Default remediation hint surfaced on every RelaySocketDenyError. Points
+# the user at the cassette-recording flow (VAL-W7-044). Kept short and
+# ASCII so the message survives every CLI / log surface.
+_REMEDIATION_HINT: Final[str] = (
+    "Replay mode is cassette-only by default. Re-record the cassette via "
+    "'rly replay record' against the desired target, or exit replay mode "
+    "before performing non-loopback network I/O."
+)
+
 
 class RelayUninstrumentedHTTPError(RelaySdkError):
     """Replay-mode init detected an HTTP client module without a Relay wrapper.
@@ -71,11 +114,23 @@ class RelayUninstrumentedHTTPError(RelaySdkError):
 
 
 class RelaySocketDenyError(RelaySdkError):
-    """Replay-mode socket deny: connect() to a non-loopback address blocked.
+    """Replay-mode socket deny: non-loopback socket I/O blocked.
 
     Per eng plan A4 layer 2 the SDK monkey-patches ``socket.socket`` so
     any non-loopback egress raises this error synchronously. Loopback
-    (127.0.0.0/8, ::1) is allowed.
+    (127.0.0.0/8, ::1, ``localhost``) is allowed; ``AF_UNIX`` is
+    allowed only when the target path matches the registered sidecar
+    UNIX socket.
+
+    The exception carries structured fields per VAL-W7-044:
+      ``dest_address`` -- the host/path argument the caller passed.
+      ``dest_port``    -- the port (None for AF_UNIX or non-tuple addrs).
+      ``family``       -- the socket family name (e.g. ``"AF_INET"``).
+      ``socktype``     -- the socket type name (e.g. ``"SOCK_STREAM"``).
+      ``remediation``  -- a short hint pointing at cassette recording.
+    These fields are also surfaced on the ``details`` dict for
+    downstream consumers that read the structured envelope. The legacy
+    ``details["target"]`` field is preserved for W3.5-era callers.
     """
 
     code: ClassVar[str] = RELAY_SDK_SOCKET_DENY_CODE
@@ -83,6 +138,38 @@ class RelaySocketDenyError(RelaySdkError):
     http_status: ClassVar[int] = 403
     default_blocked_surface: ClassVar[str] = "socket.socket.connect"
     default_retry_advice: ClassVar[str] = "no_retry"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        dest_address: str = "",
+        dest_port: int | None = None,
+        family: str = "",
+        socktype: str = "",
+        operation: str = "",
+        remediation: str = _REMEDIATION_HINT,
+        details: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        merged_details: dict[str, Any] = dict(details) if details else {}
+        # W7.3 structured fields (VAL-W7-044).
+        merged_details.setdefault("dest_address", dest_address)
+        merged_details.setdefault("dest_port", dest_port)
+        merged_details.setdefault("family", family)
+        merged_details.setdefault("socktype", socktype)
+        merged_details.setdefault("operation", operation)
+        merged_details.setdefault("remediation", remediation)
+        # W3.5 back-compat: existing tests assert ``details["target"]``
+        # contains the host string. Preserve the legacy field.
+        merged_details.setdefault("target", dest_address)
+        super().__init__(message, details=merged_details, **kwargs)
+        self.dest_address: str = dest_address
+        self.dest_port: int | None = dest_port
+        self.family: str = family
+        self.socktype: str = socktype
+        self.operation: str = operation
+        self.remediation: str = remediation
 
 
 class RelayReplayDegradedModeNotAcknowledged(RelaySdkError):
@@ -156,21 +243,36 @@ def require_instrumented_http_clients() -> None:
 
 
 # -----------------------------------------------------------------------------
-# Layer 2: socket.socket deny
+# Layer 2: socket.socket deny (W3.5 base + W7.3 extensions)
 # -----------------------------------------------------------------------------
 
 _socket_lock = threading.Lock()
-_socket_original_connect: Any = None
+
+# Saved originals; populated when the gate is installed and restored on
+# uninstall. Keys are method/function names; values are the original
+# callables. Empty dict means "not currently patched".
+_socket_originals: dict[str, Any] = {}
+
+# Allowed sidecar UNIX-socket path. ``None`` means "no sidecar socket
+# allowed, deny every AF_UNIX target". Set by :func:`install_socket_deny`.
+_allowed_sidecar_unix_path: str | None = None
 
 
 def _is_loopback_address(host: str) -> bool:
-    """Return True if ``host`` is a loopback IPv4 or IPv6 literal."""
+    """Return True if ``host`` is a loopback IPv4 or IPv6 literal.
+
+    The literal ``"localhost"`` is also accepted because every modern
+    libc resolver returns 127.0.0.1 / ::1 for it; gating on the literal
+    string avoids forcing a DNS lookup inside the deny path.
+    """
     if not host:
         return False
-    if host in ("localhost",):
+    if host == "localhost":
         return True
+    # Strip scope id from IPv6 link-local (``fe80::1%eth0``) before parse.
+    parsed = host.split("%", 1)[0]
     try:
-        ip = ipaddress.ip_address(host)
+        ip = ipaddress.ip_address(parsed)
     except ValueError:
         # A hostname; only literal IPs are accepted as loopback per A4
         # layer 2 (so the patch can't be bypassed by DNS resolution
@@ -179,52 +281,353 @@ def _is_loopback_address(host: str) -> bool:
     return ip.is_loopback
 
 
+def _family_name(family: int) -> str:
+    """Return the symbolic name for ``family`` (e.g. ``"AF_INET"``)."""
+    try:
+        return socket.AddressFamily(family).name
+    except (ValueError, AttributeError):
+        return f"AF_UNKNOWN({family})"
+
+
+def _socktype_name(socktype: int) -> str:
+    """Return the symbolic name for ``socktype`` (e.g. ``"SOCK_STREAM"``)."""
+    try:
+        # SOCK_NONBLOCK / SOCK_CLOEXEC may be ORed in on Linux; mask them
+        # off for the symbolic lookup.
+        base = socktype & 0xFF
+        return socket.SocketKind(base).name
+    except (ValueError, AttributeError):
+        return f"SOCK_UNKNOWN({socktype})"
+
+
+def _extract_host_port(address: Any) -> tuple[str, int | None]:
+    """Pull (host, port) out of the various address shapes ``socket`` accepts."""
+    if isinstance(address, tuple):
+        if len(address) >= 2:
+            host = str(address[0]) if address[0] is not None else ""
+            try:
+                port: int | None = int(address[1]) if address[1] is not None else None
+            except (TypeError, ValueError):
+                port = None
+            return host, port
+        if len(address) == 1:
+            return (str(address[0]) if address[0] is not None else ""), None
+        return "", None
+    if isinstance(address, bytes | bytearray):
+        # AF_UNIX abstract / filesystem path delivered as bytes.
+        try:
+            return bytes(address).decode("utf-8", errors="replace"), None
+        except Exception:
+            return repr(address), None
+    if isinstance(address, str):
+        return address, None
+    return repr(address), None
+
+
+def _is_address_allowed(
+    family: int,
+    socktype: int,
+    address: Any,
+) -> tuple[bool, str, int | None]:
+    """Return ``(allowed, host, port)`` for the given socket parameters.
+
+    Decision matrix:
+      * AF_INET / AF_INET6: allowed iff host is a loopback literal or
+        ``localhost``.
+      * AF_UNIX: allowed iff the path equals the registered sidecar
+        UNIX-socket path. An unset registration denies every AF_UNIX.
+      * Anything else (AF_PACKET, AF_NETLINK, ...): denied. These
+        families are never legitimate inside a replay sandbox.
+    """
+    host, port = _extract_host_port(address)
+    if family == socket.AF_INET or family == socket.AF_INET6:
+        return _is_loopback_address(host), host, port
+    if hasattr(socket, "AF_UNIX") and family == socket.AF_UNIX:
+        if _allowed_sidecar_unix_path is None:
+            return False, host, port
+        # Compare resolved paths so /var/relay vs /private/var/relay on
+        # macOS still match. Empty / non-existent paths fall through to
+        # plain string compare.
+        try:
+            real_target = os.path.realpath(host) if host else ""
+            real_allowed = os.path.realpath(_allowed_sidecar_unix_path)
+        except OSError:
+            real_target = host
+            real_allowed = _allowed_sidecar_unix_path
+        return real_target == real_allowed, host, port
+    return False, host, port
+
+
+def _raise_deny(
+    *,
+    operation: str,
+    family: int,
+    socktype: int,
+    host: str,
+    port: int | None,
+    address: Any,
+) -> None:
+    """Raise a fully-populated :class:`RelaySocketDenyError`."""
+    fam = _family_name(family)
+    sock = _socktype_name(socktype)
+    target_repr = host if port is None else f"{host}:{port}"
+    # Address-payload sanitisation: ``details`` is intended to be JSON-
+    # serialisable. Coerce non-primitive shapes via repr so the envelope
+    # never carries arbitrary objects.
+    if isinstance(address, str | int | float | bool | list | dict | type(None)):
+        addr_payload: Any = address
+    elif isinstance(address, tuple):
+        addr_payload = list(address)
+    else:
+        addr_payload = repr(address)
+    raise RelaySocketDenyError(
+        "Replay mode denied non-loopback socket "
+        f"{operation}: family={fam} socktype={sock} target={target_repr!r}. "
+        f"{_REMEDIATION_HINT}",
+        dest_address=host,
+        dest_port=port,
+        family=fam,
+        socktype=sock,
+        operation=operation,
+        remediation=_REMEDIATION_HINT,
+        details={"address": addr_payload},
+    )
+
+
+# ---- patched socket.socket methods ----------------------------------------
+
+
 def _denying_connect(self: socket.socket, address: Any) -> Any:
-    """Replacement for ``socket.socket.connect`` that denies non-loopback."""
-    host: str = ""
-    if isinstance(address, tuple) and len(address) >= 1:
-        host = str(address[0])
-    elif isinstance(address, str):
-        host = address
-    if not _is_loopback_address(host):
-        raise RelaySocketDenyError(
-            "Replay mode denied non-loopback socket connect: "
-            f"target={host!r}",
-            details={"target": host, "address": address},
+    """Replacement for ``socket.socket.connect``."""
+    allowed, host, port = _is_address_allowed(self.family, self.type, address)
+    if not allowed:
+        _raise_deny(
+            operation="connect",
+            family=self.family,
+            socktype=self.type,
+            host=host,
+            port=port,
+            address=address,
         )
-    assert _socket_original_connect is not None
-    return _socket_original_connect(self, address)
+    return _socket_originals["connect"](self, address)
 
 
-def install_socket_deny() -> None:
-    """Patch ``socket.socket.connect`` to deny non-loopback addresses.
+def _denying_connect_ex(self: socket.socket, address: Any) -> Any:
+    """Replacement for ``socket.socket.connect_ex``.
 
-    Idempotent: a second call while the patch is installed is a no-op.
+    ``connect_ex`` differs from ``connect`` only in that it returns the
+    errno instead of raising; the deny gate still raises so callers
+    cannot silently sweep the failure under a nonzero return code.
+    """
+    allowed, host, port = _is_address_allowed(self.family, self.type, address)
+    if not allowed:
+        _raise_deny(
+            operation="connect_ex",
+            family=self.family,
+            socktype=self.type,
+            host=host,
+            port=port,
+            address=address,
+        )
+    return _socket_originals["connect_ex"](self, address)
+
+
+def _denying_sendto(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
+    """Replacement for ``socket.socket.sendto``.
+
+    Accepts both call shapes: ``sendto(data, addr)`` and
+    ``sendto(data, flags, addr)``. The address is the last positional
+    argument; we extract it without copying ``data``.
+    """
+    address: Any = None
+    if len(args) >= 2:
+        address = args[-1]
+    elif "address" in kwargs:
+        address = kwargs["address"]
+    allowed, host, port = _is_address_allowed(self.family, self.type, address)
+    if not allowed:
+        _raise_deny(
+            operation="sendto",
+            family=self.family,
+            socktype=self.type,
+            host=host,
+            port=port,
+            address=address,
+        )
+    return _socket_originals["sendto"](self, *args, **kwargs)
+
+
+def _denying_bind(self: socket.socket, address: Any) -> Any:
+    """Replacement for ``socket.socket.bind``.
+
+    Binding to a non-loopback interface would let a replay-mode process
+    accept inbound traffic from outside the sandbox; the deny gate
+    treats bind the same as connect.
+    """
+    allowed, host, port = _is_address_allowed(self.family, self.type, address)
+    if not allowed:
+        _raise_deny(
+            operation="bind",
+            family=self.family,
+            socktype=self.type,
+            host=host,
+            port=port,
+            address=address,
+        )
+    return _socket_originals["bind"](self, address)
+
+
+# ---- patched module-level helpers -----------------------------------------
+
+
+def _denying_create_connection(
+    address: tuple[str, int],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Replacement for ``socket.create_connection``.
+
+    ``create_connection`` is a higher-level helper that calls
+    ``getaddrinfo`` then ``connect`` under the hood; we gate it directly
+    so the deny error surfaces with the user's intended target rather
+    than the (possibly misleading) post-resolution address.
+    """
+    host = ""
+    port: int | None = None
+    if isinstance(address, tuple) and len(address) >= 2:
+        host = str(address[0])
+        try:
+            port = int(address[1])
+        except (TypeError, ValueError):
+            port = None
+    if not _is_loopback_address(host):
+        _raise_deny(
+            operation="create_connection",
+            family=socket.AF_INET,
+            socktype=socket.SOCK_STREAM,
+            host=host,
+            port=port,
+            address=address,
+        )
+    return _socket_originals["create_connection"](address, *args, **kwargs)
+
+
+def install_socket_deny(*, sidecar_unix_path: str | None = None) -> None:
+    """Patch ``socket`` to deny non-loopback I/O.
+
+    Patches ``socket.socket.connect``, ``connect_ex``, ``sendto``,
+    ``bind`` and ``socket.create_connection``. ``socket.getaddrinfo`` is
+    intentionally LEFT INTACT (resolution is informational; the
+    follow-up connect to the resolved address is what trips the gate;
+    DNS UDP datagrams are denied via the SOCK_DGRAM ``sendto`` path).
+
+    Args:
+        sidecar_unix_path: When non-None, AF_UNIX connects/sends to
+            this exact path (after ``os.path.realpath``) are allowed.
+            Every other AF_UNIX target is denied. ``None`` denies all
+            AF_UNIX traffic.
+
+    Idempotent: a second call while the patch is installed updates the
+    allowed sidecar path but does not double-wrap the socket methods.
 
     Thread-safety: the patch is process-global and serialised by an
-    internal lock. Per the contract gap note (1554) replay sessions
-    running alongside non-replay sessions in the same process are
-    out-of-scope for v0.1; tests assume single-process invocation.
+    internal lock. Per the contract gap note replay sessions running
+    alongside non-replay sessions in the same process are out-of-scope
+    for v0.1; tests assume single-process invocation.
     """
-    global _socket_original_connect
+    global _allowed_sidecar_unix_path
     with _socket_lock:
-        if _socket_original_connect is not None:
+        _allowed_sidecar_unix_path = sidecar_unix_path
+        if _socket_originals:
             return
-        _socket_original_connect = socket.socket.connect
+        _socket_originals["connect"] = socket.socket.connect
+        _socket_originals["connect_ex"] = socket.socket.connect_ex
+        _socket_originals["sendto"] = socket.socket.sendto
+        _socket_originals["bind"] = socket.socket.bind
+        _socket_originals["create_connection"] = socket.create_connection
         socket.socket.connect = _denying_connect  # type: ignore[method-assign]
+        socket.socket.connect_ex = _denying_connect_ex  # type: ignore[method-assign]
+        socket.socket.sendto = _denying_sendto  # type: ignore[method-assign,assignment]
+        socket.socket.bind = _denying_bind  # type: ignore[method-assign]
+        socket.create_connection = _denying_create_connection  # type: ignore[assignment]
 
 
 def uninstall_socket_deny() -> None:
-    """Restore the original ``socket.socket.connect``.
+    """Restore every original ``socket`` reference patched by
+    :func:`install_socket_deny`.
 
     Idempotent: safe to call when no patch is installed.
     """
-    global _socket_original_connect
+    global _allowed_sidecar_unix_path
     with _socket_lock:
-        if _socket_original_connect is None:
+        if not _socket_originals:
+            _allowed_sidecar_unix_path = None
             return
-        socket.socket.connect = _socket_original_connect  # type: ignore[method-assign]
-        _socket_original_connect = None
+        socket.socket.connect = _socket_originals["connect"]  # type: ignore[method-assign]
+        socket.socket.connect_ex = _socket_originals["connect_ex"]  # type: ignore[method-assign]
+        socket.socket.sendto = _socket_originals["sendto"]  # type: ignore[method-assign,assignment]
+        socket.socket.bind = _socket_originals["bind"]  # type: ignore[method-assign]
+        socket.create_connection = _socket_originals["create_connection"]  # type: ignore[assignment]
+        _socket_originals.clear()
+        _allowed_sidecar_unix_path = None
+
+
+def is_socket_deny_installed() -> bool:
+    """Return True if the socket deny gate is currently installed."""
+    with _socket_lock:
+        return bool(_socket_originals)
+
+
+@contextlib.contextmanager
+def replay_session(*, sidecar_unix_path: str | None = None) -> Iterator[None]:
+    """Context manager that installs the socket-deny gate on entry and
+    restores it on exit (VAL-W7-043).
+
+    Within the ``with`` block the SDK behaves as if ``RELAY_REPLAY_SESSION``
+    were set: every non-loopback socket I/O raises
+    :class:`RelaySocketDenyError`. On exit the original ``socket``
+    references are restored so subsequent code in the same process can
+    perform normal network I/O.
+
+    The env var ``RELAY_REPLAY_SESSION`` is also set (to the sidecar
+    path or empty string) for the duration of the block so that
+    ``multiprocessing.spawn`` children re-import ``relay.replay_mode``
+    with the gate already active (VAL-W7-046).
+    """
+    prior_env = os.environ.get(RELAY_REPLAY_SESSION_ENV)
+    os.environ[RELAY_REPLAY_SESSION_ENV] = sidecar_unix_path or ""
+    install_socket_deny(sidecar_unix_path=sidecar_unix_path)
+    try:
+        yield
+    finally:
+        try:
+            uninstall_socket_deny()
+        finally:
+            if prior_env is None:
+                os.environ.pop(RELAY_REPLAY_SESSION_ENV, None)
+            else:
+                os.environ[RELAY_REPLAY_SESSION_ENV] = prior_env
+
+
+def _maybe_apply_from_env() -> None:
+    """If ``RELAY_REPLAY_SESSION`` is set, install the gate eagerly.
+
+    Called once at module import. This is the mechanism by which the
+    socket-deny gate survives ``multiprocessing.spawn``: on Windows
+    (and on POSIX when ``set_start_method('spawn')`` is in force) the
+    child interpreter re-imports every module from scratch, so a side
+    effect at import time is the only reliable carrier across the
+    spawn boundary (VAL-W7-046).
+    """
+    raw = os.environ.get(RELAY_REPLAY_SESSION_ENV)
+    if raw is None:
+        return
+    install_socket_deny(sidecar_unix_path=raw or None)
+
+
+# Apply at import. Outside an active replay session ``RELAY_REPLAY_SESSION``
+# is unset and this is a no-op (VAL-W7-047).
+_maybe_apply_from_env()
 
 
 # -----------------------------------------------------------------------------
@@ -331,6 +734,7 @@ def replay_record(
 
 
 __all__ = [
+    "RELAY_REPLAY_SESSION_ENV",
     "RELAY_SDK_REPLAY_DEGRADED_MODE_NOT_ACKNOWLEDGED_CLASS",
     "RELAY_SDK_REPLAY_DEGRADED_MODE_NOT_ACKNOWLEDGED_CODE",
     "RELAY_SDK_REPLAY_UNINSTRUMENTED_HTTP_CLASS",
@@ -342,8 +746,10 @@ __all__ = [
     "RelayUninstrumentedHTTPError",
     "ReplayRecord",
     "install_socket_deny",
+    "is_socket_deny_installed",
     "replay_record",
     "replay_run",
+    "replay_session",
     "require_instrumented_http_clients",
     "uninstall_socket_deny",
 ]
