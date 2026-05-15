@@ -1,0 +1,16 @@
+{
+  "schema_version": "relay.assertion.eval.v1",
+  "assertion_id": "VAL-EVAL-DECISION-RATIONALE-001",
+  "kind": "eval",
+  "severity": "p1",
+  "applies_to": { "dataset": "claim-decision-smoke-prod" },
+  "evaluator": {
+    "kind": "code",
+    "module": "evaluators.rationale_min_words",
+    "params": { "min_words": 8 }
+  },
+  "expected_outcome": "pass",
+  "scoring": "pass_fail",
+  "owner_email": "trust@customer.example",
+  "lifecycle_state": "active"
+}

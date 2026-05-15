@@ -1,0 +1,21 @@
+{
+  "schema_version": "relay.assertion.tool_arg.v1",
+  "assertion_id": "VAL-TOOL-CASE-NOTE-001",
+  "kind": "tool_arg",
+  "severity": "p0",
+  "applies_to": { "tool_name": "create_case_note" },
+  "args_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["case_id", "note"],
+    "properties": {
+      "case_id": { "type": "string", "minLength": 1 },
+      "note": { "type": "string", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+  "redaction_class_required": ["read_only", "approval_required"],
+  "side_effect_class": "external_irreversible",
+  "owner_email": "trust@customer.example",
+  "lifecycle_state": "active"
+}

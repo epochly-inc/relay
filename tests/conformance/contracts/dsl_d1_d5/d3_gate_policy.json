@@ -1,0 +1,30 @@
+{
+  "schema_version": "relay.gate_policy.v1",
+  "policy_version": "2026-05-12.001",
+  "conditions": [
+    {
+      "id": "no_new_p0_regressions",
+      "metric": "p0_assertion_failures",
+      "comparator": "lte",
+      "value": { "kind": "baseline_plus", "delta": 0 },
+      "baseline": { "kind": "previous_release_sha" },
+      "scope": "eval_dataset:smoke-prod"
+    },
+    {
+      "id": "structured_output_pass_rate",
+      "metric": "schema_contract.outcome.pass_rate",
+      "comparator": "gte",
+      "value": 0.995,
+      "scope": "eval_dataset:smoke-prod"
+    }
+  ],
+  "flaky_quarantine_policy": {
+    "min_flake_events": 3,
+    "flake_window_days": 7,
+    "action": "quarantine_for_review_not_block"
+  },
+  "blocking_severity": "p0_only",
+  "baseline_selector": { "kind": "previous_release_sha" },
+  "owner_email": "trust@customer.example",
+  "lifecycle_state": "active"
+}

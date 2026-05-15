@@ -1,0 +1,23 @@
+{
+  "schema_version": "relay.assertion.behavioral.v1",
+  "assertion_id": "VAL-BEHAVIORAL-001",
+  "kind": "behavioral",
+  "severity": "p0",
+  "title": "Claim decision must include rationale >= 1 sentence.",
+  "applies_to": {
+    "agent_name": "claims-agent",
+    "span_kind": ["model_call"],
+    "tool_filter": null
+  },
+  "expression": {
+    "op": "and",
+    "args": [
+      { "op": "json_path_exists", "path": "$.rationale" },
+      { "op": "string_min_words", "path": "$.rationale", "min": 8 }
+    ]
+  },
+  "owner_email": "trust@customer.example",
+  "lifecycle_state": "active",
+  "repair_policy": "none",
+  "review_artifacts": ["adversarial-review-2026-04-12.md"]
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": "relay.assertion.schema.v1",
+  "assertion_id": "VAL-SCHEMA-CLAIM-V3",
+  "kind": "schema_contract",
+  "severity": "p0",
+  "title": "claim_decision_v3 must validate against JSON Schema.",
+  "applies_to": { "contract": "claim_decision_v3" },
+  "schema_json": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["decision", "rationale"],
+    "properties": {
+      "decision": { "type": "string", "enum": ["approve", "deny", "escalate"] },
+      "rationale": { "type": "string", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+  "owner_email": "trust@customer.example",
+  "lifecycle_state": "active",
+  "repair_policy": {
+    "kind": "single_repair_attempt",
+    "max_attempts": 1,
+    "repair_strategy": "ask_model_with_diff"
+  },
+  "failure_policy": "block_release"
+}
