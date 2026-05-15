@@ -133,6 +133,20 @@ codes:
   - RELAY-REPLAY-001
   - RELAY-REPLAY-002
   - RELAY-REPLAY-014
+  # W7.1 mitmproxy harness error codes (VAL-W7-010, VAL-W7-011, generic
+  # spawn failure). Surfaced when:
+  #   021 - the in-process or subprocess proxy exits or becomes
+  #         unreachable (ECONNREFUSED) while the agent subprocess is
+  #         running (RelayProxyDownError, VAL-W7-010).
+  #   022 - the harness was asked to start a session whose cassette
+  #         directory does not exist (and no --record flag was passed)
+  #         (RelayProxyMissingCassetteError, VAL-W7-011).
+  #   023 - the harness failed to bind a port, generate a CA cert, or
+  #         spawn the proxy executable for any other reason
+  #         (RelayProxyStartError).
+  - RELAY-REPLAY-021
+  - RELAY-REPLAY-022
+  - RELAY-REPLAY-023
   - RELAY-SCHEMA-001
   - RELAY-SCHEMA-011
   - RELAY-SCHEMA-014

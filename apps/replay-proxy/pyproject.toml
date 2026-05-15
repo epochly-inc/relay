@@ -1,0 +1,63 @@
+# Relay replay-proxy harness (W7.1).
+#
+# Houses the localhost mitmproxy harness that the rly replay run command
+# spawns to serve cassette responses to an agent subprocess. Cross-platform
+# (macOS / Linux / Windows P0); no Docker dependency on Windows (an in-process
+# pure-Python driver is the default).
+#
+# Per CLAUDE.md keystone invariants:
+#   #6 side-effect idempotency, #8 atomic persistence (CA cert + key go
+#   through local_atomic_file_write), #9 cassette-first replay (the
+#   harness only serves recorded responses; live network egress from the
+#   agent through this proxy is rejected as cassette-miss).
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-replay-proxy"
+version = "0.0.0"
+description = "Relay localhost mitmproxy harness for rly replay run (W7.1)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  # Per-session CA cert + key generation. Already pulled in transitively
+  # by the workspace; pinned here so the package stands alone.
+  "cryptography>=42,<46",
+  # Atomic file primitive (CA cert + key writes go through this so a
+  # process kill mid-write does not leave a half-written PEM that the
+  # proxy might silently accept).
+  "epochly-relay-sidecar",
+  # Cassette parser + canonical request digest. Used by the in-process
+  # driver and the mitmproxy addon to look up recorded responses.
+  "epochly-relay-cli",
+]
+
+[project.optional-dependencies]
+# Smoke-tier driver: spawn the actual mitmdump binary. Plumbing tier
+# defaults to the in-process driver and does NOT require this extra.
+mitmproxy = [
+  "mitmproxy>=10,<13",
+]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["relay_replay_proxy"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "relay_replay_proxy",
+  "README.md",
+]
+
+[tool.uv.sources]
+epochly-relay-sidecar = { workspace = true }
+epochly-relay-cli = { workspace = true }

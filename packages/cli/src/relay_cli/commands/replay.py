@@ -650,6 +650,29 @@ def _cmd_replay_run(
         "--home",
         help="Override RELAY_HOME (test seam).",
     ),
+    proxy: bool = typer.Option(
+        False,
+        "--proxy/--no-proxy",
+        help=(
+            "Spawn the W7.1 mitmproxy harness for this replay. When set, "
+            "the CLI generates a per-session CA, allocates a free port, "
+            "starts the proxy, and returns its URL + CA path in the "
+            "result envelope (the agent subprocess is NOT spawned by "
+            "the CLI; consumers that need that surface should call "
+            "the harness library directly via "
+            "relay_replay_proxy.HarnessSession). Default off."
+        ),
+    ),
+    session: str = typer.Option(
+        "",
+        "--session",
+        help=(
+            "Override the session_id used by --proxy. Defaults to the "
+            "replay case_id so cassettes recorded by 'rly replay record' "
+            "are immediately usable. Cassette dir is "
+            "${RELAY_HOME}/cassettes/<session>/."
+        ),
+    ),
 ) -> None:
     """``rly replay run`` -- cassette playback (VAL-W5-021..024).
 
@@ -810,6 +833,22 @@ def _cmd_replay_run(
         emit_envelope(envelope)
         raise typer.Exit(code=EXIT_4XX_BLOCK)
 
+    # W7.1 mitmproxy harness opt-in. When --proxy is set we materialize a
+    # session under ${RELAY_HOME}/cassettes/<session>/ (copying the
+    # fixture so it is reachable by the proxy's confined cassette
+    # server), then start the harness. Failures bubble out via typed
+    # error envelopes; successful start adds proxy fields to the
+    # operator-facing JSON.
+    proxy_payload: dict[str, Any] | None = None
+    proxy_session = None
+    if proxy:
+        proxy_session, proxy_payload = _start_proxy_for_run(
+            case=case,
+            session_id_override=session,
+            base_home=base_home,
+            fixture_path=fixture_path,
+        )
+
     # Successful playback: emit the replay envelope. Note: this command
     # does NOT write the canonical run-result row -- that is the sidecar's
     # control-plane responsibility (CLAUDE.md keystone invariant #1).
@@ -825,8 +864,119 @@ def _cmd_replay_run(
         "control_plane_writer": "sidecar.replay-workers",
         "replay_id": "replay_" + uuid.uuid4().hex,
     }
-    emit_json(payload)
+    if proxy_payload is not None:
+        payload["proxy"] = proxy_payload
+    try:
+        emit_json(payload)
+    finally:
+        # The CLI surface is fire-and-emit: we tear down the proxy
+        # immediately because the agent subprocess (when implemented in
+        # a follow-up) is owned by the caller, not by this command. The
+        # consumer that needs a long-lived proxy must call the harness
+        # library directly.
+        if proxy_session is not None:
+            proxy_session.stop()
     raise typer.Exit(code=EXIT_SUCCESS)
+
+
+def _start_proxy_for_run(
+    *,
+    case: str,
+    session_id_override: str,
+    base_home: Path,
+    fixture_path: Path,
+) -> tuple[Any, dict[str, Any]]:
+    """Materialize the cassette dir + start the W7.1 harness.
+
+    Returns ``(harness_session, proxy_payload_for_envelope)``. Raises
+    ``typer.Exit`` with the appropriate exit code on failure (the
+    typed error envelope is emitted to stderr via build_envelope).
+    """
+    # Local imports keep relay_cli importable on hosts that have not
+    # installed the replay-proxy package (e.g., the schemas-only CI cell).
+    from relay_replay_proxy import (
+        HarnessConfig,
+        HarnessSession,
+        RelayProxyDownError,
+        RelayProxyError,
+        RelayProxyMissingCassetteError,
+        RelayProxyStartError,
+    )
+
+    session_id = session_id_override.strip() or case
+    cassette_root = base_home / "cassettes"
+    cassette_root.mkdir(parents=True, exist_ok=True)
+    session_dir = cassette_root / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    # Copy the fixture into the session dir under the canonical filename
+    # the harness expects (cassette.jsonl). We use the atomic primitive
+    # so a process kill mid-copy cannot leave a half-written cassette.
+    target = session_dir / "cassette.jsonl"
+    if not target.exists() or target.read_bytes() != fixture_path.read_bytes():
+        local_atomic_file_write(target, fixture_path.read_bytes(), mode=0o600)
+
+    cfg = HarnessConfig(session_id=session_id, cassette_root=cassette_root)
+    sess = HarnessSession(cfg)
+    try:
+        handle = sess.start()
+    except RelayProxyMissingCassetteError as exc:
+        envelope = build_envelope(
+            code=exc.code,
+            http_status=exc.http_status,
+            message=exc.message,
+            blocked_surface=exc.blocked_surface,
+            retry_advice=exc.retry_advice,
+            details=exc.details,
+            documentation_url=exc.documentation_url,
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_4XX_BLOCK) from exc
+    except RelayProxyStartError as exc:
+        envelope = build_envelope(
+            code=exc.code,
+            http_status=exc.http_status,
+            message=exc.message,
+            blocked_surface=exc.blocked_surface,
+            retry_advice=exc.retry_advice,
+            details=exc.details,
+            documentation_url=exc.documentation_url,
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_4XX_BLOCK) from exc
+    except RelayProxyDownError as exc:  # pragma: no cover - start path
+        envelope = build_envelope(
+            code=exc.code,
+            http_status=exc.http_status,
+            message=exc.message,
+            blocked_surface=exc.blocked_surface,
+            retry_advice=exc.retry_advice,
+            details=exc.details,
+            documentation_url=exc.documentation_url,
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_4XX_BLOCK) from exc
+    except RelayProxyError as exc:  # base class catch-all
+        envelope = build_envelope(
+            code=exc.code,
+            http_status=exc.http_status,
+            message=exc.message,
+            blocked_surface=exc.blocked_surface,
+            retry_advice=exc.retry_advice,
+            details=exc.details,
+            documentation_url=exc.documentation_url,
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_4XX_BLOCK) from exc
+
+    proxy_payload: dict[str, Any] = {
+        "session_id": handle.session_id,
+        "session_dir": str(handle.session_dir),
+        "proxy_url": handle.proxy_url,
+        "proxy_port": handle.proxy_port,
+        "ca_cert_path": str(handle.ca.cert_path),
+        "driver": handle.driver_name,
+    }
+    return sess, proxy_payload
 
 
 # -----------------------------------------------------------------------------
