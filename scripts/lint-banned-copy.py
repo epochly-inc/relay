@@ -164,6 +164,39 @@ def _scan_surface(surface: dict[str, object]) -> dict[str, object]:
     for pattern in excludes:
         for p in root_path.glob(pattern):
             excluded_paths.add(p.resolve())
+    # Files that legitimately enumerate every banned token because their
+    # purpose is to detect the tokens elsewhere (the verify-self
+    # banned-pattern detector and its closed finding-codes enum / shared
+    # util module). The same exemption convention used for this lint
+    # script's own self-reference (below).
+    self_mention_paths: set[Path] = {
+        (
+            REPO_ROOT
+            / "packages"
+            / "cli"
+            / "src"
+            / "verify_self"
+            / "finding_codes.py"
+        ).resolve(),
+        (
+            REPO_ROOT
+            / "packages"
+            / "cli"
+            / "src"
+            / "relay_cli"
+            / "invariants"
+            / "banned_patterns.py"
+        ).resolve(),
+        (
+            REPO_ROOT
+            / "packages"
+            / "cli"
+            / "src"
+            / "relay_cli"
+            / "invariants"
+            / "util.py"
+        ).resolve(),
+    }
     files_scanned = 0
     violations: list[dict[str, object]] = []
     for pattern in includes:
@@ -175,6 +208,10 @@ def _scan_surface(surface: dict[str, object]) -> dict[str, object]:
             # Skip files that are themselves the lint script (which
             # legitimately mentions every banned token in its docs).
             if p.resolve() == Path(__file__).resolve():
+                continue
+            # Skip the verify-self detector / enum / util modules whose
+            # purpose IS to enumerate the banned tokens.
+            if p.resolve() in self_mention_paths:
                 continue
             files_scanned += 1
             matches = _scan_file(p)

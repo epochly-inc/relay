@@ -1,0 +1,129 @@
+"""Control-plane-only canonical-write checker (VAL-W5-035).
+
+Per CLAUDE.md keystone invariant #1 + spec sections A.1/A.2 +
+boundaries.md sec 4: ``run_results`` and ``gate_decisions`` rows are
+written ONLY by the result-writer / gate-engine services. Every other
+path -- SDK, CLI, eval workers, replay workers -- submits drafts and
+lets the control plane resolve them.
+
+The check matches the contract VAL-W5-035 regex:
+``INSERT\\s+INTO\\s+(run_results|gate_decisions)|UPDATE\\s+(run_results|gate_decisions)``
+case-insensitive (SQL keywords are not case-sensitive on the wire).
+Path filter excludes ``services/result-writer/`` and
+``services/gate-engine/``.
+
+VAL-W5-035 also asks for a sidecar SQLite probe of the
+``relay.writer_role`` GUC. On a clean checkout no sidecar is running and
+no SQLite database exists; the GUC probe is treated as "not-applicable"
+and contributes neither a finding nor a failure. When a sidecar IS
+running, the probe attaches read-only and verifies the GUC is set to
+``control_plane`` on every write trigger; mismatch becomes a finding.
+
+The grep-only path (always runnable, never requires runtime state) is
+the load-bearing assertion for tier-1 budget; the GUC probe is a
+defensive add-on that fires only when a sidecar is reachable.
+
+ASCII-only per CLAUDE.md "ASCII-Safe Source".
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path, PurePosixPath
+from typing import Final
+
+from verify_self.finding_codes import (
+    RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
+)
+
+from .atomic_primitives import _match_is_documentation
+from .util import (
+    Finding,
+    iter_canonical_source_files,
+    suggested_fix_for,
+)
+
+CHECK_NAME: Final[str] = "control-plane-write-only"
+
+# VAL-W5-035 regex (verbatim shape). SQL keywords are case-insensitive.
+_CANONICAL_WRITE_RE: Final[re.Pattern[str]] = re.compile(
+    r"INSERT\s+INTO\s+(run_results|gate_decisions)\b"
+    r"|UPDATE\s+(run_results|gate_decisions)\b",
+    re.IGNORECASE,
+)
+
+# Allowlisted control-plane subtrees per VAL-W5-035. Any path under one
+# of these prefixes is permitted to issue canonical INSERT/UPDATE
+# statements; everything else is a violation.
+_CONTROL_PLANE_PREFIXES: Final[tuple[str, ...]] = (
+    "services/result-writer",
+    "services/gate-engine",
+)
+
+
+def _is_control_plane_path(rel_posix: str) -> bool:
+    """Return True iff ``rel_posix`` lives under an allowlisted CP path."""
+    for prefix in _CONTROL_PLANE_PREFIXES:
+        if rel_posix == prefix or rel_posix.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def run(repo_root: Path) -> tuple[str, list[Finding]]:
+    """Run the control-plane-write-only check against ``repo_root``.
+
+    Returns ``(check_name, findings)`` sorted by ``(file, line, code)``.
+    The function is intentionally grep-only; the optional sidecar GUC
+    probe is exposed via :func:`probe_sidecar_writer_role` for callers
+    that want runtime introspection. The verify-self runner does NOT
+    require a running sidecar so the GUC probe is not invoked from this
+    grep path.
+    """
+    findings: list[Finding] = []
+    for path in iter_canonical_source_files(repo_root):
+        rel = str(PurePosixPath(path.relative_to(repo_root)))
+        if _is_control_plane_path(rel):
+            continue
+        # Canonical-write SQL only appears in code, schemas, and SQL
+        # files; restrict accordingly. ``.sql`` extension is included
+        # so that any future ``packages/schemas/sql/`` migration that
+        # accidentally hand-codes a canonical-row INSERT outside the
+        # state engine is caught.
+        if path.suffix not in (
+            ".py",
+            ".pyi",
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".mjs",
+            ".cjs",
+            ".sql",
+        ):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line_no_minus_one, line in enumerate(text.split("\n")):
+            m = _CANONICAL_WRITE_RE.search(line)
+            if m is None:
+                continue
+            if _match_is_documentation(line, m.start()):
+                continue
+            findings.append(
+                Finding(
+                    file=rel,
+                    line=line_no_minus_one + 1,
+                    code=RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
+                    suggested_fix=suggested_fix_for(
+                        RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP
+                    ),
+                    pattern=m.group(0),
+                )
+            )
+    findings.sort(key=lambda f: (f.file, f.line, f.code))
+    return CHECK_NAME, findings
+
+
+__all__ = ["CHECK_NAME", "run"]

@@ -44,14 +44,25 @@ def test_no_name_based_kill_in_source() -> None:
     """Grep guard: ``pkill|killall|os.system.*kill`` must not appear."""
     pattern = re.compile(r"\b(pkill|killall)\b|os\.system\([^)]*kill")
     offenders: list[str] = []
+    # Files that legitimately enumerate the banned tokens for detection
+    # purposes (the source-of-truth for what the grep guard prohibits
+    # everywhere else). Each entry is a relative POSIX path.
+    exempt_paths: set[str] = {
+        # The W2 grep guard test itself.
+        "apps/local-sidecar/tests/test_zombie_port.py",
+        # The W5.5 verify-self banned-pattern detector and its closed
+        # finding-codes enum / shared util module / its tests.
+        "packages/cli/src/verify_self/finding_codes.py",
+        "packages/cli/src/relay_cli/invariants/banned_patterns.py",
+        "packages/cli/src/relay_cli/invariants/util.py",
+        "packages/cli/tests/test_w5_5_verify_self.py",
+    }
     for root in SCANNED_DIRS:
         if not root.exists():
             continue
         for py in root.rglob("*.py"):
-            # Skip the test files themselves (they reference the tokens
-            # inside string literals for the assertion).
             rel = py.relative_to(REPO_ROOT).as_posix()
-            if rel == "apps/local-sidecar/tests/test_zombie_port.py":
+            if rel in exempt_paths:
                 continue
             text = py.read_text(encoding="utf-8")
             for lineno, line in enumerate(text.splitlines(), start=1):

@@ -113,6 +113,23 @@ _PERMITTED_RECOVERY_PY_WRITES_FILE = (
     / "recovery.py"
 )
 
+# Documented W5.5 exception: the verify-self plumbing tests embed
+# ``INSERT INTO run_results`` literals in synthetic fixture trees so
+# the verify-self command's control-plane-write-only checker can be
+# exercised end-to-end. The literals are quoted strings inside test
+# fixture data; they never run as SQL. See
+# ``packages/cli/tests/test_w5_5_verify_self.py`` and
+# VAL-W5-035 in the contract. The same VAL-W2-024 keystone invariant
+# (canonical rows are written only by the state engine) is satisfied;
+# the test fixture is observation, not a write path.
+_PERMITTED_VERIFY_SELF_TEST_FILE = (
+    _REPO_ROOT
+    / "packages"
+    / "cli"
+    / "tests"
+    / "test_w5_5_verify_self.py"
+)
+
 
 def _python_files(root: Path) -> list[Path]:
     if not root.exists():
@@ -151,6 +168,12 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # sqlite3 connection BEFORE the SidecarDatabase opens. See
             # _PERMITTED_RECOVERY_PY_WRITES_FILE.
             if path == _PERMITTED_RECOVERY_PY_WRITES_FILE:
+                continue
+            # Documented W5.5 exception: verify-self plumbing tests embed
+            # forbidden DML literals as fixture data for the verify-self
+            # control-plane-write-only checker. See
+            # _PERMITTED_VERIFY_SELF_TEST_FILE.
+            if path == _PERMITTED_VERIFY_SELF_TEST_FILE:
                 continue
             text = path.read_text(encoding="utf-8")
             for line_no, line in enumerate(text.splitlines(), start=1):
@@ -230,6 +253,10 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
     recovery_py_marker = (
         "/relay_sidecar/recovery.py:"  # W2.7 crash-recovered forensic
     )
+    verify_self_test_marker = (
+        # W5.5 verify-self plumbing test fixture-data exception.
+        "/packages/cli/tests/test_w5_5_verify_self.py:"
+    )
     for line in result.stdout.splitlines():
         if state_engine_marker in line:
             continue
@@ -238,6 +265,8 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         if runtime_py_marker in line:
             continue
         if recovery_py_marker in line:
+            continue
+        if verify_self_test_marker in line:
             continue
         offending_lines.append(line)
     assert not offending_lines, (

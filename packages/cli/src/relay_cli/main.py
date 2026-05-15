@@ -531,13 +531,18 @@ def _contract_root(ctx: typer.Context) -> None:
         _emit_not_implemented("contract", "w5.5")
 
 
-# --- verify-self standalone command -----------------------------------------
+# --- verify-self standalone command (W5.5 wired) ----------------------------
+# Per VAL-W5-031..040 verify-self runs the invariant checker suite, emits a
+# canonical stdout JSON envelope, and writes a §K-conformant evidence bundle
+# on every invocation. The implementation lives in
+# ``relay_cli.commands.verify_self`` so the surface area in main.py stays
+# limited to wiring.
 
+from .commands.verify_self import (  # noqa: E402 - late import keeps load order stable
+    cmd_verify_self,
+)
 
-@app.command("verify-self", cls=_RelayTyperCommand)
-def _verify_self() -> None:
-    """Stub for ``rly verify-self``. Lands in W5.5."""
-    _emit_not_implemented("verify-self", "w5.5")
+app.command("verify-self", cls=_RelayTyperCommand)(cmd_verify_self)
 
 
 # -----------------------------------------------------------------------------
