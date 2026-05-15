@@ -401,22 +401,46 @@ def _evidence_root(ctx: typer.Context) -> None:
         _emit_not_implemented("evidence", "w5.4")
 
 
-# --- replay group ------------------------------------------------------------
+# --- replay group (W5.3 wired) ----------------------------------------------
+# Per VAL-W5-019..024 the replay group ships list/record/run in W5.3. The
+# subcommand module owns the implementation; main.py re-cls the group app to
+# _RelayTyperGroup so the JSON-help override in this module covers ``rly
+# replay --help`` consistently with the rest of the tree.
+
+from .commands.replay import (  # noqa: E402 - late import keeps load order stable
+    _cmd_replay_list,
+    _cmd_replay_record,
+    _cmd_replay_run,
+)
 
 replay_app = typer.Typer(
     name="replay",
     cls=_RelayTyperGroup,
-    help="Record and play back agent traffic (cassette mode by default).",
+    help=(
+        "Record and play back agent traffic. Cassette mode is the default; "
+        "live mode lands in W6. Side effects are blocked without an explicit "
+        "--allow-side-effects override."
+    ),
     no_args_is_help=False,
     rich_markup_mode=None,
+    add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+replay_app.command("list", cls=_RelayTyperCommand)(_cmd_replay_list)
+replay_app.command("record", cls=_RelayTyperCommand)(_cmd_replay_record)
+replay_app.command("run", cls=_RelayTyperCommand)(_cmd_replay_run)
 app.add_typer(replay_app, name="replay")
 
 
 @replay_app.callback(invoke_without_command=True)
 def _replay_root(ctx: typer.Context) -> None:
-    """Stub root for ``rly replay``. Lands in W5.3."""
+    """``rly replay`` root: defer to subcommand or emit not-implemented stub.
+
+    A bare ``rly replay`` with no subcommand surfaces the canonical
+    not-implemented envelope so machine consumers see a structured signal
+    that they passed no subcommand. The three subcommands (list/record/run)
+    are wired above.
+    """
     if ctx.invoked_subcommand is None:
         _emit_not_implemented("replay", "w5.3")
 
