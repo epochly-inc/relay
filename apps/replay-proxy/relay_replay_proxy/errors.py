@@ -23,6 +23,19 @@ from typing import Any, Final
 RELAY_REPLAY_PROXY_DOWN: Final[str] = "RELAY-REPLAY-021"
 RELAY_REPLAY_PROXY_MISSING_CASSETTE: Final[str] = "RELAY-REPLAY-022"
 RELAY_REPLAY_PROXY_START_FAILED: Final[str] = "RELAY-REPLAY-023"
+# W7.2 cassette-format error codes. Suffix vocabulary follows the W7.1
+# block (021..023) sequentially. Per Gaps disposition #1 the spec is
+# silent on these suffixes; this module pins them as the local source of
+# truth and a future spec amendment to packages/schemas/raw/relay-error-codes.yaml
+# (RELAY-REPLAY-024..026) will register them globally without changing
+# the wire codes here.
+RELAY_REPLAY_CASSETTE_MISS: Final[str] = "RELAY-REPLAY-024"
+RELAY_REPLAY_CASSETTE_CORRUPT: Final[str] = "RELAY-REPLAY-025"
+RELAY_REPLAY_CASSETTE_WRITE_RETRY_EXHAUSTED: Final[str] = "RELAY-REPLAY-026"
+
+# Exit code emitted by ``rly replay run`` on cassette miss (VAL-W7-024).
+# Pinned by eng plan A4 layer 4 line 95: "Cassette miss = exit code 4".
+EXIT_CODE_CASSETTE_MISS: Final[int] = 4
 
 # Doc URL prefix is duplicated here intentionally so this package has no
 # import-time dependency on relay_cli or relay (the harness is consumed
@@ -103,10 +116,71 @@ class RelayProxyStartError(RelayProxyError):
     retry_advice = "after_fix"
 
 
+class RelayCassetteMissError(RelayProxyError):
+    """VAL-W7-024 / VAL-W7-025: incoming request has no matching cassette entry.
+
+    Carries the canonical request key (``sha256-<hex>``) and a
+    human-readable request triple (``method url body_summary``) so the
+    operator can reproduce the request and re-record the cassette.
+
+    The CLI maps this exception to **exit code 4** (eng plan A4 layer 4
+    line 95). There is NO live network fallthrough: a miss MUST fail.
+    """
+
+    code = RELAY_REPLAY_CASSETTE_MISS
+    http_status = 502
+    blocked_surface = "rly replay run --proxy"
+    retry_advice = "after_fix"
+
+
+class RelayCassetteCorruptError(RelayProxyError):
+    """VAL-W7-026 / VAL-W7-028: cassette is malformed or fails an integrity check.
+
+    Raised at session start, BEFORE the agent subprocess is spawned, when
+    any of the following holds:
+
+      * a JSONL line is not valid JSON;
+      * a record fails ``ReplayFixture v1`` schema validation;
+      * a record's ``output_digest`` does not match the SHA-256 of the
+        stored output body bytes.
+
+    ``details`` carries ``line_number``, ``fixture_id`` (when available),
+    ``expected_digest``, ``actual_digest``, and ``quarantine_path`` so the
+    operator can move the offending file out of the active cassette dir.
+    """
+
+    code = RELAY_REPLAY_CASSETTE_CORRUPT
+    http_status = 422
+    blocked_surface = "rly replay run --proxy"
+    retry_advice = "after_fix"
+
+
+class RelayCassetteWriteRetryExhaustedError(RelayProxyError):
+    """VAL-W7-030: AV / FS lock retry budget exhausted on cassette append.
+
+    Raised after the writer exhausts its exponential-backoff retry budget
+    on ``EACCES`` / ``ERROR_SHARING_VIOLATION`` (Windows AV scan window).
+    ``details`` carries ``attempts``, ``last_errno``, ``cassette_path``,
+    and ``total_wait_s``.
+    """
+
+    code = RELAY_REPLAY_CASSETTE_WRITE_RETRY_EXHAUSTED
+    http_status = 503
+    blocked_surface = "rly replay record"
+    retry_advice = "after_fix"
+
+
 __all__ = [
+    "EXIT_CODE_CASSETTE_MISS",
+    "RELAY_REPLAY_CASSETTE_CORRUPT",
+    "RELAY_REPLAY_CASSETTE_MISS",
+    "RELAY_REPLAY_CASSETTE_WRITE_RETRY_EXHAUSTED",
     "RELAY_REPLAY_PROXY_DOWN",
     "RELAY_REPLAY_PROXY_MISSING_CASSETTE",
     "RELAY_REPLAY_PROXY_START_FAILED",
+    "RelayCassetteCorruptError",
+    "RelayCassetteMissError",
+    "RelayCassetteWriteRetryExhaustedError",
     "RelayProxyDownError",
     "RelayProxyError",
     "RelayProxyMissingCassetteError",

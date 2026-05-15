@@ -152,5 +152,101 @@ def harness(
         sess.stop()
 
 
+# -----------------------------------------------------------------------------
+# W7.2 ReplayFixture v1 cassette format helpers
+# -----------------------------------------------------------------------------
+
+
+def _make_replay_fixture(
+    *,
+    fixture_id: str = "00000000-0000-4000-8000-000000000001",
+    replay_case_id: str = "00000000-0000-4000-8000-000000000002",
+    source_span_id: str = "00000000-0000-4000-8000-000000000003",
+    kind: str = "model_call",
+    mode: str = "cassette",
+    side_effect_class: str = "read_only",
+    refresh_policy: str = "invalidate_on_signature_change",
+    provider: str | None = "openai",
+    model: str | None = "gpt-4o-mini",
+    model_signature: str | None = "fp_abc123",
+    input_digest: str = "sha256-" + "1" * 64,
+    output_digest: str | None = None,
+    output_ref: str | None = None,
+    capture_clock: str = "2026-05-14T10:00:00+00:00",
+    created_at: str = "2026-05-14T10:00:00+00:00",
+    redaction_policy_version: str = "relay.redaction.v1#default",
+    allowed_in_replay: bool = False,
+) -> Any:
+    """Build a ``ReplayFixture`` with sensible defaults for tests.
+
+    Defaults satisfy the closed-enum constraints (kind / mode /
+    side_effect_class / refresh_policy) and produce a valid record with
+    minimal caller-side noise.
+    """
+    from relay_schemas.envelopes import ReplayFixture
+
+    return ReplayFixture.model_validate(
+        {
+            "schema_version": "relay.replay_fixture.v1",
+            "fixture_id": fixture_id,
+            "replay_case_id": replay_case_id,
+            "source_span_id": source_span_id,
+            "kind": kind,
+            "mode": mode,
+            "redaction_policy_version": redaction_policy_version,
+            "input_digest": input_digest,
+            "output_ref": output_ref,
+            "output_digest": output_digest,
+            "provider": provider,
+            "model": model,
+            "model_signature": model_signature,
+            "capture_clock": capture_clock,
+            "refresh_policy": refresh_policy,
+            "side_effect_class": side_effect_class,
+            "allowed_in_replay": allowed_in_replay,
+            "created_at": created_at,
+        }
+    )
+
+
+@pytest.fixture
+def make_replay_fixture() -> Any:
+    """Factory fixture: build ``ReplayFixture`` instances with overrides."""
+    return _make_replay_fixture
+
+
+@pytest.fixture
+def make_canonical_request() -> Any:
+    """Factory fixture: build ``CanonicalRequest`` instances with overrides."""
+    from relay_replay_proxy.cassette_format import CanonicalRequest
+
+    def _make(
+        *,
+        method: str = "POST",
+        url: str = "https://api.openai.com/v1/chat/completions",
+        headers: dict[str, str] | None = None,
+        body_bytes: bytes = b'{"model":"gpt-4o-mini","messages":[]}',
+        content_type: str = "application/json",
+    ) -> CanonicalRequest:
+        return CanonicalRequest(
+            method=method,
+            url=url,
+            headers=headers if headers is not None else {"content-type": content_type},
+            body_bytes=body_bytes,
+            content_type=content_type,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def empty_cassette_dir(cassette_root: Path) -> Path:
+    """Return a fresh, empty session directory under cassette_root."""
+    session_id = "ses02_w7_2_test_session_id"
+    sd = cassette_root / session_id
+    sd.mkdir(parents=True, exist_ok=True)
+    return sd
+
+
 # Suppress unused-import warnings for symbols referenced only via fixtures.
 _ = (json, os)
