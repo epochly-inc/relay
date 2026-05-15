@@ -1,0 +1,73 @@
+# epochly-relay-cli
+#
+# The `rly` CLI entrypoint (W5 milestone). Owns the user-facing surfaces
+# documented in spec section P (CLI inventory + contract). Per CLAUDE.md
+# CLI binary name pin (PW1) the binary name is `rly` (3 chars), distinct
+# from the PyPI distribution name which is `epochly-relay-cli`.
+#
+# Per /Users/chandlervaughn/.ops-runtime/relay-v0.1-oss-wedge/contract.md
+# Conventions ("CLI binary name") and VAL-W5-001 the binary entrypoint MUST
+# be `rly` and `rly --version` MUST exit 0 and emit the canonical version
+# JSON envelope when piped (non-TTY).
+#
+# VAL-W5-002 requires Typer + Click pinned with the exact-version operator
+# (==), NEVER a range or compatible-release specifier. CI lint enforces.
+# This isolates the CLI from upstream Typer/Click churn (eng plan CQ3
+# mitigation).
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-cli"
+version = "0.0.0"
+description = "Relay CLI (rly): Apache 2.0 control surface for the Relay agent reliability OS."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  # VAL-W5-002: Typer and Click pinned to EXACT versions (operator '==', not
+  # '>=' or '~=' or '^'). The CLI's stdout-JSON contract (VAL-W5-003,
+  # VAL-W5-010) depends on Typer's --help and command dispatch behavior;
+  # any version drift invalidates the snapshot fixtures.
+  "typer==0.12.5",
+  "click==8.1.7",
+  # VAL-W5-006 reuses the SDK's canonical exit-code table
+  # (relay.exit_codes); VAL-W5-004 reuses the SDK error hierarchy
+  # (relay.errors). Workspace dependency: uv resolves from the workspace
+  # tree per CLAUDE.md import-boundary rule.
+  "epochly-relay",
+  # VAL-W5-005: every emitted error envelope validates against the
+  # canonical relay.error.v1 schema (ErrorEnvelope) defined in
+  # packages/schemas/raw/envelopes.yaml. Workspace dependency.
+  "epochly-relay-schemas",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+# VAL-W5-001: the binary entrypoint is `rly`. Resolves via setuptools
+# entry-point spec; uv pip install -e packages/cli installs `rly` on PATH.
+# No other binary names (`relay`, `epochly`) are installed.
+[project.scripts]
+rly = "relay_cli.main:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/relay_cli"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/relay_cli",
+  "README.md",
+]
+
+[tool.uv.sources]
+epochly-relay = { workspace = true }
+epochly-relay-schemas = { workspace = true }

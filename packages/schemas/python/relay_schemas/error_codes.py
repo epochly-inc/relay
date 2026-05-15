@@ -33,6 +33,7 @@ class RelayErrorCode:
     RELAY_AUTH_001: Final[str] = "RELAY-AUTH-001"
     RELAY_AUTH_014: Final[str] = "RELAY-AUTH-014"
     RELAY_CLI_070: Final[str] = "RELAY-CLI-070"
+    RELAY_CLI_130: Final[str] = "RELAY-CLI-130"
     RELAY_COVERAGE_001: Final[str] = "RELAY-COVERAGE-001"
     RELAY_COVERAGE_002: Final[str] = "RELAY-COVERAGE-002"
     RELAY_COVERAGE_003: Final[str] = "RELAY-COVERAGE-003"
@@ -128,6 +129,7 @@ class RelayErrorCode:
     RELAY_SDK_013: Final[str] = "RELAY-SDK-013"
     RELAY_SDK_014: Final[str] = "RELAY-SDK-014"
     RELAY_SDK_015: Final[str] = "RELAY-SDK-015"
+    RELAY_SDK_016: Final[str] = "RELAY-SDK-016"
     RELAY_SIDECAR_001: Final[str] = "RELAY-SIDECAR-001"
     RELAY_SIDECAR_002: Final[str] = "RELAY-SIDECAR-002"
     RELAY_SIDECAR_003: Final[str] = "RELAY-SIDECAR-003"
@@ -157,6 +159,7 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-AUTH-001",
     "RELAY-AUTH-014",
     "RELAY-CLI-070",
+    "RELAY-CLI-130",
     "RELAY-COVERAGE-001",
     "RELAY-COVERAGE-002",
     "RELAY-COVERAGE-003",
@@ -252,6 +255,7 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-SDK-013",
     "RELAY-SDK-014",
     "RELAY-SDK-015",
+    "RELAY-SDK-016",
     "RELAY-SIDECAR-001",
     "RELAY-SIDECAR-002",
     "RELAY-SIDECAR-003",
