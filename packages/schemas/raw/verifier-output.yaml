@@ -1,0 +1,189 @@
+# Canonical verifier-output JSON schema (W10.4 VAL-W10-039).
+#
+# Single source of truth for the JSON the OSS verifier emits when invoked
+# against a Relay evidence bundle. Per CLAUDE.md keystone invariant #6
+# ("Evidence binds. Narrative does not.") this schema pins every field a
+# downstream consumer (auditor UI, CI gate, archival tool) reads from the
+# verifier output. Byte-identical output is required across the Python
+# (packages/verifier/) and TypeScript (packages/verifier-typescript/)
+# implementations; cross-language parity is enforced by the W10.4
+# conformance fixtures.
+#
+# Spec anchors:
+#   K    line 4382  verifier output trust_anchor_source field
+#   K    line 4390  Merkle binding + JCS canonicalisation
+#   AB   line 5446  tsa_check / log_inclusion outcomes
+#   AO.1 line 6119  trust anchor publication contract
+#   AO.4 line 6166  trust_anchor field in evidence bundles
+#
+# Generated outputs (downstream consumers; this YAML is the source):
+#   - packages/verifier/src/relay_verifier/output_schema.py    (Python)
+#   - packages/verifier-typescript/src/output_schema.ts        (TypeScript)
+#
+# (W10.4 ships the Python copy; the TypeScript mirror lands when the TS
+# verifier package extends to full bundle validation.)
+#
+# Versioning policy (per spec section B.7): every persisted envelope carries
+# `schema_version`. Engines refuse to write objects whose schema_version is
+# unknown to them. The current version is `relay.verifier.output.v1`.
+
+schema: relay.schema.verifier_output.v1
+
+envelope:
+  name: VerifierOutput
+  schema_version: relay.verifier.output.v1
+  description: >-
+    Aggregated verdict produced by the OSS verifier for one evidence bundle.
+    Exit code is 0 iff `overall == "pass"`; non-zero otherwise. Stderr
+    carries WARN/ERROR lines that mirror the structured `warnings[]` and
+    `errors[]` fields. Stdout carries this JSON object verbatim.
+
+  fields:
+
+    schema_version:
+      type: string
+      const: relay.verifier.output.v1
+      description: Wire-format version pin (B.7).
+
+    overall:
+      type: string
+      enum: [pass, fail, warn]
+      description: >-
+        Aggregate verdict. `pass` requires every check ok and zero ERROR-level
+        warnings. `fail` is set whenever any check fails or an ERROR-level
+        warning is present. `warn` is reserved for future use; v1 collapses
+        warn-only outputs into `pass` with `warnings[]` populated so the exit
+        code remains 0 for non-strict modes (VAL-W10-028, VAL-W10-029,
+        VAL-W10-041).
+
+    bundle_path:
+      type: string
+      description: Path to the bundle file the verifier read.
+
+    bundle_digest_sha256:
+      type: string
+      pattern: "^[0-9a-f]{64}$"
+      description: SHA-256 over the JCS canonical bytes of the signature-free payload.
+
+    digest_ok:
+      type: boolean
+      description: >-
+        True iff every claim's stored digest matches the recomputed
+        SHA-256(JCS(claim_payload_without_signature)) (VAL-W10-020).
+
+    structure_ok:
+      type: boolean
+      description: True iff bundle parsed cleanly with required fields present.
+
+    signatures_ok:
+      type: boolean
+      description: True iff every signature verified AND >= 1 signature was checked.
+
+    signatures_checked:
+      type: array
+      description: Per-signature verdicts in bundle declaration order.
+      items:
+        type: object
+        required: [kid, alg, ok]
+        properties:
+          kid: { type: string }
+          alg: { type: string }
+          ok:  { type: boolean }
+          reason: { type: string, description: "Empty when ok=true." }
+          code:   { type: string, description: "RELAY-VERIFY-NNN or RELAY-EVID-NNN." }
+
+    claims_count:
+      type: integer
+      minimum: 0
+      description: Number of evidence claims in the bundle.
+
+    merkle_check:
+      type: string
+      enum: [ok, mismatch, absent]
+      description: >-
+        VAL-W10-024. `ok` when the bundle's stored merkle_root equals the
+        recomputed root. `mismatch` when claim ordering or any per-claim
+        digest was tampered. `absent` when the bundle does not declare a
+        merkle_root (some legacy single-claim bundles).
+
+    tsa_check:
+      type: string
+      enum: [ok, invalid, missing, skew]
+      description: >-
+        VAL-W10-025/026/027. `ok` when the RFC 3161 timestamp validates
+        against the bundled TSA cert chain AND genTime is within +/-300 s
+        of the bundle's decided_at. `invalid` when the .tsr signature does
+        not verify. `missing` when no .tsr is present (raises
+        RELAY-EVID-031). `skew` when genTime drifts beyond +/-300 s
+        (raises RELAY-EVID-038).
+
+    log_inclusion:
+      type: string
+      enum: [ok, absent, witness_mismatch]
+      description: >-
+        VAL-W10-028/029/030. `ok` when an inclusion proof is present and
+        verifies offline against the bundled tree root. `absent` when no
+        inclusion proof is shipped (WARN, exit 0). `witness_mismatch`
+        when a proof exists but the witness signature does not verify
+        (WARN by default; ERROR under --strict-log).
+
+    trust_anchor:
+      type: string
+      description: >-
+        VAL-W10-035. Verbatim echo of the bundle's `trust_anchor` field.
+        Common values: "https://relay.epochly.com/.well-known/jwks.json",
+        "local_dev", or a third-party anchor URL.
+
+    trust_anchor_source:
+      type: string
+      enum: [live, cache, bundled, byo_flag, byo_config]
+      description: >-
+        VAL-W10-005. Source the verifier resolved its JWKS from. Surfaces
+        the W10.1 loader trace so an auditor can attribute the verdict to
+        the JWKS provenance.
+
+    signer_key_revoked:
+      type: boolean
+      description: >-
+        VAL-W10-033. True when the signing key resolves to a JWK whose
+        `revoked_at` is set; the bundle still verifies if signed before
+        revocation, but the verdict surfaces this so the auditor can decide.
+
+    signer_key_revoked_at:
+      type: [string, "null"]
+      description: ISO-8601 RFC-3339-Z timestamp of revocation, or null.
+
+    subject_resolution:
+      type: string
+      enum: [live, tombstoned, redacted_after_signing, unknown]
+      description: >-
+        VAL-W10-037/038. `live` when the referenced subject is intact.
+        `tombstoned` when retention deleted the subject; the bundle is
+        still valid by signature. `redacted_after_signing` when a
+        superseding bundle redacted fields; the original digest binding
+        is preserved. `unknown` when the verifier was not given a
+        subject store to consult (offline default).
+
+    warnings:
+      type: array
+      description: >-
+        Structured warnings (each carries a `reason` token like
+        `local_dev_unsupported_for_audit` or `log_inclusion_absent`).
+      items:
+        type: object
+        required: [reason, message]
+        properties:
+          reason:  { type: string }
+          message: { type: string }
+          code:    { type: string, description: "RELAY-EVID-NNN or RELAY-VERIFY-NNN if applicable." }
+
+    errors:
+      type: array
+      description: Structured ERROR-level entries (force exit code non-zero).
+      items:
+        type: object
+        required: [reason, message]
+        properties:
+          reason:  { type: string }
+          message: { type: string }
+          code:    { type: string }

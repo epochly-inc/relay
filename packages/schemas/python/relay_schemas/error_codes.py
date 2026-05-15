@@ -56,6 +56,9 @@ class RelayErrorCode:
     RELAY_EVID_024: Final[str] = "RELAY-EVID-024"
     RELAY_EVID_031: Final[str] = "RELAY-EVID-031"
     RELAY_EVID_038: Final[str] = "RELAY-EVID-038"
+    RELAY_EVID_040: Final[str] = "RELAY-EVID-040"
+    RELAY_EVID_041: Final[str] = "RELAY-EVID-041"
+    RELAY_EVID_042: Final[str] = "RELAY-EVID-042"
     RELAY_FUTURE_999: Final[str] = "RELAY-FUTURE-999"
     RELAY_GATE_001: Final[str] = "RELAY-GATE-001"
     RELAY_GATE_014: Final[str] = "RELAY-GATE-014"
@@ -198,6 +201,9 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-EVID-024",
     "RELAY-EVID-031",
     "RELAY-EVID-038",
+    "RELAY-EVID-040",
+    "RELAY-EVID-041",
+    "RELAY-EVID-042",
     "RELAY-FUTURE-999",
     "RELAY-GATE-001",
     "RELAY-GATE-014",

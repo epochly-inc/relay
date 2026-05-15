@@ -69,6 +69,23 @@ codes:
   - RELAY-EVID-024
   - RELAY-EVID-031
   - RELAY-EVID-038
+  # W10.4 verifier-side codes (full-bundle validator). Spec gaps #4 and #5
+  # in contract.md flagged that the contract names these placeholders
+  # ("RELAY-EVID-MERKLE-NNN" and "SIGNER_KEY_EXPIRED"); the actual wire
+  # tokens follow the canonical RELAY-{AREA}-NNN grammar and are allocated
+  # here in the EVID range:
+  #   040 - Merkle root mismatch (VAL-W10-024). Distinct from a per-claim
+  #         JWS failure (014) so consumers branching on the code can
+  #         attribute the rejection to claim ordering vs payload tamper.
+  #   041 - Signer key expired: bundle's signer_key_id resolves to a JWK
+  #         whose not_after is in the past (with the L.5 +/-300s tolerance
+  #         already exhausted) (VAL-W10-032).
+  #   042 - Signer key revoked: bundle was signed AFTER the JWK's
+  #         revoked_at timestamp; signed-before-revocation is a WARN
+  #         (VAL-W10-033).
+  - RELAY-EVID-040
+  - RELAY-EVID-041
+  - RELAY-EVID-042
   - RELAY-FUTURE-999
   - RELAY-GATE-001
   - RELAY-GATE-014

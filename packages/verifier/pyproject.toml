@@ -70,6 +70,11 @@ packages = ["src/relay_verifier"]
 # file being present alongside the package modules.
 [tool.hatch.build.targets.wheel.force-include]
 "src/relay_verifier/bundled_jwks.json" = "relay_verifier/bundled_jwks.json"
+# W10.4 VAL-W10-042: ship the public TSA cert chain inside the wheel so
+# importlib.resources finds it at the canonical packaged path
+# relay_verifier/tsa_chain/tsa-chain.pem. Banned pattern #14 still
+# applies; the file contains PUBLIC certs only.
+"src/relay_verifier/tsa_chain/tsa-chain.pem" = "relay_verifier/tsa_chain/tsa-chain.pem"
 
 [tool.hatch.build.targets.sdist]
 include = [
