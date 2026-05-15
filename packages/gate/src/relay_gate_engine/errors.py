@@ -18,6 +18,11 @@ Wire-format codes used by w8.1:
                             raises if a caller-supplied handoff fails
                             pre-validation)
   - ``RELAY-GATE-024``  -- draft TTL expired (VAL-W8-006)
+  - ``RELAY-GATE-051``  -- new draft submission rejected: scope is in
+                            ``gate.stalled`` state and requires
+                            ``admin.reopen`` or ``admin.terminate``
+                            (VAL-W8-034, spec AD lines 5479-5488,
+                            contract gap #1)
   - ``RELAY-GATE-061``  -- anti-bypass marker present in declared
                             command (VAL-W8-041)
 
@@ -114,10 +119,43 @@ class AntiBypassRejectedError(GateEngineError):
     code: str = RelayErrorCode.RELAY_GATE_061
 
 
+class StalledScopeRejectedError(GateEngineError):
+    """A new gate_decision_drafts submission was made against a scope that
+    is in the ``gate.stalled`` state (cap exceeded or admin paused) and
+    has not been reopened or terminated.
+
+    Surfaces ``RELAY-GATE-051`` (VAL-W8-034). Spec AD lines 5479-5488:
+    only ``admin.reopen`` (returns to ``gate.open`` with a new round) or
+    ``admin.terminate`` (final block) move the scope out of stalled.
+
+    Per contract gap #1, the canonical code is not yet formally assigned
+    in spec section B.4; this module uses ``RELAY-GATE-051`` as the
+    proposed wire-format token (already present in
+    ``relay-error-codes.yaml`` and ``relay_schemas.error_codes``).
+    """
+
+    code: str = RelayErrorCode.RELAY_GATE_051
+
+
+class AdminAuthorizationError(GateEngineError):
+    """An admin action (``admin.reopen`` / ``admin.terminate``) was
+    invoked by an actor whose role is not ``org_owner`` or ``org_admin``.
+
+    VAL-W8-035 requires the API to return 403. The error envelope uses
+    ``RELAY-AUTH-014`` to differentiate authorization failure from a
+    state-engine rejection (the stalled scope is in a valid state; the
+    rejection is about the caller's authority).
+    """
+
+    code: str = RelayErrorCode.RELAY_AUTH_014
+
+
 __all__ = [
+    "AdminAuthorizationError",
     "AntiBypassRejectedError",
     "DraftTtlExpiredError",
     "GateEngineError",
     "GateOrderingError",
     "StaleHandoffError",
+    "StalledScopeRejectedError",
 ]

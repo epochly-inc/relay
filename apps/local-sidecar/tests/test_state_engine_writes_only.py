@@ -158,6 +158,43 @@ _PERMITTED_GATE_RESTART_COORDINATOR_FILE = (
     / "restart_pipeline.py"
 )
 
+# Documented W8.4 exception: the gate circuit breaker at
+# ``packages/gate/src/relay_gate_engine/circuit_breaker.py`` writes
+# ``gate.stalled`` and ``gate.terminal_block`` event_log_entries rows
+# inside the SAME BEGIN IMMEDIATE..COMMIT block as the
+# ``gate_stalled_state`` INSERT so VAL-W8-032 / VAL-W8-033 / VAL-W8-038
+# co-commit atomically per CLAUDE.md keystone invariant #5 final clause
+# ("Circuit breaker trips at remediation_round_cap"). Per contract gap
+# #3 the canonical scope_state row is held in the equivalent
+# ``gate_stalled_state`` companion table this module owns; the
+# ``event_log_entries`` row is the gate-engine event stream entry
+# (event_kind='validation_circuit_breaker' / 'gate.terminal_block').
+_PERMITTED_GATE_CIRCUIT_BREAKER_FILE = (
+    _REPO_ROOT
+    / "packages"
+    / "gate"
+    / "src"
+    / "relay_gate_engine"
+    / "circuit_breaker.py"
+)
+
+# Documented W8.4 exception: the admin-actions service at
+# ``packages/gate/src/relay_gate_engine/admin_actions.py`` writes
+# ``admin.reopen`` / ``admin.terminate`` event_log_entries rows
+# inside the SAME BEGIN IMMEDIATE..COMMIT block as the
+# ``audit_log_entries`` INSERT and the ``gate_stalled_state`` UPDATE so
+# VAL-W8-035 / VAL-W8-036 / VAL-W8-037 co-commit atomically. The audit
+# rows are categorically distinct from state-engine state-transition
+# rows; they record org-admin actions per spec AD lines 5479-5480.
+_PERMITTED_GATE_ADMIN_ACTIONS_FILE = (
+    _REPO_ROOT
+    / "packages"
+    / "gate"
+    / "src"
+    / "relay_gate_engine"
+    / "admin_actions.py"
+)
+
 # Documented W5.5 exception: the verify-self plumbing tests embed
 # ``INSERT INTO run_results`` literals in synthetic fixture trees so
 # the verify-self command's control-plane-write-only checker can be
@@ -232,6 +269,19 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # gate_rounds INSERT (VAL-W8-020/023/025). See
             # _PERMITTED_GATE_RESTART_COORDINATOR_FILE.
             if path == _PERMITTED_GATE_RESTART_COORDINATOR_FILE:
+                continue
+            # Documented W8.4 exception: the circuit breaker writes
+            # gate.stalled / gate.terminal_block event_log_entries rows
+            # atomically with the gate_stalled_state INSERT
+            # (VAL-W8-032/033/038). See _PERMITTED_GATE_CIRCUIT_BREAKER_FILE.
+            if path == _PERMITTED_GATE_CIRCUIT_BREAKER_FILE:
+                continue
+            # Documented W8.4 exception: the admin-actions service writes
+            # admin.reopen / admin.terminate event_log_entries rows
+            # atomically with audit_log_entries + gate_stalled_state
+            # transitions (VAL-W8-035/036/037). See
+            # _PERMITTED_GATE_ADMIN_ACTIONS_FILE.
+            if path == _PERMITTED_GATE_ADMIN_ACTIONS_FILE:
                 continue
             text = path.read_text(encoding="utf-8")
             for line_no, line in enumerate(text.splitlines(), start=1):
@@ -325,6 +375,16 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         # _PERMITTED_GATE_RESTART_COORDINATOR_FILE.
         "/packages/gate/src/relay_gate_engine/restart_pipeline.py:"
     )
+    gate_circuit_breaker_marker = (
+        # W8.4 canonical gate-engine circuit breaker exception. See
+        # _PERMITTED_GATE_CIRCUIT_BREAKER_FILE.
+        "/packages/gate/src/relay_gate_engine/circuit_breaker.py:"
+    )
+    gate_admin_actions_marker = (
+        # W8.4 canonical gate-engine admin-actions exception. See
+        # _PERMITTED_GATE_ADMIN_ACTIONS_FILE.
+        "/packages/gate/src/relay_gate_engine/admin_actions.py:"
+    )
     for line in result.stdout.splitlines():
         if state_engine_marker in line:
             continue
@@ -339,6 +399,10 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         if gate_decision_writer_marker in line:
             continue
         if gate_restart_coordinator_marker in line:
+            continue
+        if gate_circuit_breaker_marker in line:
+            continue
+        if gate_admin_actions_marker in line:
             continue
         offending_lines.append(line)
     assert not offending_lines, (
