@@ -1,0 +1,81 @@
+# epochly-relay-gate-engine (Python control-plane gate evaluator package).
+#
+# Houses the W8.1 gate evaluation pipeline: a deterministic, in-memory
+# evaluator that consumes a gate_decision_drafts envelope, resolves
+# evidence_bundle ids through a pluggable provider, sorts assertions by
+# priority (P0 > P1 > P2 > P3), evaluates conditions through the W6
+# contract engine (cel-python), enforces three-gate ordering
+# (scrutiny -> structural-review -> testing), draft TTL, concurrent-draft
+# conflict, and the anti-bypass guard (W2.5 mirror).
+#
+# The actual gate_decisions row write + DB role grants land in W8.2; this
+# package produces a draft outcome record (action, failed_assertion_ids,
+# unmet_conditions) that w8.2 wraps in a compare_and_set_state transition.
+#
+# Spec anchors:
+#   A.2  gate_decisions schema
+#   A.3  gate_decision_drafts schema (resolution_state, draft_kind)
+#   A.4  gate_rounds schema
+#   A.5  gates + gate_policies (draft_ttl_seconds default 900)
+#   C    state-transition table; gate restart rule; circuit breaker
+#   D.3  GatePolicy (conditions evaluated by W6 contract engine)
+#   K    Evidence binding (artifact hash, command id, exit code, ...)
+#   AM.4 Remediation context injection
+# Eng plan anchors:
+#   W8 (line 382)            packages/gate/
+#   Lane D (line 398)        weeks 6-9; depends on W6 contracts
+# CLAUDE.md anchors:
+#   keystone invariant 1     control plane writes the result
+#   keystone invariant 2     pass without evidence is not a pass
+#   keystone invariant 4     three-anchor handoff
+#   keystone invariant 5     gate restart on failure
+#   banned pattern 8         --no-verify and friends
+#   guard tests              gate_decision ownership, gate restart, stale
+#                            handoff, evidence pairing, manifest source-of-
+#                            truth, anti-bypass
+#
+# Contract assertions: VAL-W8-001 .. VAL-W8-007 + VAL-W8-041 (w8.1).
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-gate-engine"
+version = "0.0.0"
+description = "Relay gate evaluation pipeline (Python; deterministic three-gate evaluator + draft lock)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  # W6 contract engine: every gate policy condition compiles + evaluates
+  # through the Relay CEL profile here, never via a parallel CEL impl
+  # (CLAUDE.md banned pattern 16; eng plan CQ1 line 145).
+  "epochly-relay-contracts",
+  # Generated RelayErrorCode constants live here. Workspace dependency;
+  # uv resolves from the workspace tree, never from a published index
+  # (CLAUDE.md import-boundary rule).
+  "epochly-relay-schemas",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/relay_gate_engine"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/relay_gate_engine",
+  "README.md",
+]
+
+[tool.uv.sources]
+epochly-relay-contracts = { workspace = true }
+epochly-relay-schemas = { workspace = true }
