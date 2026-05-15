@@ -63,6 +63,11 @@ export {
   // W4.3 redaction typed leaves (VAL-W4-022, VAL-W4-024).
   RelayRedactionPolicyError,
   RelayRedactionRawCaptureDeniedError,
+  // W4.5 adapter + replay-mode typed leaves (VAL-W4-035, -036, -036b, -040).
+  RelayReplayEgressDeniedError,
+  RelayReplayProxyMissingError,
+  RelaySdkUninstrumentedHttpClientError,
+  RelayAdapterUnsupportedVersionError,
   // Sidecar-bundle (npx wrapper) typed leaves.
   RelaySidecarBundleUnverified,
   RelaySidecarBundleDigestMismatch,

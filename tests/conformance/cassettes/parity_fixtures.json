@@ -1,0 +1,83 @@
+{
+  "description": "Cross-language cassette parity corpus (VAL-W4-041). Each fixture carries a Python-emitted JSONL cassette; the TS reader (parseCassette / readCassetteFile) MUST load it byte-identically and produce a matching fileDigestSha256.",
+  "fixtures": [
+    {
+      "cassette_sha256": "9e2bbdd26200c4bd0cdcdf0d28697ea02840fe95066f8683ffcf00fcc32b8751",
+      "cassette_text": "{\"case_id\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"manifest_commit_hash\":\"sha256-0000000000000000000000000000000000000000000000000000000000000001\",\"recorded_at\":\"2026-05-14T12:00:00.000Z\",\"schema_version\":\"relay.cassette.v1\",\"session_id\":\"01ARZ3NDEKTSV4RRFFQ69G5FAW\"}\n{\"model\":\"gpt-4o-mini\",\"provider\":\"openai\",\"request_digest\":\"sha256-1111111111111111111111111111111111111111111111111111111111111111\",\"response\":{\"id\":\"chatcmpl-fixture-1\",\"model\":\"gpt-4o-mini\",\"system_fingerprint\":\"fp_fixture_1\",\"usage\":{\"completion_tokens\":4,\"prompt_tokens\":12,\"total_tokens\":16}},\"response_digest\":\"sha256-2222222222222222222222222222222222222222222222222222222222222222\",\"schema_version\":\"relay.cassette_entry.v1\",\"sequence\":0,\"timestamp\":\"2026-05-14T12:00:00.100Z\"}\n{\"model\":\"claude-3-5-haiku\",\"provider\":\"anthropic\",\"request_digest\":\"sha256-3333333333333333333333333333333333333333333333333333333333333333\",\"response\":{\"id\":\"msg_fixture_2\",\"model\":\"claude-3-5-haiku\",\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":18,\"output_tokens\":6}},\"response_digest\":\"sha256-4444444444444444444444444444444444444444444444444444444444444444\",\"schema_version\":\"relay.cassette_entry.v1\",\"sequence\":1,\"timestamp\":\"2026-05-14T12:00:00.250Z\"}\n",
+      "entry_count": 2,
+      "inputs": {
+        "case_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "entries": [
+          {
+            "model": "gpt-4o-mini",
+            "provider": "openai",
+            "request_digest": "sha256-1111111111111111111111111111111111111111111111111111111111111111",
+            "response": {
+              "id": "chatcmpl-fixture-1",
+              "model": "gpt-4o-mini",
+              "system_fingerprint": "fp_fixture_1",
+              "usage": {
+                "completion_tokens": 4,
+                "prompt_tokens": 12,
+                "total_tokens": 16
+              }
+            },
+            "response_digest": "sha256-2222222222222222222222222222222222222222222222222222222222222222",
+            "timestamp": "2026-05-14T12:00:00.100Z"
+          },
+          {
+            "model": "claude-3-5-haiku",
+            "provider": "anthropic",
+            "request_digest": "sha256-3333333333333333333333333333333333333333333333333333333333333333",
+            "response": {
+              "id": "msg_fixture_2",
+              "model": "claude-3-5-haiku",
+              "stop_reason": "end_turn",
+              "usage": {
+                "input_tokens": 18,
+                "output_tokens": 6
+              }
+            },
+            "response_digest": "sha256-4444444444444444444444444444444444444444444444444444444444444444",
+            "timestamp": "2026-05-14T12:00:00.250Z"
+          }
+        ],
+        "manifest_commit_hash": "sha256-0000000000000000000000000000000000000000000000000000000000000001",
+        "recorded_at": "2026-05-14T12:00:00.000Z",
+        "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+      },
+      "name": "minimal_two_entries"
+    },
+    {
+      "cassette_sha256": "9e72f864035bf019518c1ebd7a19ef22a62a3f163848ded4b74f7392c5ceacc3",
+      "cassette_text": "{\"case_id\":\"01HXYZ0000000000000000000A\",\"manifest_commit_hash\":\"sha256-abcdef0000000000000000000000000000000000000000000000000000000000\",\"recorded_at\":\"2026-05-14T13:00:00.000Z\",\"schema_version\":\"relay.cassette.v1\",\"session_id\":\"01HXYZ0000000000000000000B\"}\n{\"model\":\"gpt-4o\",\"provider\":\"vercel-ai\",\"request_digest\":\"sha256-5555555555555555555555555555555555555555555555555555555555555555\",\"response\":{\"finishReason\":\"stop\",\"text\":\"ok\",\"usage\":{\"completionTokens\":2,\"promptTokens\":7,\"totalTokens\":9}},\"response_digest\":\"sha256-6666666666666666666666666666666666666666666666666666666666666666\",\"schema_version\":\"relay.cassette_entry.v1\",\"sequence\":0,\"timestamp\":\"2026-05-14T13:00:00.500Z\"}\n",
+      "entry_count": 1,
+      "inputs": {
+        "case_id": "01HXYZ0000000000000000000A",
+        "entries": [
+          {
+            "model": "gpt-4o",
+            "provider": "vercel-ai",
+            "request_digest": "sha256-5555555555555555555555555555555555555555555555555555555555555555",
+            "response": {
+              "finishReason": "stop",
+              "text": "ok",
+              "usage": {
+                "completionTokens": 2,
+                "promptTokens": 7,
+                "totalTokens": 9
+              }
+            },
+            "response_digest": "sha256-6666666666666666666666666666666666666666666666666666666666666666",
+            "timestamp": "2026-05-14T13:00:00.500Z"
+          }
+        ],
+        "manifest_commit_hash": "sha256-abcdef0000000000000000000000000000000000000000000000000000000000",
+        "recorded_at": "2026-05-14T13:00:00.000Z",
+        "session_id": "01HXYZ0000000000000000000B"
+      },
+      "name": "single_vercel_ai_entry"
+    }
+  ],
+  "schema_version": "relay.cassette_parity.v1"
+}

@@ -81,6 +81,17 @@ export const RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CODE = "RELAY-SDK-015";
 // callers can branch on the specific failure class.
 export const RELAY_SDK_RAW_CAPTURE_DENIED_CODE = "RELAY-SDK-016";
 
+// W4.5 adapter + replay-mode codes (descriptive tokens; VAL-W4-035, -036,
+// -036b, -040). The contract assertions specify the wire `code` field
+// verbatim as a descriptive string rather than a numeric token. These
+// constants are the single source of truth for the literal wire values.
+export const RELAY_REPLAY_EGRESS_DENIED_CODE = "RELAY-REPLAY-EGRESS-DENIED";
+export const RELAY_REPLAY_PROXY_MISSING_CODE = "RELAY-REPLAY-PROXY-MISSING";
+export const RELAY_SDK_UNINSTRUMENTED_HTTP_CLIENT_CODE =
+  "RELAY-SDK-UNINSTRUMENTED-HTTP-CLIENT";
+export const RELAY_SDK_ADAPTER_VERSION_UNSUPPORTED_CODE =
+  "RELAY-SDK-ADAPTER-VERSION-UNSUPPORTED";
+
 // Descriptive error_class tokens (contract.md prose).
 export const RELAY_SDK_CONFIG_CLASS = "RELAY-SDK-CONFIG-001";
 export const RELAY_SDK_VERSION_MISMATCH_CLASS = "RELAY-SDK-VERSION-MISMATCH";
@@ -111,6 +122,14 @@ export const RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CLASS =
 // W4.3 redaction classes (VAL-W4-022, VAL-W4-024).
 export const RELAY_SDK_RAW_CAPTURE_DENIED_CLASS = "RELAY-SDK-RAW-CAPTURE-DENIED";
 export const RELAY_SDK_REDACTION_POLICY_CLASS = "RELAY-SDK-REDACTION-POLICY";
+// W4.5 adapter + replay-mode classes. The class token mirrors the wire
+// code verbatim because the codes are already descriptive.
+export const RELAY_REPLAY_EGRESS_DENIED_CLASS = "RELAY-REPLAY-EGRESS-DENIED";
+export const RELAY_REPLAY_PROXY_MISSING_CLASS = "RELAY-REPLAY-PROXY-MISSING";
+export const RELAY_SDK_UNINSTRUMENTED_HTTP_CLIENT_CLASS =
+  "RELAY-SDK-UNINSTRUMENTED-HTTP-CLIENT";
+export const RELAY_SDK_ADAPTER_VERSION_UNSUPPORTED_CLASS =
+  "RELAY-SDK-ADAPTER-VERSION-UNSUPPORTED";
 
 const DEFAULT_DOC_URL_PREFIX = "https://relay.epochly.com/docs/errors/";
 
@@ -579,6 +598,76 @@ export class RelayRedactionRawCaptureDeniedError extends RelayRedactionPolicyErr
 }
 
 // -----------------------------------------------------------------------------
+// W4.5 adapter + replay-mode typed leaves.
+// -----------------------------------------------------------------------------
+
+/**
+ * VAL-W4-035: replay-mode undici interceptor blocked a non-loopback egress.
+ *
+ * The SDK installs an undici dispatcher (A4 layer 3) when replay mode is
+ * active. Any outbound TCP connection to a non-loopback destination is
+ * refused synchronously and surfaced as this typed leaf so callers can
+ * branch on the egress-denied case without sniffing the message string.
+ */
+export class RelayReplayEgressDeniedError extends RelayReplayError {
+  static override defaultCode = RELAY_REPLAY_EGRESS_DENIED_CODE;
+  static override defaultErrorClass = RELAY_REPLAY_EGRESS_DENIED_CLASS;
+  static override defaultHttpStatus = 403;
+  static override defaultBlockedSurface = "relay-sdk-replay-undici-interceptor";
+  static override defaultRetryAdvice: RetryAdviceMode = "no_retry";
+}
+
+/**
+ * VAL-W4-036: replay-mode init detected missing HTTPS_PROXY env var.
+ *
+ * Per eng plan A4 layer 4 the SDK MUST emit a structured ERROR (not a
+ * warning) at construction time when ``RELAY_REPLAY=1`` AND
+ * ``process.env.HTTPS_PROXY`` is unset. This typed leaf carries that
+ * failure shape; callers can catch it and surface a remediation hint.
+ */
+export class RelayReplayProxyMissingError extends RelayReplayError {
+  static override defaultCode = RELAY_REPLAY_PROXY_MISSING_CODE;
+  static override defaultErrorClass = RELAY_REPLAY_PROXY_MISSING_CLASS;
+  static override defaultHttpStatus = 400;
+  static override defaultBlockedSurface = "relay-sdk-replay-init";
+  static override defaultRetryAdvice: RetryAdviceMode = "after_state_change";
+}
+
+/**
+ * VAL-W4-036b: replay-mode init detected an uninstrumented HTTP client.
+ *
+ * Per eng plan A4 layer 4 the SDK MUST scan for direct usage of
+ * ``got``, ``request``, ``node-fetch``, ``axios`` (without the relay
+ * axios adapter), and ``undici`` (raw -- not through the relay
+ * interceptor). The error envelope carries ``client_name`` so the
+ * operator knows which module to instrument.
+ */
+export class RelaySdkUninstrumentedHttpClientError extends RelaySdkError {
+  static override defaultCode = RELAY_SDK_UNINSTRUMENTED_HTTP_CLIENT_CODE;
+  static override defaultErrorClass = RELAY_SDK_UNINSTRUMENTED_HTTP_CLIENT_CLASS;
+  static override defaultHttpStatus = 400;
+  static override defaultBlockedSurface = "relay-sdk-replay-init";
+  static override defaultRetryAdvice: RetryAdviceMode = "after_state_change";
+}
+
+/**
+ * VAL-W4-040: adapter constructor refused to wrap an unsupported provider
+ * SDK version.
+ *
+ * Each P0 adapter declares a supported semver range for its underlying
+ * provider package. Out-of-range versions raise this error synchronously
+ * with both observed and supported version strings on the details map so
+ * operators can pin a compatible release.
+ */
+export class RelayAdapterUnsupportedVersionError extends RelaySdkError {
+  static override defaultCode = RELAY_SDK_ADAPTER_VERSION_UNSUPPORTED_CODE;
+  static override defaultErrorClass = RELAY_SDK_ADAPTER_VERSION_UNSUPPORTED_CLASS;
+  static override defaultHttpStatus = 400;
+  static override defaultBlockedSurface = "relay-sdk-adapter-init";
+  static override defaultRetryAdvice: RetryAdviceMode = "after_state_change";
+}
+
+// -----------------------------------------------------------------------------
 // W4 sidecar-bundle typed leaves (used by npx wrapper).
 // -----------------------------------------------------------------------------
 
@@ -673,6 +762,11 @@ const CODE_LEAF_REGISTRY: Record<string, typeof RelayError> = {
   [RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CODE]: RelayReplayLiveModeUnacknowledgedError,
   // W4.3 redaction code → narrowest typed leaf (VAL-W4-022).
   [RELAY_SDK_RAW_CAPTURE_DENIED_CODE]: RelayRedactionRawCaptureDeniedError,
+  // W4.5 adapter + replay-mode typed leaves.
+  [RELAY_REPLAY_EGRESS_DENIED_CODE]: RelayReplayEgressDeniedError,
+  [RELAY_REPLAY_PROXY_MISSING_CODE]: RelayReplayProxyMissingError,
+  [RELAY_SDK_UNINSTRUMENTED_HTTP_CLIENT_CODE]: RelaySdkUninstrumentedHttpClientError,
+  [RELAY_SDK_ADAPTER_VERSION_UNSUPPORTED_CODE]: RelayAdapterUnsupportedVersionError,
 };
 
 // Order matters: longest namespace prefix first.
