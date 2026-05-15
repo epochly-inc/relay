@@ -75,3 +75,19 @@ consumption of ACEF bundles goes through the Python sidecar's HTTP
 surface (`GET /v1/evidence/{id}`). This boundary is enforced by
 VAL-W11-007 (a repo grep over `packages/sdk-typescript/src/` for
 ACEF-specific identifier patterns).
+
+## What this package is for
+
+ACEF bundles produced by Relay carry AI Act readiness evidence: per-run
+control-plane bindings, replay verification outcomes, contract-gate
+results, human-oversight events, and incident-monitoring records. The
+bundle Merkle root binds the evidence coverage of a run into a single
+content-addressed digest so an auditor can reason about gaps in the
+evidence set and decide whether a run is ready for auditor review.
+
+This package surfaces the vendor pin, the W11.2 emission validator,
+and the W11.3 byte-level roundtrip helpers (`emit_bundle`,
+`parse_bundle`, `roundtrip`, `bundle_digest`, `bundle_merkle_root`).
+See `RELAY-LOCAL-CHANGES.md` for the catalogue of patches Relay applies
+on top of the vendored upstream and `VENDOR.md` for the vendor-pin
+governance surface.

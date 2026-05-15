@@ -1,0 +1,196 @@
+{
+  "entries": [
+    {
+      "expected_digest": "4340e4e1b09aec7e2c12ef94c32cbfe0e62c090dc9c215ff6f7191108ae272ec",
+      "expected_error_code": null,
+      "expected_merkle_root": "5250fe9b5c541dca721899ecf3f3643967604a416eb725e805732bb26d8884e5",
+      "fixture_id": "claims-canonical-order",
+      "fixture_path": "in_process_builders._fixture_with_claims_in_canonical_order"
+    },
+    {
+      "expected_digest": "35e1082e775a1e79f71a75a5858795eee421e762378e859b1f65e1981e2cff7e",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "decimal-precision",
+      "fixture_path": "in_process_builders._fixture_decimal_precision"
+    },
+    {
+      "expected_digest": "dd098215fc580fba31cdf39d9a493af36827a8951770aef0002b2030e82cfed1",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "minimum",
+      "fixture_path": "in_process_builders._fixture_minimum"
+    },
+    {
+      "expected_digest": null,
+      "expected_error_code": "RELAY-SCHEMA-023",
+      "expected_merkle_root": null,
+      "fixture_id": "neg-missing-manifest-commit-hash",
+      "fixture_path": "in_process_builders._neg_missing_manifest_commit_hash"
+    },
+    {
+      "expected_digest": null,
+      "expected_error_code": "RELAY-SCHEMA-023",
+      "expected_merkle_root": null,
+      "fixture_id": "neg-missing-redaction-policy-version",
+      "fixture_path": "in_process_builders._neg_missing_redaction_policy_version"
+    },
+    {
+      "expected_digest": null,
+      "expected_error_code": "RELAY-SCHEMA-014",
+      "expected_merkle_root": null,
+      "fixture_id": "neg-unknown-core-schema-v0_1",
+      "fixture_path": "in_process_builders._neg_unknown_core_schema_v0_1"
+    },
+    {
+      "expected_digest": null,
+      "expected_error_code": "RELAY-SCHEMA-014",
+      "expected_merkle_root": null,
+      "fixture_id": "neg-unknown-core-schema-v99",
+      "fixture_path": "in_process_builders._neg_unknown_core_schema_v99"
+    },
+    {
+      "expected_digest": null,
+      "expected_error_code": "RELAY-SCHEMA-014",
+      "expected_merkle_root": null,
+      "fixture_id": "neg-unknown-xrelay-schema-v0",
+      "fixture_path": "in_process_builders._neg_unknown_xrelay_schema_v0"
+    },
+    {
+      "expected_digest": null,
+      "expected_error_code": "RELAY-SCHEMA-014",
+      "expected_merkle_root": null,
+      "fixture_id": "neg-unknown-xrelay-schema-v2",
+      "fixture_path": "in_process_builders._neg_unknown_xrelay_schema_v2"
+    },
+    {
+      "expected_digest": "a9f20893473b706c1f4fcf3defb3e5ece83eaecd495de9c631900afc7a7fdbf8",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "nullable-field-null",
+      "fixture_path": "in_process_builders._fixture_nullable_field_null"
+    },
+    {
+      "expected_digest": "78254e9f7d9da029b088ff8455a680cc3c5ec33c89831274d87ac2a28c857d03",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "nullable-field-present",
+      "fixture_path": "in_process_builders._fixture_nullable_field_present"
+    },
+    {
+      "expected_digest": "842f898b3051b0eff3a5f21875bbcc49626266f6612d0af1e04ea78fa16df95b",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "optional-fields-absent",
+      "fixture_path": "in_process_builders._fixture_optional_field_absent"
+    },
+    {
+      "expected_digest": "8b09b9403ac2010aa2132ad3a7bd6c9c4cfb427d8b36e4e218d7e4291f69861c",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "optional-fields-present",
+      "fixture_path": "in_process_builders._fixture_optional_field_present"
+    },
+    {
+      "expected_digest": "52b314635dbf2ed5a26191f1e822665ff85167fe7849d233a901fb6ace5a26f2",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-agent-execution-trace",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "8cc94b3190ea679892195e6f069eca8695951c05cfb9a73deaa103a30ced5161",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-contract-gate-result",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "e9a9b75ae2e5907553b700dec18d08ee78c3480284252cce6dc5b98307eed43a",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-data-quality-check",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "833bf9dc2f3828e0ce95fba9489e3026c26ba2308e5179c4c6906bae5477dbc1",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-eval-dataset-result",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "2cd3b219c01f3483dca770a714703e2fae0fd5de05b43b413cf5453e25e8ea40",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-human-oversight-event",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "23de85f2a0e961107b7c2628abc019918daa242a86b8385b9cb3ce2a86ef8f59",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-incident-monitoring-event",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "43f2b3a876fd973e10d8eb918f87fc0edcc71d8ffdaf3cad35c393e05db55aaf",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-model-provider-compatibility",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "ad5f144cf54cacf347c827ac8ebf4233bcd80d55ce6290f9b3e5265e5d45c8cc",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-rag-retrieval-diagnostics",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "a9f20893473b706c1f4fcf3defb3e5ece83eaecd495de9c631900afc7a7fdbf8",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-replay-verification",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "95629e88461048b95350eca243a311e825a1759691371f4992214f735237f3e2",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "single-namespace-tool-invocation-log",
+      "fixture_path": "in_process_builders.<lambda>"
+    },
+    {
+      "expected_digest": "2eea711bd711560db916db3c45cde30a88d26fd18aa362bde641ae65b59b3c5e",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "unicode-cjk-rtl-emoji",
+      "fixture_path": "in_process_builders._fixture_unicode_nfd_keys"
+    },
+    {
+      "expected_digest": "e7c9f10ee7427f10660bbb01f56590ab4e72c05a15fb9a73d3ae23aae4897614",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "unicode-combining",
+      "fixture_path": "in_process_builders._fixture_unicode_payload"
+    },
+    {
+      "expected_digest": "383b09ce7e864ad1ecb4141bc89e68b0c8f9e06b58597d1293015845ff79224d",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "with-all-ten-namespaces",
+      "fixture_path": "in_process_builders._fixture_with_all_ten_namespaces"
+    },
+    {
+      "expected_digest": "52b314635dbf2ed5a26191f1e822665ff85167fe7849d233a901fb6ace5a26f2",
+      "expected_error_code": null,
+      "expected_merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "fixture_id": "with-one-namespace",
+      "fixture_path": "in_process_builders._fixture_with_one_namespace"
+    }
+  ],
+  "fixture_count": 27,
+  "generated_by": "packages/acef/tests/test_w11_3_acef_roundtrip.py",
+  "schema_version": "v1"
+}
