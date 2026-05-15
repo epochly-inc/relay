@@ -37,11 +37,51 @@ Per CLAUDE.md keystone invariant #2 and VAL-W9-007, a per-case row
 whose evidence binding is incomplete is written with `status='invalid'`,
 NOT `status='passed'` or `status='failed'`.
 
-## Deferred
+## Deferred features
 
-- `w9.2` -- assertion template library (VAL-W9-009 .. VAL-W9-015). Not
-  in this commit.
-- `w9.3` -- LLM-judge stub (VAL-W9-016 .. VAL-W9-020). Not in this commit.
+The following surfaces are **deferred** in v0.1 -- the schema slots
+exist but the runtime explicitly refuses to register them as active:
+
+### LLM-as-judge evaluator (W9.3; ships month 4+)
+
+The LLM-as-judge evaluator (`evaluator.kind == "llm_judge"` on
+EvalAssertion per spec D.5) is **deferred to month 4+**. The v0.1
+surface ships only a stub at `relay_evals.llm_judge_evaluator` that:
+
+1. Validates the canonical `relay.assertion.eval.v1` EvalAssertion
+   schema (so schema breakage surfaces as `RelayTemplateInputError`
+   before the deferred raise fires).
+2. Raises `NotImplementedError` with the canonical message
+   `"LLM-as-judge evaluator deferred to month 4+; see docs/roadmap.md"`.
+3. Is **NOT** registered as an active evaluator -- the active-evaluator
+   introspection surface (`relay_evals.list_active_evaluator_kinds()`,
+   future `rly eval evaluators list`) returns an empty tuple. Customers
+   who submit an EvalAssertion with `evaluator.kind == "llm_judge"`
+   receive the wire code `RELAY-EVAL-EVALUATOR-DEFERRED` mapped to
+   CLI exit code 8.
+
+The deferred status is intentional. LLM-as-judge requires the
+cassette-first replay hardening described in spec section AM.7 plus
+the structured-output enforcement landing alongside the month-4+ work.
+Shipping the slot at v0.1 without a runtime would create a path for
+silent passes; the stub closes that path.
+
+**Tracking issue:** see `docs/roadmap.md` once the OSS repo is
+populated. Customer-facing product copy MUST NOT claim LLM-judge
+support in v0.1 (forbidden per CLAUDE.md section J.5 carryover).
+
+### Other deferrals
+
+- `w9.2` -- assertion template library (VAL-W9-009 .. VAL-W9-015):
+  **SHIPPED** in the preceding W9.2 worker pass.
+
+## Sub-feature deltas vs initial scaffolding
+
+- W9.2 has shipped: the assertion-template library now ships three
+  signed templates (`coverage_assertion_template`,
+  `tool_arg_assertion_template`, `schema_match_assertion_template`)
+  via a closed-allow-list registry that refuses dynamic plugin loads.
+- W9.3 ships ONLY the deferred LLM-as-judge stub described above.
 
 ## Spec anchors
 
