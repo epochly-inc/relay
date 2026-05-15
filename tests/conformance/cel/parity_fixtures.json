@@ -1,0 +1,224 @@
+{
+  "cases": [
+    {
+      "input": null,
+      "name": "null",
+      "py_jcs_b64": "bnVsbA=="
+    },
+    {
+      "input": true,
+      "name": "bool_true",
+      "py_jcs_b64": "dHJ1ZQ=="
+    },
+    {
+      "input": false,
+      "name": "bool_false",
+      "py_jcs_b64": "ZmFsc2U="
+    },
+    {
+      "input": 0,
+      "name": "int_zero",
+      "py_jcs_b64": "MA=="
+    },
+    {
+      "input": 42,
+      "name": "int_positive",
+      "py_jcs_b64": "NDI="
+    },
+    {
+      "input": -7,
+      "name": "int_negative",
+      "py_jcs_b64": "LTc="
+    },
+    {
+      "input": 9007199254740992,
+      "name": "int_safe_max",
+      "py_jcs_b64": "OTAwNzE5OTI1NDc0MDk5Mg=="
+    },
+    {
+      "input": -9007199254740992,
+      "name": "int_safe_min",
+      "py_jcs_b64": "LTkwMDcxOTkyNTQ3NDA5OTI="
+    },
+    {
+      "input": 1.0,
+      "name": "float_one",
+      "py_jcs_b64": "MQ=="
+    },
+    {
+      "input": -0.0,
+      "name": "float_neg_zero",
+      "py_jcs_b64": "MA=="
+    },
+    {
+      "input": 0.5,
+      "name": "float_half",
+      "py_jcs_b64": "MC41"
+    },
+    {
+      "input": -3.14,
+      "name": "float_negative",
+      "py_jcs_b64": "LTMuMTQ="
+    },
+    {
+      "input": 0.1,
+      "name": "float_small_decimal",
+      "py_jcs_b64": "MC4x"
+    },
+    {
+      "input": "",
+      "name": "string_empty",
+      "py_jcs_b64": "IiI="
+    },
+    {
+      "input": "relay",
+      "name": "string_simple",
+      "py_jcs_b64": "InJlbGF5Ig=="
+    },
+    {
+      "input": "a\"b",
+      "name": "string_with_quote",
+      "py_jcs_b64": "ImFcImIi"
+    },
+    {
+      "input": "a\\b",
+      "name": "string_with_backslash",
+      "py_jcs_b64": "ImFcXGIi"
+    },
+    {
+      "input": "line1\nline2",
+      "name": "string_with_newline",
+      "py_jcs_b64": "ImxpbmUxXG5saW5lMiI="
+    },
+    {
+      "input": "col1\tcol2",
+      "name": "string_with_tab",
+      "py_jcs_b64": "ImNvbDFcdGNvbDIi"
+    },
+    {
+      "input": "\u007f",
+      "name": "string_with_del",
+      "py_jcs_b64": "In8i"
+    },
+    {
+      "input": "caf\u00e9",
+      "name": "string_with_unicode_bmp",
+      "py_jcs_b64": "ImNhZsOpIg=="
+    },
+    {
+      "input": [],
+      "name": "list_empty",
+      "py_jcs_b64": "W10="
+    },
+    {
+      "input": [
+        1,
+        2,
+        3
+      ],
+      "name": "list_of_ints",
+      "py_jcs_b64": "WzEsMiwzXQ=="
+    },
+    {
+      "input": [
+        1,
+        "two",
+        true,
+        null,
+        3.14
+      ],
+      "name": "list_mixed",
+      "py_jcs_b64": "WzEsInR3byIsdHJ1ZSxudWxsLDMuMTRd"
+    },
+    {
+      "input": [
+        [
+          1,
+          2
+        ],
+        [
+          3,
+          4
+        ]
+      ],
+      "name": "list_nested",
+      "py_jcs_b64": "W1sxLDJdLFszLDRdXQ=="
+    },
+    {
+      "input": {},
+      "name": "dict_empty",
+      "py_jcs_b64": "e30="
+    },
+    {
+      "input": {
+        "a": 1,
+        "b": 2
+      },
+      "name": "dict_simple",
+      "py_jcs_b64": "eyJhIjoxLCJiIjoyfQ=="
+    },
+    {
+      "input": {
+        "a": 2,
+        "m": 3,
+        "z": 1
+      },
+      "name": "dict_unsorted_keys",
+      "py_jcs_b64": "eyJhIjoyLCJtIjozLCJ6IjoxfQ=="
+    },
+    {
+      "input": {
+        "outer": {
+          "inner": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "name": "dict_nested",
+      "py_jcs_b64": "eyJvdXRlciI6eyJpbm5lciI6WzEsMiwzXX19"
+    },
+    {
+      "input": {
+        "count": 3,
+        "items": [
+          1,
+          2,
+          3
+        ],
+        "name": "relay",
+        "ok": true
+      },
+      "name": "relay_known_good",
+      "py_jcs_b64": "eyJjb3VudCI6MywiaXRlbXMiOlsxLDIsM10sIm5hbWUiOiJyZWxheSIsIm9rIjp0cnVlfQ=="
+    },
+    {
+      "input": {
+        "covered": [
+          "step.a",
+          "step.b"
+        ],
+        "missing": [
+          "step.c"
+        ],
+        "ratio": 0.6666666666666666
+      },
+      "name": "coverage_result",
+      "py_jcs_b64": "eyJjb3ZlcmVkIjpbInN0ZXAuYSIsInN0ZXAuYiJdLCJtaXNzaW5nIjpbInN0ZXAuYyJdLCJyYXRpbyI6MC42NjY2NjY2NjY2NjY2NjY2fQ=="
+    },
+    {
+      "input": {
+        "args": {
+          "limit": 10,
+          "query": "relay"
+        },
+        "tool": "search.web",
+        "trace_span_id": "0123456789abcdef"
+      },
+      "name": "tool_args_capture",
+      "py_jcs_b64": "eyJhcmdzIjp7ImxpbWl0IjoxMCwicXVlcnkiOiJyZWxheSJ9LCJ0b29sIjoic2VhcmNoLndlYiIsInRyYWNlX3NwYW5faWQiOiIwMTIzNDU2Nzg5YWJjZGVmIn0="
+    }
+  ],
+  "schema_version": "relay.cel.parity_fixtures.v1"
+}

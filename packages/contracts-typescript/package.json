@@ -1,0 +1,38 @@
+{
+  "name": "@epochly/relay-contracts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Relay-profile cel-js evaluator and RFC 8785 JCS canonical encoder. TypeScript mirror of packages/contracts/ (Python). VAL-W6-010..014.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --reporter=verbose"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "cel-js": "0.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
