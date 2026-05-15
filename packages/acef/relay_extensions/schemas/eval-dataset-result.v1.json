@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/x-relay/eval-dataset-result.v1.json",
+  "title": "x-relay/eval-dataset-result",
+  "description": "Relay EvalRun extension for ACEF bundles. Spec table line 867: include dataset digest, cases, thresholds, score, failed assertions. Generated under bundle.namespaces['x-relay']['eval-dataset-result'].",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "eval_run_id",
+    "dataset_digest",
+    "case_count",
+    "score",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "x-relay.eval-dataset-result.v1"
+    },
+    "eval_run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "dataset_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the canonicalised dataset used for the eval run."
+    },
+    "case_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Aggregate score in [0, 1]; lower-is-better metrics are inverted before recording."
+    },
+    "threshold": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Pass threshold the eval was gated against; null if untested."
+    },
+    "failed_case_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": []
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

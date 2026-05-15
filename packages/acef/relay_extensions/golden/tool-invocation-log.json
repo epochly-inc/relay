@@ -1,0 +1,11 @@
+{
+  "schema_version": "x-relay.tool-invocation-log.v1",
+  "tool_name": "fetch_user_record",
+  "args_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+  "result_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+  "idempotency_key": "fetch-user-2026-05-15-001",
+  "side_effect_class": "none",
+  "invoked_at": "2026-05-15T12:00:00Z",
+  "pre_action_marker_digest": null,
+  "post_success_proof_digest": null
+}

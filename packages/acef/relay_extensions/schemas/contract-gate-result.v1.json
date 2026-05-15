@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/x-relay/contract-gate-result.v1.json",
+  "title": "x-relay/contract-gate-result",
+  "description": "Relay GateDecision extension for ACEF bundles. Spec table line 862: gate result binds failed assertions, action, round, and evidence bundle. Generated under bundle.namespaces['x-relay']['contract-gate-result'].",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "gate_round_id",
+    "round_index",
+    "action",
+    "decided_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "x-relay.contract-gate-result.v1"
+    },
+    "gate_round_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "round_index": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "1-indexed remediation round number; CLAUDE.md keystone #5 caps via remediation_round_cap."
+    },
+    "action": {
+      "type": "string",
+      "enum": ["accept", "reject", "remediate"],
+      "description": "Gate decision action; spec C state-transition table."
+    },
+    "failed_assertion_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^VAL-[A-Z0-9]+-[0-9]+$"
+      },
+      "default": []
+    },
+    "contract_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the resolved contract document for this round."
+    },
+    "decided_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

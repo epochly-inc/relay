@@ -1,0 +1,9 @@
+{
+  "schema_version": "x-relay.contract-gate-result.v1",
+  "gate_round_id": "11111111-2222-3333-4444-555555555555",
+  "round_index": 1,
+  "action": "accept",
+  "failed_assertion_ids": [],
+  "contract_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+  "decided_at": "2026-05-15T12:00:00Z"
+}

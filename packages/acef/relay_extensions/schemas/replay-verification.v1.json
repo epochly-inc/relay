@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/x-relay/replay-verification.v1.json",
+  "title": "x-relay/replay-verification",
+  "description": "Relay ReplayResult extension for ACEF bundles. Spec table line 866: include fixture hashes, mode, live/locked state, result diff, pass/fail. Generated under bundle.namespaces['x-relay']['replay-verification'].",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "replay_case_id",
+    "mode",
+    "fixture_digest",
+    "outcome",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "x-relay.replay-verification.v1"
+    },
+    "replay_case_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["cassette", "live"],
+      "description": "CLAUDE.md keystone #9: cassette is default; live is the degraded mode."
+    },
+    "fixture_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the cassette fixture used (or recorded, in live mode)."
+    },
+    "model_signature": {
+      "type": ["string", "null"],
+      "description": "Provider system_fingerprint or equivalent recorded at capture time."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["pass", "fail", "degraded", "error"]
+    },
+    "result_diff_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of structured diff between expected and observed output."
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "schema_version": "x-relay.human-oversight-event.v1",
+  "event_id": "33333333-4444-5555-6666-777777777777",
+  "reviewer_identity_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+  "reviewer_role": "approver",
+  "authority_basis": "policy:rbac/approver-tier-2",
+  "decision": "approved",
+  "linked_run_id": "44444444-5555-6666-7777-888888888888",
+  "occurred_at": "2026-05-15T12:00:00Z"
+}

@@ -1,0 +1,8 @@
+{
+  "schema_version": "x-relay.model-provider-compatibility.v1",
+  "provider": "openai",
+  "model_id": "gpt-4o-2024-11-20",
+  "system_fingerprint": "fp_abcdef0123456789",
+  "compatibility_status": "matched",
+  "captured_at": "2026-05-15T12:00:00Z"
+}

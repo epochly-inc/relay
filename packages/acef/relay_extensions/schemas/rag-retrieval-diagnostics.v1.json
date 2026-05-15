@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/x-relay/rag-retrieval-diagnostics.v1.json",
+  "title": "x-relay/rag-retrieval-diagnostics",
+  "description": "Relay RAG retrieval diagnostics extension for ACEF bundles. Records the retrieval document set digest, k, and per-document scores so a verifier can detect index drift between capture and replay (CLAUDE.md keystone #9 cassette-first determinism).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "query_digest",
+    "k",
+    "retrieved_document_digests",
+    "retrieved_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "x-relay.rag-retrieval-diagnostics.v1"
+    },
+    "query_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the canonicalised retrieval query."
+    },
+    "k": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Top-k requested from the retrieval index."
+    },
+    "retrieved_document_digests": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "description": "Ordered sha256 digests of retrieved documents (length must equal k)."
+    },
+    "scores": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "number"
+      },
+      "description": "Per-document relevance scores aligned with retrieved_document_digests order."
+    },
+    "index_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the retrieval index manifest at capture time."
+    },
+    "retrieved_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

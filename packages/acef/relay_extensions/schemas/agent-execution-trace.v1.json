@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/x-relay/agent-execution-trace.v1.json",
+  "title": "x-relay/agent-execution-trace",
+  "description": "Relay TraceSpan extension for ACEF bundles. Spec table line 864: include span type, parent, status, timing, error class, redacted metadata. Generated under bundle.namespaces['x-relay']['agent-execution-trace'].",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "span_id",
+    "trace_id",
+    "span_type",
+    "status",
+    "started_at",
+    "ended_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "x-relay.agent-execution-trace.v1"
+    },
+    "span_id": {
+      "type": "string",
+      "description": "W3C trace-context span id (16 lowercase hex chars)."
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "W3C trace-context trace id (32 lowercase hex chars)."
+    },
+    "parent_span_id": {
+      "type": ["string", "null"],
+      "description": "Parent span id, or null for the root span."
+    },
+    "span_type": {
+      "type": "string",
+      "enum": ["llm_call", "tool_call", "retrieval", "agent_step", "custom"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["ok", "error", "cancelled"]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ended_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "error_class": {
+      "type": ["string", "null"],
+      "description": "Error class identifier when status == 'error' (e.g., 'provider_timeout')."
+    },
+    "redacted_metadata_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the redacted metadata payload; raw payload lives outside the bundle per default-deny capture (CLAUDE.md keystone #7)."
+    }
+  }
+}

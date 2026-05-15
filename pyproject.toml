@@ -84,4 +84,8 @@ filterwarnings = [
 [dependency-groups]
 dev = [
     "datamodel-code-generator>=0.57.0",
+    # W11.2 / VAL-W11-010: jsonschema validates each x-relay/* namespace
+    # golden fixture against its Draft 2020-12 schema; required for the
+    # plumbing-tier tests in packages/acef/tests/test_w11_2_*.py.
+    "jsonschema>=4.21",
 ]

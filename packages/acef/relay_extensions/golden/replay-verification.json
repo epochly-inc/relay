@@ -1,0 +1,10 @@
+{
+  "schema_version": "x-relay.replay-verification.v1",
+  "replay_case_id": "abcdef01-2345-6789-abcd-ef0123456789",
+  "mode": "cassette",
+  "fixture_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+  "model_signature": "fp_abcdef0123456789",
+  "outcome": "pass",
+  "result_diff_digest": null,
+  "completed_at": "2026-05-15T12:00:00Z"
+}

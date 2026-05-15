@@ -47,20 +47,26 @@ dependencies = []
 test = [
   "pytest>=8.0",
   "pytest-timeout>=2.3",
+  # W11.2 / VAL-W11-010 Tool: pytest + jsonschema. Validates each x-relay/*
+  # namespace's golden fixture against its JSON Schema (Draft 2020-12) and
+  # the round-trip dataclass<->dict path.
+  "jsonschema>=4.21",
 ]
 
 # The vendored upstream tree under upstream/ is NOT shipped as part of the
-# Python wheel for this workspace package. The wheel is intentionally empty;
-# the package exists to declare the vendor pin and host its drift-guard
-# tests. Downstream consumers depend on the Python sidecar's ACEF emission
+# Python wheel for this workspace package. The wheel ships:
+#   * src/relay_acef (vendor-pin surface, W11.1)
+#   * relay_extensions (Relay's x-relay/* extension namespaces, W11.2)
+# Downstream consumers depend on the Python sidecar's ACEF emission
 # surface (W11.2+), not on importing the raw vendored tree.
 [tool.hatch.build.targets.wheel]
-packages = ["src/relay_acef"]
-only-include = ["src/relay_acef"]
+packages = ["src/relay_acef", "relay_extensions"]
+only-include = ["src/relay_acef", "relay_extensions"]
 
 [tool.hatch.build.targets.sdist]
 include = [
   "src/relay_acef",
+  "relay_extensions",
   "README.md",
   "vendor_manifest.json",
 ]

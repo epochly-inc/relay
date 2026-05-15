@@ -1,0 +1,10 @@
+{
+  "schema_version": "x-relay.incident-monitoring-event.v1",
+  "incident_id": "55555555-6666-7777-8888-999999999999",
+  "severity": "sev2",
+  "detected_at": "2026-05-15T12:00:00Z",
+  "linked_run_ids": ["66666666-7777-8888-9999-aaaaaaaaaaaa"],
+  "remediation_summary_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+  "notification_evidence_digest": null,
+  "status": "investigating"
+}

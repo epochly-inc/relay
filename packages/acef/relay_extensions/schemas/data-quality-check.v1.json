@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/x-relay/data-quality-check.v1.json",
+  "title": "x-relay/data-quality-check",
+  "description": "Relay DataQualityCheck extension for ACEF bundles. Spec table line 870: include dataset digest, representativeness checks, completeness checks, limitations. Generated under bundle.namespaces['x-relay']['data-quality-check'].",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "dataset_digest",
+    "check_kind",
+    "result",
+    "checked_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "x-relay.data-quality-check.v1"
+    },
+    "dataset_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "check_kind": {
+      "type": "string",
+      "enum": [
+        "representativeness",
+        "completeness",
+        "freshness",
+        "schema_conformance",
+        "drift_detection"
+      ]
+    },
+    "result": {
+      "type": "string",
+      "enum": ["pass", "warn", "fail"]
+    },
+    "limitations_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of structured limitations narrative."
+    },
+    "metric_value": {
+      "type": ["number", "null"],
+      "description": "Optional scalar metric (e.g., representativeness coverage ratio)."
+    },
+    "checked_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

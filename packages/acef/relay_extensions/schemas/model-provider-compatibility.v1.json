@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/x-relay/model-provider-compatibility.v1.json",
+  "title": "x-relay/model-provider-compatibility",
+  "description": "Relay model/provider compatibility extension for ACEF bundles. Records the provider, model id, and provider-reported fingerprint observed at evidence-capture time so a verifier can detect provider-side fingerprint rotation that would invalidate downstream replay claims.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "provider",
+    "model_id",
+    "captured_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "x-relay.model-provider-compatibility.v1"
+    },
+    "provider": {
+      "type": "string",
+      "enum": ["openai", "anthropic", "google", "azure", "bedrock", "local", "other"]
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider-reported model identifier (e.g., 'gpt-4o-2024-11-20')."
+    },
+    "system_fingerprint": {
+      "type": ["string", "null"],
+      "description": "Provider-reported system_fingerprint at capture time; null if provider does not surface one."
+    },
+    "compatibility_status": {
+      "type": "string",
+      "enum": ["matched", "drifted", "unknown"],
+      "default": "unknown"
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

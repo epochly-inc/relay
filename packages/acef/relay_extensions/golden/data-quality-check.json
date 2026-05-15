@@ -1,0 +1,9 @@
+{
+  "schema_version": "x-relay.data-quality-check.v1",
+  "dataset_digest": "8888888888888888888888888888888888888888888888888888888888888888",
+  "check_kind": "representativeness",
+  "result": "pass",
+  "limitations_digest": null,
+  "metric_value": 0.92,
+  "checked_at": "2026-05-15T12:00:00Z"
+}

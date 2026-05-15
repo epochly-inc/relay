@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/x-relay/human-oversight-event.v1.json",
+  "title": "x-relay/human-oversight-event",
+  "description": "Relay HumanOversightEvent extension for ACEF bundles. Spec table line 869: include reviewer role, authority, decision, timestamp, linked run. Generated under bundle.namespaces['x-relay']['human-oversight-event'].",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "reviewer_identity_hash",
+    "reviewer_role",
+    "decision",
+    "occurred_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "x-relay.human-oversight-event.v1"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "reviewer_identity_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the human reviewer's identity; raw identity is redacted by default."
+    },
+    "reviewer_role": {
+      "type": "string",
+      "enum": ["operator", "reviewer", "approver", "auditor", "incident_responder"]
+    },
+    "authority_basis": {
+      "type": ["string", "null"],
+      "description": "Free-form reference to the authority basis (policy ID, role grant)."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["approved", "rejected", "escalated", "deferred"]
+    },
+    "linked_run_id": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

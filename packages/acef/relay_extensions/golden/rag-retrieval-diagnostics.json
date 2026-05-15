@@ -1,0 +1,13 @@
+{
+  "schema_version": "x-relay.rag-retrieval-diagnostics.v1",
+  "query_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+  "k": 3,
+  "retrieved_document_digests": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  ],
+  "scores": [0.95, 0.88, 0.72],
+  "index_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "retrieved_at": "2026-05-15T12:00:00Z"
+}
