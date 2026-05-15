@@ -511,24 +511,42 @@ def _sidecar_root(ctx: typer.Context) -> None:
         _emit_not_implemented("sidecar", "w5.2")
 
 
-# --- contract group ----------------------------------------------------------
+# --- contract group (W6.6 wired) --------------------------------------------
+# Per VAL-W6-060..066 the contract group ships the ``publish`` subcommand
+# in W6.6. The subcommand module owns the implementation; main.py re-cls
+# the group app to _RelayTyperGroup so the JSON-help override in this
+# module covers ``rly contract --help`` consistently with the rest of the
+# tree.
+
+from .commands.contract import (  # noqa: E402 - late import keeps load order stable
+    cmd_contract_publish,
+)
 
 contract_app = typer.Typer(
     name="contract",
     cls=_RelayTyperGroup,
-    help="Publish and validate Relay contract definitions (CEL + UDF).",
+    help=(
+        "Publish and validate Relay contract definitions (CEL + UDF). "
+        "The ``publish`` subcommand enforces the coverage invariant "
+        "(orphan / duplicate-digest / missing-owner / group-alias-owner) "
+        "and emits a signed coverage report. Forks without GITHUB_TOKEN "
+        "produce a dry-run-unsigned report; coverage failures still exit "
+        "non-zero in dry-run mode."
+    ),
     no_args_is_help=False,
     rich_markup_mode=None,
+    add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+contract_app.command("publish", cls=_RelayTyperCommand)(cmd_contract_publish)
 app.add_typer(contract_app, name="contract")
 
 
 @contract_app.callback(invoke_without_command=True)
 def _contract_root(ctx: typer.Context) -> None:
-    """Stub root for ``rly contract``. Lands in W5.5."""
+    """``rly contract`` root: defer to subcommand or emit not-implemented stub."""
     if ctx.invoked_subcommand is None:
-        _emit_not_implemented("contract", "w5.5")
+        _emit_not_implemented("contract", "w6.6")
 
 
 # --- verify-self standalone command (W5.5 wired) ----------------------------
