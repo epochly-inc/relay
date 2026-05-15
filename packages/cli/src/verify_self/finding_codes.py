@@ -67,6 +67,19 @@ RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP: Final[str] = (
 )
 
 # -----------------------------------------------------------------------------
+# Gate-engine invariants (W8.2 VAL-W8-040)
+# -----------------------------------------------------------------------------
+
+#: The W8.2 migration is missing one of the required gate-engine
+#: invariants: role-gate trigger, immutability trigger, evidence-bundle
+#: FK trigger, signature-required trigger, or bundle-manifest-match
+#: trigger. Each absent trigger is one finding so remediation is
+#: targeted.
+RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING: Final[str] = (
+    "RELAY-VERIFY-SELF-GATE-INVARIANT-MISSING"
+)
+
+# -----------------------------------------------------------------------------
 # Closed enum
 # -----------------------------------------------------------------------------
 
@@ -82,6 +95,7 @@ FINDING_CODES: Final[frozenset[str]] = frozenset(
         RELAY_VERIFY_SELF_MOCK_IN_SOURCE,
         RELAY_VERIFY_SELF_PRIMITIVE_BYPASS,
         RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
+        RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING,
     }
 )
 
@@ -90,6 +104,7 @@ __all__ = [
     "FINDING_CODES",
     "RELAY_VERIFY_SELF_BANNED_COPY",
     "RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP",
+    "RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING",
     "RELAY_VERIFY_SELF_KILL_BY_NAME",
     "RELAY_VERIFY_SELF_MOCK_IN_SOURCE",
     "RELAY_VERIFY_SELF_PRIMITIVE_BYPASS",

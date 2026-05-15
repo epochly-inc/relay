@@ -113,6 +113,29 @@ _PERMITTED_RECOVERY_PY_WRITES_FILE = (
     / "recovery.py"
 )
 
+# Documented W8.2 exception: the canonical gate-engine decision writer
+# at ``packages/gate/src/relay_gate_engine/decision_writer.py`` writes
+# the ``gate.decision_written`` event_log_entries row inside the SAME
+# BEGIN IMMEDIATE..COMMIT block as the ``gate_decisions`` INSERT to
+# satisfy VAL-W8-018's atomicity requirement (gate_decisions +
+# gate_rounds + event_log_entries co-committed). The W2.4 state engine's
+# ``compare_and_set_state`` writes the canonical scope-state transition
+# event AFTER the writer returns success; the row written by the writer
+# is the gate-decision audit row (event_kind='gate_decision_written' /
+# 'gate_rejected_handoff'), distinct from the state engine's
+# ``state_transition`` rows. The writer is therefore the canonical
+# control-plane writer for gate-engine events; per VAL-W8-010 and
+# CLAUDE.md keystone invariant #1 it is the SINGLE production-code
+# path that writes ``gate_decisions`` and emits the bound audit row.
+_PERMITTED_GATE_DECISION_WRITER_FILE = (
+    _REPO_ROOT
+    / "packages"
+    / "gate"
+    / "src"
+    / "relay_gate_engine"
+    / "decision_writer.py"
+)
+
 # Documented W5.5 exception: the verify-self plumbing tests embed
 # ``INSERT INTO run_results`` literals in synthetic fixture trees so
 # the verify-self command's control-plane-write-only checker can be
@@ -174,6 +197,12 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # control-plane-write-only checker. See
             # _PERMITTED_VERIFY_SELF_TEST_FILE.
             if path == _PERMITTED_VERIFY_SELF_TEST_FILE:
+                continue
+            # Documented W8.2 exception: the gate-engine decision writer
+            # is the canonical control-plane writer for gate_decisions +
+            # its bound audit row (VAL-W8-010, VAL-W8-018). See
+            # _PERMITTED_GATE_DECISION_WRITER_FILE.
+            if path == _PERMITTED_GATE_DECISION_WRITER_FILE:
                 continue
             text = path.read_text(encoding="utf-8")
             for line_no, line in enumerate(text.splitlines(), start=1):
@@ -257,6 +286,11 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         # W5.5 verify-self plumbing test fixture-data exception.
         "/packages/cli/tests/test_w5_5_verify_self.py:"
     )
+    gate_decision_writer_marker = (
+        # W8.2 canonical gate-engine writer exception. See
+        # _PERMITTED_GATE_DECISION_WRITER_FILE.
+        "/packages/gate/src/relay_gate_engine/decision_writer.py:"
+    )
     for line in result.stdout.splitlines():
         if state_engine_marker in line:
             continue
@@ -267,6 +301,8 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         if recovery_py_marker in line:
             continue
         if verify_self_test_marker in line:
+            continue
+        if gate_decision_writer_marker in line:
             continue
         offending_lines.append(line)
     assert not offending_lines, (

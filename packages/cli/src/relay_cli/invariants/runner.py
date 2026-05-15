@@ -48,6 +48,8 @@ from .banned_patterns import CHECK_NAME as BANNED_PATTERNS_CHECK
 from .banned_patterns import run as run_banned_patterns
 from .control_plane_writes import CHECK_NAME as CONTROL_PLANE_CHECK
 from .control_plane_writes import run as run_control_plane_writes
+from .gate_engine_invariants import CHECK_NAME as GATE_ENGINE_INVARIANTS_CHECK
+from .gate_engine_invariants import run as run_gate_engine_invariants
 from .mocks_in_source import CHECK_NAME as MOCKS_IN_SOURCE_CHECK
 from .mocks_in_source import run as run_mocks_in_source
 from .util import Finding, finding_to_dict
@@ -66,6 +68,7 @@ CHECK_ORDER: Final[tuple[str, ...]] = (
     ATOMIC_PRIMITIVES_CHECK,
     BANNED_PATTERNS_CHECK,
     CONTROL_PLANE_CHECK,
+    GATE_ENGINE_INVARIANTS_CHECK,
     MOCKS_IN_SOURCE_CHECK,
 )
 
@@ -76,6 +79,7 @@ _CHECK_DISPATCH: Final[
     ATOMIC_PRIMITIVES_CHECK: run_atomic_primitives,
     BANNED_PATTERNS_CHECK: run_banned_patterns,
     CONTROL_PLANE_CHECK: run_control_plane_writes,
+    GATE_ENGINE_INVARIANTS_CHECK: run_gate_engine_invariants,
     MOCKS_IN_SOURCE_CHECK: run_mocks_in_source,
 }
 

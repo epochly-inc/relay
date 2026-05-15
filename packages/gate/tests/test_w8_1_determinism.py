@@ -27,8 +27,27 @@ from relay_gate_engine import GateAssertion
 
 # Source paths to scan for non-determinism patterns. The contract
 # assertion text scopes the grep to packages/gate/ excluding test
-# directories.
+# directories. VAL-W8-005 governs the W8.1 EVALUATOR (a pure function);
+# the W8.2 writer (decision_writer.py + signed_decision.py + db_grants.py)
+# legitimately mints UUIDs and reads wall-clock time and is therefore
+# scoped out of this grep. The W8.2 modules carry their own determinism
+# discipline through their canonical-JSON output (RFC 8785 byte stable
+# given equal inputs) which is enforced separately in
+# test_w8_2_*.py via byte-equality of canonical_json_bytes(...) for
+# fixed payloads.
 _PACKAGE_SRC = Path(__file__).resolve().parent.parent / "src" / "relay_gate_engine"
+
+# W8.1-only file allowlist for the determinism grep. New W8.2 modules
+# (decision_writer, signed_decision, db_grants) are deliberately excluded:
+# they implement the canonical-row writer which by spec produces fresh
+# UUIDs (gate_decision_id, evidence_bundle_id, event_id) and uses the
+# wall clock for decided_at timestamps.
+_W8_1_DETERMINISM_FILES: tuple[str, ...] = (
+    "evaluator.py",
+    "pipeline.py",
+    "draft_lock.py",
+    "errors.py",
+)
 
 
 # Per VAL-W8-005, ALL of these patterns must have zero non-comment hits
@@ -148,11 +167,19 @@ def test_no_non_determinism_in_package_source() -> None:
     sentence does not falsely flag.
     """
     hits: dict[str, list[str]] = {p: [] for p in _PY_NON_DETERMINISM_PATTERNS}
-    py_files = sorted(_PACKAGE_SRC.rglob("*.py"))
+    # Scope to the W8.1 evaluator files only; W8.2 writer modules
+    # legitimately mint UUIDs + use wall-clock time and are excluded.
+    py_files = sorted(
+        _PACKAGE_SRC / name for name in _W8_1_DETERMINISM_FILES
+    )
     assert py_files, f"no python source found under {_PACKAGE_SRC}"
     for py_file in py_files:
         if "__pycache__" in py_file.parts:
             continue
+        if not py_file.exists():
+            raise AssertionError(
+                f"W8.1 determinism allowlist file missing: {py_file}"
+            )
         text = py_file.read_text(encoding="utf-8")
         cleaned = _strip_python_comments(text)
         for pattern in _PY_NON_DETERMINISM_PATTERNS:

@@ -43,6 +43,7 @@ from verify_self.finding_codes import (
     FINDING_CODES,
     RELAY_VERIFY_SELF_BANNED_COPY,
     RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
+    RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING,
     RELAY_VERIFY_SELF_KILL_BY_NAME,
     RELAY_VERIFY_SELF_MOCK_IN_SOURCE,
     RELAY_VERIFY_SELF_PRIMITIVE_BYPASS,
@@ -216,6 +217,15 @@ _SUGGESTED_FIX_BY_CODE: Final[dict[str, str]] = {
         "the result-writer / gate-engine services. Submit a draft envelope "
         "via the SDK and let the control plane resolve it (CLAUDE.md "
         "keystone invariant #1)."
+    ),
+    RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING: (
+        "The W8.2 gate-engine SQL migration is missing one of the required "
+        "triggers (gate_decisions_role_check, gate_decisions_no_update, "
+        "gate_decisions_no_delete, gate_decisions_evidence_fk, "
+        "gate_decisions_signature_required, "
+        "gate_decisions_bundle_manifest_match). Re-run the migration or "
+        "restore the trigger declaration in "
+        "apps/local-sidecar/migrations/0009_gate_decision_writer.sql."
     ),
 }
 

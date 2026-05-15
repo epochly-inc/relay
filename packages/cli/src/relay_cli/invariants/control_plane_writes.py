@@ -55,9 +55,30 @@ _CANONICAL_WRITE_RE: Final[re.Pattern[str]] = re.compile(
 # Allowlisted control-plane subtrees per VAL-W5-035. Any path under one
 # of these prefixes is permitted to issue canonical INSERT/UPDATE
 # statements; everything else is a violation.
+#
+# Per VAL-W8-010 narrative and the spec / boundaries §4 control-plane
+# write boundary: the OSS local profile's canonical gate-engine writer
+# lives in ``packages/gate/`` (the public Apache 2.0 package); the
+# hosted profile's equivalent lives in ``services/gate-engine/``. Both
+# paths are allowlisted so VAL-W5-035 verify-self grep does not flag
+# the legitimate canonical write.
+#
+# Migration .sql files under ``apps/local-sidecar/migrations/`` define
+# the schema (CREATE TABLE / CREATE TRIGGER) but do NOT issue
+# ``INSERT INTO gate_decisions`` -- the grep below operates on lexical
+# content, so any future migration that did issue such an INSERT would
+# correctly fail this check. The current 0009 migration only declares
+# triggers and does not contain the matching literal.
 _CONTROL_PLANE_PREFIXES: Final[tuple[str, ...]] = (
     "services/result-writer",
     "services/gate-engine",
+    # OSS local profile (spec §"Public relay repository layout" places
+    # the gate engine package at packages/gate/; VAL-W8-010 narrative
+    # names "apps/api-local/gate_engine/" as the OSS equivalent. The
+    # public package is the canonical OSS home — services/ does not
+    # exist in the public Apache 2.0 tree).
+    "packages/gate",
+    "apps/api-local/gate_engine",
 )
 
 

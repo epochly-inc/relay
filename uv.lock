@@ -736,8 +736,11 @@ name = "epochly-relay-gate-engine"
 version = "0.0.0"
 source = { editable = "packages/gate" }
 dependencies = [
+    { name = "cryptography", version = "44.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "cryptography", version = "45.0.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "epochly-relay-contracts" },
     { name = "epochly-relay-schemas" },
+    { name = "epochly-relay-sidecar" },
 ]
 
 [package.optional-dependencies]
@@ -748,8 +751,10 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=42.0,<46" },
     { name = "epochly-relay-contracts", editable = "packages/contracts" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
+    { name = "epochly-relay-sidecar", editable = "apps/local-sidecar" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
 ]

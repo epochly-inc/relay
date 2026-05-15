@@ -59,6 +59,15 @@ dependencies = [
   # uv resolves from the workspace tree, never from a published index
   # (CLAUDE.md import-boundary rule).
   "epochly-relay-schemas",
+  # W8.2: the GateDecisionWriter calls into the sidecar three-anchor
+  # handoff validator (validate_three_anchor_handoff) and borrows the
+  # sidecar's single-writer connection via the state engine's writer
+  # lock. Workspace dependency; uv resolves from the workspace tree.
+  "epochly-relay-sidecar",
+  # W8.2: Ed25519 signing over canonical JSON of gate_decisions rows
+  # (VAL-W8-019). The CLI already pulls cryptography for the W5.5
+  # verify-self bundle signer; we pin a compatible range.
+  "cryptography>=42.0,<46",
 ]
 
 [project.optional-dependencies]
@@ -79,3 +88,4 @@ include = [
 [tool.uv.sources]
 epochly-relay-contracts = { workspace = true }
 epochly-relay-schemas = { workspace = true }
+epochly-relay-sidecar = { workspace = true }
