@@ -1,0 +1,81 @@
+# epochly-relay-verifier (Python offline verifier package).
+#
+# W10.1 surface: offline JWKS resolution with bundled JWKS shipping inside
+# the wheel, BYO trust-anchor via flag or config file, and clear-fail when
+# no JWKS is available. The verifier package is the canonical OSS-portable
+# trust-anchor consumer per spec section AO.4 line 6165 -- it ships in
+# relay/ (Apache 2.0), defaults to https://relay.epochly.com/.well-known/
+# jwks.json, and supports BYO trust anchors. Trust-anchor key material
+# (signing private keys, KMS refs, TSA credentials, transparency-log
+# custody keys) lives ONLY in relay-platform/ and is not granted by
+# Apache 2.0 (CLAUDE.md banned pattern #14).
+#
+# Spec anchors:
+#   AO.1 (line 6113-6123)  Trust anchor: JWKS, transparency log, TSA
+#   AO.3 (line 6145-6158)  Trust anchor governance program
+#   AO.4 (line 6160-6168)  OSS verifier defaults + BYO trust anchors
+#   L.1  (line 4442)       Signing keys / JWKS publication
+#   L.2  (line 4462)       Auditor trust-bundle download for offline use
+#   L.5  (line 4482)       Trust bundle drift behaviour
+#   K    (line 4382)       Verifier output trust_anchor_source field
+#   Edge cases (4382)      JWKS unreachable -> bundled / cache / fail
+# Eng plan anchors:
+#   W10 (line 130-135)     packages/verifier/ scope
+# CLAUDE.md anchors:
+#   keystone invariant 11  Trust anchor is the commercial moat
+#   banned pattern 13      Default JWKS URL is board-level decision
+#   banned pattern 14      No trust-anchor key material in OSS
+#
+# Contract assertions: VAL-W10-001 .. VAL-W10-009 (w10.1).
+# w10.2 (RFC 7515 JWS) / w10.3 (RFC 8785 JCS) / w10.4 (bundle validate)
+# are separate feature-sized commits; this package's __init__.py reserves
+# the surface only.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-verifier"
+version = "0.0.0"
+description = "Relay offline evidence verifier (Python; bundled JWKS, BYO trust anchor, offline-first)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  # Generated RelayErrorCode constants and canonical schema id strings
+  # live here. Workspace dependency; uv resolves from the workspace
+  # tree, never from a published index (CLAUDE.md import-boundary rule).
+  "epochly-relay-schemas",
+  # Ed25519 + ECDSA-P256 JWS verification (RFC 7518 + RFC 8037). Pinned
+  # major-version range; the CLI's evidence verifier
+  # (packages/cli/src/relay_cli/evidence_verifier.py) uses the same
+  # surface and version family.
+  "cryptography>=42",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/relay_verifier"]
+# Ship the bundled JWKS snapshot inside the wheel (VAL-W10-003). The
+# importlib.resources loader in relay_verifier.bundled depends on this
+# file being present alongside the package modules.
+[tool.hatch.build.targets.wheel.force-include]
+"src/relay_verifier/bundled_jwks.json" = "relay_verifier/bundled_jwks.json"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/relay_verifier",
+  "README.md",
+]
+
+[tool.uv.sources]
+epochly-relay-schemas = { workspace = true }

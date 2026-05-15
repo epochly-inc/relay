@@ -1,0 +1,30 @@
+{
+  "keys": [
+    {
+      "alg": "EdDSA",
+      "crv": "Ed25519",
+      "kid": "oss-placeholder-ed25519-2026",
+      "kty": "OKP",
+      "not_after": "2099-12-31T23:59:59Z",
+      "not_before": "2026-01-01T00:00:00Z",
+      "use": "sig",
+      "x": "_WL8dqIGOJ511Xlp5jQNva40mahFmVCIos1s9DcL5Fs"
+    },
+    {
+      "alg": "ES256",
+      "crv": "P-256",
+      "kid": "oss-placeholder-p256-2026",
+      "kty": "EC",
+      "not_after": "2099-12-31T23:59:59Z",
+      "not_before": "2026-01-01T00:00:00Z",
+      "use": "sig",
+      "x": "HpS_AoGOQL0t8P0pv1sEx_L15zvYsFHlzIhZalCyGmg",
+      "y": "egnfk2bwX5iFoIKCrGfjjOwwIBJstYd8kTrj_GR2jFg"
+    }
+  ],
+  "notes": "OSS placeholder snapshot. Production bundled JWKS will be replaced by the release pipeline with the current live JWKS from relay-platform. These keys are NOT used by the hosted control plane.",
+  "schema_version": "relay.verifier.bundled_jwks.v1",
+  "snapshot_id": "oss-v0.1.0-bootstrap-snapshot",
+  "snapshot_taken_at": "2026-01-01T00:00:00Z",
+  "source": "placeholder-example-keys"
+}
