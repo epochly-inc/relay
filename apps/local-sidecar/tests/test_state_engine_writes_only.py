@@ -136,6 +136,28 @@ _PERMITTED_GATE_DECISION_WRITER_FILE = (
     / "decision_writer.py"
 )
 
+# Documented W8.3 exception: the gate restart coordinator at
+# ``packages/gate/src/relay_gate_engine/restart_pipeline.py`` writes a
+# single ``gate.restarted`` event_log_entries row (event_kind='gate_restarted')
+# inside the SAME BEGIN IMMEDIATE..COMMIT block as the gate_rounds INSERT
+# and the gate_decision_drafts cancellation UPDATE so VAL-W8-020/023/025
+# all co-commit atomically per CLAUDE.md keystone invariant #5
+# ("gate restart on failure"). Like the W8.2 decision_writer.py, the
+# restart coordinator is a canonical control-plane writer for gate-engine
+# events; the row is categorically distinct from the state engine's
+# ``state_transition`` / ``state_invalid_transition`` rows. The
+# restart coordinator is the ONLY production-code path that transitions
+# a scope from ``remediate_required`` back to ``running`` / ``gate.open``
+# (VAL-W8-022 grep guard).
+_PERMITTED_GATE_RESTART_COORDINATOR_FILE = (
+    _REPO_ROOT
+    / "packages"
+    / "gate"
+    / "src"
+    / "relay_gate_engine"
+    / "restart_pipeline.py"
+)
+
 # Documented W5.5 exception: the verify-self plumbing tests embed
 # ``INSERT INTO run_results`` literals in synthetic fixture trees so
 # the verify-self command's control-plane-write-only checker can be
@@ -203,6 +225,13 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # its bound audit row (VAL-W8-010, VAL-W8-018). See
             # _PERMITTED_GATE_DECISION_WRITER_FILE.
             if path == _PERMITTED_GATE_DECISION_WRITER_FILE:
+                continue
+            # Documented W8.3 exception: the gate restart coordinator is
+            # the canonical control-plane writer for the gate.restarted
+            # event_log_entries row, co-committed atomically with the
+            # gate_rounds INSERT (VAL-W8-020/023/025). See
+            # _PERMITTED_GATE_RESTART_COORDINATOR_FILE.
+            if path == _PERMITTED_GATE_RESTART_COORDINATOR_FILE:
                 continue
             text = path.read_text(encoding="utf-8")
             for line_no, line in enumerate(text.splitlines(), start=1):
@@ -291,6 +320,11 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         # _PERMITTED_GATE_DECISION_WRITER_FILE.
         "/packages/gate/src/relay_gate_engine/decision_writer.py:"
     )
+    gate_restart_coordinator_marker = (
+        # W8.3 canonical gate-engine restart coordinator exception. See
+        # _PERMITTED_GATE_RESTART_COORDINATOR_FILE.
+        "/packages/gate/src/relay_gate_engine/restart_pipeline.py:"
+    )
     for line in result.stdout.splitlines():
         if state_engine_marker in line:
             continue
@@ -303,6 +337,8 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         if verify_self_test_marker in line:
             continue
         if gate_decision_writer_marker in line:
+            continue
+        if gate_restart_coordinator_marker in line:
             continue
         offending_lines.append(line)
     assert not offending_lines, (
