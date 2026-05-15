@@ -737,6 +737,7 @@ name = "epochly-relay-evals"
 version = "0.0.0"
 source = { editable = "packages/evals" }
 dependencies = [
+    { name = "epochly-relay-contracts" },
     { name = "epochly-relay-schemas" },
 ]
 
@@ -748,6 +749,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "epochly-relay-contracts", editable = "packages/contracts" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },

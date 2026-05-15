@@ -71,6 +71,7 @@ class RelayErrorCode:
     RELAY_ING_022: Final[str] = "RELAY-ING-022"
     RELAY_ING_031: Final[str] = "RELAY-ING-031"
     RELAY_ING_032: Final[str] = "RELAY-ING-032"
+    RELAY_MANIFEST_021: Final[str] = "RELAY-MANIFEST-021"
     RELAY_RATE_001: Final[str] = "RELAY-RATE-001"
     RELAY_RATE_014: Final[str] = "RELAY-RATE-014"
     RELAY_RELEASE_001: Final[str] = "RELAY-RELEASE-001"
@@ -212,6 +213,7 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-ING-022",
     "RELAY-ING-031",
     "RELAY-ING-032",
+    "RELAY-MANIFEST-021",
     "RELAY-RATE-001",
     "RELAY-RATE-014",
     "RELAY-RELEASE-001",

@@ -53,6 +53,11 @@ dependencies = [
   # live here. Workspace dependency; uv resolves from the workspace
   # tree, never from a published index (CLAUDE.md import-boundary rule).
   "epochly-relay-schemas",
+  # JCS canonicalisation primitive (relay_contracts.canonical) is the
+  # one canonical implementation in the workspace; W9.2 templates use
+  # it to derive deterministic assertion ids per VAL-W9-011 rather than
+  # re-implementing JCS in this package.
+  "epochly-relay-contracts",
 ]
 
 [project.optional-dependencies]
@@ -73,3 +78,4 @@ include = [
 
 [tool.uv.sources]
 epochly-relay-schemas = { workspace = true }
+epochly-relay-contracts = { workspace = true }

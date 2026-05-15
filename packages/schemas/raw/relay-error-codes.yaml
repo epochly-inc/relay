@@ -84,6 +84,13 @@ codes:
   - RELAY-ING-022
   - RELAY-ING-031
   - RELAY-ING-032
+  # W9.2 assertion-template error codes (eng plan W9; contract VAL-W9-013,
+  # VAL-W9-014, VAL-W9-015). RELAY-MANIFEST-021 is raised when a tool_arg
+  # template references a tool_name not declared in the active manifest
+  # tool registry. Note: the contract narrative refers to it as
+  # "RELAY-MANIFEST-UNKNOWN-TOOL" for human readability, but the wire-
+  # format token follows the canonical RELAY-{AREA}-NNN grammar.
+  - RELAY-MANIFEST-021
   - RELAY-RATE-001
   - RELAY-RATE-014
   - RELAY-RELEASE-001
