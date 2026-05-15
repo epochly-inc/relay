@@ -1,0 +1,356 @@
+{
+  "template_id": "eu-labelling-code-of-practice-2026",
+  "template_name": "EU Code of Practice on Marking and Labelling AI-Generated Content",
+  "version": "1.0.0",
+  "jurisdiction": "EU",
+  "source_legislation": "Second Draft Code of Practice (March 2026)",
+  "instrument_type": "code_of_practice",
+  "legal_force": "voluntary",
+  "instrument_status": "draft",
+  "default_effective_date": "2026-08-02",
+  "superseded_by": null,
+  "applicable_system_types": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+  "provisions": [
+    {
+      "provision_id": "label-layer1",
+      "provision_name": "Secured Metadata Marking (Layer 1)",
+      "normative_text_ref": "EU Labelling CoP Layer 1",
+      "description": "AI system providers shall embed secured machine-readable metadata in AI-generated outputs, using recognized provenance standards (e.g., C2PA manifests), to enable automated detection and verification of synthetic content origin",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "label-layer1.c2pa",
+          "normative_text_ref": "EU Labelling CoP Layer 1.1",
+          "description": "C2PA manifests are the encouraged format for secured metadata, providing cryptographic binding of provenance to content"
+        },
+        {
+          "provision_id": "label-layer1.interop",
+          "normative_text_ref": "EU Labelling CoP Layer 1.2",
+          "description": "Secured metadata must be interoperable across platforms and content formats"
+        }
+      ],
+      "required_evidence_types": [
+        "transparency_marking"
+      ],
+      "minimum_evidence_count": {
+        "transparency_marking": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "label-l1-marking-exists",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_marking", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_marking record is required — EU Labelling Code of Practice Layer 1 mandates secured machine-readable metadata in AI-generated content"
+        },
+        {
+          "rule_id": "label-l1-scheme-id",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/marking_scheme_id"},
+          "severity": "fail",
+          "message": "Every transparency_marking record must specify marking_scheme_id — Layer 1 requires identification of the provenance standard used (e.g., C2PA, IPTC)"
+        },
+        {
+          "rule_id": "label-l1-metadata-container",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/metadata_container"},
+          "severity": "fail",
+          "message": "Every transparency_marking record must specify the metadata_container (e.g., c2pa_manifest, exif, id3, xmp) describing where secured metadata is embedded per Layer 1 interoperability requirements"
+        },
+        {
+          "rule_id": "label-l1-modality",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/modality"},
+          "severity": "warning",
+          "message": "Transparency marking records should specify the content modality (text, image, audio, video, multimodal) for Layer 1 secured metadata"
+        },
+        {
+          "rule_id": "label-l1-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "transparency_marking", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Transparency marking records should be linked to a subject entity to identify which AI system produces the marked content"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "label-layer2",
+      "provision_name": "Digital Watermarking (Layer 2)",
+      "normative_text_ref": "EU Labelling CoP Layer 2",
+      "description": "AI system providers shall apply imperceptible digital watermarks to AI-generated content that are robust against compression, cropping, format conversion, and other common transformations",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "label-layer2.robustness",
+          "normative_text_ref": "EU Labelling CoP Layer 2.1",
+          "description": "Watermarks must be robust against compression, cropping, and format conversion while remaining imperceptible to human users"
+        }
+      ],
+      "required_evidence_types": [
+        "transparency_marking"
+      ],
+      "minimum_evidence_count": {
+        "transparency_marking": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "label-l2-marking-exists",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_marking", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_marking record is required — EU Labelling Code of Practice Layer 2 mandates digital watermarking of AI-generated content"
+        },
+        {
+          "rule_id": "label-l2-watermark-applied",
+          "rule": "field_value",
+          "params": {
+            "record_type": "transparency_marking",
+            "field": "/payload/watermark_applied",
+            "op": "eq",
+            "value": true
+          },
+          "severity": "fail",
+          "message": "At least one transparency_marking record must have watermark_applied set to true — Layer 2 mandates imperceptible digital watermarking of AI-generated content"
+        },
+        {
+          "rule_id": "label-l2-watermark-family",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/watermark_family"},
+          "severity": "warning",
+          "message": "Transparency marking records with watermarks should specify watermark_family (e.g., spectral_embedding, robust-imperceptible) for robustness verification"
+        },
+        {
+          "rule_id": "label-l2-robustness-spec",
+          "rule": "attachment_exists",
+          "params": {"record_type": "transparency_marking"},
+          "severity": "info",
+          "message": "Transparency marking records should include an attachment documenting watermark robustness parameters and test results per Layer 2 robustness requirements"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "label-detection",
+      "provision_name": "Detection and Verification API",
+      "normative_text_ref": "EU Labelling CoP Detection Commitment",
+      "description": "AI system providers shall make available free detection and verification APIs that return confidence scores, provenance data, and synthetic content indicators, enabling downstream platforms and deployers to verify AI-generated content",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "label-detection.confidence",
+          "normative_text_ref": "EU Labelling CoP Detection 1.1",
+          "description": "Detection APIs must return confidence scores indicating the likelihood that content is AI-generated"
+        },
+        {
+          "provision_id": "label-detection.free-access",
+          "normative_text_ref": "EU Labelling CoP Detection 1.2",
+          "description": "Detection and verification APIs must be made available free of charge to downstream deployers and platforms"
+        }
+      ],
+      "required_evidence_types": [
+        "transparency_marking"
+      ],
+      "minimum_evidence_count": {
+        "transparency_marking": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "label-det-marking-exists",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_marking", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_marking record is required — EU Labelling Code of Practice Detection Commitment mandates documented detection and verification capabilities"
+        },
+        {
+          "rule_id": "label-det-verification-ref",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/verification_method_ref"},
+          "severity": "fail",
+          "message": "Every transparency_marking record must specify verification_method_ref — the Detection Commitment requires a documented reference to the detection or verification API endpoint"
+        },
+        {
+          "rule_id": "label-det-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "transparency_marking", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Transparency marking records should be linked to a subject entity to identify which AI system's detection API is documented"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "label-icon",
+      "provision_name": "EU Uniform Icon",
+      "normative_text_ref": "EU Labelling CoP Icon Commitment",
+      "description": "AI system providers and deployers shall apply the EU uniform AI icon ('AI'/'IA'/'KI' acronym) to AI-generated content, positioned consistently and visible at first exposure, as required by Art. 50 of the EU AI Act",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "label-icon.placement",
+          "normative_text_ref": "EU Labelling CoP Icon 1.1",
+          "description": "The uniform icon must be positioned consistently and be visible at the first exposure to the content"
+        }
+      ],
+      "required_evidence_types": [
+        "disclosure_labeling"
+      ],
+      "minimum_evidence_count": {
+        "disclosure_labeling": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "label-icon-disclosure-exists",
+          "rule": "has_record_type",
+          "params": {"type": "disclosure_labeling", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one disclosure_labeling record is required — EU Labelling Code of Practice Icon Commitment mandates the EU uniform AI icon on AI-generated content"
+        },
+        {
+          "rule_id": "label-icon-presentation",
+          "rule": "field_present",
+          "params": {"record_type": "disclosure_labeling", "field": "/payload/presentation"},
+          "severity": "fail",
+          "message": "Every disclosure_labeling record must specify the presentation method for the EU uniform icon (e.g., visible_icon_plus_text) per Icon Commitment placement requirements"
+        },
+        {
+          "rule_id": "label-icon-locale",
+          "rule": "field_present",
+          "params": {"record_type": "disclosure_labeling", "field": "/payload/locale"},
+          "severity": "warning",
+          "message": "Disclosure labeling records should specify the locale for language-appropriate icon variant selection (AI/IA/KI) per EU multilingual requirements"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "label-provider",
+      "provision_name": "Provider Marking Obligations",
+      "normative_text_ref": "EU Labelling CoP Provider Obligations",
+      "description": "AI system providers are responsible for the technical implementation of content marking, including embedding secured metadata (Layer 1) and watermarks (Layer 2) at the point of generation",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "transparency_marking"
+      ],
+      "minimum_evidence_count": {
+        "transparency_marking": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "label-prov-marking-exists",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_marking", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_marking record is required — providers must document their technical marking implementation at the point of content generation",
+          "scope": {
+            "obligation_roles": ["provider"]
+          }
+        },
+        {
+          "rule_id": "label-prov-scheme-id",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/marking_scheme_id"},
+          "severity": "fail",
+          "message": "Provider transparency_marking records must specify marking_scheme_id to identify the technical marking standard implemented",
+          "scope": {
+            "obligation_roles": ["provider"]
+          }
+        },
+        {
+          "rule_id": "label-prov-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "transparency_marking", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Provider transparency marking records should be linked to a subject entity to identify which AI system implements the marking",
+          "scope": {
+            "obligation_roles": ["provider"]
+          }
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "label-deployer",
+      "provision_name": "Deployer Disclosure Obligations",
+      "normative_text_ref": "EU Labelling CoP Deployer Obligations",
+      "description": "AI system deployers are responsible for user-facing labels and disclosures, ensuring end users are informed that content is AI-generated through the EU uniform icon and appropriate contextual disclosures",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "disclosure_labeling"
+      ],
+      "minimum_evidence_count": {
+        "disclosure_labeling": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "label-dep-disclosure-exists",
+          "rule": "has_record_type",
+          "params": {"type": "disclosure_labeling", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one disclosure_labeling record is required — deployers must document their user-facing AI content disclosure implementation",
+          "scope": {
+            "obligation_roles": ["deployer"]
+          }
+        },
+        {
+          "rule_id": "label-dep-presentation",
+          "rule": "field_present",
+          "params": {"record_type": "disclosure_labeling", "field": "/payload/presentation"},
+          "severity": "fail",
+          "message": "Deployer disclosure_labeling records must specify the presentation method used for user-facing AI content disclosure",
+          "scope": {
+            "obligation_roles": ["deployer"]
+          }
+        },
+        {
+          "rule_id": "label-dep-first-exposure",
+          "rule": "field_present",
+          "params": {"record_type": "disclosure_labeling", "field": "/payload/first_exposure_visible"},
+          "severity": "warning",
+          "message": "Deployer disclosure labeling records should confirm first_exposure_visible to verify the disclosure is visible at the moment of initial user contact per EU Labelling CoP requirements",
+          "scope": {
+            "obligation_roles": ["deployer"]
+          }
+        },
+        {
+          "rule_id": "label-dep-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "disclosure_labeling", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Deployer disclosure labeling records should be linked to a subject entity to identify which deployed AI system the disclosures apply to",
+          "scope": {
+            "obligation_roles": ["deployer"]
+          }
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": [
+    "test-vectors/eu-labelling/layer1-secured-metadata-pass.acef/",
+    "test-vectors/eu-labelling/layer2-watermark-pass.acef/",
+    "test-vectors/eu-labelling/detection-api-pass.acef/",
+    "test-vectors/eu-labelling/icon-disclosure-pass.acef/",
+    "test-vectors/eu-labelling/provider-deployer-split-pass.acef/"
+  ]
+}

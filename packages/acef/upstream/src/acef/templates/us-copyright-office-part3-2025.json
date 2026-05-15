@@ -1,0 +1,218 @@
+{
+  "template_id": "us-copyright-office-part3-2025",
+  "template_name": "US Copyright Office Part 3: Generative AI and Copyright Training",
+  "version": "1.0.0",
+  "jurisdiction": "US",
+  "source_legislation": "US Copyright Office, Copyright and Artificial Intelligence Part 3: Generative AI Training (2025)",
+  "instrument_type": "guidance",
+  "legal_force": "advisory",
+  "instrument_status": "final",
+  "default_effective_date": null,
+  "superseded_by": null,
+  "applicable_system_types": ["gpai", "gpai-systemic"],
+  "provisions": [
+    {
+      "provision_id": "usco-acquisition",
+      "provision_name": "Lawful Data Acquisition",
+      "normative_text_ref": "USCO Part 3 — Lawful Acquisition of Training Data",
+      "description": "Generative AI providers should document the lawful acquisition of training data, including source identification, acquisition method (licensed, fair use, public domain), and legal basis for each data source",
+      "effective_date": null,
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [
+        {
+          "provision_id": "usco-acquisition.1",
+          "normative_text_ref": "USCO Part 3 — Data Source Identification",
+          "description": "Each training data source should be identified with a URI, acquisition date, and legal basis"
+        },
+        {
+          "provision_id": "usco-acquisition.2",
+          "normative_text_ref": "USCO Part 3 — Chain of Custody",
+          "description": "Documentation should establish a clear chain of custody from original source to training pipeline"
+        }
+      ],
+      "required_evidence_types": [
+        "data_provenance"
+      ],
+      "minimum_evidence_count": {
+        "data_provenance": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "usco-acq-data-provenance",
+          "rule": "has_record_type",
+          "params": {"type": "data_provenance", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one data_provenance record is required — the US Copyright Office Part 3 guidance expects documented provenance of training data including source identification and acquisition method"
+        },
+        {
+          "rule_id": "usco-acq-method-present",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/acquisition_method"},
+          "severity": "fail",
+          "message": "Every data_provenance record must specify acquisition_method (licensed, scraped, public_domain, synthetic, fair_use) — the Copyright Office guidance requires clear documentation of how training data was obtained"
+        },
+        {
+          "rule_id": "usco-acq-source-uri",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/source_uri"},
+          "severity": "warning",
+          "message": "Data provenance records should include source_uri to identify the origin of training data for legal defensibility"
+        },
+        {
+          "rule_id": "usco-acq-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "data_provenance", "entity_type": "dataset"},
+          "severity": "warning",
+          "message": "Data provenance records should be linked to dataset entities for traceability of acquisition records to specific training datasets"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "usco-licensing",
+      "provision_name": "Licensing Documentation",
+      "normative_text_ref": "USCO Part 3 — Licensing Pathway",
+      "description": "Where training data is obtained through licensing, providers should document the licensor, scope, restrictions, content type, and expiration of each licensing agreement",
+      "effective_date": null,
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "license_record"
+      ],
+      "minimum_evidence_count": {
+        "license_record": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "usco-lic-license-record",
+          "rule": "has_record_type",
+          "params": {"type": "license_record", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one license_record is required — the US Copyright Office Part 3 guidance expects documentation of licensing agreements for copyrighted training data"
+        },
+        {
+          "rule_id": "usco-lic-licensor-present",
+          "rule": "field_present",
+          "params": {"record_type": "license_record", "field": "/payload/licensor"},
+          "severity": "warning",
+          "message": "License records should specify the licensor to establish the granting party for training data licensing per Copyright Office guidance"
+        },
+        {
+          "rule_id": "usco-lic-scope-present",
+          "rule": "field_present",
+          "params": {"record_type": "license_record", "field": "/payload/scope"},
+          "severity": "warning",
+          "message": "License records should specify the scope of the licensing agreement to verify coverage of intended training uses"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "usco-curation",
+      "provision_name": "Curation and Filtering",
+      "normative_text_ref": "USCO Part 3 — Curation and Filtering Processes",
+      "description": "Providers should document their data curation and filtering processes including deduplication methods, content removal decisions, and filtering criteria applied to training data",
+      "effective_date": null,
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "data_provenance"
+      ],
+      "minimum_evidence_count": {
+        "data_provenance": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "usco-cur-data-provenance",
+          "rule": "has_record_type",
+          "params": {"type": "data_provenance", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one data_provenance record is required — the US Copyright Office Part 3 guidance expects documentation of data curation and filtering processes"
+        },
+        {
+          "rule_id": "usco-cur-processing-steps",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/processing_steps"},
+          "severity": "fail",
+          "message": "Every data_provenance record must specify processing_steps — the Copyright Office guidance requires documentation of curation, filtering, and deduplication methods applied to training data"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "usco-memorization",
+      "provision_name": "Memorization Mitigation",
+      "normative_text_ref": "USCO Part 3 — Memorization and Regurgitation Risk",
+      "description": "Providers should document measures taken to detect and mitigate memorization and regurgitation risks, including detection methods, test results, and mitigation techniques applied",
+      "effective_date": null,
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "evaluation_report"
+      ],
+      "minimum_evidence_count": {
+        "evaluation_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "usco-mem-evaluation-report",
+          "rule": "has_record_type",
+          "params": {"type": "evaluation_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one evaluation_report record is required — the US Copyright Office Part 3 guidance expects documented evidence of memorization/regurgitation risk detection and mitigation"
+        },
+        {
+          "rule_id": "usco-mem-methodology",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/methodology"},
+          "severity": "warning",
+          "message": "Evaluation reports should document the methodology used for memorization detection and mitigation assessment"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "usco-guardrails",
+      "provision_name": "Output Guardrails",
+      "normative_text_ref": "USCO Part 3 — Technical Guardrails Against Infringing Output",
+      "description": "Providers should document technical guardrails implemented to prevent the generation of output that infringes copyright, including prompt filtering, content matching, and blocking mechanisms",
+      "effective_date": null,
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "evaluation_report"
+      ],
+      "minimum_evidence_count": {
+        "evaluation_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "usco-guard-eval-or-copyright",
+          "rule": "has_record_type",
+          "params": {"type": "evaluation_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one evaluation_report record is required — the US Copyright Office Part 3 guidance expects documented evidence of output guardrails including effectiveness testing of anti-infringement measures"
+        },
+        {
+          "rule_id": "usco-guard-copyright-reservation",
+          "rule": "has_record_type",
+          "params": {"type": "copyright_rights_reservation", "min_count": 1},
+          "severity": "warning",
+          "message": "A copyright_rights_reservation record is recommended to document TDM opt-out compliance and rights reservation signal handling as part of the output guardrails framework"
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": []
+}

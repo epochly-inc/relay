@@ -1,0 +1,23 @@
+{
+  "schema_version": "relay.acef.vendor_manifest.v1",
+  "source_repo": "https://github.com/chandlercvaughn/ACEF",
+  "commit_sha": "57e1d14e063d3a2a88bfe5361fd81ca02bc6d540",
+  "commit_date": "2026-03-19T05:23:09-05:00",
+  "commit_subject": "Add architecture diagrams and executive overview PDF",
+  "spec_version": "v0.3",
+  "license": "Apache License 2.0",
+  "license_spdx": "Apache-2.0",
+  "license_file": "upstream/LICENSE",
+  "source_url": "https://github.com/chandlercvaughn/ACEF/tree/57e1d14e063d3a2a88bfe5361fd81ca02bc6d540",
+  "upstream_status": "v0.3 pre-1.0 reference implementation",
+  "maturity_disclosure": "v0.3 pre-1.0 reference implementation",
+  "vendored_on": "2026-05-15",
+  "vendored_by": "relay-v0.1-oss-wedge / w11.1-acef-vendor-pin",
+  "vendor_path": "upstream",
+  "vendor_tree_file_count": 307,
+  "vendor_tree_sha256": "7d1bf5c34dc673323dbc4a8c51fc53c84f5ede8166c8ac8cdc473140ebe8f50f",
+  "tree_digest_algorithm": "sha256-of-line-stream-where-each-line-is-sha256hex-of-file-bytes-two-spaces-posix-relpath-newline-files-sorted-by-posix-relpath",
+  "tree_digest_recipe_pseudo": "h=sha256(); for f in sorted(rglob('*')) if f.is_file(): h.update(f'{sha256(read_bytes(f))}  {posix_relpath(f)}\\n'.encode('utf-8')); return h.hexdigest()",
+  "ts_to_acef_coupling": "indirect-via-python-sidecar-only",
+  "update_workflow": "Modifications to upstream/ outside the documented vendor-update workflow are forbidden and detected by tests/test_w11_1_vendor_drift_guard.py. To update: re-archive upstream at a new pinned SHA, recompute vendor_tree_sha256 with the recipe above, update commit_sha + commit_date + commit_subject, and bump vendored_on."
+}

@@ -1,0 +1,193 @@
+{
+  "template_id": "uk-ai-copyright-guidance-2026",
+  "template_name": "UK AI, Copyright and the Creative Industries Guidance",
+  "version": "1.0.0",
+  "jurisdiction": "UK",
+  "source_legislation": "House of Lords Communications and Digital Committee: AI, Copyright and the Creative Industries (March 2026)",
+  "instrument_type": "parliamentary_report",
+  "legal_force": "advisory",
+  "instrument_status": "final",
+  "default_effective_date": null,
+  "superseded_by": null,
+  "applicable_system_types": ["gpai", "gpai-systemic"],
+  "provisions": [
+    {
+      "provision_id": "uk-disclosure",
+      "provision_name": "Training Data Disclosure",
+      "normative_text_ref": "UK AI, Copyright and the Creative Industries — Recommendation: Mandatory Training Data Disclosure",
+      "description": "AI model providers should disclose information about their training data including data sources, content categories, and scope of data used, through both public and regulator-confidential disclosure channels",
+      "effective_date": null,
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [
+        {
+          "provision_id": "uk-disclosure.1",
+          "normative_text_ref": "UK AI & Copyright — Disclosure Scope",
+          "description": "Training data disclosures should cover the scope of data used, content types, and summary statistics"
+        },
+        {
+          "provision_id": "uk-disclosure.2",
+          "normative_text_ref": "UK AI & Copyright — Regulator Disclosure",
+          "description": "More detailed disclosures may be required for regulatory examination, beyond public disclosure"
+        }
+      ],
+      "required_evidence_types": [
+        "data_provenance",
+        "transparency_disclosure"
+      ],
+      "minimum_evidence_count": {
+        "data_provenance": 1,
+        "transparency_disclosure": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "uk-disc-data-provenance",
+          "rule": "has_record_type",
+          "params": {"type": "data_provenance", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one data_provenance record is required — the UK House of Lords report recommends mandatory disclosure of training data sources and characteristics"
+        },
+        {
+          "rule_id": "uk-disc-transparency-disclosure",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_disclosure", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_disclosure record is required — the UK report recommends public transparency about AI training data and system capabilities"
+        },
+        {
+          "rule_id": "uk-disc-source-type",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/source_type"},
+          "severity": "warning",
+          "message": "Data provenance records should specify source_type (licensed, scraped, public_domain, synthetic) to support the UK training data disclosure requirements"
+        },
+        {
+          "rule_id": "uk-disc-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "data_provenance", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Data provenance records should be linked to a subject entity to identify which AI model the training data disclosure pertains to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "uk-rights",
+      "provision_name": "Rights Reservation Compliance",
+      "normative_text_ref": "UK AI, Copyright and the Creative Industries — Recommendation: Rights Reservation and Opt-Out",
+      "description": "AI model providers should comply with rights reservation mechanisms including TDM opt-out signals, robots.txt, and other rights reservation protocols established by content creators and rights-holders",
+      "effective_date": null,
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "copyright_rights_reservation"
+      ],
+      "minimum_evidence_count": {
+        "copyright_rights_reservation": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "uk-rights-copyright-reservation",
+          "rule": "has_record_type",
+          "params": {"type": "copyright_rights_reservation", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one copyright_rights_reservation record is required — the UK report recommends compliance with rights reservation mechanisms including TDM opt-out signals"
+        },
+        {
+          "rule_id": "uk-rights-opt-out-method",
+          "rule": "field_present",
+          "params": {"record_type": "copyright_rights_reservation", "field": "/payload/opt_out_detection_method"},
+          "severity": "warning",
+          "message": "Copyright rights reservation records should specify the opt_out_detection_method used (robots.txt, TDMRep, HTTP headers) for rights reservation compliance verification"
+        },
+        {
+          "rule_id": "uk-rights-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "copyright_rights_reservation", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Copyright rights reservation records should be linked to a subject entity to identify which AI model's training data the rights compliance applies to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "uk-provenance",
+      "provision_name": "Provenance Standards",
+      "normative_text_ref": "UK AI, Copyright and the Creative Industries — Recommendation: Provenance Standards Compliance",
+      "description": "AI model providers should implement and comply with established provenance standards for AI-generated content, enabling transparent identification and verification of content origin",
+      "effective_date": null,
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "transparency_marking"
+      ],
+      "minimum_evidence_count": {
+        "transparency_marking": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "uk-prov-transparency-marking",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_marking", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_marking record is required — the UK report recommends compliance with provenance standards for AI-generated content identification"
+        },
+        {
+          "rule_id": "uk-prov-marking-scheme",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/marking_scheme_id"},
+          "severity": "warning",
+          "message": "Transparency marking records should specify marking_scheme_id to identify the provenance standard applied (e.g., C2PA, IPTC) per UK provenance standards recommendations"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "uk-licensing",
+      "provision_name": "Licensing Agreements",
+      "normative_text_ref": "UK AI, Copyright and the Creative Industries — Recommendation: Licensing with Rights-Holders",
+      "description": "AI model providers should establish and document licensing agreements with rights-holders for copyrighted content used in training, including terms, scope, and compliance verification",
+      "effective_date": null,
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "license_record"
+      ],
+      "minimum_evidence_count": {
+        "license_record": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "uk-lic-license-record",
+          "rule": "has_record_type",
+          "params": {"type": "license_record", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one license_record is required — the UK report recommends documented licensing agreements with rights-holders for copyrighted training content"
+        },
+        {
+          "rule_id": "uk-lic-licensor-present",
+          "rule": "field_present",
+          "params": {"record_type": "license_record", "field": "/payload/licensor"},
+          "severity": "warning",
+          "message": "License records should specify the licensor to establish which rights-holder granted the training data license"
+        },
+        {
+          "rule_id": "uk-lic-scope-present",
+          "rule": "field_present",
+          "params": {"record_type": "license_record", "field": "/payload/scope"},
+          "severity": "warning",
+          "message": "License records should specify the scope of the licensing agreement to verify coverage of intended training uses per UK recommendations"
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": []
+}

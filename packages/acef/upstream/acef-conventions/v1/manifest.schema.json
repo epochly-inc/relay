@@ -1,0 +1,420 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/manifest.schema.json",
+  "title": "ACEF Evidence Bundle Manifest",
+  "description": "JSON Schema for acef-manifest.json — the envelope of an ACEF Evidence Bundle. Contains metadata, subjects, entities, profiles, record file references, and audit trail. Evidence record payloads are stored externally in records/ and referenced via record_files[].",
+  "type": "object",
+  "required": [
+    "metadata",
+    "versioning",
+    "subjects",
+    "entities",
+    "profiles",
+    "record_files",
+    "audit_trail"
+  ],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "description": "Package-level metadata including identity, provenance, and retention.",
+      "required": ["package_id", "timestamp", "producer"],
+      "properties": {
+        "package_id": {
+          "type": "string",
+          "description": "URN identifier for this package (urn:acef:pkg:<uuid>).",
+          "pattern": "^urn:acef:pkg:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "Package creation time in ISO 8601 format.",
+          "format": "date-time"
+        },
+        "producer": {
+          "type": "object",
+          "description": "Organization or tool that created this package.",
+          "required": ["name", "version"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Producer name (tool or organization)."
+            },
+            "version": {
+              "type": "string",
+              "description": "Producer tool version."
+            }
+          },
+          "additionalProperties": true
+        },
+        "prior_package_ref": {
+          "type": ["string", "null"],
+          "description": "SHA-256 hash reference to the prior version of this package for chaining (the bundle digest of the predecessor). Null if this is the first version."
+        },
+        "retention_policy": {
+          "type": ["object", "null"],
+          "description": "Package-level retention requirements.",
+          "properties": {
+            "min_retention_days": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Minimum retention period in days (e.g., 3650 for 10 years)."
+            },
+            "personal_data_interplay": {
+              "type": "string",
+              "description": "How retention interacts with data protection obligations (e.g., GDPR Art. 17 erasure requests)."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "versioning": {
+      "type": "object",
+      "description": "Module version declarations per Section 1.0.1. Evidence Bundles declare core_version and profiles_version only.",
+      "required": ["core_version", "profiles_version"],
+      "properties": {
+        "core_version": {
+          "type": "string",
+          "description": "ACEF Core module version (semver).",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "profiles_version": {
+          "type": "string",
+          "description": "ACEF Profiles module version (semver).",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "subjects": {
+      "type": "array",
+      "description": "The AI systems and/or models being documented. Plural to support composed systems.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["subject_id", "subject_type", "name", "version", "provider", "risk_classification", "modalities", "lifecycle_phase"],
+        "properties": {
+          "subject_id": {
+            "type": "string",
+            "description": "URN identifier (urn:acef:sub:<uuid>).",
+            "pattern": "^urn:acef:sub:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "subject_type": {
+            "type": "string",
+            "description": "Whether this subject is an AI system or AI model, reflecting the EU AI Act provider/deployer split.",
+            "enum": ["ai_system", "ai_model"]
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable name of the system or model."
+          },
+          "version": {
+            "type": "string",
+            "description": "System or model version."
+          },
+          "provider": {
+            "type": "string",
+            "description": "Organization responsible for this subject."
+          },
+          "risk_classification": {
+            "type": "string",
+            "description": "Risk classification per EU AI Act or equivalent framework.",
+            "enum": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"]
+          },
+          "modalities": {
+            "type": "array",
+            "description": "Input/output modalities supported by this subject.",
+            "items": {
+              "type": "string",
+              "enum": ["text", "image", "audio", "video", "multimodal"]
+            },
+            "minItems": 1
+          },
+          "lifecycle_phase": {
+            "type": "string",
+            "description": "Current lifecycle phase of this subject.",
+            "enum": ["design", "development", "testing", "deployment", "monitoring", "decommission"]
+          },
+          "lifecycle_timeline": {
+            "type": "array",
+            "description": "Phase transition history for this subject.",
+            "items": {
+              "type": "object",
+              "required": ["phase", "start_date"],
+              "properties": {
+                "phase": {
+                  "type": "string",
+                  "description": "Lifecycle phase.",
+                  "enum": ["design", "development", "testing", "deployment", "monitoring", "decommission"]
+                },
+                "start_date": {
+                  "type": "string",
+                  "description": "Start date of this phase (ISO 8601 date or date-time).",
+                  "format": "date"
+                },
+                "end_date": {
+                  "type": ["string", "null"],
+                  "description": "End date of this phase (ISO 8601 date or date-time). Null if current.",
+                  "format": "date"
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "entities": {
+      "type": "object",
+      "description": "First-class entity graph (W3C PROV-compatible). Entities are defined once and referenced by URN from evidence records.",
+      "required": ["components", "datasets", "actors", "relationships"],
+      "properties": {
+        "components": {
+          "type": "array",
+          "description": "Subsystems, model versions, deployment components.",
+          "items": {
+            "type": "object",
+            "required": ["component_id", "name", "type", "version", "subject_refs"],
+            "properties": {
+              "component_id": {
+                "type": "string",
+                "description": "URN identifier (urn:acef:cmp:<uuid>).",
+                "pattern": "^urn:acef:cmp:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "name": {
+                "type": "string",
+                "description": "Component name."
+              },
+              "type": {
+                "type": "string",
+                "description": "Component type.",
+                "enum": ["model", "retriever", "guardrail", "orchestrator", "tool", "database", "api"]
+              },
+              "version": {
+                "type": "string",
+                "description": "Component version."
+              },
+              "subject_refs": {
+                "type": "array",
+                "description": "URNs of subjects this component belongs to (many-to-many).",
+                "items": {
+                  "type": "string",
+                  "pattern": "^urn:acef:sub:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                }
+              },
+              "provider": {
+                "type": "string",
+                "description": "Component provider (may differ from system provider)."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "datasets": {
+          "type": "array",
+          "description": "Training, validation, test datasets — defined once, referenced by records.",
+          "items": {
+            "type": "object",
+            "required": ["dataset_id", "name", "version", "source_type", "modality"],
+            "properties": {
+              "dataset_id": {
+                "type": "string",
+                "description": "URN identifier (urn:acef:dat:<uuid>).",
+                "pattern": "^urn:acef:dat:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "name": {
+                "type": "string",
+                "description": "Dataset name."
+              },
+              "version": {
+                "type": "string",
+                "description": "Dataset version."
+              },
+              "source_type": {
+                "type": "string",
+                "description": "How the dataset was acquired.",
+                "enum": ["licensed", "scraped", "public_domain", "synthetic", "user_generated"]
+              },
+              "modality": {
+                "type": "string",
+                "description": "Data modality.",
+                "enum": ["text", "image", "audio", "video", "tabular", "multimodal"]
+              },
+              "size": {
+                "type": "object",
+                "description": "Dataset size information.",
+                "properties": {
+                  "records": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Number of records in the dataset."
+                  },
+                  "size_gb": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Size in gigabytes."
+                  }
+                },
+                "additionalProperties": true
+              },
+              "subject_refs": {
+                "type": "array",
+                "description": "URNs of subjects this dataset is associated with (many-to-many).",
+                "items": {
+                  "type": "string",
+                  "pattern": "^urn:acef:sub:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "actors": {
+          "type": "array",
+          "description": "People and organizations involved — privacy-aware identifiers.",
+          "items": {
+            "type": "object",
+            "required": ["actor_id", "role"],
+            "properties": {
+              "actor_id": {
+                "type": "string",
+                "description": "URN identifier (urn:acef:act:<uuid>).",
+                "pattern": "^urn:acef:act:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "role": {
+                "type": "string",
+                "description": "Actor role in the AI lifecycle.",
+                "enum": ["provider", "deployer", "importer", "distributor", "auditor", "regulator", "data_subject"]
+              },
+              "name": {
+                "type": "string",
+                "description": "Name or pseudonym (redactable)."
+              },
+              "organization": {
+                "type": "string",
+                "description": "Organization affiliation."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "description": "Entity graph edges (W3C PROV-compatible).",
+          "items": {
+            "type": "object",
+            "required": ["source_ref", "target_ref", "relationship_type"],
+            "properties": {
+              "source_ref": {
+                "type": "string",
+                "description": "URN of source entity.",
+                "pattern": "^urn:acef:(sub|cmp|dat|act):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "target_ref": {
+                "type": "string",
+                "description": "URN of target entity.",
+                "pattern": "^urn:acef:(sub|cmp|dat|act):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "relationship_type": {
+                "type": "string",
+                "description": "Type of relationship between entities.",
+                "enum": ["wraps", "calls", "fine_tunes", "deploys", "trains_on", "evaluates_with", "oversees"]
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable description of the relationship."
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "profiles": {
+      "type": "array",
+      "description": "Which regulation mapping templates this package addresses.",
+      "items": {
+        "type": "object",
+        "required": ["profile_id", "template_version", "applicable_provisions"],
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "description": "Template identifier (e.g., 'eu-ai-act-2024', 'nist-ai-rmf-1.0')."
+          },
+          "template_version": {
+            "type": "string",
+            "description": "Version of the regulation mapping template used.",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          },
+          "applicable_provisions": {
+            "type": "array",
+            "description": "Specific articles/subcategories addressed (e.g., 'article-9.1.a', 'govern-1.1').",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "record_files": {
+      "type": "array",
+      "description": "Index of evidence record files in records/. Each entry references a JSONL file or shard by path, record type, and count.",
+      "items": {
+        "type": "object",
+        "required": ["path", "record_type", "count"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Relative path to the record file within the bundle (e.g., 'records/risk_register.jsonl'). Must use forward slashes, UTF-8 NFC, no . or .. segments.",
+            "pattern": "^records/[^.][^/].*\\.jsonl$"
+          },
+          "record_type": {
+            "type": "string",
+            "description": "The ACEF record type for all records in this file."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of records (JSONL lines) in this file."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "audit_trail": {
+      "type": "array",
+      "description": "Package-level audit history.",
+      "items": {
+        "type": "object",
+        "required": ["event_type", "timestamp", "actor_ref", "description"],
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "description": "Type of audit event.",
+            "enum": ["created", "updated", "reviewed", "submitted", "certified"]
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "When the event occurred (ISO 8601).",
+            "format": "date-time"
+          },
+          "actor_ref": {
+            "type": "string",
+            "description": "URN of the actor who performed this action.",
+            "pattern": "^urn:acef:act:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "description": {
+            "type": "string",
+            "description": "What changed or what action was performed."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

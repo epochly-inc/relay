@@ -1,0 +1,345 @@
+{
+  "template_id": "nist-ai-rmf-1.0",
+  "template_name": "NIST AI Risk Management Framework 1.0",
+  "version": "1.0.0",
+  "jurisdiction": "US",
+  "source_legislation": "NIST AI 100-1 (AI Risk Management Framework 1.0, January 2023)",
+  "instrument_type": "standard",
+  "legal_force": "voluntary",
+  "instrument_status": "final",
+  "default_effective_date": null,
+  "superseded_by": null,
+  "applicable_system_types": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+  "provisions": [
+    {
+      "provision_id": "govern-1",
+      "provision_name": "AI Governance",
+      "normative_text_ref": "NIST AI RMF 1.0 GOVERN 1",
+      "description": "Policies, processes, procedures, and practices across the organization related to the mapping, measuring, and managing of AI risks are in place, transparent, and implemented effectively",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "govern-1.1",
+          "normative_text_ref": "NIST AI RMF 1.0 GOVERN 1.1",
+          "description": "Legal and regulatory requirements involving AI are understood, managed, and documented"
+        },
+        {
+          "provision_id": "govern-1.3",
+          "normative_text_ref": "NIST AI RMF 1.0 GOVERN 1.3",
+          "description": "Processes and procedures are in place for oversight and human intervention throughout the AI lifecycle"
+        },
+        {
+          "provision_id": "govern-1.7",
+          "normative_text_ref": "NIST AI RMF 1.0 GOVERN 1.7",
+          "description": "Processes and procedures are in place for decommissioning and phasing out AI systems safely and in a manner that does not increase risks or harms"
+        }
+      ],
+      "required_evidence_types": [
+        "governance_policy"
+      ],
+      "minimum_evidence_count": {
+        "governance_policy": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "govern1-governance-policy",
+          "rule": "has_record_type",
+          "params": {"type": "governance_policy", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one governance_policy record is required — GOVERN 1 mandates documented policies, processes, and procedures for AI risk management"
+        },
+        {
+          "rule_id": "govern1-policy-attachment",
+          "rule": "attachment_exists",
+          "params": {"record_type": "governance_policy"},
+          "severity": "warning",
+          "message": "Governance policy records should include attached policy documents demonstrating established organizational AI governance"
+        },
+        {
+          "rule_id": "govern1-policy-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "governance_policy", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Governance policy records should be linked to subject entities to establish which AI systems are covered by the governance framework"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "map-1",
+      "provision_name": "System Context and Risk Identification",
+      "normative_text_ref": "NIST AI RMF 1.0 MAP 1",
+      "description": "Context is established and understood, including the intended deployment setting, legal and regulatory requirements, and the broader socio-technical environment in which the AI system will operate",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "map-1.1",
+          "normative_text_ref": "NIST AI RMF 1.0 MAP 1.1",
+          "description": "Intended purposes, potentially beneficial uses, context of use, and deployment setting are documented"
+        },
+        {
+          "provision_id": "map-1.5",
+          "normative_text_ref": "NIST AI RMF 1.0 MAP 1.5",
+          "description": "Organizational risk tolerances are determined and documented"
+        }
+      ],
+      "required_evidence_types": [
+        "risk_register"
+      ],
+      "minimum_evidence_count": {
+        "risk_register": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "map1-risk-register",
+          "rule": "has_record_type",
+          "params": {"type": "risk_register", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_register record is required — MAP 1 mandates risk identification and contextual analysis of the AI system deployment environment"
+        },
+        {
+          "rule_id": "map1-risk-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "risk_register", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Risk register records should be linked to a subject entity for traceability of system-context risk mapping"
+        },
+        {
+          "rule_id": "map1-risk-category",
+          "rule": "field_present",
+          "params": {"record_type": "risk_register", "field": "/payload/risk_category"},
+          "severity": "warning",
+          "message": "Risk register records should categorize risks per NIST trustworthiness characteristics (validity, reliability, safety, security, accountability, transparency, explainability, privacy, fairness)"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "map-2",
+      "provision_name": "Data Documentation",
+      "normative_text_ref": "NIST AI RMF 1.0 MAP 2",
+      "description": "Categorization of the AI system is performed, including data requirements and characteristics for training, validation, and testing datasets",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "map-2.1",
+          "normative_text_ref": "NIST AI RMF 1.0 MAP 2.1",
+          "description": "The specific tasks and methods used to implement the tasks that the AI system will support are defined"
+        },
+        {
+          "provision_id": "map-2.3",
+          "normative_text_ref": "NIST AI RMF 1.0 MAP 2.3",
+          "description": "Scientific integrity and TEVV considerations are identified and documented"
+        }
+      ],
+      "required_evidence_types": [
+        "dataset_card",
+        "data_provenance"
+      ],
+      "minimum_evidence_count": {
+        "dataset_card": 1,
+        "data_provenance": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "map2-dataset-card",
+          "rule": "has_record_type",
+          "params": {"type": "dataset_card", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one dataset_card record is required — MAP 2 mandates documentation of training, validation, and testing datasets including characteristics and limitations"
+        },
+        {
+          "rule_id": "map2-data-provenance",
+          "rule": "has_record_type",
+          "params": {"type": "data_provenance", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one data_provenance record is required — MAP 2 requires documentation of data lineage and acquisition for categorization"
+        },
+        {
+          "rule_id": "map2-dataset-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "dataset_card", "entity_type": "dataset"},
+          "severity": "warning",
+          "message": "Dataset card records should be linked to dataset entities for proper data governance traceability"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "measure-1",
+      "provision_name": "Evaluation Metrics and Testing",
+      "normative_text_ref": "NIST AI RMF 1.0 MEASURE 1",
+      "description": "Appropriate methods and metrics are identified and applied for measuring AI risks and trustworthiness characteristics relevant to the AI system's deployment context",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "measure-1.1",
+          "normative_text_ref": "NIST AI RMF 1.0 MEASURE 1.1",
+          "description": "Approaches and metrics for measurement of AI risks enumerated during the MAP function are selected for implementation"
+        },
+        {
+          "provision_id": "measure-1.3",
+          "normative_text_ref": "NIST AI RMF 1.0 MEASURE 1.3",
+          "description": "Internal experts who did not serve as combinedjudges of the AI system's development or deployment are used for independent review"
+        }
+      ],
+      "required_evidence_types": [
+        "evaluation_report"
+      ],
+      "minimum_evidence_count": {
+        "evaluation_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "measure1-evaluation-report",
+          "rule": "has_record_type",
+          "params": {"type": "evaluation_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one evaluation_report record is required — MEASURE 1 mandates documented evaluation metrics, test conditions, and results for AI trustworthiness assessment"
+        },
+        {
+          "rule_id": "measure1-metrics-present",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/metrics"},
+          "severity": "warning",
+          "message": "Evaluation reports should include quantified metrics for measuring AI risks and trustworthiness per MEASURE 1.1"
+        },
+        {
+          "rule_id": "measure1-methodology-present",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/methodology"},
+          "severity": "warning",
+          "message": "Evaluation reports should document the evaluation methodology to ensure reproducibility and independent verification per MEASURE 1.3"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "manage-1",
+      "provision_name": "Risk Treatment",
+      "normative_text_ref": "NIST AI RMF 1.0 MANAGE 1",
+      "description": "AI risks based on assessments and other analytical output from the MAP and MEASURE functions are prioritized, responded to, and managed",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "manage-1.1",
+          "normative_text_ref": "NIST AI RMF 1.0 MANAGE 1.1",
+          "description": "A determination is made as to whether the AI system achieves its intended purpose and stated objectives and whether its development or deployment should proceed"
+        },
+        {
+          "provision_id": "manage-1.3",
+          "normative_text_ref": "NIST AI RMF 1.0 MANAGE 1.3",
+          "description": "Responses to the AI risks deemed high priority, as identified by the MAP function, are developed, planned, and documented"
+        }
+      ],
+      "required_evidence_types": [
+        "risk_treatment"
+      ],
+      "minimum_evidence_count": {
+        "risk_treatment": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "manage1-risk-treatment",
+          "rule": "has_record_type",
+          "params": {"type": "risk_treatment", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_treatment record is required — MANAGE 1 mandates documented risk responses including treatment strategy, implementation timeline, and responsible party"
+        },
+        {
+          "rule_id": "manage1-treatment-type",
+          "rule": "field_present",
+          "params": {"record_type": "risk_treatment", "field": "/payload/treatment_type"},
+          "severity": "warning",
+          "message": "Risk treatment records should specify the treatment_type (eliminate, reduce, mitigate, accept, transfer) per MANAGE 1.3 prioritized response documentation"
+        },
+        {
+          "rule_id": "manage1-treatment-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "risk_treatment", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Risk treatment records should be linked to a subject entity for traceability of risk management actions to specific AI systems"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "manage-4",
+      "provision_name": "Incident Response",
+      "normative_text_ref": "NIST AI RMF 1.0 MANAGE 4",
+      "description": "Incidents and errors are communicated and documented, risk treatments are monitored and their effectiveness is assessed",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "manage-4.1",
+          "normative_text_ref": "NIST AI RMF 1.0 MANAGE 4.1",
+          "description": "Post-deployment AI system monitoring plans are implemented, including mechanisms for capturing and evaluating input from users and other relevant AI actors"
+        },
+        {
+          "provision_id": "manage-4.2",
+          "normative_text_ref": "NIST AI RMF 1.0 MANAGE 4.2",
+          "description": "Measurable activities for continual improvements are integrated into AI system updates and include regular engagement with interested parties"
+        }
+      ],
+      "required_evidence_types": [
+        "incident_report"
+      ],
+      "minimum_evidence_count": {
+        "incident_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "manage4-incident-report",
+          "rule": "has_record_type",
+          "params": {"type": "incident_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one incident_report record is required — MANAGE 4 mandates documented incident response, root cause analysis, corrective actions, and communication of errors"
+        },
+        {
+          "rule_id": "manage4-incident-severity",
+          "rule": "field_present",
+          "params": {"record_type": "incident_report", "field": "/payload/severity"},
+          "severity": "warning",
+          "message": "Incident reports should include a severity classification for prioritized response per MANAGE 4.1"
+        },
+        {
+          "rule_id": "manage4-incident-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "incident_report", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Incident reports should be linked to a subject entity to establish which AI system experienced the incident"
+        },
+        {
+          "rule_id": "manage4-corrective-actions",
+          "rule": "field_present",
+          "params": {"record_type": "incident_report", "field": "/payload/corrective_actions"},
+          "severity": "warning",
+          "message": "Incident reports should document corrective_actions taken per MANAGE 4.2 continual improvement requirements"
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": [
+    "test-vectors/nist-rmf/govern-map-measure-manage-pass.acef/",
+    "test-vectors/nist-rmf/govern-missing-policy-fail.acef/"
+  ]
+}

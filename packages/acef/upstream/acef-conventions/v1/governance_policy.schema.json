@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/governance_policy.schema.json",
+  "title": "ACEF Governance Policy Payload",
+  "description": "Payload schema for governance_policy records. Captures organizational AI governance documentation per NIST GOVERN, ISO 42001, and EU AI Act Art. 17 (QMS). Supports the ai_use_case_inventory_entry variant (OMB M-24-10) and training_competency_record variant via the variant discriminator field.",
+  "type": "object",
+  "required": ["policy_type"],
+  "properties": {
+    "variant": {
+      "type": "string",
+      "description": "Discriminator for payload variants. Use 'ai_use_case_inventory_entry' for OMB M-24-10 inventory entries, 'training_competency_record' for training and competency records."
+    },
+    "policy_type": {
+      "type": "string",
+      "description": "Type of governance document.",
+      "enum": [
+        "ai_governance_policy",
+        "qms_policy",
+        "qms_procedure",
+        "qms_instruction",
+        "risk_management_procedure",
+        "data_management_procedure",
+        "recordkeeping_procedure",
+        "accountability_framework",
+        "ai_principles",
+        "risk_appetite_statement",
+        "design_control",
+        "test_validation_procedure",
+        "incident_procedure",
+        "decommission_procedure",
+        "ai_use_case_inventory",
+        "training_competency",
+        "other"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "description": "Title of the governance document."
+    },
+    "document_version": {
+      "type": "string",
+      "description": "Version of the governance document."
+    },
+    "approval_date": {
+      "type": "string",
+      "description": "Date the document was approved (ISO 8601).",
+      "format": "date"
+    },
+    "review_cycle": {
+      "type": "string",
+      "description": "Review cycle for the document (e.g., 'annual', 'semi-annual', 'quarterly')."
+    },
+    "next_review_date": {
+      "type": "string",
+      "description": "Next scheduled review date (ISO 8601).",
+      "format": "date"
+    },
+    "scope": {
+      "type": "string",
+      "description": "Scope of the policy — what systems, teams, or processes it covers."
+    },
+    "owner": {
+      "type": "string",
+      "description": "Document owner (person or team responsible for maintenance)."
+    },
+    "approver": {
+      "type": "string",
+      "description": "Person or authority who approved the document."
+    },
+    "governance_structure": {
+      "type": "object",
+      "description": "Organizational governance structure for AI.",
+      "properties": {
+        "oversight_committee": {
+          "type": "string",
+          "description": "Name of the AI oversight committee or board."
+        },
+        "reporting_lines": {
+          "type": "string",
+          "description": "Reporting lines for AI governance."
+        },
+        "delegation_of_authority": {
+          "type": "string",
+          "description": "How authority is delegated for AI-related decisions."
+        }
+      },
+      "additionalProperties": true
+    },
+    "raci_matrix": {
+      "type": "array",
+      "description": "RACI (Responsible, Accountable, Consulted, Informed) assignments.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "activity": {
+            "type": "string",
+            "description": "Activity or task."
+          },
+          "responsible": {
+            "type": "string",
+            "description": "Who performs the work."
+          },
+          "accountable": {
+            "type": "string",
+            "description": "Who is ultimately accountable."
+          },
+          "consulted": {
+            "type": "string",
+            "description": "Who is consulted."
+          },
+          "informed": {
+            "type": "string",
+            "description": "Who is informed."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "system_purpose": {
+      "type": "string",
+      "description": "Plain-language description of what the AI does (for ai_use_case_inventory_entry variant)."
+    },
+    "decision_influence": {
+      "type": "string",
+      "description": "How the AI influences decisions (for ai_use_case_inventory_entry variant).",
+      "enum": ["autonomous", "advisory", "augmentative", "none"]
+    },
+    "rights_safety_impact": {
+      "type": "string",
+      "description": "Impact classification (for ai_use_case_inventory_entry variant).",
+      "enum": ["rights_impacting", "safety_impacting", "both", "neither"]
+    },
+    "impact_classification_rationale": {
+      "type": "string",
+      "description": "Rationale for the impact classification (for ai_use_case_inventory_entry variant)."
+    },
+    "responsible_owner": {
+      "type": "string",
+      "description": "Responsible owner for the AI use case (for ai_use_case_inventory_entry variant)."
+    },
+    "caio_designation": {
+      "type": "string",
+      "description": "Chief AI Officer name/role per OMB M-24-10 (for ai_use_case_inventory_entry variant)."
+    },
+    "governance_board_ref": {
+      "type": "string",
+      "description": "Pointer to governance board charter artifact (for ai_use_case_inventory_entry variant)."
+    },
+    "model_version": {
+      "type": "string",
+      "description": "AI model version (for ai_use_case_inventory_entry variant)."
+    },
+    "deployment_context": {
+      "type": "string",
+      "description": "Deployment context (for ai_use_case_inventory_entry variant, e.g., 'production', 'pilot', 'development')."
+    },
+    "last_review_date": {
+      "type": "string",
+      "description": "Date of last review (ISO 8601, for ai_use_case_inventory_entry variant).",
+      "format": "date"
+    },
+    "inventory_reporting_period": {
+      "type": "string",
+      "description": "Reporting period (for ai_use_case_inventory_entry variant, e.g., '2026-FY')."
+    },
+    "training_topic": {
+      "type": "string",
+      "description": "Training topic (for training_competency_record variant)."
+    },
+    "training_completion_date": {
+      "type": "string",
+      "description": "Date training was completed (for training_competency_record variant).",
+      "format": "date"
+    },
+    "trainees": {
+      "type": "array",
+      "description": "List of trainees (for training_competency_record variant).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "competency_assessment_result": {
+      "type": "string",
+      "description": "Result of competency assessment (for training_competency_record variant)."
+    },
+    "certification_reference": {
+      "type": "string",
+      "description": "Reference to certification obtained (for training_competency_record variant)."
+    }
+  },
+  "additionalProperties": true
+}

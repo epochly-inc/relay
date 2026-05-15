@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/transparency_disclosure.schema.json",
+  "title": "ACEF Transparency Disclosure Payload",
+  "description": "Payload schema for transparency_disclosure records. Captures public-facing documentation and instructions for use per EU AI Act Art. 13, GPAI requirements, China CAC visible labels, and UK statutory transparency. Supports the publication_evidence variant via the variant discriminator field.",
+  "type": "object",
+  "required": ["disclosure_type"],
+  "properties": {
+    "variant": {
+      "type": "string",
+      "description": "Discriminator for payload variants. Use 'publication_evidence' for evidence that a transparency document was publicly published."
+    },
+    "disclosure_type": {
+      "type": "string",
+      "description": "Type of transparency disclosure.",
+      "enum": [
+        "instructions_for_use",
+        "capability_card",
+        "model_card",
+        "system_description",
+        "interpretability_spec",
+        "integration_guidance",
+        "downstream_risk_advisory",
+        "acceptable_use_policy",
+        "transparency_report",
+        "training_data_disclosure",
+        "other"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "description": "Title of the disclosure document."
+    },
+    "document_version": {
+      "type": "string",
+      "description": "Version of the disclosure document."
+    },
+    "publication_date": {
+      "type": "string",
+      "description": "Date the disclosure was published (ISO 8601).",
+      "format": "date"
+    },
+    "audience": {
+      "type": "array",
+      "description": "Intended audience for the disclosure (e.g., 'deployers', 'end_users', 'regulators', 'public').",
+      "items": {
+        "type": "string"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "description": "Capabilities described in the disclosure.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "description": "Limitations described in the disclosure.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "intended_use": {
+      "type": "string",
+      "description": "Intended use of the AI system as described in the disclosure."
+    },
+    "prohibited_uses": {
+      "type": "array",
+      "description": "Prohibited uses of the AI system.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risk_warnings": {
+      "type": "array",
+      "description": "Risk warnings included in the disclosure.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "interpretation_guidance": {
+      "type": "string",
+      "description": "Guidance on how to interpret system outputs."
+    },
+    "explanation_methods": {
+      "type": "array",
+      "description": "Explanation methods available for system outputs.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence_indicators": {
+      "type": "string",
+      "description": "How confidence or uncertainty is communicated in system outputs."
+    },
+    "known_failure_modes": {
+      "type": "array",
+      "description": "Known failure modes described in the disclosure.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "out_of_scope_uses": {
+      "type": "array",
+      "description": "Uses that are out of scope for the AI system.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "api_documentation_ref": {
+      "type": "string",
+      "description": "Reference to API documentation (for integration guidance)."
+    },
+    "rate_limits": {
+      "type": "string",
+      "description": "API rate limit information (for integration guidance)."
+    },
+    "summary_published": {
+      "type": "boolean",
+      "description": "Whether the summary has been publicly published (for publication_evidence variant)."
+    },
+    "publication_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL where the disclosure is published (for publication_evidence variant)."
+    },
+    "publication_content_hash": {
+      "type": "string",
+      "description": "SHA-256 hash of the published content for verifiability (for publication_evidence variant)."
+    },
+    "locale": {
+      "type": "string",
+      "description": "Language of the disclosure (BCP 47 tag)."
+    },
+    "reporting_period": {
+      "type": "string",
+      "description": "Reporting period covered by the disclosure (for transparency reports)."
+    }
+  },
+  "additionalProperties": true
+}

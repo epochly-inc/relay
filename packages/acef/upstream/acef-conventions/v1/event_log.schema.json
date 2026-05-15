@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/event_log.schema.json",
+  "title": "ACEF Event Log Payload",
+  "description": "Payload schema for event_log records. Captures automatic system event records per EU AI Act Art. 12 and China CAC labeling measures. Includes normative minimum required fields per spec Section 3.1.5. Supports the logging_spec variant via the event_type discriminator field.",
+  "type": "object",
+  "required": ["event_type"],
+  "properties": {
+    "event_type": {
+      "type": "string",
+      "description": "Type of system event. The 'logging_spec' value indicates a logging specification variant that describes what a system logs and why.",
+      "enum": [
+        "inference",
+        "training",
+        "evaluation",
+        "deployment",
+        "override",
+        "error",
+        "marking",
+        "disclosure",
+        "logging_spec"
+      ]
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "Links related events across log entries and to human_oversight_action records."
+    },
+    "inputs_commitment": {
+      "type": "object",
+      "description": "Hash commitment of input data. Avoids storing raw PII while enabling traceability.",
+      "required": ["hash_alg", "hash"],
+      "properties": {
+        "hash_alg": {
+          "type": "string",
+          "description": "Hash algorithm used.",
+          "const": "sha-256"
+        },
+        "hash": {
+          "type": "string",
+          "description": "Hex-encoded hash of the input data."
+        }
+      },
+      "additionalProperties": true
+    },
+    "outputs_commitment": {
+      "type": "object",
+      "description": "Hash commitment of output data. Avoids storing raw PII while enabling traceability.",
+      "required": ["hash_alg", "hash"],
+      "properties": {
+        "hash_alg": {
+          "type": "string",
+          "description": "Hash algorithm used.",
+          "const": "sha-256"
+        },
+        "hash": {
+          "type": "string",
+          "description": "Hex-encoded hash of the output data."
+        }
+      },
+      "additionalProperties": true
+    },
+    "retention_start_event": {
+      "type": "string",
+      "description": "When the retention clock starts for this log entry. Resolves ambiguity in computing retention windows.",
+      "enum": ["first_use", "first_deployment", "record_creation", "custom"]
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Links to deployer session context."
+    },
+    "actor_ref": {
+      "type": "string",
+      "description": "URN of the actor who triggered the event (urn:acef:act:<uuid>)."
+    },
+    "label_exception": {
+      "type": "boolean",
+      "description": "True if explicit label was omitted by user request, triggering CAC 6-month retention obligation."
+    },
+    "system_state": {
+      "type": "string",
+      "description": "System state at the time of the event."
+    },
+    "latency_ms": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Latency in milliseconds for the operation."
+    },
+    "error_code": {
+      "type": "string",
+      "description": "Error code if the event is an error event."
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Error message if the event is an error event."
+    },
+    "input_hash": {
+      "type": "string",
+      "description": "SHA-256 hash of input data (simplified alternative to inputs_commitment)."
+    },
+    "output_hash": {
+      "type": "string",
+      "description": "SHA-256 hash of output data (simplified alternative to outputs_commitment)."
+    },
+    "logged_event_types": {
+      "type": "array",
+      "description": "Event types that the system logs (for logging_spec variant).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "log_fields_documented": {
+      "type": "array",
+      "description": "Fields documented in log entries (for logging_spec variant).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "traceability_rationale": {
+      "type": "string",
+      "description": "Rationale for the logging approach (for logging_spec variant). Explains how logs enable identification of risk situations per Art. 12(1)."
+    },
+    "retention_policy_summary": {
+      "type": "object",
+      "description": "Summary of retention policy (for logging_spec variant).",
+      "properties": {
+        "min_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum retention period in days."
+        },
+        "start_event": {
+          "type": "string",
+          "description": "When the retention clock starts."
+        },
+        "legal_basis": {
+          "type": "string",
+          "description": "Legal basis for the retention policy."
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

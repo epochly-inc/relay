@@ -1,0 +1,203 @@
+{
+  "template_id": "us-omb-m-24-10",
+  "template_name": "OMB M-24-10: Advancing Governance, Innovation, and Risk Management for Agency Use of AI",
+  "version": "1.0.0",
+  "jurisdiction": "US",
+  "source_legislation": "OMB Memorandum M-24-10 (March 28, 2024)",
+  "instrument_type": "guidance",
+  "legal_force": "binding",
+  "instrument_status": "final",
+  "default_effective_date": "2024-03-28",
+  "superseded_by": null,
+  "applicable_system_types": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+  "provisions": [
+    {
+      "provision_id": "omb-inventory",
+      "provision_name": "AI Use-Case Inventory",
+      "normative_text_ref": "OMB M-24-10 Section 5(b)",
+      "description": "Federal agencies shall maintain an annual inventory of AI use cases, including purpose, deployment context, rights/safety impact classification, and responsible ownership, published publicly where appropriate",
+      "effective_date": "2024-03-28",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "omb-inventory.1",
+          "normative_text_ref": "OMB M-24-10 Section 5(b)(i)",
+          "description": "Each AI use case must document the system purpose, decision influence level, and deployment context"
+        },
+        {
+          "provision_id": "omb-inventory.2",
+          "normative_text_ref": "OMB M-24-10 Section 5(b)(ii)",
+          "description": "Each AI use case must include a rights and safety impact classification with rationale"
+        }
+      ],
+      "required_evidence_types": [
+        "governance_policy"
+      ],
+      "minimum_evidence_count": {
+        "governance_policy": 1
+      },
+      "evidence_freshness_max_days": 365,
+      "retention_years": 7,
+      "evaluation": [
+        {
+          "rule_id": "omb-inv-governance-policy",
+          "rule": "has_record_type",
+          "params": {"type": "governance_policy", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one governance_policy record is required — OMB M-24-10 Section 5(b) mandates documented AI governance including use-case inventories"
+        },
+        {
+          "rule_id": "omb-inv-inventory-variant",
+          "rule": "exists_where",
+          "params": {
+            "record_type": "governance_policy",
+            "field": "/payload/variant",
+            "op": "eq",
+            "value": "ai_use_case_inventory_entry",
+            "min_count": 1
+          },
+          "severity": "fail",
+          "message": "At least one governance_policy record with variant='ai_use_case_inventory_entry' is required — OMB M-24-10 mandates a structured AI use-case inventory with standardized fields for interoperability across federal agencies"
+        },
+        {
+          "rule_id": "omb-inv-freshness",
+          "rule": "evidence_freshness",
+          "params": {"max_days": 365, "reference_date": "validation_time"},
+          "severity": "warning",
+          "message": "AI use-case inventory evidence older than 1 year may not satisfy OMB M-24-10 annual reporting requirements"
+        },
+        {
+          "rule_id": "omb-inv-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "governance_policy", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Governance policy records should be linked to a subject entity to identify which AI system the inventory entry pertains to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "omb-caio",
+      "provision_name": "Chief AI Officer Designation",
+      "normative_text_ref": "OMB M-24-10 Section 3",
+      "description": "Each agency shall designate a Chief AI Officer (CAIO) responsible for coordinating AI governance, advising senior leadership on AI-related risks, and overseeing compliance with OMB guidance",
+      "effective_date": "2024-03-28",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "governance_policy"
+      ],
+      "minimum_evidence_count": {
+        "governance_policy": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 7,
+      "evaluation": [
+        {
+          "rule_id": "omb-caio-designation",
+          "rule": "field_present",
+          "params": {"record_type": "governance_policy", "field": "/payload/caio_designation"},
+          "severity": "fail",
+          "message": "Governance policy records must include caio_designation documenting the Chief AI Officer per OMB M-24-10 Section 3 — CAIO is responsible for coordinating AI governance across the agency"
+        },
+        {
+          "rule_id": "omb-caio-inventory-has-caio",
+          "rule": "exists_where",
+          "params": {
+            "record_type": "governance_policy",
+            "field": "/payload/caio_designation",
+            "op": "ne",
+            "value": null,
+            "min_count": 1
+          },
+          "severity": "fail",
+          "message": "At least one governance_policy record must have a non-null caio_designation — OMB M-24-10 requires every agency to name a Chief AI Officer"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "omb-rights-safety",
+      "provision_name": "Rights and Safety Impact Classification",
+      "normative_text_ref": "OMB M-24-10 Section 5(c)",
+      "description": "Agencies must classify each AI use case by its impact on rights and safety, distinguishing between rights-impacting, safety-impacting, both, or neither, with documented rationale",
+      "effective_date": "2024-03-28",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "omb-rights-safety.1",
+          "normative_text_ref": "OMB M-24-10 Section 5(c)(i)",
+          "description": "Rights-impacting AI: AI whose output serves as a basis for a decision or action that has a legal, material, or similarly significant effect on an individual's or community's rights"
+        },
+        {
+          "provision_id": "omb-rights-safety.2",
+          "normative_text_ref": "OMB M-24-10 Section 5(c)(ii)",
+          "description": "Safety-impacting AI: AI whose output serves as a basis for a decision or action that could result in injury, damage, or harm to individuals, property, or the environment"
+        }
+      ],
+      "required_evidence_types": [
+        "governance_policy"
+      ],
+      "minimum_evidence_count": {
+        "governance_policy": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 7,
+      "evaluation": [
+        {
+          "rule_id": "omb-rights-safety-classification",
+          "rule": "field_present",
+          "params": {"record_type": "governance_policy", "field": "/payload/rights_safety_impact"},
+          "severity": "fail",
+          "message": "Governance policy records must include rights_safety_impact classification (rights_impacting, safety_impacting, both, neither) per OMB M-24-10 Section 5(c)"
+        },
+        {
+          "rule_id": "omb-rights-safety-rationale",
+          "rule": "field_present",
+          "params": {"record_type": "governance_policy", "field": "/payload/impact_classification_rationale"},
+          "severity": "warning",
+          "message": "Governance policy records should include impact_classification_rationale documenting why the AI use case was classified at its rights/safety impact level"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "omb-governance",
+      "provision_name": "AI Governance Framework",
+      "normative_text_ref": "OMB M-24-10 Section 4",
+      "description": "Agencies shall establish AI governance structures including governance boards, policies, and procedures to manage AI risks and ensure responsible AI use across the organization",
+      "effective_date": "2024-03-28",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "governance_policy"
+      ],
+      "minimum_evidence_count": {
+        "governance_policy": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 7,
+      "evaluation": [
+        {
+          "rule_id": "omb-gov-governance-policy",
+          "rule": "has_record_type",
+          "params": {"type": "governance_policy", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one governance_policy record is required — OMB M-24-10 Section 4 mandates an AI governance framework with policies, procedures, and organizational structures"
+        },
+        {
+          "rule_id": "omb-gov-attachment",
+          "rule": "attachment_exists",
+          "params": {"record_type": "governance_policy"},
+          "severity": "warning",
+          "message": "AI governance framework governance_policy records should include attached policy documents (PDF or similar) demonstrating the established governance structure"
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": [
+    "test-vectors/omb-m24-10/inventory-governance-pass.acef/",
+    "test-vectors/omb-m24-10/missing-caio-fail.acef/"
+  ]
+}

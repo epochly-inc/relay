@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/human_oversight_action.schema.json",
+  "title": "ACEF Human Oversight Action Payload",
+  "description": "Payload schema for human_oversight_action records. Captures oversight events including overrides, stops, verifications, and escalations per EU AI Act Art. 14 and NIST GOVERN.",
+  "type": "object",
+  "required": ["action_type"],
+  "properties": {
+    "action_type": {
+      "type": "string",
+      "description": "Type of human oversight action taken.",
+      "enum": ["override", "stop", "disregard", "manual_verification", "escalation", "approval", "rejection", "review"]
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Session identifier linking this action to the system interaction context."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "Links this action to related event_log entries via correlation_id."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Reason for the oversight action."
+    },
+    "operator_decision": {
+      "type": "string",
+      "description": "The decision made by the human operator (e.g., 'blocked_and_escalated', 'approved', 'modified_and_released')."
+    },
+    "escalation_path": {
+      "type": "string",
+      "description": "Where the issue was escalated to (e.g., 'safety-team-oncall', 'legal-review')."
+    },
+    "escalation_timestamp": {
+      "type": "string",
+      "description": "When the escalation occurred (ISO 8601).",
+      "format": "date-time"
+    },
+    "resolution": {
+      "type": "string",
+      "description": "How the oversight action was resolved."
+    },
+    "resolution_timestamp": {
+      "type": "string",
+      "description": "When the resolution occurred (ISO 8601).",
+      "format": "date-time"
+    },
+    "operator_id": {
+      "type": "string",
+      "description": "Identifier for the human operator who performed the action."
+    },
+    "operator_role": {
+      "type": "string",
+      "description": "Role of the human operator (e.g., 'deployer_admin', 'safety_reviewer', 'data_protection_officer')."
+    },
+    "system_output_before_action": {
+      "type": "string",
+      "description": "Hash or summary of the system output before human intervention."
+    },
+    "system_output_after_action": {
+      "type": "string",
+      "description": "Hash or summary of the system output after human intervention."
+    },
+    "intervention_mechanism": {
+      "type": "string",
+      "description": "How the human was able to intervene (e.g., 'dashboard_button', 'api_call', 'kill_switch')."
+    },
+    "ai_system_response": {
+      "type": "string",
+      "description": "How the AI system responded to the oversight action (e.g., 'halted', 'output_suppressed', 'fallback_activated')."
+    },
+    "impact_assessment": {
+      "type": "string",
+      "description": "Assessment of the impact of the oversight action."
+    },
+    "follow_up_required": {
+      "type": "boolean",
+      "description": "Whether follow-up actions are required."
+    },
+    "follow_up_description": {
+      "type": "string",
+      "description": "Description of required follow-up actions."
+    }
+  },
+  "additionalProperties": true
+}

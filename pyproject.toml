@@ -17,7 +17,7 @@ description = "Relay v0.1 OSS workspace root (not published)."
 requires-python = ">=3.12"
 
 [tool.uv.workspace]
-members = ["packages/schemas", "packages/sdk-python", "packages/cli", "packages/contracts", "packages/gate", "packages/evals", "packages/verifier", "apps/local-sidecar", "apps/replay-proxy"]
+members = ["packages/schemas", "packages/sdk-python", "packages/cli", "packages/contracts", "packages/gate", "packages/evals", "packages/verifier", "packages/acef", "apps/local-sidecar", "apps/replay-proxy"]
 
 [tool.uv]
 package = false
@@ -30,6 +30,10 @@ extend-exclude = [
   # drift check (VAL-W1-035) enforces byte-equal sync. Do NOT hand-edit; do
   # NOT auto-format via ruff (would itself trigger drift).
   "packages/sdk-python/relay/_generated",
+  # W11.1 vendored ACEF tree (chandlercvaughn/ACEF @ 57e1d14e). Byte-immutable
+  # outside the vendor-update workflow; ruff lint or format would mutate the
+  # tree and trip the vendor-drift guard (VAL-W11-001, VAL-W11-004).
+  "packages/acef/upstream",
 ]
 
 [tool.ruff.lint]
@@ -47,6 +51,7 @@ testpaths = [
   "packages/gate/tests",
   "packages/evals/tests",
   "packages/verifier/tests",
+  "packages/acef/tests",
   "apps/local-sidecar/tests",
   "apps/replay-proxy/tests",
 ]

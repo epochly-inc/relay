@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/dataset_card.schema.json",
+  "title": "ACEF Dataset Card Payload",
+  "description": "Payload schema for dataset_card records. Captures training, validation, and test dataset documentation per EU AI Act Art. 10 and NIST MAP. Documents dataset characteristics, representativeness, known limitations, and quality assessments.",
+  "type": "object",
+  "required": ["dataset_name", "dataset_version", "source", "modality"],
+  "properties": {
+    "dataset_name": {
+      "type": "string",
+      "description": "Human-readable name of the dataset."
+    },
+    "dataset_version": {
+      "type": "string",
+      "description": "Version identifier of the dataset."
+    },
+    "source": {
+      "type": "string",
+      "description": "Source or origin of the dataset (e.g., organization name, URL, data collection campaign)."
+    },
+    "modality": {
+      "type": "string",
+      "description": "Primary data modality.",
+      "enum": ["text", "image", "audio", "video", "tabular", "multimodal"]
+    },
+    "purpose": {
+      "type": "string",
+      "description": "Purpose of this dataset in the AI system lifecycle.",
+      "enum": ["training", "validation", "testing", "fine_tuning", "evaluation", "calibration", "other"]
+    },
+    "size": {
+      "type": "object",
+      "description": "Dataset size information.",
+      "properties": {
+        "records": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of records or samples."
+        },
+        "size_gb": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Size in gigabytes."
+        }
+      },
+      "additionalProperties": true
+    },
+    "collection_methodology": {
+      "type": "string",
+      "description": "How the dataset was collected (e.g., web scraping, surveys, sensor data, licensed feeds)."
+    },
+    "collection_date_range": {
+      "type": "object",
+      "description": "Date range of data collection.",
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date",
+          "description": "Start date of data collection (ISO 8601)."
+        },
+        "end": {
+          "type": "string",
+          "format": "date",
+          "description": "End date of data collection (ISO 8601)."
+        }
+      },
+      "additionalProperties": true
+    },
+    "representativeness_assessment": {
+      "type": "string",
+      "description": "Assessment of whether the dataset is relevant, representative, error-free, and complete for its intended purpose (EU AI Act Art. 10 requirements)."
+    },
+    "geographic_coverage": {
+      "type": "array",
+      "description": "Geographic regions represented in the dataset.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "demographic_coverage": {
+      "type": "array",
+      "description": "Demographic groups represented or covered in the dataset.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "language_coverage": {
+      "type": "array",
+      "description": "Languages represented in the dataset (BCP 47 tags).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "known_limitations": {
+      "type": "array",
+      "description": "Known limitations, biases, or gaps in the dataset.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "quality_checks_performed": {
+      "type": "array",
+      "description": "Data quality checks that were performed.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "check_name": {
+            "type": "string",
+            "description": "Name of the quality check."
+          },
+          "result": {
+            "type": "string",
+            "description": "Result or outcome of the check."
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "description": "Date the check was performed."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "bias_mitigation_methods": {
+      "type": "array",
+      "description": "Methods used to detect and mitigate bias in the dataset.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "curation_steps": {
+      "type": "array",
+      "description": "Data curation steps performed (filtering, deduplication, cleaning, etc.).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "annotation_methodology": {
+      "type": "string",
+      "description": "How the dataset was annotated or labeled, if applicable."
+    },
+    "ethical_review": {
+      "type": "string",
+      "description": "Whether and how an ethical review of the dataset was conducted."
+    },
+    "license": {
+      "type": "string",
+      "description": "License under which the dataset is used."
+    },
+    "personal_data_present": {
+      "type": "boolean",
+      "description": "Whether the dataset contains personal data."
+    },
+    "personal_data_handling": {
+      "type": "string",
+      "description": "How personal data in the dataset is handled (anonymization, pseudonymization, consent, etc.)."
+    }
+  },
+  "additionalProperties": true
+}

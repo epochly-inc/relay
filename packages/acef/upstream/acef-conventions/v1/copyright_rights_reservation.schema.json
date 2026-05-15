@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/copyright_rights_reservation.schema.json",
+  "title": "ACEF Copyright Rights Reservation Payload",
+  "description": "Payload schema for copyright_rights_reservation records. Captures evidence of TDM opt-out compliance, rights reservation signal detection, and removal/exclusion processes per GPAI Art. 53, EU DSM Directive Art. 4(3), US Copyright Office guidance, and UK anticipated requirements.",
+  "type": "object",
+  "required": ["opt_out_detection_method"],
+  "properties": {
+    "opt_out_detection_method": {
+      "type": "string",
+      "description": "Method used to detect opt-out signals (e.g., 'robots_txt_and_tdmrep', 'http_headers', 'manual_review')."
+    },
+    "tdmrep_protocol_version": {
+      "type": "string",
+      "description": "Version of the W3C TDM Reservation Protocol used for detection."
+    },
+    "removal_process": {
+      "type": "string",
+      "description": "Process for removing or excluding content from rights-reserved sources (e.g., 'automated_pipeline_with_manual_review')."
+    },
+    "compliance_verification_date": {
+      "type": "string",
+      "description": "Date the opt-out compliance was verified (ISO 8601).",
+      "format": "date"
+    },
+    "reserved_works_removed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of reserved works that were removed or excluded from the dataset."
+    },
+    "opt_out_signals_detected": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of opt-out signals detected during the compliance check."
+    },
+    "detection_methods": {
+      "type": "array",
+      "description": "All detection methods used in the compliance check.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string",
+            "description": "Detection method name (e.g., 'robots_txt', 'tdmrep', 'http_x_robots_tag')."
+          },
+          "signals_found": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of opt-out signals found via this method."
+          },
+          "coverage": {
+            "type": "string",
+            "description": "Coverage of this detection method (e.g., 'all_web_sources', 'top_10_percent_domains')."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "crawler_identifiers": {
+      "type": "array",
+      "description": "Crawler identifiers used for web scraping (for GPAI transparency requirements).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "crawl_timing_windows": {
+      "type": "array",
+      "description": "Time windows during which web crawling occurred.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date",
+            "description": "Start of the crawl window."
+          },
+          "end": {
+            "type": "string",
+            "format": "date",
+            "description": "End of the crawl window."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "top_domains_crawled": {
+      "type": "array",
+      "description": "Top domains crawled (for GPAI transparency, typically top 10%).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "complaint_mechanism": {
+      "type": "object",
+      "description": "Complaint handling mechanism for rights holders.",
+      "properties": {
+        "process_description": {
+          "type": "string",
+          "description": "Description of the complaint process."
+        },
+        "contact": {
+          "type": "string",
+          "description": "Contact information for complaints."
+        },
+        "response_sla": {
+          "type": "string",
+          "description": "Service level agreement for responding to complaints."
+        }
+      },
+      "additionalProperties": true
+    },
+    "output_guardrails": {
+      "type": "object",
+      "description": "Methods for preventing infringing outputs.",
+      "properties": {
+        "methods": {
+          "type": "array",
+          "description": "Guardrail methods implemented.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "testing_results": {
+          "type": "string",
+          "description": "Results of guardrail effectiveness testing."
+        }
+      },
+      "additionalProperties": true
+    },
+    "memorization_mitigation": {
+      "type": "object",
+      "description": "Methods for detecting and mitigating memorization/regurgitation risks.",
+      "properties": {
+        "detection_methods": {
+          "type": "array",
+          "description": "Detection methods used.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "test_results": {
+          "type": "string",
+          "description": "Results of memorization detection testing."
+        },
+        "guardrails_implemented": {
+          "type": "array",
+          "description": "Guardrails implemented to prevent memorization.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "legal_defensibility_record": {
+      "type": "object",
+      "description": "Record supporting legal defensibility (US Copyright Office context).",
+      "properties": {
+        "fair_use_analysis": {
+          "type": "string",
+          "description": "Fair use analysis documentation."
+        },
+        "transformative_purpose": {
+          "type": "string",
+          "description": "Documentation of transformative purpose."
+        },
+        "guardrail_effectiveness_evidence": {
+          "type": "string",
+          "description": "Evidence of guardrail effectiveness."
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -115,6 +115,8 @@ _BASE_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = (
     "packages/schemas/python/tests",
     "packages/evals/tests",
     "packages/verifier/tests",
+    "packages/acef/tests",
+    "packages/acef/upstream",
     "apps/local-sidecar/tests",
     "apps/replay-proxy/tests",
     # Generated codegen

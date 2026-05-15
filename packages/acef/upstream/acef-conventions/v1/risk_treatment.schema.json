@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/risk_treatment.schema.json",
+  "title": "ACEF Risk Treatment Payload",
+  "description": "Payload schema for risk_treatment records. Captures mitigation and control measures per EU AI Act Art. 9 and NIST MANAGE. Supports the risk_testing_log variant via the treatment_subtype discriminator field.",
+  "type": "object",
+  "required": ["risk_id", "treatment_type", "control_description", "implementation_status"],
+  "properties": {
+    "risk_id": {
+      "type": "string",
+      "description": "Reference to the risk_register entry this treatment addresses."
+    },
+    "treatment_type": {
+      "type": "string",
+      "description": "Type of risk treatment applied.",
+      "enum": ["eliminate", "reduce", "mitigate", "accept", "transfer"]
+    },
+    "control_description": {
+      "type": "string",
+      "description": "Detailed description of the control or mitigation measure."
+    },
+    "implementation_status": {
+      "type": "string",
+      "description": "Current implementation status of the treatment.",
+      "enum": ["planned", "in_progress", "implemented", "verified", "retired"]
+    },
+    "implementation_date": {
+      "type": "string",
+      "description": "Date the treatment was implemented (ISO 8601).",
+      "format": "date"
+    },
+    "responsible_party": {
+      "type": "string",
+      "description": "Person or team responsible for implementing and maintaining this treatment."
+    },
+    "effectiveness_assessment": {
+      "type": "string",
+      "description": "Assessment of how effective this treatment is at reducing the risk."
+    },
+    "effectiveness_rating": {
+      "type": "string",
+      "description": "Rated effectiveness of the treatment.",
+      "enum": ["not_assessed", "ineffective", "partially_effective", "effective", "highly_effective"]
+    },
+    "verification_method": {
+      "type": "string",
+      "description": "How the treatment's effectiveness is verified."
+    },
+    "verification_date": {
+      "type": "string",
+      "description": "Date of the last effectiveness verification (ISO 8601).",
+      "format": "date"
+    },
+    "review_cycle_days": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How frequently this treatment is reviewed, in days."
+    },
+    "treatment_subtype": {
+      "type": "string",
+      "description": "Discriminator for payload variants. 'testing_log' for risk_testing_log variant."
+    },
+    "test_method": {
+      "type": "string",
+      "description": "Testing method used (for risk_testing_log variant)."
+    },
+    "test_results": {
+      "type": "string",
+      "description": "Results of the risk treatment testing (for risk_testing_log variant)."
+    },
+    "test_date": {
+      "type": "string",
+      "description": "Date of the test (ISO 8601, for risk_testing_log variant).",
+      "format": "date"
+    },
+    "cost_estimate": {
+      "type": "string",
+      "description": "Estimated cost of implementing and maintaining this treatment."
+    },
+    "residual_risk_after_treatment": {
+      "type": "string",
+      "description": "Expected residual risk level after this treatment is applied.",
+      "enum": ["low", "medium", "high", "critical"]
+    }
+  },
+  "additionalProperties": true
+}

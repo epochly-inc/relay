@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACEF Provision Rollup Algorithm</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  .header {
+    text-align: center;
+    padding: 40px 20px 20px;
+  }
+  .header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: #f8fafc;
+    margin-bottom: 8px;
+  }
+  .header p {
+    font-size: 15px;
+    color: #94a3b8;
+    max-width: 700px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+
+  .context-bar {
+    max-width: 900px;
+    margin: 24px auto 0;
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 20px 28px;
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+  }
+  .context-bar .icon {
+    font-size: 24px;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .context-bar .text {
+    font-size: 14px;
+    color: #cbd5e1;
+    line-height: 1.65;
+  }
+  .context-bar .text strong { color: #f1f5f9; }
+
+  .main {
+    max-width: 900px;
+    margin: 32px auto;
+    padding: 0 20px 60px;
+    position: relative;
+  }
+
+  /* The vertical connector line */
+  .flow-line {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: linear-gradient(to bottom, #334155 0%, #334155 100%);
+    transform: translateX(-50%);
+    z-index: 0;
+  }
+
+  /* Input block at top */
+  .input-block {
+    position: relative;
+    z-index: 1;
+    background: linear-gradient(135deg, #1e3a5f, #1e293b);
+    border: 1px solid #3b82f6;
+    border-radius: 14px;
+    padding: 24px 28px;
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .input-block h3 {
+    font-size: 16px;
+    color: #93c5fd;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+  }
+  .input-block p {
+    font-size: 14px;
+    color: #cbd5e1;
+    line-height: 1.6;
+  }
+  .input-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 14px;
+  }
+  .input-pills span {
+    background: #1e293b;
+    border: 1px solid #475569;
+    border-radius: 20px;
+    padding: 5px 14px;
+    font-size: 12px;
+    color: #94a3b8;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  /* Arrow between blocks */
+  .arrow-down {
+    text-align: center;
+    padding: 6px 0;
+    position: relative;
+    z-index: 1;
+  }
+  .arrow-down svg {
+    display: block;
+    margin: 0 auto;
+  }
+
+  /* Step card */
+  .step {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 60px 1fr 180px;
+    gap: 0;
+    margin-bottom: 6px;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #334155;
+    transition: all 0.25s ease;
+    cursor: default;
+  }
+  .step:hover {
+    border-color: #64748b;
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  }
+
+  .step-num {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 800;
+    color: rgba(255,255,255,0.15);
+    background: rgba(0,0,0,0.2);
+  }
+
+  .step-body {
+    padding: 18px 20px;
+    background: #1e293b;
+  }
+  .step-question {
+    font-size: 14px;
+    font-weight: 600;
+    color: #f1f5f9;
+    margin-bottom: 6px;
+  }
+  .step-detail {
+    font-size: 12.5px;
+    color: #94a3b8;
+    line-height: 1.5;
+  }
+
+  .step-outcome {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  /* Outcome colors */
+  .outcome-not-assessed { background: #1e1b2e; color: #a78bfa; border-left: 3px solid #7c3aed; }
+  .outcome-skipped { background: #1b2433; color: #93c5fd; border-left: 3px solid #3b82f6; }
+  .outcome-gap { background: #1f2419; color: #bef264; border-left: 3px solid #84cc16; }
+  .outcome-not-satisfied { background: #2a1215; color: #fca5a5; border-left: 3px solid #ef4444; }
+  .outcome-partial { background: #2a2010; color: #fcd34d; border-left: 3px solid #f59e0b; }
+  .outcome-satisfied-info { background: #0f2a1a; color: #6ee7b7; border-left: 3px solid #10b981; }
+  .outcome-satisfied { background: #0f2a1a; color: #6ee7b7; border-left: 3px solid #10b981; }
+
+  /* Yes/No branch labels */
+  .branch-labels {
+    display: flex;
+    justify-content: center;
+    gap: 80px;
+    padding: 4px 0;
+    position: relative;
+    z-index: 1;
+  }
+  .branch-yes {
+    font-size: 11px;
+    font-weight: 700;
+    color: #f87171;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    background: rgba(248,113,113,0.1);
+    padding: 3px 12px;
+    border-radius: 10px;
+  }
+  .branch-no {
+    font-size: 11px;
+    font-weight: 700;
+    color: #4ade80;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    background: rgba(74,222,128,0.1);
+    padding: 3px 12px;
+    border-radius: 10px;
+  }
+
+  /* Output block */
+  .output-block {
+    position: relative;
+    z-index: 1;
+    background: linear-gradient(135deg, #14532d, #1e293b);
+    border: 1px solid #22c55e;
+    border-radius: 14px;
+    padding: 24px 28px;
+    text-align: center;
+    margin-top: 10px;
+  }
+  .output-block h3 {
+    font-size: 16px;
+    color: #86efac;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+  }
+  .output-block p {
+    font-size: 14px;
+    color: #cbd5e1;
+    line-height: 1.6;
+  }
+
+  /* Legend */
+  .legend {
+    max-width: 900px;
+    margin: 0 auto 40px;
+    padding: 0 20px;
+  }
+  .legend h3 {
+    font-size: 14px;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 16px;
+  }
+  .legend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 10px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: #1e293b;
+    border-radius: 8px;
+    padding: 12px 14px;
+    border: 1px solid #334155;
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 4px;
+  }
+  .legend-item .label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #e2e8f0;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .legend-item .desc {
+    font-size: 12px;
+    color: #94a3b8;
+    line-height: 1.4;
+    margin-top: 2px;
+  }
+
+  /* Scenario panel */
+  .scenario-panel {
+    max-width: 900px;
+    margin: 0 auto 40px;
+    padding: 0 20px;
+  }
+  .scenario-panel h3 {
+    font-size: 14px;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 16px;
+  }
+  .scenarios {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .scenario {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    padding: 16px 18px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .scenario:hover {
+    border-color: #64748b;
+    background: #253044;
+  }
+  .scenario.active {
+    border-color: #3b82f6;
+    background: #1e3350;
+  }
+  .scenario .s-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f1f5f9;
+    margin-bottom: 6px;
+  }
+  .scenario .s-desc {
+    font-size: 12px;
+    color: #94a3b8;
+    line-height: 1.5;
+  }
+  .scenario .s-result {
+    margin-top: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    letter-spacing: 0.5px;
+  }
+
+  /* Highlight animation */
+  .step.highlighted {
+    border-color: #fbbf24 !important;
+    box-shadow: 0 0 20px rgba(251,191,36,0.2);
+  }
+  .step.dimmed {
+    opacity: 0.35;
+  }
+  .step.stop-here .step-outcome {
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+
+  @media (max-width: 700px) {
+    .step { grid-template-columns: 44px 1fr 120px; }
+    .scenarios { grid-template-columns: 1fr; }
+    .step-outcome { font-size: 11px; padding: 8px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>ACEF Provision Rollup Algorithm</h1>
+  <p>How the SDK turns individual rule results into a single compliance verdict for each regulatory provision. The algorithm checks conditions top-to-bottom and stops at the first match.</p>
+</div>
+
+<div class="context-bar">
+  <div class="icon">&#x1f4cb;</div>
+  <div class="text">
+    <strong>What is a "provision"?</strong> A provision is a specific legal requirement — like EU AI Act Article 9 (risk management) or Article 13 (transparency). Each provision has multiple rules that check for specific evidence. After all rules run, this algorithm collapses their results into one verdict. Click a scenario below the diagram to see the algorithm trace through a real example.
+  </div>
+</div>
+
+<div class="scenario-panel" style="margin-top: 32px;">
+  <h3>Walk-Through Scenarios — click one</h3>
+  <div class="scenarios">
+    <div class="scenario" data-stop="7" onclick="activateScenario(this, 7)">
+      <div class="s-label">Full Compliance</div>
+      <div class="s-desc">All rules passed, no warnings, no gaps. Falls through every check to Step 7.</div>
+      <div class="s-result" style="color: #6ee7b7;">&#x2192; SATISFIED</div>
+    </div>
+    <div class="scenario" data-stop="4" onclick="activateScenario(this, 4)">
+      <div class="s-label">Missing Risk Register</div>
+      <div class="s-desc">A fail-severity rule found no risk_register record. Caught at Step 4.</div>
+      <div class="s-result" style="color: #fca5a5;">&#x2192; NOT_SATISFIED</div>
+    </div>
+    <div class="scenario" data-stop="3" onclick="activateScenario(this, 3)">
+      <div class="s-label">Known Gap with Plan</div>
+      <div class="s-desc">Team filed an evidence_gap record with a remediation plan. Caught at Step 3.</div>
+      <div class="s-result" style="color: #bef264;">&#x2192; GAP_ACKNOWLEDGED</div>
+    </div>
+    <div class="scenario" data-stop="5" onclick="activateScenario(this, 5)">
+      <div class="s-label">Stale Evaluation Report</div>
+      <div class="s-desc">All mandatory rules pass, but evidence_freshness warning fails. Caught at Step 5.</div>
+      <div class="s-result" style="color: #fcd34d;">&#x2192; PARTIALLY_SATISFIED</div>
+    </div>
+    <div class="scenario" data-stop="1" onclick="activateScenario(this, 1)">
+      <div class="s-label">Broken Rule Definition</div>
+      <div class="s-desc">A rule has a malformed JSON pointer — engine can't evaluate. Caught at Step 1.</div>
+      <div class="s-result" style="color: #a78bfa;">&#x2192; NOT_ASSESSED</div>
+    </div>
+    <div class="scenario" data-stop="2" onclick="activateScenario(this, 2)">
+      <div class="s-label">Future Regulation</div>
+      <div class="s-desc">Provision effective date is 2027-01-01, evaluation is today. Caught at Step 2.</div>
+      <div class="s-result" style="color: #93c5fd;">&#x2192; SKIPPED</div>
+    </div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="flow-line"></div>
+
+  <!-- Input -->
+  <div class="input-block">
+    <h3>Input: Rule Results for One Provision</h3>
+    <p>All rules for this provision have been evaluated. Each returned one of:</p>
+    <div class="input-pills">
+      <span>PASSED</span>
+      <span>FAILED (severity: fail)</span>
+      <span>FAILED (severity: warning)</span>
+      <span>FAILED (severity: info)</span>
+      <span>ERROR</span>
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <svg width="20" height="24" viewBox="0 0 20 24"><path d="M10 0 L10 18 M4 14 L10 22 L16 14" stroke="#475569" stroke-width="2" fill="none"/></svg>
+  </div>
+
+  <!-- Step 1 -->
+  <div class="step" id="step-1">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <div class="step-question">Did a fatal error occur during evaluation?</div>
+      <div class="step-detail">ACEF-040 through ACEF-045: invalid JSON pointer, duplicate rule_id, bad regex, etc. The engine itself broke — it can't produce a reliable result.</div>
+    </div>
+    <div class="step-outcome outcome-not-assessed">NOT_<br>ASSESSED</div>
+  </div>
+  <div class="branch-labels"><span class="branch-yes">Yes &#x2192; stop</span><span class="branch-no">No &#x2193; continue</span></div>
+
+  <!-- Step 2 -->
+  <div class="step" id="step-2">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <div class="step-question">Is the provision's effective date in the future?</div>
+      <div class="step-detail">Some provisions haven't taken effect yet (e.g., EU AI Act transitional periods). No point assessing compliance with a rule that isn't active.</div>
+    </div>
+    <div class="step-outcome outcome-skipped">SKIPPED</div>
+  </div>
+  <div class="branch-labels"><span class="branch-yes">Yes &#x2192; stop</span><span class="branch-no">No &#x2193; continue</span></div>
+
+  <!-- Step 3 -->
+  <div class="step" id="step-3">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <div class="step-question">Does an evidence_gap record exist for this provision?</div>
+      <div class="step-detail">The organization explicitly documented "we know we don't have this evidence yet" and filed a remediation plan. Honest disclosure, not a silent failure.</div>
+    </div>
+    <div class="step-outcome outcome-gap">GAP_<br>ACKNOWLEDGED</div>
+  </div>
+  <div class="branch-labels"><span class="branch-yes">Yes &#x2192; stop</span><span class="branch-no">No &#x2193; continue</span></div>
+
+  <!-- Step 4 -->
+  <div class="step" id="step-4">
+    <div class="step-num">4</div>
+    <div class="step-body">
+      <div class="step-question">Did any mandatory rule fail?</div>
+      <div class="step-detail">Rules with <strong>severity: "fail"</strong> are hard requirements. If a risk register is required and missing, or an evaluation report lacks required fields — this is a compliance gap.</div>
+    </div>
+    <div class="step-outcome outcome-not-satisfied">NOT_<br>SATISFIED</div>
+  </div>
+  <div class="branch-labels"><span class="branch-yes">Yes &#x2192; stop</span><span class="branch-no">No &#x2193; continue</span></div>
+
+  <!-- Step 5 -->
+  <div class="step" id="step-5">
+    <div class="step-num">5</div>
+    <div class="step-body">
+      <div class="step-question">Did any warning-level rule fail?</div>
+      <div class="step-detail">Rules with <strong>severity: "warning"</strong> are recommended practices. You meet the hard requirements but a best practice is missing — like evidence being older than recommended.</div>
+    </div>
+    <div class="step-outcome outcome-partial">PARTIALLY_<br>SATISFIED</div>
+  </div>
+  <div class="branch-labels"><span class="branch-yes">Yes &#x2192; stop</span><span class="branch-no">No &#x2193; continue</span></div>
+
+  <!-- Step 6 -->
+  <div class="step" id="step-6">
+    <div class="step-num">6</div>
+    <div class="step-body">
+      <div class="step-question">Were there only info-level observations?</div>
+      <div class="step-detail">Rules with <strong>severity: "info"</strong> are purely informational — they never block compliance. Notes like "consider adding more detail to dataset cards."</div>
+    </div>
+    <div class="step-outcome outcome-satisfied-info">SATISFIED</div>
+  </div>
+  <div class="branch-labels"><span class="branch-yes">Yes &#x2192; stop</span><span class="branch-no">No &#x2193; continue</span></div>
+
+  <!-- Step 7 -->
+  <div class="step" id="step-7">
+    <div class="step-num">7</div>
+    <div class="step-body">
+      <div class="step-question">All rules passed with zero violations</div>
+      <div class="step-detail">Every rule — mandatory, warning, and info — returned PASSED. Full compliance with this provision. This is the only path that means "everything checks out."</div>
+    </div>
+    <div class="step-outcome outcome-satisfied">SATISFIED</div>
+  </div>
+
+  <div class="arrow-down">
+    <svg width="20" height="24" viewBox="0 0 20 24"><path d="M10 0 L10 18 M4 14 L10 22 L16 14" stroke="#475569" stroke-width="2" fill="none"/></svg>
+  </div>
+
+  <!-- Output -->
+  <div class="output-block">
+    <h3>Output: Single Provision Outcome</h3>
+    <p>This outcome is written into the Assessment Bundle's <code style="background:#14532d;padding:2px 6px;border-radius:4px;font-size:13px;">provision_summary</code> — one verdict per provision, per subject.</p>
+  </div>
+</div>
+
+<div class="legend">
+  <h3>Outcome Reference</h3>
+  <div class="legend-grid">
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#7c3aed;"></div>
+      <div>
+        <div class="label">NOT_ASSESSED</div>
+        <div class="desc">Engine error — can't determine compliance</div>
+      </div>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#3b82f6;"></div>
+      <div>
+        <div class="label">SKIPPED</div>
+        <div class="desc">Provision not yet in effect</div>
+      </div>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#84cc16;"></div>
+      <div>
+        <div class="label">GAP_ACKNOWLEDGED</div>
+        <div class="desc">Missing evidence, but documented with a plan</div>
+      </div>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#ef4444;"></div>
+      <div>
+        <div class="label">NOT_SATISFIED</div>
+        <div class="desc">Mandatory rule failed — compliance gap</div>
+      </div>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#f59e0b;"></div>
+      <div>
+        <div class="label">PARTIALLY_SATISFIED</div>
+        <div class="desc">Mandatory rules pass, but warnings present</div>
+      </div>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#10b981;"></div>
+      <div>
+        <div class="label">SATISFIED</div>
+        <div class="desc">Full compliance — all checks passed</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function activateScenario(el, stopStep) {
+  // Toggle active scenario
+  document.querySelectorAll('.scenario').forEach(s => s.classList.remove('active'));
+  el.classList.add('active');
+
+  // Reset all steps
+  document.querySelectorAll('.step').forEach(s => {
+    s.classList.remove('highlighted', 'dimmed', 'stop-here');
+  });
+
+  // Highlight the path
+  for (let i = 1; i <= 7; i++) {
+    const step = document.getElementById('step-' + i);
+    if (i < stopStep) {
+      step.classList.add('highlighted');
+    } else if (i === stopStep) {
+      step.classList.add('highlighted', 'stop-here');
+    } else {
+      step.classList.add('dimmed');
+    }
+  }
+
+  // Scroll to the stop step
+  const target = document.getElementById('step-' + stopStep);
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+</script>
+
+</body>
+</html>

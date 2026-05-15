@@ -1,0 +1,207 @@
+{
+  "template_id": "iso-iec-23894-2023",
+  "template_name": "ISO/IEC 23894:2023 — Guidance on AI Risk Management",
+  "version": "1.0.0",
+  "jurisdiction": "International",
+  "source_legislation": "ISO/IEC 23894:2023 Information technology — Artificial intelligence — Guidance on risk management",
+  "instrument_type": "standard",
+  "legal_force": "voluntary",
+  "instrument_status": "final",
+  "default_effective_date": null,
+  "superseded_by": null,
+  "applicable_system_types": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+  "provisions": [
+    {
+      "provision_id": "iso23894-context",
+      "provision_name": "Scope and Context Establishment",
+      "normative_text_ref": "ISO/IEC 23894:2023 Clause 6.3",
+      "description": "The organization shall establish the external and internal context of AI risk management, defining the scope, risk criteria, and risk appetite for AI systems, and documenting the organizational environment in which AI risks are assessed",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "iso23894-context.6.3.1",
+          "normative_text_ref": "ISO/IEC 23894:2023 Clause 6.3.1",
+          "description": "Understanding the organization's external and internal context for AI risk management"
+        },
+        {
+          "provision_id": "iso23894-context.6.3.2",
+          "normative_text_ref": "ISO/IEC 23894:2023 Clause 6.3.2",
+          "description": "Defining risk criteria including impact scales, likelihood criteria, and risk thresholds for AI systems"
+        }
+      ],
+      "required_evidence_types": [
+        "risk_register"
+      ],
+      "minimum_evidence_count": {
+        "risk_register": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso23894-ctx-risk-register",
+          "rule": "has_record_type",
+          "params": {"type": "risk_register", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_register record is required — ISO/IEC 23894 Clause 6.3 mandates documented scope and context establishment for AI risk management including risk criteria and organizational context"
+        },
+        {
+          "rule_id": "iso23894-ctx-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "risk_register", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Risk register records should be linked to a subject entity to establish which AI system the risk context applies to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "iso23894-assessment",
+      "provision_name": "Risk Assessment",
+      "normative_text_ref": "ISO/IEC 23894:2023 Clause 6.4",
+      "description": "The organization shall perform AI risk assessment including risk identification, risk analysis (determining likelihood and consequences), and risk evaluation (comparing analysis results against risk criteria to determine acceptability)",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "iso23894-assessment.6.4.1",
+          "normative_text_ref": "ISO/IEC 23894:2023 Clause 6.4.1",
+          "description": "AI risk identification covering AI-specific risk sources and events"
+        },
+        {
+          "provision_id": "iso23894-assessment.6.4.2",
+          "normative_text_ref": "ISO/IEC 23894:2023 Clause 6.4.2",
+          "description": "AI risk analysis determining likelihood and severity of identified risks"
+        },
+        {
+          "provision_id": "iso23894-assessment.6.4.3",
+          "normative_text_ref": "ISO/IEC 23894:2023 Clause 6.4.3",
+          "description": "AI risk evaluation comparing analysis results against established risk criteria"
+        }
+      ],
+      "required_evidence_types": [
+        "risk_register"
+      ],
+      "minimum_evidence_count": {
+        "risk_register": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso23894-assess-risk-register",
+          "rule": "has_record_type",
+          "params": {"type": "risk_register", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_register record is required — ISO/IEC 23894 Clause 6.4 mandates documented AI risk assessment with identification, analysis, and evaluation"
+        },
+        {
+          "rule_id": "iso23894-assess-likelihood",
+          "rule": "field_present",
+          "params": {"record_type": "risk_register", "field": "/payload/likelihood"},
+          "severity": "fail",
+          "message": "Every risk_register record must specify likelihood — ISO/IEC 23894 Clause 6.4.2 requires risk analysis to determine the likelihood of identified AI risks"
+        },
+        {
+          "rule_id": "iso23894-assess-severity",
+          "rule": "field_present",
+          "params": {"record_type": "risk_register", "field": "/payload/severity"},
+          "severity": "fail",
+          "message": "Every risk_register record must specify severity — ISO/IEC 23894 Clause 6.4.2 requires risk analysis to determine the severity of identified AI risks"
+        },
+        {
+          "rule_id": "iso23894-assess-category",
+          "rule": "field_present",
+          "params": {"record_type": "risk_register", "field": "/payload/category"},
+          "severity": "warning",
+          "message": "Risk register records should specify a risk category to support the risk identification and classification requirements of ISO/IEC 23894 Clause 6.4.1"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "iso23894-treatment",
+      "provision_name": "Risk Treatment",
+      "normative_text_ref": "ISO/IEC 23894:2023 Clause 6.5",
+      "description": "The organization shall select and implement AI risk treatment options, formulate a risk treatment plan, and implement selected treatments, considering the effectiveness of treatments in reducing AI-specific risks",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "risk_treatment"
+      ],
+      "minimum_evidence_count": {
+        "risk_treatment": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso23894-treat-risk-treatment",
+          "rule": "has_record_type",
+          "params": {"type": "risk_treatment", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_treatment record is required — ISO/IEC 23894 Clause 6.5 mandates documented risk treatment plans with selected treatment options and implementation status"
+        },
+        {
+          "rule_id": "iso23894-treat-type-present",
+          "rule": "field_present",
+          "params": {"record_type": "risk_treatment", "field": "/payload/treatment_type"},
+          "severity": "warning",
+          "message": "Risk treatment records should specify treatment_type (eliminate, reduce, mitigate, accept, share) to document the selected treatment option per ISO/IEC 23894"
+        },
+        {
+          "rule_id": "iso23894-treat-status",
+          "rule": "field_present",
+          "params": {"record_type": "risk_treatment", "field": "/payload/implementation_status"},
+          "severity": "warning",
+          "message": "Risk treatment records should specify implementation_status to track treatment plan execution per ISO/IEC 23894 Clause 6.5"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "iso23894-monitoring",
+      "provision_name": "Monitoring and Review",
+      "normative_text_ref": "ISO/IEC 23894:2023 Clause 6.6",
+      "description": "The organization shall monitor and review AI risk management processes and their outcomes, ensuring that risk assessments remain current and that new AI-specific risks are identified in a timely manner",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "evaluation_report"
+      ],
+      "minimum_evidence_count": {
+        "evaluation_report": 1
+      },
+      "evidence_freshness_max_days": 365,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso23894-mon-evaluation-report",
+          "rule": "has_record_type",
+          "params": {"type": "evaluation_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one evaluation_report record is required — ISO/IEC 23894 Clause 6.6 mandates documented monitoring and review of AI risk management outcomes"
+        },
+        {
+          "rule_id": "iso23894-mon-freshness",
+          "rule": "evidence_freshness",
+          "params": {"max_days": 365, "reference_date": "validation_time"},
+          "severity": "warning",
+          "message": "Monitoring and review evidence older than 1 year may not satisfy ISO/IEC 23894 Clause 6.6 requirements for timely risk monitoring and review"
+        },
+        {
+          "rule_id": "iso23894-mon-methodology",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/methodology"},
+          "severity": "warning",
+          "message": "Evaluation reports should document the monitoring methodology used for AI risk management review per ISO/IEC 23894"
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": []
+}

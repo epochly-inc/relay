@@ -1,0 +1,347 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/evaluation_report.schema.json",
+  "title": "ACEF Evaluation Report Payload",
+  "description": "Payload schema for evaluation_report records. Captures test results, benchmarks, and performance metrics per EU AI Act Art. 11/15 and NIST MEASURE. Supports gpai_annex_xi_model_doc and mark_detectability_test variants via the variant discriminator field.",
+  "type": "object",
+  "required": ["methodology"],
+  "properties": {
+    "variant": {
+      "type": "string",
+      "description": "Discriminator for payload variants. Use 'gpai_annex_xi_model_doc' for GPAI Annex XI model documentation, 'mark_detectability_test' for marking detectability test results."
+    },
+    "methodology": {
+      "type": "string",
+      "description": "Evaluation methodology used."
+    },
+    "evaluation_date": {
+      "type": "string",
+      "description": "Date the evaluation was performed (ISO 8601).",
+      "format": "date"
+    },
+    "test_datasets": {
+      "type": "array",
+      "description": "Names or references of datasets used in the evaluation.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "description": "Performance metrics measured during evaluation.",
+      "items": {
+        "type": "object",
+        "required": ["metric_name", "value"],
+        "properties": {
+          "metric_name": {
+            "type": "string",
+            "description": "Name of the metric (e.g., 'accuracy', 'f1_score', 'latency_p99')."
+          },
+          "value": {
+            "description": "Measured value of the metric.",
+            "oneOf": [
+              {"type": "number"},
+              {"type": "string"}
+            ]
+          },
+          "threshold": {
+            "description": "Threshold or target value for the metric.",
+            "oneOf": [
+              {"type": "number"},
+              {"type": "string"}
+            ]
+          },
+          "unit": {
+            "type": "string",
+            "description": "Unit of measurement (e.g., 'percent', 'milliseconds')."
+          },
+          "test_conditions": {
+            "type": "string",
+            "description": "Conditions under which the metric was measured."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "confidence_intervals": {
+      "type": "object",
+      "description": "Confidence intervals for key metrics.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "lower": {"type": "number"},
+          "upper": {"type": "number"},
+          "confidence_level": {"type": "number"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "reviewer": {
+      "type": "string",
+      "description": "Person or team that reviewed the evaluation results."
+    },
+    "independent_evaluator": {
+      "type": "string",
+      "description": "Name of independent evaluator, if applicable."
+    },
+    "results_summary": {
+      "type": "string",
+      "description": "Human-readable summary of evaluation results."
+    },
+    "limitations": {
+      "type": "array",
+      "description": "Known limitations of the evaluation.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "red_teaming_performed": {
+      "type": "boolean",
+      "description": "Whether adversarial testing / red teaming was performed."
+    },
+    "adversarial_testing": {
+      "type": "object",
+      "description": "Adversarial testing details (for systemic risk GPAI models).",
+      "properties": {
+        "methodology": {
+          "type": "string",
+          "description": "Adversarial testing methodology."
+        },
+        "attack_types": {
+          "type": "array",
+          "description": "Types of adversarial attacks tested.",
+          "items": {"type": "string"}
+        },
+        "results": {
+          "type": "string",
+          "description": "Summary of adversarial testing results."
+        },
+        "independent_evaluator": {
+          "type": "string",
+          "description": "Name of independent evaluator for adversarial testing."
+        },
+        "date": {
+          "type": "string",
+          "format": "date",
+          "description": "Date of adversarial testing."
+        }
+      },
+      "additionalProperties": true
+    },
+    "model_description": {
+      "type": "object",
+      "description": "Model description fields for gpai_annex_xi_model_doc variant (Annex XI).",
+      "properties": {
+        "release_date": {
+          "type": "string",
+          "format": "date",
+          "description": "Model release date (ISO 8601)."
+        },
+        "architecture": {
+          "type": "string",
+          "description": "Model architecture (e.g., 'decoder-only transformer')."
+        },
+        "parameter_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of parameters in the model."
+        },
+        "modalities": {
+          "type": "array",
+          "description": "Input/output modalities.",
+          "items": {"type": "string"}
+        },
+        "context_length": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum context length in tokens."
+        },
+        "license": {
+          "type": "string",
+          "description": "Model license type."
+        }
+      },
+      "additionalProperties": true
+    },
+    "training_data_summary": {
+      "type": "object",
+      "description": "Training data summary for gpai_annex_xi_model_doc variant.",
+      "properties": {
+        "content_categories": {
+          "type": "array",
+          "description": "Categories of training data content.",
+          "items": {"type": "string"}
+        },
+        "acquisition_channels": {
+          "type": "array",
+          "description": "Channels through which training data was acquired.",
+          "items": {"type": "string"}
+        },
+        "geographic_scope": {
+          "type": "array",
+          "description": "Geographic coverage of training data.",
+          "items": {"type": "string"}
+        },
+        "languages": {
+          "type": "array",
+          "description": "Languages in training data (BCP 47 tags).",
+          "items": {"type": "string"}
+        },
+        "processing_steps": {
+          "type": "array",
+          "description": "Processing steps applied to training data.",
+          "items": {"type": "string"}
+        },
+        "known_bias_mitigations": {
+          "type": "array",
+          "description": "Bias mitigation methods applied to training data.",
+          "items": {"type": "string"}
+        },
+        "quantitative_metrics": {
+          "type": "object",
+          "description": "Quantitative metrics about training data.",
+          "properties": {
+            "total_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Total number of tokens."
+            },
+            "total_size_gb": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Total size in gigabytes."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "compute_energy": {
+      "type": "object",
+      "description": "Compute and energy consumption for gpai_annex_xi_model_doc variant.",
+      "properties": {
+        "compute_resources": {
+          "type": "object",
+          "description": "Compute resources used for training.",
+          "properties": {
+            "hardware_description": {
+              "type": "string",
+              "description": "Hardware description (e.g., 'A100-class GPUs')."
+            },
+            "training_flops_estimate": {
+              "type": "string",
+              "description": "Estimated training FLOPs (scientific notation, e.g., '1.2e25')."
+            },
+            "training_duration_hours": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Training duration in hours."
+            }
+          },
+          "additionalProperties": true
+        },
+        "energy_consumption": {
+          "type": "object",
+          "description": "Energy consumption information.",
+          "properties": {
+            "kwh_estimate": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Estimated energy consumption in kWh."
+            },
+            "estimation_method": {
+              "type": "string",
+              "description": "Method used to estimate energy consumption.",
+              "enum": ["measured", "modeled", "power_draw_telemetry"]
+            },
+            "carbon_intensity_gco2eq_per_kwh": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Carbon intensity in gCO2eq per kWh."
+            },
+            "scope": {
+              "type": "string",
+              "description": "Scope of the energy measurement.",
+              "enum": ["training_only", "training_and_inference", "full_lifecycle"]
+            },
+            "uncertainty_range": {
+              "type": "string",
+              "description": "Uncertainty range for the estimate (e.g., '+/-15%')."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "evaluation_summary": {
+      "type": "object",
+      "description": "Evaluation summary for gpai_annex_xi_model_doc variant.",
+      "properties": {
+        "red_teaming_performed": {
+          "type": "boolean",
+          "description": "Whether red teaming was performed."
+        },
+        "key_metrics": {
+          "type": "object",
+          "description": "Key evaluation metrics as name-value pairs.",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "evaluation_datasets": {
+          "type": "array",
+          "description": "Datasets used for evaluation.",
+          "items": {"type": "string"}
+        },
+        "independent_evaluator": {
+          "type": "string",
+          "description": "Name of independent evaluator."
+        }
+      },
+      "additionalProperties": true
+    },
+    "publication_evidence": {
+      "type": "object",
+      "description": "Publication evidence for gpai_annex_xi_model_doc variant.",
+      "properties": {
+        "summary_published": {
+          "type": "boolean",
+          "description": "Whether the summary has been published."
+        },
+        "publication_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL where the summary is published."
+        },
+        "publication_date": {
+          "type": "string",
+          "format": "date",
+          "description": "Date of publication (ISO 8601)."
+        },
+        "publication_content_hash": {
+          "type": "string",
+          "description": "SHA-256 hash of the published summary for verifiability."
+        }
+      },
+      "additionalProperties": true
+    },
+    "marking_technique_tested": {
+      "type": "string",
+      "description": "Marking technique that was tested (for mark_detectability_test variant)."
+    },
+    "detection_accuracy": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Detection accuracy as a fraction (for mark_detectability_test variant)."
+    },
+    "robustness_results": {
+      "type": "object",
+      "description": "Robustness test results for marking detectability (for mark_detectability_test variant).",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

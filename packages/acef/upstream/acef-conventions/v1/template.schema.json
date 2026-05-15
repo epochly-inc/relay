@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/template.schema.json",
+  "title": "ACEF Regulation Mapping Template",
+  "description": "JSON Schema for regulation mapping template files. Each template declares what evidence is required for a given regulatory profile, with machine-executable evaluation rules, date scoping, and test vector references.",
+  "type": "object",
+  "required": [
+    "template_id",
+    "template_name",
+    "version",
+    "jurisdiction",
+    "source_legislation",
+    "instrument_type",
+    "legal_force",
+    "instrument_status",
+    "applicable_system_types",
+    "provisions"
+  ],
+  "properties": {
+    "template_id": {
+      "type": "string",
+      "description": "Unique template identifier (e.g., 'eu-ai-act-2024', 'nist-ai-rmf-1.0')."
+    },
+    "template_name": {
+      "type": "string",
+      "description": "Human-readable name of the regulation or standard."
+    },
+    "version": {
+      "type": "string",
+      "description": "Template version (semver).",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "jurisdiction": {
+      "type": "string",
+      "description": "Geographic jurisdiction (e.g., 'EU', 'US', 'China', 'UK', 'International')."
+    },
+    "source_legislation": {
+      "type": "string",
+      "description": "Official legislative or standard reference (e.g., 'Regulation (EU) 2024/1689')."
+    },
+    "instrument_type": {
+      "type": "string",
+      "description": "Type of regulatory instrument.",
+      "enum": ["law", "code_of_practice", "standard", "guidance", "parliamentary_report"]
+    },
+    "legal_force": {
+      "type": "string",
+      "description": "Whether the instrument is legally binding.",
+      "enum": ["binding", "voluntary", "advisory"]
+    },
+    "instrument_status": {
+      "type": "string",
+      "description": "Current status of the instrument.",
+      "enum": ["draft", "final", "superseded", "withdrawn"]
+    },
+    "default_effective_date": {
+      "type": ["string", "null"],
+      "description": "Default effective date for provisions that do not specify their own (ISO 8601 date). Null if not applicable (e.g., voluntary standards).",
+      "format": "date"
+    },
+    "superseded_by": {
+      "type": ["string", "null"],
+      "description": "Template ID of the successor template if this one is superseded."
+    },
+    "applicable_system_types": {
+      "type": "array",
+      "description": "Which system risk classifications this template applies to.",
+      "items": {
+        "type": "string",
+        "enum": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"]
+      },
+      "minItems": 1
+    },
+    "provisions": {
+      "type": "array",
+      "description": "Provisions (articles, subcategories, clauses) defined by this regulatory framework.",
+      "items": {
+        "$ref": "#/$defs/provision"
+      }
+    },
+    "test_vectors": {
+      "type": "array",
+      "description": "Paths to test vector ACEF bundles that validate template evaluation logic.",
+      "items": {
+        "type": "string",
+        "description": "Relative path to a test vector bundle directory or file."
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "provision": {
+      "type": "object",
+      "required": ["provision_id", "description"],
+      "properties": {
+        "provision_id": {
+          "type": "string",
+          "description": "Unique provision identifier using dotted notation (e.g., 'article-9', 'article-9.2.a', 'govern-1.1')."
+        },
+        "provision_name": {
+          "type": "string",
+          "description": "Human-readable name of the provision."
+        },
+        "normative_text_ref": {
+          "type": "string",
+          "description": "Reference to the exact legal or standard text (e.g., 'EU AI Act Art. 9(1)-(9)')."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the provision's requirements."
+        },
+        "effective_date": {
+          "type": ["string", "null"],
+          "description": "Date this provision becomes effective (ISO 8601 date). Overrides default_effective_date for this provision.",
+          "format": "date"
+        },
+        "applicable_to": {
+          "type": "array",
+          "description": "Which system types this provision applies to (subset of template's applicable_system_types).",
+          "items": {
+            "type": "string",
+            "enum": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"]
+          }
+        },
+        "sub_provisions": {
+          "type": "array",
+          "description": "Sub-requirements with finer granularity.",
+          "items": {
+            "$ref": "#/$defs/sub_provision"
+          }
+        },
+        "required_evidence_types": {
+          "type": "array",
+          "description": "Record types required by this provision. Syntactic sugar expanded into has_record_type rules by the reference validator.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "minimum_evidence_count": {
+          "type": "object",
+          "description": "Minimum number of records required per record type. Keys are record_type strings, values are integers.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "evidence_freshness_max_days": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum age in days for evidence to be considered fresh."
+        },
+        "retention_years": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Required retention period in years for evidence under this provision."
+        },
+        "evaluation": {
+          "type": "array",
+          "description": "Machine-executable evaluation rules for this provision.",
+          "items": {
+            "$ref": "#/$defs/evaluation_rule"
+          }
+        },
+        "evaluation_scope": {
+          "type": "string",
+          "description": "Whether this provision is evaluated per subject (default) or once for the entire package.",
+          "enum": ["subject", "package"],
+          "default": "subject"
+        },
+        "tiered_requirements": {
+          "description": "Tiered compliance requirements (e.g., GPAI Code of Practice Tier 1/2/3). Null if not applicable.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "description": "Tier-specific requirements.",
+                "additionalProperties": true
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "sub_provision": {
+      "type": "object",
+      "required": ["provision_id", "description"],
+      "properties": {
+        "provision_id": {
+          "type": "string",
+          "description": "Sub-provision identifier using dotted notation (e.g., 'article-9.2.a')."
+        },
+        "normative_text_ref": {
+          "type": "string",
+          "description": "Reference to the exact legal text."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the sub-requirement."
+        }
+      },
+      "additionalProperties": true
+    },
+    "evaluation_rule": {
+      "type": "object",
+      "required": ["rule_id", "rule", "params", "severity", "message"],
+      "properties": {
+        "rule_id": {
+          "type": "string",
+          "description": "Unique rule identifier within this template. Referenced in Assessment Bundle results."
+        },
+        "rule": {
+          "type": "string",
+          "description": "Rule operator name. Built-in operators: has_record_type, field_present, field_value, evidence_freshness, attachment_exists, entity_linked, exists_where, attachment_kind_exists, bundle_signed, record_attested. Vendor extensions use x-vendorname/operator_name namespace."
+        },
+        "params": {
+          "type": "object",
+          "description": "Operator-specific parameters. Structure depends on the rule operator.",
+          "additionalProperties": true
+        },
+        "severity": {
+          "type": "string",
+          "description": "Importance level of this rule. 'fail' = binding requirement, 'warning' = advisory, 'info' = informational.",
+          "enum": ["fail", "warning", "info"]
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable explanation shown when the rule is triggered."
+        },
+        "scope": {
+          "type": "object",
+          "description": "Optional scope filter. If present, the rule only applies to records matching ALL criteria.",
+          "properties": {
+            "risk_classifications": {
+              "type": "array",
+              "description": "Only evaluate against subjects with these risk classifications.",
+              "items": {
+                "type": "string",
+                "enum": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"]
+              }
+            },
+            "obligation_roles": {
+              "type": "array",
+              "description": "Only evaluate against records with these obligation roles.",
+              "items": {
+                "type": "string",
+                "enum": ["provider", "deployer", "importer", "distributor", "authorised_representative", "notified_body", "platform"]
+              }
+            },
+            "lifecycle_phases": {
+              "type": "array",
+              "description": "Only evaluate against records in these lifecycle phases.",
+              "items": {
+                "type": "string",
+                "enum": ["design", "development", "testing", "deployment", "monitoring", "decommission"]
+              }
+            },
+            "modalities": {
+              "type": "array",
+              "description": "Only evaluate against subjects with these modalities.",
+              "items": {
+                "type": "string",
+                "enum": ["text", "image", "audio", "video", "multimodal"]
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "condition": {
+          "type": "object",
+          "description": "Optional condition. If present and evaluates to false, the rule is skipped (not failed, not passed).",
+          "properties": {
+            "if_provision_effective": {
+              "type": "boolean",
+              "description": "If true, rule is skipped when the provision is not yet effective at evaluation_instant."
+            },
+            "if_system_type": {
+              "type": "array",
+              "description": "Rule applies only if the subject's risk_classification is in this list.",
+              "items": {
+                "type": "string",
+                "enum": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"]
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

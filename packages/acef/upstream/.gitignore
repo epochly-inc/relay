@@ -1,0 +1,47 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+venv/
+.venv/
+*.whl
+
+# Virtual environments
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Coverage
+htmlcov/
+.coverage
+coverage.json
+coverage.xml
+
+# Testing
+.pytest_cache/
+junit.xml
+
+# Logs
+*.log
+
+# Claude
+.claude/evidence/
+.claude/handoff/
+
+# Hydra
+fabric/
+hydra.toml
+.hydra-backup/
+projects/

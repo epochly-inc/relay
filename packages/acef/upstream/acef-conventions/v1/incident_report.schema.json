@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/incident_report.schema.json",
+  "title": "ACEF Incident Report Payload",
+  "description": "Payload schema for incident_report records. Captures safety and security incident documentation, notification receipts, and regulatory communication timestamps per GPAI Systemic Risk requirements (Art. 55) and NIST MANAGE.",
+  "type": "object",
+  "required": ["incident_type", "severity", "description"],
+  "properties": {
+    "incident_type": {
+      "type": "string",
+      "description": "Type of incident.",
+      "enum": [
+        "safety",
+        "security",
+        "privacy",
+        "bias",
+        "misuse",
+        "operational_failure",
+        "model_degradation",
+        "adversarial_attack",
+        "data_breach",
+        "other"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "description": "Severity classification of the incident.",
+      "enum": ["critical", "major", "minor", "informational"]
+    },
+    "description": {
+      "type": "string",
+      "description": "Detailed description of the incident."
+    },
+    "incident_id": {
+      "type": "string",
+      "description": "Organization-internal incident identifier."
+    },
+    "detection_date": {
+      "type": "string",
+      "description": "Date the incident was detected (ISO 8601).",
+      "format": "date-time"
+    },
+    "occurrence_date": {
+      "type": "string",
+      "description": "Date the incident occurred (ISO 8601), if different from detection.",
+      "format": "date-time"
+    },
+    "resolution_date": {
+      "type": ["string", "null"],
+      "description": "Date the incident was resolved (ISO 8601). Null if unresolved.",
+      "format": "date-time"
+    },
+    "root_cause_analysis": {
+      "type": "string",
+      "description": "Root cause analysis of the incident."
+    },
+    "corrective_actions": {
+      "type": "array",
+      "description": "Corrective actions taken or planned.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Description of the corrective action."
+          },
+          "status": {
+            "type": "string",
+            "description": "Status of the corrective action.",
+            "enum": ["planned", "in_progress", "completed", "verified"]
+          },
+          "responsible_party": {
+            "type": "string",
+            "description": "Person or team responsible for the action."
+          },
+          "target_date": {
+            "type": "string",
+            "format": "date",
+            "description": "Target completion date."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "affected_systems": {
+      "type": "array",
+      "description": "Systems affected by the incident.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "affected_users_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of users affected by the incident."
+    },
+    "notification_timeline": {
+      "type": "array",
+      "description": "Timeline of regulatory and stakeholder notifications (GPAI Art. 55 requires 2-15 day notification).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "recipient": {
+            "type": "string",
+            "description": "Who was notified (e.g., 'AI Office', 'national authority', 'affected users')."
+          },
+          "notification_date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Date of notification (ISO 8601)."
+          },
+          "method": {
+            "type": "string",
+            "description": "Notification method (e.g., 'formal_letter', 'portal_submission', 'email')."
+          },
+          "reference_number": {
+            "type": "string",
+            "description": "Reference number for the notification."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "ai_office_reference": {
+      "type": "string",
+      "description": "AI Office reference number for the incident report."
+    },
+    "preventive_measures": {
+      "type": "array",
+      "description": "Preventive measures implemented to avoid recurrence.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "impact_assessment": {
+      "type": "string",
+      "description": "Assessment of the impact of the incident on health, safety, or fundamental rights."
+    },
+    "regulatory_compliance_impact": {
+      "type": "string",
+      "description": "Assessment of how the incident affects regulatory compliance status."
+    },
+    "lessons_learned": {
+      "type": "string",
+      "description": "Lessons learned from the incident."
+    }
+  },
+  "additionalProperties": true
+}

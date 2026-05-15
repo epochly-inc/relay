@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/risk_register.schema.json",
+  "title": "ACEF Risk Register Payload",
+  "description": "Payload schema for risk_register records. Captures risk identification and assessment entries per EU AI Act Art. 9 and NIST MAP/MEASURE. Supports the management_review and post_market_monitoring_plan payload variants via the review_type discriminator field.",
+  "type": "object",
+  "required": ["risk_id", "description", "category"],
+  "properties": {
+    "risk_id": {
+      "type": "string",
+      "description": "Unique identifier for this risk within the organization's risk management system."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the identified risk."
+    },
+    "category": {
+      "type": "string",
+      "description": "Risk category aligned with EU AI Act Art. 9(2) and NIST AI RMF.",
+      "enum": [
+        "health",
+        "safety",
+        "fundamental_rights",
+        "validity",
+        "reliability",
+        "accountability",
+        "transparency",
+        "explainability",
+        "privacy",
+        "fairness",
+        "security",
+        "environmental",
+        "other"
+      ]
+    },
+    "likelihood": {
+      "type": "string",
+      "description": "Estimated likelihood of the risk materializing.",
+      "enum": ["rare", "unlikely", "possible", "likely", "almost_certain"]
+    },
+    "severity": {
+      "type": "string",
+      "description": "Estimated severity if the risk materializes.",
+      "enum": ["negligible", "minor", "moderate", "major", "catastrophic"]
+    },
+    "risk_level": {
+      "type": "string",
+      "description": "Overall risk level derived from likelihood and severity.",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "assessment_method": {
+      "type": "string",
+      "description": "Method used to assess this risk (e.g., 'qualitative_matrix', 'quantitative_model', 'expert_judgment')."
+    },
+    "assessment_date": {
+      "type": "string",
+      "description": "Date of the risk assessment (ISO 8601).",
+      "format": "date"
+    },
+    "identified_by": {
+      "type": "string",
+      "description": "Person or team that identified this risk (name or actor_ref URN)."
+    },
+    "status": {
+      "type": "string",
+      "description": "Current status of this risk entry.",
+      "enum": ["identified", "assessed", "mitigated", "accepted", "closed", "monitoring"]
+    },
+    "residual_risk_level": {
+      "type": "string",
+      "description": "Risk level after treatments have been applied.",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "residual_risk_justification": {
+      "type": "string",
+      "description": "Justification for accepting the residual risk level."
+    },
+    "residual_risk_approver": {
+      "type": "string",
+      "description": "Person or authority who approved the residual risk acceptance."
+    },
+    "related_risk_ids": {
+      "type": "array",
+      "description": "IDs of related risks in the register.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "review_type": {
+      "type": "string",
+      "description": "Discriminator for payload variants. 'management_review' for Art. 9 management review records, 'post_market_monitoring_plan' for post-market monitoring plans."
+    },
+    "review_date": {
+      "type": "string",
+      "description": "Date of the management review or monitoring event (ISO 8601).",
+      "format": "date"
+    },
+    "review_attendees": {
+      "type": "array",
+      "description": "List of attendees at the management review.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "review_decisions": {
+      "type": "array",
+      "description": "Decisions made during the management review.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "review_signatories": {
+      "type": "array",
+      "description": "Signatories of the management review minutes.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "monitoring_trigger_conditions": {
+      "type": "array",
+      "description": "Conditions that trigger post-market monitoring actions.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "monitoring_data_sources": {
+      "type": "array",
+      "description": "Data sources used for post-market monitoring.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "linked_risk_ids": {
+      "type": "array",
+      "description": "Risk IDs linked to this review.",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

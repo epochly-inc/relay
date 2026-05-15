@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/data_provenance.schema.json",
+  "title": "ACEF Data Provenance Payload",
+  "description": "Payload schema for data_provenance records. Captures dataset lineage, acquisition records, and chain of custody per EU AI Act Art. 10, GPAI Annex XI, US Copyright Office guidance, and UK requirements.",
+  "type": "object",
+  "required": ["acquisition_method"],
+  "properties": {
+    "acquisition_method": {
+      "type": "string",
+      "description": "How the data was acquired.",
+      "enum": ["licensed", "scraped", "public_domain", "synthetic", "user_generated", "government_open_data", "donated", "other"]
+    },
+    "acquisition_date": {
+      "type": "string",
+      "description": "Date the data was acquired (ISO 8601).",
+      "format": "date"
+    },
+    "source_uris": {
+      "type": "array",
+      "description": "URIs identifying the data sources.",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      }
+    },
+    "source_description": {
+      "type": "string",
+      "description": "Human-readable description of the data source."
+    },
+    "legal_basis": {
+      "type": "string",
+      "description": "Legal basis for the data acquisition (e.g., 'license', 'fair_use', 'public_domain', 'consent', 'legitimate_interest')."
+    },
+    "chain_of_custody": {
+      "type": "array",
+      "description": "Chain of custody documenting how the data moved from source to final use.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "description": "Description of this custody step."
+          },
+          "actor": {
+            "type": "string",
+            "description": "Person or organization responsible at this step."
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "description": "Date of this custody step (ISO 8601)."
+          },
+          "action": {
+            "type": "string",
+            "description": "Action performed (e.g., 'received', 'processed', 'transferred', 'stored')."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "opt_out_compliance": {
+      "type": "object",
+      "description": "Evidence of compliance with opt-out mechanisms (robots.txt, TDMRep, HTTP headers).",
+      "properties": {
+        "method": {
+          "type": "string",
+          "description": "Opt-out detection method used (e.g., 'robots_txt_and_http_headers', 'tdmrep', 'manual_review')."
+        },
+        "verification_date": {
+          "type": "string",
+          "format": "date",
+          "description": "Date the opt-out compliance was verified."
+        },
+        "exclusions_applied": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sources excluded due to opt-out signals."
+        }
+      },
+      "additionalProperties": true
+    },
+    "processing_steps": {
+      "type": "array",
+      "description": "Data processing steps applied after acquisition.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "data_subjects_consent": {
+      "type": "string",
+      "description": "How consent was obtained from data subjects, if applicable."
+    },
+    "geographic_origin": {
+      "type": "array",
+      "description": "Geographic regions where the data originated.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "content_categories": {
+      "type": "array",
+      "description": "Categories of content in the dataset (e.g., 'web', 'books', 'licensed_news', 'synthetic').",
+      "items": {
+        "type": "string"
+      }
+    },
+    "acquisition_channels": {
+      "type": "array",
+      "description": "Channels through which data was acquired (e.g., 'public_web_crawl', 'licensed_feeds', 'user_generated').",
+      "items": {
+        "type": "string"
+      }
+    },
+    "retention_period": {
+      "type": "string",
+      "description": "How long the source data is retained."
+    },
+    "deletion_policy": {
+      "type": "string",
+      "description": "Policy for deleting or purging source data."
+    }
+  },
+  "additionalProperties": true
+}

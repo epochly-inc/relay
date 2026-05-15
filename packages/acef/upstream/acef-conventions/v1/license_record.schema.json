@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/license_record.schema.json",
+  "title": "ACEF License Record Payload",
+  "description": "Payload schema for license_record records. Captures content licensing agreements per GPAI Copyright requirements, US Copyright Office guidance, and UK anticipated requirements.",
+  "type": "object",
+  "required": ["licensor", "content_type", "license_type"],
+  "properties": {
+    "licensor": {
+      "type": "string",
+      "description": "Name of the licensor (rights holder or licensing authority)."
+    },
+    "content_type": {
+      "type": "string",
+      "description": "Type of content covered by the license (e.g., 'text', 'image', 'audio', 'video', 'code', 'mixed')."
+    },
+    "license_type": {
+      "type": "string",
+      "description": "Type of license (e.g., 'exclusive', 'non-exclusive', 'open_source', 'creative_commons', 'custom')."
+    },
+    "license_identifier": {
+      "type": "string",
+      "description": "Standard license identifier if applicable (e.g., 'Apache-2.0', 'CC-BY-4.0', 'MIT')."
+    },
+    "scope": {
+      "type": "string",
+      "description": "Scope of the license — what the licensee is permitted to do."
+    },
+    "restrictions": {
+      "type": "array",
+      "description": "Restrictions imposed by the license.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "distribution_terms": {
+      "type": "string",
+      "description": "Terms governing distribution of licensed content or derivatives."
+    },
+    "agreement_reference": {
+      "type": "string",
+      "description": "Reference number or identifier for the licensing agreement."
+    },
+    "agreement_date": {
+      "type": "string",
+      "description": "Date the license agreement was executed (ISO 8601).",
+      "format": "date"
+    },
+    "expiration_date": {
+      "type": ["string", "null"],
+      "description": "Date the license expires (ISO 8601). Null if perpetual.",
+      "format": "date"
+    },
+    "auto_renewal": {
+      "type": "boolean",
+      "description": "Whether the license automatically renews."
+    },
+    "licensed_content_description": {
+      "type": "string",
+      "description": "Description of the specific content covered by the license."
+    },
+    "licensed_content_volume": {
+      "type": "object",
+      "description": "Volume of licensed content.",
+      "properties": {
+        "records": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of records or items."
+        },
+        "size_gb": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Size in gigabytes."
+        }
+      },
+      "additionalProperties": true
+    },
+    "permitted_uses": {
+      "type": "array",
+      "description": "Uses explicitly permitted under the license.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "prohibited_uses": {
+      "type": "array",
+      "description": "Uses explicitly prohibited under the license.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ai_training_permitted": {
+      "type": "boolean",
+      "description": "Whether the license explicitly permits use for AI/ML training."
+    },
+    "tdm_permitted": {
+      "type": "boolean",
+      "description": "Whether the license explicitly permits text and data mining."
+    },
+    "attribution_required": {
+      "type": "boolean",
+      "description": "Whether attribution is required under the license."
+    },
+    "attribution_text": {
+      "type": "string",
+      "description": "Required attribution text, if applicable."
+    },
+    "fee_structure": {
+      "type": "string",
+      "description": "Fee structure for the license (e.g., 'flat_fee', 'per_use', 'revenue_share', 'free')."
+    },
+    "territorial_scope": {
+      "type": "array",
+      "description": "Geographic territories covered by the license.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "governing_law": {
+      "type": "string",
+      "description": "Governing law of the license agreement."
+    }
+  },
+  "additionalProperties": true
+}

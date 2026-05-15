@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "epochly-relay",
+    "epochly-relay-acef",
     "epochly-relay-cli",
     "epochly-relay-contracts",
     "epochly-relay-evals",
@@ -669,6 +670,24 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'test'", specifier = ">=0.27,<0.29" },
     { name = "portalocker", specifier = ">=2.10,<3" },
     { name = "pydantic", specifier = ">=2.7,<3" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
+    { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
+]
+provides-extras = ["test"]
+
+[[package]]
+name = "epochly-relay-acef"
+version = "0.0.0"
+source = { editable = "packages/acef" }
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-timeout" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
 ]

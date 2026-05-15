@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/transparency_marking.schema.json",
+  "title": "ACEF Transparency Marking Payload",
+  "description": "Payload schema for transparency_marking records. Captures provider-side technical marking of AI-generated content per EU AI Act Art. 50, EU Labelling Code of Practice, and China CAC measures. Includes normative minimum required fields per spec Section 3.1.5. Supports the marking_standards_compliance variant via the marking_subtype discriminator field.",
+  "type": "object",
+  "required": [
+    "modality",
+    "marking_scheme_id",
+    "scheme_version",
+    "metadata_container",
+    "watermark_applied"
+  ],
+  "properties": {
+    "modality": {
+      "type": "string",
+      "description": "Output modality being marked.",
+      "enum": ["text", "image", "audio", "video", "multimodal"]
+    },
+    "marking_scheme_id": {
+      "type": "string",
+      "description": "Identifier for the marking scheme applied (e.g., 'c2pa-content-credentials', 'cn-cac-implicit-label-2025'). Enables testable verification by auditors."
+    },
+    "scheme_version": {
+      "type": "string",
+      "description": "Version of the marking scheme (e.g., '2.3')."
+    },
+    "metadata_container": {
+      "type": "string",
+      "description": "Where the marking metadata is stored (e.g., 'xmp/c2pa-manifest-store', 'exif', 'id3', 'file-header')."
+    },
+    "watermark_applied": {
+      "type": "boolean",
+      "description": "Whether a digital watermark was applied to the content."
+    },
+    "watermark_family": {
+      "type": "string",
+      "description": "Watermark technique family (e.g., 'spectral_embedding', 'robust-imperceptible')."
+    },
+    "verification_method_ref": {
+      "type": "string",
+      "description": "Pointer to the verification tool or API artifact for checking the marking."
+    },
+    "marking_parameters_ref": {
+      "type": "string",
+      "description": "Pointer to detailed marking configuration artifact."
+    },
+    "jurisdiction": {
+      "type": "string",
+      "description": "Jurisdiction for which this marking is intended (e.g., 'EU', 'CN'). Enables jurisdiction-specific marking validation."
+    },
+    "label_exception": {
+      "type": "object",
+      "description": "Exception handling for cases where explicit labels are omitted (e.g., by user request under CAC rules).",
+      "properties": {
+        "applied": {
+          "type": "boolean",
+          "description": "True if an explicit label was omitted."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Reason for the exception (e.g., 'user_requested_no_label')."
+        },
+        "log_retention_triggered": {
+          "type": "boolean",
+          "description": "True if the exception triggers additional retention obligations."
+        }
+      },
+      "additionalProperties": true
+    },
+    "marking_technique": {
+      "type": "string",
+      "description": "Marking technique applied (e.g., 'secure_metadata', 'watermark', 'digital_signature')."
+    },
+    "metadata_format": {
+      "type": "string",
+      "description": "Format of the provenance metadata (e.g., 'c2pa-manifest-v2.3')."
+    },
+    "watermark_method": {
+      "type": "string",
+      "description": "Specific watermark method used."
+    },
+    "robustness_parameters": {
+      "type": "object",
+      "description": "Robustness parameters for the marking (e.g., compression tolerance, cropping tolerance).",
+      "additionalProperties": true
+    },
+    "detection_api_endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "Endpoint for the detection/verification API."
+    },
+    "detection_confidence_threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Minimum confidence threshold for detection."
+    },
+    "interoperability_standard": {
+      "type": "string",
+      "description": "Interoperability standard the marking conforms to."
+    },
+    "marking_subtype": {
+      "type": "string",
+      "description": "Discriminator for payload variants. 'standards_compliance' for marking_standards_compliance variant."
+    },
+    "standards_applied": {
+      "type": "array",
+      "description": "Standards applied to the marking (for marking_standards_compliance variant).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "conformity_evidence": {
+      "type": "string",
+      "description": "Evidence of conformity to marking standards (for marking_standards_compliance variant)."
+    },
+    "state_of_the_art_assessment": {
+      "type": "string",
+      "description": "Assessment of state-of-the-art alignment (for marking_standards_compliance variant)."
+    },
+    "implicit_label_fields": {
+      "type": "object",
+      "description": "China CAC implicit metadata label fields.",
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "description": "Provider identifier."
+        },
+        "content_id": {
+          "type": "string",
+          "description": "Content identifier."
+        },
+        "content_type": {
+          "type": "string",
+          "description": "Content type."
+        },
+        "reference_number": {
+          "type": "string",
+          "description": "Reference number."
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

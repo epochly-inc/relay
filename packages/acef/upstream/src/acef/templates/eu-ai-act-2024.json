@@ -1,0 +1,509 @@
+{
+  "template_id": "eu-ai-act-2024",
+  "template_name": "EU Artificial Intelligence Act",
+  "version": "1.0.0",
+  "jurisdiction": "EU",
+  "source_legislation": "Regulation (EU) 2024/1689",
+  "instrument_type": "law",
+  "legal_force": "binding",
+  "instrument_status": "final",
+  "default_effective_date": "2026-08-02",
+  "superseded_by": null,
+  "applicable_system_types": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+  "provisions": [
+    {
+      "provision_id": "article-9",
+      "provision_name": "Risk Management System",
+      "normative_text_ref": "EU AI Act Art. 9(1)-(9)",
+      "description": "Continuous, iterative risk management across full lifecycle including risk identification, estimation, evaluation, elimination/reduction/mitigation, residual risk acceptance, testing, and post-market monitoring integration",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "article-9.1",
+          "normative_text_ref": "EU AI Act Art. 9(1)",
+          "description": "Establish, implement, document, and maintain a risk management system consisting of a continuous iterative process planned and run throughout the entire lifecycle of a high-risk AI system"
+        },
+        {
+          "provision_id": "article-9.2.a",
+          "normative_text_ref": "EU AI Act Art. 9(2)(a)",
+          "description": "Identification and analysis of the known and the reasonably foreseeable risks that the high-risk AI system can pose to health, safety, or fundamental rights"
+        }
+      ],
+      "required_evidence_types": [
+        "risk_register",
+        "risk_treatment"
+      ],
+      "minimum_evidence_count": {
+        "risk_register": 1,
+        "risk_treatment": 1
+      },
+      "evidence_freshness_max_days": 365,
+      "retention_years": 10,
+      "evaluation": [
+        {
+          "rule_id": "art9-risk-register",
+          "rule": "has_record_type",
+          "params": {"type": "risk_register", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_register record is required for Art. 9 compliance — risk identification and analysis must be documented"
+        },
+        {
+          "rule_id": "art9-risk-treatment",
+          "rule": "has_record_type",
+          "params": {"type": "risk_treatment", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_treatment record is required — risk elimination, reduction, or mitigation measures must be documented"
+        },
+        {
+          "rule_id": "art9-management-review",
+          "rule": "exists_where",
+          "params": {
+            "record_type": "risk_register",
+            "field": "/payload/review_type",
+            "op": "eq",
+            "value": "management_review",
+            "min_count": 1
+          },
+          "severity": "fail",
+          "message": "At least one management review record is required — Art. 9 mandates management review with signed minutes documenting decisions and linked risk IDs"
+        },
+        {
+          "rule_id": "art9-freshness",
+          "rule": "evidence_freshness",
+          "params": {"max_days": 365, "reference_date": "validation_time"},
+          "severity": "warning",
+          "message": "Risk management evidence older than 1 year may not satisfy the continuous iterative lifecycle requirement of Art. 9(1)"
+        },
+        {
+          "rule_id": "art9-post-market-monitoring",
+          "rule": "attachment_kind_exists",
+          "params": {
+            "record_type": "risk_register",
+            "attachment_type": "post_market_monitoring_plan",
+            "min_count": 1
+          },
+          "severity": "warning",
+          "message": "A post-market monitoring plan attachment should be present — Art. 9(4) requires integration of post-market monitoring data into risk management"
+        },
+        {
+          "rule_id": "art9-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "risk_register", "entity_type": "subject"},
+          "severity": "fail",
+          "message": "Every risk_register record must be linked to a subject entity to establish which AI system the risk applies to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "article-10",
+      "provision_name": "Data Governance",
+      "normative_text_ref": "EU AI Act Art. 10(1)-(6)",
+      "description": "Training, validation, and testing data shall be subject to data governance and management practices covering design choices, data collection processes, data preparation, bias examination, and gap identification",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "data_provenance",
+        "dataset_card"
+      ],
+      "minimum_evidence_count": {
+        "data_provenance": 1,
+        "dataset_card": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 10,
+      "evaluation": [
+        {
+          "rule_id": "art10-data-provenance",
+          "rule": "has_record_type",
+          "params": {"type": "data_provenance", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one data_provenance record is required — Art. 10 mandates documentation of data source, acquisition method, and chain of custody"
+        },
+        {
+          "rule_id": "art10-dataset-card",
+          "rule": "has_record_type",
+          "params": {"type": "dataset_card", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one dataset_card record is required — Art. 10 requires documentation of dataset characteristics, representativeness, and known limitations"
+        },
+        {
+          "rule_id": "art10-dataset-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "dataset_card", "entity_type": "dataset"},
+          "severity": "fail",
+          "message": "Every dataset_card must be linked to a dataset entity for proper traceability of data governance measures"
+        },
+        {
+          "rule_id": "art10-provenance-source",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/source_uri"},
+          "severity": "fail",
+          "message": "Every data_provenance record must specify the source_uri for traceability of training data origin"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "article-11",
+      "provision_name": "Technical Documentation",
+      "normative_text_ref": "EU AI Act Art. 11(1)-(2), Annex IV",
+      "description": "Technical documentation shall be drawn up before the high-risk AI system is placed on the market or put into service and shall be kept up-to-date, demonstrating compliance with the requirements set out in this Chapter",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "evaluation_report"
+      ],
+      "minimum_evidence_count": {
+        "evaluation_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 10,
+      "evaluation": [
+        {
+          "rule_id": "art11-evaluation-report",
+          "rule": "has_record_type",
+          "params": {"type": "evaluation_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one evaluation_report record is required — Art. 11 and Annex IV require documented system performance evaluation methods and results"
+        },
+        {
+          "rule_id": "art11-report-methodology",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/methodology"},
+          "severity": "warning",
+          "message": "Evaluation reports should document the methodology used, per Annex IV requirements for system performance evaluation methods"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "article-12",
+      "provision_name": "Record-Keeping and Automatic Logging",
+      "normative_text_ref": "EU AI Act Art. 12(1)-(4)",
+      "description": "High-risk AI systems shall technically allow for the automatic recording of events (logs) over the lifetime of the system, ensuring a level of traceability appropriate to the intended purpose",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "event_log"
+      ],
+      "minimum_evidence_count": {
+        "event_log": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 10,
+      "evaluation": [
+        {
+          "rule_id": "art12-event-log",
+          "rule": "has_record_type",
+          "params": {"type": "event_log", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one event_log record is required — Art. 12 mandates automatic recording of events throughout the system lifecycle"
+        },
+        {
+          "rule_id": "art12-event-type-present",
+          "rule": "field_present",
+          "params": {"record_type": "event_log", "field": "/payload/event_type"},
+          "severity": "fail",
+          "message": "Every event_log record must have an event_type field — Art. 12 requires categorized logging for traceability"
+        },
+        {
+          "rule_id": "art12-correlation-id-present",
+          "rule": "field_present",
+          "params": {"record_type": "event_log", "field": "/payload/correlation_id"},
+          "severity": "fail",
+          "message": "Every event_log record must have a correlation_id — Art. 12 requires traceability across related events and to human oversight actions"
+        },
+        {
+          "rule_id": "art12-logging-spec",
+          "rule": "exists_where",
+          "params": {
+            "record_type": "event_log",
+            "field": "/payload/event_type",
+            "op": "eq",
+            "value": "logging_spec",
+            "min_count": 1
+          },
+          "severity": "warning",
+          "message": "A logging_spec variant event_log record is recommended to document what the system logs and why, enabling deployers to interpret logs per Art. 12(1)"
+        },
+        {
+          "rule_id": "art12-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "event_log", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Event log records should be linked to a subject entity for traceability to the specific AI system"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "article-13",
+      "provision_name": "Transparency and Provision of Information to Deployers",
+      "normative_text_ref": "EU AI Act Art. 13(1)-(3)",
+      "description": "High-risk AI systems shall be designed and developed in such a way as to ensure that their operation is sufficiently transparent to enable deployers to interpret a system's output and use it appropriately",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "transparency_disclosure"
+      ],
+      "minimum_evidence_count": {
+        "transparency_disclosure": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 10,
+      "evaluation": [
+        {
+          "rule_id": "art13-transparency-disclosure",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_disclosure", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_disclosure record is required — Art. 13 mandates instructions for use enabling deployer compliance, including capabilities, limitations, and risk warnings"
+        },
+        {
+          "rule_id": "art13-subject-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "transparency_disclosure", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Transparency disclosures should be linked to a subject entity to identify which AI system's capabilities and limitations are documented"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "article-14",
+      "provision_name": "Human Oversight",
+      "normative_text_ref": "EU AI Act Art. 14(1)-(5)",
+      "description": "High-risk AI systems shall be designed and developed in such a way, including with appropriate human-machine interface tools, that they can be effectively overseen by natural persons during the period in which they are used",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "human_oversight_action"
+      ],
+      "minimum_evidence_count": {
+        "human_oversight_action": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 10,
+      "evaluation": [
+        {
+          "rule_id": "art14-human-oversight",
+          "rule": "has_record_type",
+          "params": {"type": "human_oversight_action", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one human_oversight_action record is required — Art. 14 mandates design for effective human oversight including intervention, override, and stop capabilities"
+        },
+        {
+          "rule_id": "art14-oversight-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "human_oversight_action", "entity_type": "actor"},
+          "severity": "warning",
+          "message": "Human oversight actions should be linked to an actor entity to establish who performed the oversight"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "article-15",
+      "provision_name": "Accuracy, Robustness, and Cybersecurity",
+      "normative_text_ref": "EU AI Act Art. 15(1)-(5)",
+      "description": "High-risk AI systems shall be designed and developed in such a way that they achieve an appropriate level of accuracy, robustness, and cybersecurity, and perform consistently in those respects throughout their lifecycle",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "evaluation_report"
+      ],
+      "minimum_evidence_count": {
+        "evaluation_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 10,
+      "evaluation": [
+        {
+          "rule_id": "art15-evaluation-report",
+          "rule": "has_record_type",
+          "params": {"type": "evaluation_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one evaluation_report record is required — Art. 15 mandates documented accuracy levels, robustness testing, and cybersecurity measures"
+        },
+        {
+          "rule_id": "art15-accuracy-metrics",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/metrics"},
+          "severity": "warning",
+          "message": "Evaluation reports should include quantified metrics for accuracy assessment per Art. 15(1)"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "article-17",
+      "provision_name": "Quality Management System",
+      "normative_text_ref": "EU AI Act Art. 17(1)",
+      "description": "Providers of high-risk AI systems shall put a quality management system in place that ensures compliance with this Regulation, covering policies, procedures, and instructions spanning the full compliance lifecycle",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "governance_policy"
+      ],
+      "minimum_evidence_count": {
+        "governance_policy": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": 10,
+      "evaluation": [
+        {
+          "rule_id": "art17-governance-policy",
+          "rule": "has_record_type",
+          "params": {"type": "governance_policy", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one governance_policy record is required — Art. 17 mandates a written quality management system with policies, procedures, and instructions"
+        },
+        {
+          "rule_id": "art17-qms-attachment",
+          "rule": "attachment_exists",
+          "params": {"record_type": "governance_policy"},
+          "severity": "warning",
+          "message": "Quality management system governance_policy records should include attached policy documents (PDF or similar)"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "article-50.2",
+      "provision_name": "Transparency - Synthetic Content Marking",
+      "normative_text_ref": "EU AI Act Art. 50(2)",
+      "description": "Providers of AI systems that generate synthetic audio, image, video, or text content shall ensure that the outputs are marked in a machine-readable format and detectable as artificially generated or manipulated",
+      "effective_date": "2026-08-02",
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "transparency_marking"
+      ],
+      "minimum_evidence_count": {
+        "transparency_marking": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "art50-marking-exists",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_marking", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_marking record is required — Art. 50(2) mandates machine-readable marking of synthetic content"
+        },
+        {
+          "rule_id": "art50-marking-scheme-id",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/marking_scheme_id"},
+          "severity": "fail",
+          "message": "Every transparency_marking record must specify marking_scheme_id — the marking standard or scheme used must be identifiable for interoperability verification"
+        },
+        {
+          "rule_id": "art50-modality",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/modality"},
+          "severity": "fail",
+          "message": "Every transparency_marking record must specify the content modality (text, image, audio, video, multimodal) for which marking is applied"
+        },
+        {
+          "rule_id": "art50-marking-technique",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/metadata_container"},
+          "severity": "warning",
+          "message": "Transparency marking records should specify the metadata_container used (e.g., C2PA manifest, EXIF, ID3) per Art. 50(2) interoperability requirements"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "article-53",
+      "provision_name": "GPAI Model Obligations",
+      "normative_text_ref": "EU AI Act Art. 53(1)",
+      "description": "Providers of general-purpose AI models shall provide technical documentation, a copyright policy compliant with Directive (EU) 2019/790, and a sufficiently detailed training data summary",
+      "effective_date": "2025-08-02",
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "data_provenance",
+        "copyright_rights_reservation"
+      ],
+      "minimum_evidence_count": {
+        "data_provenance": 1,
+        "copyright_rights_reservation": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "art53-data-provenance",
+          "rule": "has_record_type",
+          "params": {"type": "data_provenance", "min_count": 1},
+          "severity": "fail",
+          "message": "GPAI models must document training data provenance — Art. 53(1)(d) requires a sufficiently detailed summary of training data",
+          "condition": {
+            "if_system_type": ["gpai", "gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "art53-copyright",
+          "rule": "has_record_type",
+          "params": {"type": "copyright_rights_reservation", "min_count": 1},
+          "severity": "fail",
+          "message": "GPAI models must document copyright compliance — Art. 53(1)(c) requires a policy to comply with EU copyright law including TDM opt-out mechanisms",
+          "condition": {
+            "if_system_type": ["gpai", "gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "art53-annex-xi-doc",
+          "rule": "exists_where",
+          "params": {
+            "record_type": "evaluation_report",
+            "field": "/payload/variant",
+            "op": "eq",
+            "value": "gpai_annex_xi_model_doc",
+            "min_count": 1
+          },
+          "severity": "warning",
+          "message": "A gpai_annex_xi_model_doc variant evaluation_report is recommended — Annex XI requires structured technical documentation including model architecture, training data characteristics, and compute resources",
+          "condition": {
+            "if_system_type": ["gpai", "gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "art53-provenance-source-type",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/source_type"},
+          "severity": "fail",
+          "message": "Data provenance records must specify source_type (licensed, scraped, public_domain, synthetic, user_generated) per Art. 53 training data summary requirements",
+          "condition": {
+            "if_system_type": ["gpai", "gpai-systemic"]
+          }
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": [
+    "test-vectors/eu-ai-act/article-9-minimal-pass.acef/",
+    "test-vectors/eu-ai-act/article-9-minimal-fail.acef/",
+    "test-vectors/eu-ai-act/article-9-variant-management-review-pass.acef/",
+    "test-vectors/eu-ai-act/article-12-logging-spec-pass.acef/",
+    "test-vectors/eu-ai-act/article-12-retention-fail.acef/",
+    "test-vectors/eu-ai-act/article-50-marking-pass.acef/",
+    "test-vectors/eu-ai-act/article-50-marking-no-scheme-id-fail.acef/",
+    "test-vectors/eu-ai-act/article-53-annex-xi-pass.acef/",
+    "test-vectors/eu-ai-act/article-53-annex-xi-missing-energy-fail.acef/",
+    "test-vectors/eu-ai-act/multi-subject-per-subject-eval.acef/"
+  ]
+}

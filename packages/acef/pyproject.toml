@@ -1,0 +1,66 @@
+# epochly-relay-acef (Python workspace package).
+#
+# w11.1-acef-vendor-pin: vendors the ACEF reference SDK at a pinned upstream
+# commit. The vendored tree under upstream/ is byte-equal to
+# https://github.com/chandlercvaughn/ACEF at commit
+# 57e1d14e063d3a2a88bfe5361fd81ca02bc6d540 (see vendor_manifest.json).
+#
+# The vendored tree is read-only relative to Relay: modifications outside the
+# documented vendor-update workflow are forbidden and detected by the
+# vendor-drift guard test under tests/test_w11_1_vendor_drift_guard.py.
+#
+# Spec anchors:
+#   ACEF incorporation decision (spec: vendor unmodified upstream)
+#   AO.4                         OSS verifier defaults + Apache 2.0
+# Eng plan anchors:
+#   PW1-2                        ACEF vendor pin lockdown
+#   W11.1                        ACEF vendor pin feature
+# CLAUDE.md anchors:
+#   Repository topology          Public relay/ packages/acef/ scope
+#   Banned pattern 14            No trust-anchor key material in OSS
+#
+# Contract assertions: VAL-W11-001 .. VAL-W11-008 (w11.1 scope).
+# Subsequent features (w11.2 x-relay extension namespaces, w11.3+ ACEF
+# emission service) live in sibling subdirectories under packages/acef/
+# and will declare their own modules; this skeleton reserves only the
+# vendor pin + drift guard.
+#
+# ASCII-only per CLAUDE.md "ASCII-Safe Source".
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-acef"
+version = "0.0.0"
+description = "Relay ACEF vendor pin (Apache 2.0; upstream chandlercvaughn/ACEF; v0.3 pre-1.0 reference implementation)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+# The vendored upstream tree under upstream/ is NOT shipped as part of the
+# Python wheel for this workspace package. The wheel is intentionally empty;
+# the package exists to declare the vendor pin and host its drift-guard
+# tests. Downstream consumers depend on the Python sidecar's ACEF emission
+# surface (W11.2+), not on importing the raw vendored tree.
+[tool.hatch.build.targets.wheel]
+packages = ["src/relay_acef"]
+only-include = ["src/relay_acef"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/relay_acef",
+  "README.md",
+  "vendor_manifest.json",
+]

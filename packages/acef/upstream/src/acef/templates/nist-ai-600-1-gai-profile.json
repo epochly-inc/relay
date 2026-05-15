@@ -1,0 +1,320 @@
+{
+  "template_id": "nist-ai-600-1-gai-profile",
+  "template_name": "NIST AI 600-1 Generative AI Profile",
+  "version": "1.0.0",
+  "jurisdiction": "US",
+  "source_legislation": "NIST AI 600-1",
+  "instrument_type": "standard",
+  "legal_force": "voluntary",
+  "instrument_status": "final",
+  "default_effective_date": null,
+  "superseded_by": null,
+  "applicable_system_types": ["gpai", "gpai-systemic"],
+  "provisions": [
+    {
+      "provision_id": "gai-risk-1",
+      "provision_name": "GAI-Specific Risk Identification",
+      "normative_text_ref": "NIST AI 600-1 Section 2.1 (GAI Risks)",
+      "description": "Organizations deploying generative AI shall identify and document risks specific to GAI across 12 categories including hate speech, data privacy, bias amplification, CBRN information, cyber offense, environmental impact, and other GAI-specific risk dimensions per the NIST 600-1 taxonomy",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "gai-risk-1.1",
+          "normative_text_ref": "NIST AI 600-1 Section 2.1.1",
+          "description": "Risk identification must cover the 12 GAI-specific risk categories: CBRN, cyber, hate/toxicity, bias/homogenization, privacy, environmental, intellectual property, obscenity, value chain, confabulation, data security, and human autonomy"
+        },
+        {
+          "provision_id": "gai-risk-1.2",
+          "normative_text_ref": "NIST AI 600-1 Section 2.1.2",
+          "description": "Risk identification must document current state assessment and target state for each applicable risk category"
+        }
+      ],
+      "required_evidence_types": [
+        "risk_register"
+      ],
+      "minimum_evidence_count": {
+        "risk_register": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gai-r1-risk-register",
+          "rule": "has_record_type",
+          "params": {"type": "risk_register", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_register record is required — NIST AI 600-1 mandates identification and documentation of GAI-specific risks across 12 defined categories"
+        },
+        {
+          "rule_id": "gai-r1-risk-category",
+          "rule": "field_present",
+          "params": {"record_type": "risk_register", "field": "/payload/risk_category"},
+          "severity": "fail",
+          "message": "Every risk_register record must specify risk_category — NIST AI 600-1 requires categorization using the GAI risk taxonomy (CBRN, cyber, bias, privacy, environmental, etc.)"
+        },
+        {
+          "rule_id": "gai-r1-assessment-method",
+          "rule": "field_present",
+          "params": {"record_type": "risk_register", "field": "/payload/assessment_method"},
+          "severity": "warning",
+          "message": "Risk register records should specify the assessment_method used for GAI-specific risk identification per NIST AI 600-1 documentation requirements"
+        },
+        {
+          "rule_id": "gai-r1-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "risk_register", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Risk register records should be linked to a subject entity to identify which generative AI system the risk assessment applies to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gai-dual-use",
+      "provision_name": "Dual-Use Risk Evaluation",
+      "normative_text_ref": "NIST AI 600-1 Section 2.6 (Dual-Use)",
+      "description": "Organizations shall evaluate and document dual-use risks for generative AI systems, including capability analysis for potential misuse, access control measures, and monitoring for dual-use indicators",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "gai-dual-use.1",
+          "normative_text_ref": "NIST AI 600-1 Section 2.6.1",
+          "description": "Capability analysis must identify potential dual-use applications and misuse scenarios for the generative AI model"
+        },
+        {
+          "provision_id": "gai-dual-use.2",
+          "normative_text_ref": "NIST AI 600-1 Section 2.6.2",
+          "description": "Access controls and monitoring mechanisms must be documented for mitigating dual-use risks"
+        }
+      ],
+      "required_evidence_types": [
+        "risk_register"
+      ],
+      "minimum_evidence_count": {
+        "risk_register": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gai-du-risk-register",
+          "rule": "has_record_type",
+          "params": {"type": "risk_register", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_register record is required — NIST AI 600-1 mandates documented dual-use risk evaluation including capability analysis and access controls"
+        },
+        {
+          "rule_id": "gai-du-dual-use-category",
+          "rule": "exists_where",
+          "params": {
+            "record_type": "risk_register",
+            "field": "/payload/risk_category",
+            "op": "eq",
+            "value": "dual_use",
+            "min_count": 1
+          },
+          "severity": "warning",
+          "message": "At least one risk_register record with risk_category='dual_use' is recommended — NIST AI 600-1 specifically addresses dual-use risk evaluation as a distinct GAI concern"
+        },
+        {
+          "rule_id": "gai-du-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "risk_register", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Dual-use risk register records should be linked to a subject entity to identify which generative AI system's dual-use potential was evaluated"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gai-foundation",
+      "provision_name": "Foundation Model Documentation",
+      "normative_text_ref": "NIST AI 600-1 Section 2.7 (Foundation Models)",
+      "description": "Organizations developing or deploying foundation models shall produce structured technical documentation including model architecture, training data characteristics, compute resources, parameter count, and evaluation methodology, aligned with Annex XI model documentation requirements",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "gai-foundation.1",
+          "normative_text_ref": "NIST AI 600-1 Section 2.7.1",
+          "description": "Foundation model documentation must include architecture description, parameter count, training compute (FLOPs), and training methodology"
+        },
+        {
+          "provision_id": "gai-foundation.2",
+          "normative_text_ref": "NIST AI 600-1 Section 2.7.2",
+          "description": "Foundation model documentation must include training data characteristics and known limitations"
+        }
+      ],
+      "required_evidence_types": [
+        "evaluation_report"
+      ],
+      "minimum_evidence_count": {
+        "evaluation_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gai-fm-evaluation-report",
+          "rule": "has_record_type",
+          "params": {"type": "evaluation_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one evaluation_report record is required — NIST AI 600-1 mandates structured technical documentation for foundation models"
+        },
+        {
+          "rule_id": "gai-fm-annex-xi-variant",
+          "rule": "exists_where",
+          "params": {
+            "record_type": "evaluation_report",
+            "field": "/payload/variant",
+            "op": "eq",
+            "value": "gpai_annex_xi_model_doc",
+            "min_count": 1
+          },
+          "severity": "fail",
+          "message": "At least one evaluation_report with variant='gpai_annex_xi_model_doc' is required — NIST AI 600-1 foundation model documentation aligns with Annex XI structured model documentation requirements"
+        },
+        {
+          "rule_id": "gai-fm-methodology",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/methodology"},
+          "severity": "warning",
+          "message": "Foundation model evaluation reports should document the methodology used for model evaluation and testing"
+        },
+        {
+          "rule_id": "gai-fm-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "evaluation_report", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Foundation model evaluation reports should be linked to a subject entity to identify the specific generative AI model documented"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gai-transparency",
+      "provision_name": "Transparency Documentation",
+      "normative_text_ref": "NIST AI 600-1 Section 2.4 (Transparency)",
+      "description": "Organizations shall document transparency measures for generative AI systems including capabilities, limitations, intended use, and guidance for downstream users to make informed decisions about system deployment and use",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "gai-transparency.1",
+          "normative_text_ref": "NIST AI 600-1 Section 2.4.1",
+          "description": "Transparency documentation must include system capabilities, known limitations, and appropriate use guidance"
+        },
+        {
+          "provision_id": "gai-transparency.2",
+          "normative_text_ref": "NIST AI 600-1 Section 2.4.2",
+          "description": "Documentation must enable downstream users to make informed decisions about integrating and deploying the generative AI system"
+        }
+      ],
+      "required_evidence_types": [
+        "transparency_disclosure"
+      ],
+      "minimum_evidence_count": {
+        "transparency_disclosure": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gai-tr-transparency-disclosure",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_disclosure", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_disclosure record is required — NIST AI 600-1 mandates transparency documentation for generative AI systems covering capabilities, limitations, and use guidance"
+        },
+        {
+          "rule_id": "gai-tr-capabilities-present",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_disclosure", "field": "/payload/capabilities"},
+          "severity": "warning",
+          "message": "Transparency disclosure records should document system capabilities per NIST AI 600-1 transparency requirements"
+        },
+        {
+          "rule_id": "gai-tr-limitations-present",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_disclosure", "field": "/payload/limitations"},
+          "severity": "warning",
+          "message": "Transparency disclosure records should document known limitations per NIST AI 600-1 requirements for informed downstream use decisions"
+        },
+        {
+          "rule_id": "gai-tr-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "transparency_disclosure", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Transparency disclosure records should be linked to a subject entity to identify which generative AI system the transparency documentation applies to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gai-fairness",
+      "provision_name": "Fairness Assessment",
+      "normative_text_ref": "NIST AI 600-1 Section 2.5 (Fairness)",
+      "description": "Organizations shall assess and document fairness characteristics of generative AI systems including bias detection across protected attributes, disparate impact analysis, and mitigation actions to address identified fairness concerns",
+      "effective_date": null,
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "gai-fairness.1",
+          "normative_text_ref": "NIST AI 600-1 Section 2.5.1",
+          "description": "Fairness assessments must test across relevant protected attributes and measure disparate impact"
+        },
+        {
+          "provision_id": "gai-fairness.2",
+          "normative_text_ref": "NIST AI 600-1 Section 2.5.2",
+          "description": "Documented mitigation actions must address identified fairness and bias concerns in generative AI outputs"
+        }
+      ],
+      "required_evidence_types": [
+        "evaluation_report"
+      ],
+      "minimum_evidence_count": {
+        "evaluation_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gai-fa-evaluation-report",
+          "rule": "has_record_type",
+          "params": {"type": "evaluation_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one evaluation_report record is required — NIST AI 600-1 mandates documented fairness assessments for generative AI systems"
+        },
+        {
+          "rule_id": "gai-fa-metrics-present",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/metrics"},
+          "severity": "warning",
+          "message": "Fairness evaluation reports should include quantified metrics for bias detection and disparate impact analysis per NIST AI 600-1 requirements"
+        },
+        {
+          "rule_id": "gai-fa-methodology-present",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/methodology"},
+          "severity": "warning",
+          "message": "Fairness evaluation reports should document the assessment methodology used for testing across protected attributes"
+        },
+        {
+          "rule_id": "gai-fa-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "evaluation_report", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Fairness evaluation reports should be linked to a subject entity to identify which generative AI system was assessed for fairness"
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": [
+    "test-vectors/nist-gai/gai-risk-identification-pass.acef/",
+    "test-vectors/nist-gai/gai-foundation-model-doc-pass.acef/",
+    "test-vectors/nist-gai/gai-missing-risk-category-fail.acef/"
+  ]
+}

@@ -1,0 +1,1337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACEF System Architecture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0a0e1a;
+    color: #e2e8f0;
+    overflow-x: hidden;
+  }
+
+  /* ── NAV TABS ── */
+  .nav {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10,14,26,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid #1e293b;
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    padding: 10px 16px;
+  }
+  .nav-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 18px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .nav-btn:hover { color: #94a3b8; background: #1e293b; }
+  .nav-btn.active {
+    color: #e2e8f0;
+    background: #1e293b;
+    border-color: #334155;
+  }
+
+  /* ── SECTIONS ── */
+  .view { display: none; padding: 32px 20px 60px; max-width: 1100px; margin: 0 auto; }
+  .view.active { display: block; }
+
+  h1 {
+    font-size: 28px; font-weight: 700; color: #f8fafc;
+    text-align: center; margin-bottom: 6px;
+  }
+  .subtitle {
+    text-align: center; font-size: 14px; color: #64748b;
+    margin-bottom: 36px; line-height: 1.6;
+  }
+
+  /* ── SHARED CARD STYLES ── */
+  .card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 14px;
+    padding: 24px;
+    transition: all 0.25s;
+  }
+  .card:hover { border-color: #334155; }
+  .card h3 {
+    font-size: 15px; font-weight: 700; margin-bottom: 8px;
+  }
+  .card p, .card li {
+    font-size: 13px; color: #94a3b8; line-height: 1.6;
+  }
+  .card ul { list-style: none; padding: 0; }
+  .card ul li::before {
+    content: "›"; color: #475569; margin-right: 8px; font-weight: bold;
+  }
+  .tag {
+    display: inline-block;
+    font-size: 11px; font-weight: 600;
+    padding: 3px 10px; border-radius: 12px;
+    margin-right: 4px; margin-bottom: 4px;
+    font-family: 'SF Mono', monospace;
+  }
+
+  /* ── VIEW 1: BIG PICTURE ── */
+  .big-picture-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .bp-phase {
+    position: relative;
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    min-height: 160px;
+  }
+
+  .bp-label {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px 10px;
+    position: relative;
+  }
+  .bp-label .num {
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 800;
+    margin-bottom: 8px;
+    position: relative;
+    z-index: 2;
+  }
+  .bp-label .name {
+    font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1.5px;
+    text-align: center; line-height: 1.4;
+  }
+  /* Vertical connector between phase numbers */
+  .bp-label::after {
+    content: '';
+    position: absolute;
+    bottom: -1px; left: 50%;
+    width: 2px; height: calc(50% - 22px);
+    background: #1e293b;
+    transform: translateX(-50%);
+  }
+  .bp-phase:last-child .bp-label::after { display: none; }
+  .bp-label::before {
+    content: '';
+    position: absolute;
+    top: -1px; left: 50%;
+    width: 2px; height: calc(50% - 22px);
+    background: #1e293b;
+    transform: translateX(-50%);
+  }
+  .bp-phase:first-child .bp-label::before { display: none; }
+
+  .bp-content {
+    padding: 16px 0 16px 20px;
+    border-left: 1px solid #1e293b;
+  }
+
+  .bp-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+  }
+  .bp-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 14px 16px;
+    transition: all 0.2s;
+  }
+  .bp-card:hover {
+    border-color: #475569;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  }
+  .bp-card .icon { font-size: 20px; margin-bottom: 6px; }
+  .bp-card h4 { font-size: 13px; font-weight: 600; color: #e2e8f0; margin-bottom: 4px; }
+  .bp-card p { font-size: 11.5px; color: #64748b; line-height: 1.5; }
+  .bp-card code {
+    font-size: 10px; background: #0a0e1a; padding: 2px 6px;
+    border-radius: 4px; color: #94a3b8; font-family: 'SF Mono', monospace;
+  }
+
+  /* Phase colors */
+  .phase-build .num { background: #1e3a5f; color: #60a5fa; border: 2px solid #3b82f6; }
+  .phase-build .name { color: #60a5fa; }
+  .phase-build .bp-card { border-left: 3px solid #3b82f6; }
+
+  .phase-record .num { background: #1a3636; color: #5eead4; border: 2px solid #14b8a6; }
+  .phase-record .name { color: #5eead4; }
+  .phase-record .bp-card { border-left: 3px solid #14b8a6; }
+
+  .phase-seal .num { background: #2d1b4e; color: #c084fc; border: 2px solid #8b5cf6; }
+  .phase-seal .name { color: #c084fc; }
+  .phase-seal .bp-card { border-left: 3px solid #8b5cf6; }
+
+  .phase-export .num { background: #3b1d1d; color: #fca5a5; border: 2px solid #ef4444; }
+  .phase-export .name { color: #fca5a5; }
+  .phase-export .bp-card { border-left: 3px solid #ef4444; }
+
+  .phase-validate .num { background: #1a3319; color: #86efac; border: 2px solid #22c55e; }
+  .phase-validate .name { color: #86efac; }
+  .phase-validate .bp-card { border-left: 3px solid #22c55e; }
+
+  .phase-assess .num { background: #3b2e10; color: #fcd34d; border: 2px solid #eab308; }
+  .phase-assess .name { color: #fcd34d; }
+  .phase-assess .bp-card { border-left: 3px solid #eab308; }
+
+  /* ── VIEW 2: BUNDLE ANATOMY ── */
+  .bundle-container {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 28px;
+    align-items: start;
+  }
+
+  .file-tree {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 14px;
+    padding: 20px;
+    position: sticky;
+    top: 70px;
+  }
+  .file-tree h3 {
+    font-size: 14px; color: #f1f5f9;
+    margin-bottom: 14px; padding-bottom: 10px;
+    border-bottom: 1px solid #1e293b;
+  }
+  .ft-item {
+    padding: 6px 0 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ft-item:hover { background: #1e293b; padding-left: 6px; }
+  .ft-item.active { background: #1e3350; padding-left: 6px; }
+  .ft-item .ft-icon {
+    font-size: 14px; flex-shrink: 0; width: 20px; text-align: center;
+  }
+  .ft-item .ft-name {
+    font-size: 12.5px; font-family: 'SF Mono', monospace;
+  }
+  .ft-indent-0 .ft-name { color: #f1f5f9; font-weight: 700; }
+  .ft-indent-1 { padding-left: 16px; }
+  .ft-indent-1 .ft-name { color: #94a3b8; }
+  .ft-indent-2 { padding-left: 36px; }
+  .ft-indent-2 .ft-name { color: #64748b; font-size: 12px; }
+  .ft-indent-3 { padding-left: 56px; }
+  .ft-indent-3 .ft-name { color: #475569; font-size: 11.5px; }
+
+  .ft-dir .ft-name { color: #60a5fa !important; }
+  .ft-hash .ft-name { color: #22c55e !important; }
+  .ft-sig .ft-name { color: #c084fc !important; }
+
+  .detail-panel { min-height: 400px; }
+  .detail-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 14px;
+    padding: 28px;
+    display: none;
+  }
+  .detail-card.active { display: block; }
+  .detail-card h3 { font-size: 18px; color: #f1f5f9; margin-bottom: 6px; }
+  .detail-card .role {
+    font-size: 12px; color: #64748b; margin-bottom: 16px;
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+  .detail-card p { font-size: 13.5px; color: #cbd5e1; line-height: 1.7; margin-bottom: 12px; }
+  .detail-card .field-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    margin-top: 14px;
+  }
+  .field-box {
+    background: #0a0e1a;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .field-box .fl { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .field-box .fv { font-size: 13px; color: #e2e8f0; font-family: 'SF Mono', monospace; }
+
+  .hash-domain-badge {
+    display: inline-block;
+    font-size: 11px; font-weight: 600;
+    padding: 3px 10px; border-radius: 10px;
+    margin-bottom: 12px;
+  }
+  .in-hash { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); }
+  .out-hash { background: rgba(139,92,246,0.15); color: #a78bfa; border: 1px solid rgba(139,92,246,0.3); }
+
+  /* ── VIEW 3: ENTITY MODEL ── */
+  .entity-canvas {
+    position: relative;
+    min-height: 540px;
+    margin-bottom: 24px;
+    padding-bottom: 20px;
+  }
+
+  .entity-node {
+    position: absolute;
+    border-radius: 14px;
+    padding: 18px 22px;
+    min-width: 180px;
+    text-align: center;
+    cursor: default;
+    transition: all 0.25s;
+    z-index: 2;
+  }
+  .entity-node:hover {
+    transform: scale(1.04);
+    z-index: 3;
+  }
+  .entity-node h4 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .entity-node .etype { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.7; margin-bottom: 8px; }
+  .entity-node .variants {
+    display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;
+  }
+  .entity-node .variants span {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.7);
+  }
+
+  .en-subject {
+    background: linear-gradient(135deg, #1e3a5f, #172554);
+    border: 2px solid #3b82f6;
+    box-shadow: 0 0 30px rgba(59,130,246,0.15);
+  }
+  .en-subject h4 { color: #93c5fd; }
+
+  .en-component {
+    background: linear-gradient(135deg, #1a3636, #134e4a);
+    border: 2px solid #14b8a6;
+    box-shadow: 0 0 30px rgba(20,184,166,0.12);
+  }
+  .en-component h4 { color: #5eead4; }
+
+  .en-dataset {
+    background: linear-gradient(135deg, #2d1b4e, #3b1d5e);
+    border: 2px solid #8b5cf6;
+    box-shadow: 0 0 30px rgba(139,92,246,0.12);
+  }
+  .en-dataset h4 { color: #c4b5fd; }
+
+  .en-actor {
+    background: linear-gradient(135deg, #3b2e10, #422006);
+    border: 2px solid #d97706;
+    box-shadow: 0 0 30px rgba(217,119,6,0.12);
+  }
+  .en-actor h4 { color: #fcd34d; }
+
+  .rel-legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+  }
+  .rel-item {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .rel-item .arrow {
+    font-size: 16px; flex-shrink: 0;
+  }
+  .rel-item .rl { font-size: 12px; font-weight: 600; color: #e2e8f0; font-family: 'SF Mono', monospace; }
+  .rel-item .rd { font-size: 11px; color: #64748b; margin-top: 2px; }
+
+  /* SVG arrows for entity diagram */
+  .entity-svg {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 1;
+    pointer-events: none;
+    overflow: visible;
+  }
+  .rel-line {
+    stroke-width: 2;
+    stroke-dasharray: 8, 5;
+    fill: none;
+  }
+  .rel-label {
+    font-size: 11px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    paint-order: stroke;
+    stroke: #0a0e1a;
+    stroke-width: 4px;
+    stroke-linejoin: round;
+  }
+
+  /* ── VIEW 4: VALIDATION DEEP DIVE ── */
+  .val-phases {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .val-phase {
+    border-radius: 12px;
+    padding: 20px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 2px solid transparent;
+  }
+  .val-phase:hover { transform: translateY(-2px); }
+  .val-phase.vp-active { border-color: #f1f5f9; }
+  .val-phase .vp-num {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 1.5px; opacity: 0.6; margin-bottom: 8px;
+  }
+  .val-phase h4 { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+  .val-phase p { font-size: 11.5px; opacity: 0.7; line-height: 1.5; }
+
+  .vp1 { background: linear-gradient(135deg, #1e3a5f, #111827); }
+  .vp1 h4 { color: #93c5fd; }
+  .vp2 { background: linear-gradient(135deg, #1a3636, #111827); }
+  .vp2 h4 { color: #5eead4; }
+  .vp3 { background: linear-gradient(135deg, #2d1b4e, #111827); }
+  .vp3 h4 { color: #c4b5fd; }
+  .vp4 { background: linear-gradient(135deg, #3b2e10, #111827); }
+  .vp4 h4 { color: #fcd34d; }
+
+  .val-detail {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 14px;
+    padding: 28px;
+    display: none;
+  }
+  .val-detail.active { display: block; }
+  .val-detail h3 { font-size: 18px; margin-bottom: 14px; }
+  .val-detail .check-list { list-style: none; padding: 0; }
+  .val-detail .check-list li {
+    padding: 10px 14px;
+    border-bottom: 1px solid #1e293b;
+    font-size: 13px;
+    color: #cbd5e1;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .val-detail .check-list li:last-child { border-bottom: none; }
+  .val-detail .check-list .ci {
+    flex-shrink: 0;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px;
+    background: #1e293b;
+  }
+  .val-detail .err-codes {
+    margin-top: 14px;
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .err-tag {
+    font-size: 11px; font-family: 'SF Mono', monospace;
+    padding: 3px 10px; border-radius: 8px;
+    background: rgba(239,68,68,0.1); color: #fca5a5;
+    border: 1px solid rgba(239,68,68,0.2);
+  }
+
+  /* ── VIEW 5: REGULATORY MAP ── */
+  .reg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 14px;
+  }
+  .reg-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+    padding: 20px;
+    transition: all 0.2s;
+  }
+  .reg-card:hover { border-color: #475569; transform: translateY(-1px); }
+  .reg-card h4 { font-size: 14px; font-weight: 700; color: #f1f5f9; margin-bottom: 4px; }
+  .reg-card .jurisdiction {
+    font-size: 11px; color: #64748b; text-transform: uppercase;
+    letter-spacing: 1px; margin-bottom: 10px;
+  }
+  .reg-card .reg-meta {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;
+  }
+  .reg-card p { font-size: 12.5px; color: #94a3b8; line-height: 1.6; }
+  .force-binding { background: rgba(239,68,68,0.12); color: #fca5a5; border: 1px solid rgba(239,68,68,0.25); }
+  .force-voluntary { background: rgba(59,130,246,0.12); color: #93c5fd; border: 1px solid rgba(59,130,246,0.25); }
+  .force-advisory { background: rgba(139,92,246,0.12); color: #c4b5fd; border: 1px solid rgba(139,92,246,0.25); }
+
+  /* ── VIEW 6: RECORD TYPES ── */
+  .rt-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+  }
+  .rt-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 16px 18px;
+    transition: all 0.2s;
+  }
+  .rt-card:hover { border-color: #475569; }
+  .rt-card h4 {
+    font-size: 13px; font-weight: 600; color: #e2e8f0;
+    font-family: 'SF Mono', monospace; margin-bottom: 6px;
+  }
+  .rt-card p { font-size: 12px; color: #64748b; line-height: 1.5; }
+  .rt-card .cat {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    padding: 2px 8px; border-radius: 8px; margin-top: 8px;
+  }
+  .cat-gov { background: rgba(59,130,246,0.15); color: #93c5fd; }
+  .cat-data { background: rgba(139,92,246,0.15); color: #c4b5fd; }
+  .cat-test { background: rgba(20,184,166,0.15); color: #5eead4; }
+  .cat-ops { background: rgba(239,68,68,0.15); color: #fca5a5; }
+  .cat-trans { background: rgba(234,179,8,0.15); color: #fcd34d; }
+  .cat-ip { background: rgba(217,119,6,0.15); color: #fdba74; }
+  .cat-over { background: rgba(34,197,94,0.15); color: #86efac; }
+  .cat-meta { background: rgba(100,116,139,0.15); color: #94a3b8; }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 800px) {
+    .bundle-container { grid-template-columns: 1fr; }
+    .file-tree { position: static; }
+    .val-phases { grid-template-columns: 1fr 1fr; }
+    .bp-phase { grid-template-columns: 100px 1fr; }
+    .entity-canvas { min-height: 700px; }
+    .nav { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── NAVIGATION ── -->
+<div class="nav">
+  <button class="nav-btn active" onclick="showView('overview')">Big Picture</button>
+  <button class="nav-btn" onclick="showView('bundle')">Bundle Anatomy</button>
+  <button class="nav-btn" onclick="showView('entities')">Entity Model</button>
+  <button class="nav-btn" onclick="showView('records')">16 Record Types</button>
+  <button class="nav-btn" onclick="showView('validation')">Validation Pipeline</button>
+  <button class="nav-btn" onclick="showView('regulations')">Regulatory Map</button>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW 1: BIG PICTURE -->
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<div class="view active" id="view-overview">
+  <h1>How ACEF Works — End to End</h1>
+  <p class="subtitle">An AI compliance evidence bundle starts as structured data, gets signed and sealed into a deterministic archive, then validated against regulation templates to produce an assessment verdict.</p>
+
+  <div class="big-picture-grid">
+
+    <!-- Phase 1: Build -->
+    <div class="bp-phase phase-build">
+      <div class="bp-label">
+        <div class="num">1</div>
+        <div class="name">Build<br>Package</div>
+      </div>
+      <div class="bp-content">
+        <div class="bp-cards">
+          <div class="bp-card">
+            <div class="icon">&#x1f3d7;</div>
+            <h4>Initialize Package</h4>
+            <p>Create a new evidence package with producer metadata, retention policy, and optional link to a prior bundle.</p>
+            <code>Package(producer=...)</code>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f916;</div>
+            <h4>Declare Subjects</h4>
+            <p>Register the AI system or model being documented — its type, risk class, lifecycle phase, and modalities.</p>
+            <code>pkg.add_subject(...)</code>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f517;</div>
+            <h4>Build Entity Graph</h4>
+            <p>Add components (model, guardrail, retriever), datasets (training, eval), actors (provider, deployer, auditor), and relationships between them.</p>
+            <code>pkg.add_component(...)</code>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f4cb;</div>
+            <h4>Attach Profiles</h4>
+            <p>Declare which regulations apply — EU AI Act, NIST RMF, China CAC, etc. Each profile lists the provisions to evaluate against.</p>
+            <code>pkg.add_profile(...)</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 2: Record -->
+    <div class="bp-phase phase-record">
+      <div class="bp-label">
+        <div class="num">2</div>
+        <div class="name">Record<br>Evidence</div>
+      </div>
+      <div class="bp-content">
+        <div class="bp-cards">
+          <div class="bp-card">
+            <div class="icon">&#x1f4dd;</div>
+            <h4>Add Evidence Records</h4>
+            <p>Each record has a type (risk_register, dataset_card, etc.), a payload with type-specific data, provisions addressed, entity refs, and trust level.</p>
+            <code>pkg.record("risk_register", ...)</code>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f4ce;</div>
+            <h4>Attach Artifacts</h4>
+            <p>Binary files — evaluation reports (PDF), model cards (Markdown), audit logs. Each attachment gets a SHA-256 hash and MIME type.</p>
+            <code>pkg.add_attachment(...)</code>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f510;</div>
+            <h4>Set Confidentiality</h4>
+            <p>Each record carries a confidentiality level: public, redacted, hash-committed, regulator-only, or under-NDA.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 3: Seal -->
+    <div class="bp-phase phase-seal">
+      <div class="bp-label">
+        <div class="num">3</div>
+        <div class="name">Seal &<br>Sign</div>
+      </div>
+      <div class="bp-content">
+        <div class="bp-cards">
+          <div class="bp-card">
+            <div class="icon">&#x1f512;</div>
+            <h4>Compute Integrity</h4>
+            <p>SHA-256 hash every file via RFC 8785 canonicalization. Build a Merkle tree with odd-leaf promotion. Write content-hashes.json and merkle-tree.json.</p>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x270d;&#xfe0f;</div>
+            <h4>Sign with JWS</h4>
+            <p>Create a detached JWS (RFC 7515) over content-hashes.json using RS256 or ES256. Supports multiple signers (provider + auditor).</p>
+            <code>pkg.sign(key_path)</code>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f50f;</div>
+            <h4>Optional: Redact</h4>
+            <p>Create a redacted copy — sensitive payloads replaced with SHA-256 hash commitments. Integrity remains verifiable.</p>
+            <code>acef.redact(pkg, spec, path)</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 4: Export -->
+    <div class="bp-phase phase-export">
+      <div class="bp-label">
+        <div class="num">4</div>
+        <div class="name">Export<br>Bundle</div>
+      </div>
+      <div class="bp-content">
+        <div class="bp-cards">
+          <div class="bp-card">
+            <div class="icon">&#x1f4c1;</div>
+            <h4>Directory Bundle</h4>
+            <p>Content-addressable directory: acef-manifest.json, records/ (JSONL), artifacts/, hashes/, signatures/.</p>
+            <code>pkg.export("./out.acef/")</code>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f4e6;</div>
+            <h4>Archive Bundle</h4>
+            <p>Deterministic .acef.tar.gz — gzip level 6, mtime=0, OS=0xFF, owner 0/0, perms 0644. Byte-identical across implementations.</p>
+            <code>pkg.export("out.acef.tar.gz")</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 5: Validate -->
+    <div class="bp-phase phase-validate">
+      <div class="bp-label">
+        <div class="num">5</div>
+        <div class="name">Validate<br>Evidence</div>
+      </div>
+      <div class="bp-content">
+        <div class="bp-cards">
+          <div class="bp-card">
+            <div class="icon">&#x2705;</div>
+            <h4>4-Phase Pipeline</h4>
+            <p><strong>Schema</strong> &#x2192; <strong>Integrity</strong> &#x2192; <strong>References</strong> &#x2192; <strong>Rules</strong>. Each phase collects all errors before proceeding. 60 error codes (ACEF-001 to ACEF-060).</p>
+            <code>acef.validate(path, profiles)</code>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x2699;&#xfe0f;</div>
+            <h4>DSL Rule Engine</h4>
+            <p>10 operators evaluate evidence against regulation templates: has_record_type, field_value, evidence_freshness, exists_where, etc.</p>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f4ca;</div>
+            <h4>Provision Rollup</h4>
+            <p>7-step precedence algorithm collapses per-rule results into a single provision outcome: SATISFIED, NOT_SATISFIED, PARTIALLY_SATISFIED, GAP_ACKNOWLEDGED, SKIPPED, or NOT_ASSESSED.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 6: Assess -->
+    <div class="bp-phase phase-assess">
+      <div class="bp-label">
+        <div class="num">6</div>
+        <div class="name">Produce<br>Assessment</div>
+      </div>
+      <div class="bp-content">
+        <div class="bp-cards">
+          <div class="bp-card">
+            <div class="icon">&#x1f4dc;</div>
+            <h4>Assessment Bundle</h4>
+            <p>A separate .acef-assessment.json file: per-rule results, per-provision summaries, per-subject breakdowns, structural errors, template digests. Optionally signed.</p>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f4d1;</div>
+            <h4>Human Report</h4>
+            <p>Render assessment as Markdown or console output — compliance officers and auditors get a readable summary with evidence links.</p>
+            <code>acef.render(assessment)</code>
+          </div>
+          <div class="bp-card">
+            <div class="icon">&#x1f501;</div>
+            <h4>Chain & Iterate</h4>
+            <p>Link the next evidence bundle to this one via prior_package_ref. Continuous compliance: each snapshot adds to the chain.</p>
+            <code>acef.chain(prior_path)</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW 2: BUNDLE ANATOMY -->
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<div class="view" id="view-bundle">
+  <h1>Bundle Anatomy</h1>
+  <p class="subtitle">Click any file in the tree to see what it contains and how it fits into the integrity model.</p>
+
+  <div class="bundle-container">
+    <div class="file-tree">
+      <h3>&#x1f4c2; my-system.acef/</h3>
+      <div class="ft-item ft-indent-1 active" data-detail="manifest" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c4;</span>
+        <span class="ft-name">acef-manifest.json</span>
+      </div>
+      <div class="ft-item ft-indent-1 ft-dir" data-detail="records" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c2;</span>
+        <span class="ft-name">records/</span>
+      </div>
+      <div class="ft-item ft-indent-2" data-detail="record-file" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c4;</span>
+        <span class="ft-name">risk_register.jsonl</span>
+      </div>
+      <div class="ft-item ft-indent-2" data-detail="record-file" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c4;</span>
+        <span class="ft-name">dataset_card.jsonl</span>
+      </div>
+      <div class="ft-item ft-indent-2 ft-dir" data-detail="sharded" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c2;</span>
+        <span class="ft-name">event_log/</span>
+      </div>
+      <div class="ft-item ft-indent-3" data-detail="sharded" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c4;</span>
+        <span class="ft-name">event_log.0001.jsonl</span>
+      </div>
+      <div class="ft-item ft-indent-3" data-detail="sharded" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c4;</span>
+        <span class="ft-name">event_log.0002.jsonl</span>
+      </div>
+      <div class="ft-item ft-indent-1 ft-dir" data-detail="artifacts" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c2;</span>
+        <span class="ft-name">artifacts/</span>
+      </div>
+      <div class="ft-item ft-indent-2" data-detail="artifacts" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4ce;</span>
+        <span class="ft-name">eval-report-v3.pdf</span>
+      </div>
+      <div class="ft-item ft-indent-2" data-detail="artifacts" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4ce;</span>
+        <span class="ft-name">model-card.md</span>
+      </div>
+      <div class="ft-item ft-indent-1 ft-hash" data-detail="hashes" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c2;</span>
+        <span class="ft-name">hashes/</span>
+      </div>
+      <div class="ft-item ft-indent-2 ft-hash" data-detail="content-hashes" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f512;</span>
+        <span class="ft-name">content-hashes.json</span>
+      </div>
+      <div class="ft-item ft-indent-2 ft-hash" data-detail="merkle" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f333;</span>
+        <span class="ft-name">merkle-tree.json</span>
+      </div>
+      <div class="ft-item ft-indent-1 ft-sig" data-detail="signatures" onclick="showDetail(this)">
+        <span class="ft-icon">&#x1f4c2;</span>
+        <span class="ft-name">signatures/</span>
+      </div>
+      <div class="ft-item ft-indent-2 ft-sig" data-detail="jws" onclick="showDetail(this)">
+        <span class="ft-icon">&#x270d;&#xfe0f;</span>
+        <span class="ft-name">provider-signature.jws</span>
+      </div>
+    </div>
+
+    <div class="detail-panel">
+      <div class="detail-card active" id="detail-manifest">
+        <span class="hash-domain-badge in-hash">&#x2705; Inside hash domain</span>
+        <h3>acef-manifest.json</h3>
+        <div class="role">The envelope — package-level metadata</div>
+        <p>This is the root document of every ACEF bundle. It contains everything about the package <em>except</em> the evidence records themselves (which live in records/). All JSON is RFC 8785-canonicalized for deterministic hashing.</p>
+        <div class="field-grid">
+          <div class="field-box"><div class="fl">Metadata</div><div class="fv">package_id, timestamp, producer, retention_policy, prior_package_ref</div></div>
+          <div class="field-box"><div class="fl">Versioning</div><div class="fv">core_version, profiles_version (semver, independently versioned)</div></div>
+          <div class="field-box"><div class="fl">Subjects</div><div class="fv">AI systems and models (type, risk class, lifecycle phase, modalities)</div></div>
+          <div class="field-box"><div class="fl">Entities</div><div class="fv">Components, datasets, actors, relationships (W3C PROV graph)</div></div>
+          <div class="field-box"><div class="fl">Profiles</div><div class="fv">Regulation profiles with applicable provision lists</div></div>
+          <div class="field-box"><div class="fl">Audit Trail</div><div class="fv">Package-level audit history entries</div></div>
+        </div>
+      </div>
+
+      <div class="detail-card" id="detail-records">
+        <span class="hash-domain-badge in-hash">&#x2705; Inside hash domain</span>
+        <h3>records/</h3>
+        <div class="role">Evidence in deterministic JSONL format</div>
+        <p>One file per record type. Each line is an RFC 8785-canonicalized JSON object representing a single evidence record wrapped in the common envelope (record_id, record_type, provisions_addressed, timestamp, payload, entity_refs, etc.).</p>
+        <p>Records are sorted deterministically: primary by timestamp ascending (ISO 8601), secondary by record_id ascending. This ensures any conformant implementation produces identical files.</p>
+      </div>
+
+      <div class="detail-card" id="detail-record-file">
+        <span class="hash-domain-badge in-hash">&#x2705; Inside hash domain</span>
+        <h3>*.jsonl Record Files</h3>
+        <div class="role">One record per line, canonicalized</div>
+        <p>Each line is a complete RecordEnvelope serialized as RFC 8785-canonical JSON followed by a single newline (0x0A). No empty lines, no BOM. The file is hashed line-by-line — each line is independently canonicalized before contributing to the file's SHA-256 hash.</p>
+        <div class="field-grid">
+          <div class="field-box"><div class="fl">Envelope Fields</div><div class="fv">record_id, record_type, timestamp, provisions_addressed, entity_refs, obligation_role, confidentiality, trust_level</div></div>
+          <div class="field-box"><div class="fl">Payload</div><div class="fv">Type-specific evidence data validated against per-type JSON Schema</div></div>
+        </div>
+      </div>
+
+      <div class="detail-card" id="detail-sharded">
+        <span class="hash-domain-badge in-hash">&#x2705; Inside hash domain</span>
+        <h3>Sharded Record Directories</h3>
+        <div class="role">Automatic splitting for large record sets</div>
+        <p>When a record type exceeds 100,000 records or 256 MB, it moves from a single .jsonl file to a sharded directory. Shard files use zero-padded 4-digit numbering: event_log.0001.jsonl, event_log.0002.jsonl, etc.</p>
+        <p>Shard boundaries are deterministic — every conformant implementation splits at the same points, producing identical shard files.</p>
+      </div>
+
+      <div class="detail-card" id="detail-artifacts">
+        <span class="hash-domain-badge in-hash">&#x2705; Inside hash domain</span>
+        <h3>artifacts/</h3>
+        <div class="role">Binary attachments referenced by evidence records</div>
+        <p>PDFs, images, Markdown documents, logs — any file that backs an evidence claim. Each artifact is referenced from a record's attachments array with a path, MIME type, and advisory SHA-256 hash. Binary files are hashed in 64 KB streaming chunks (not canonicalized).</p>
+        <p>Path traversal is blocked at multiple layers: add_attachment(), export, and load all validate paths independently.</p>
+      </div>
+
+      <div class="detail-card" id="detail-hashes">
+        <span class="hash-domain-badge out-hash">&#x1f6ab; Outside hash domain</span>
+        <h3>hashes/</h3>
+        <div class="role">Integrity verification layer</div>
+        <p>This directory sits <strong>outside</strong> the hash domain — it contains the hashes themselves, so it can't be part of what's hashed (that would create a circular dependency). It holds two files: content-hashes.json and merkle-tree.json.</p>
+      </div>
+
+      <div class="detail-card" id="detail-content-hashes">
+        <span class="hash-domain-badge out-hash">&#x1f6ab; Outside hash domain</span>
+        <h3>content-hashes.json</h3>
+        <div class="role">SHA-256 hash index of every file in hash domain</div>
+        <p>A flat JSON object mapping every file path (manifest, records, artifacts) to its SHA-256 hex digest. Verifiers recompute each hash and compare. This is the document that JWS signatures are computed over — signing content-hashes.json effectively signs the entire bundle.</p>
+      </div>
+
+      <div class="detail-card" id="detail-merkle">
+        <span class="hash-domain-badge out-hash">&#x1f6ab; Outside hash domain</span>
+        <h3>merkle-tree.json</h3>
+        <div class="role">Merkle tree over content hashes</div>
+        <p>Contains a sorted leaf array (path + hash pairs) and a computed root hash. Leaf hashes are SHA-256(path_bytes || 0x00 || hash_hex_bytes). Inner nodes use SHA-256(left_raw_32_bytes || right_raw_32_bytes). Odd leaves are promoted, not duplicated.</p>
+        <p>The root hash provides a single value that represents the entire bundle's integrity — change any file and the root changes.</p>
+      </div>
+
+      <div class="detail-card" id="detail-signatures">
+        <span class="hash-domain-badge out-hash">&#x1f6ab; Outside hash domain</span>
+        <h3>signatures/</h3>
+        <div class="role">Detached JWS signatures</div>
+        <p>Multiple parties can sign the same bundle independently — a provider signs first, then an auditor or notified body adds their signature. Each .jws file is a detached JWS (RFC 7515) computed over content-hashes.json.</p>
+      </div>
+
+      <div class="detail-card" id="detail-jws">
+        <span class="hash-domain-badge out-hash">&#x1f6ab; Outside hash domain</span>
+        <h3>*.jws Signature Files</h3>
+        <div class="role">RFC 7515 detached signatures — RS256 or ES256 only</div>
+        <p>Format: header..signature (empty payload section). The JWS header carries alg (RS256 or ES256), optional kid (key identifier), optional x5c (certificate chain), and auto-derived jwk (public key). All other algorithms are rejected with ACEF-013.</p>
+        <div class="field-grid">
+          <div class="field-box"><div class="fl">Payload</div><div class="fv">content-hashes.json (canonical bytes)</div></div>
+          <div class="field-box"><div class="fl">Algorithms</div><div class="fv">RS256, ES256 (only these two)</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW 3: ENTITY MODEL -->
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<div class="view" id="view-entities">
+  <h1>Entity Model</h1>
+  <p class="subtitle">W3C PROV-compatible entity graph. Four entity types linked by seven relationship types. Every evidence record references entities via URNs.</p>
+
+  <div class="entity-canvas" id="entity-canvas">
+    <svg class="entity-svg" id="entity-svg">
+      <defs>
+        <marker id="arrow-blue" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="10" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6"/>
+        </marker>
+        <marker id="arrow-teal" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="10" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#14b8a6"/>
+        </marker>
+        <marker id="arrow-purple" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="10" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#8b5cf6"/>
+        </marker>
+        <marker id="arrow-amber" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="10" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#d97706"/>
+        </marker>
+      </defs>
+      <!-- Lines drawn dynamically by drawEntityLines() -->
+    </svg>
+
+    <!-- Subject Node -->
+    <div class="entity-node en-subject" id="en-subject" style="top: 20px; left: 60px; min-width: 280px;">
+      <h4>Subject</h4>
+      <div class="etype">AI System or Model</div>
+      <div class="variants">
+        <span>ai_system</span>
+        <span>ai_model</span>
+      </div>
+      <div style="margin-top:8px; font-size:11px; color:#64748b;">Risk: high-risk | gpai | gpai-systemic | limited | minimal</div>
+    </div>
+
+    <!-- Component Node -->
+    <div class="entity-node en-component" id="en-component" style="top: 290px; left: 30px; min-width: 310px;">
+      <h4>Component</h4>
+      <div class="etype">System building blocks</div>
+      <div class="variants">
+        <span>model</span>
+        <span>retriever</span>
+        <span>guardrail</span>
+        <span>orchestrator</span>
+        <span>tool</span>
+        <span>database</span>
+        <span>api</span>
+      </div>
+    </div>
+
+    <!-- Dataset Node -->
+    <div class="entity-node en-dataset" id="en-dataset" style="top: 20px; left: 620px; min-width: 280px;">
+      <h4>Dataset</h4>
+      <div class="etype">Training, evaluation, or operational data</div>
+      <div class="variants">
+        <span>licensed</span>
+        <span>scraped</span>
+        <span>public_domain</span>
+        <span>synthetic</span>
+        <span>user_generated</span>
+      </div>
+      <div style="margin-top:8px; font-size:11px; color:#64748b;">Modality: text | image | audio | video | tabular | multimodal</div>
+    </div>
+
+    <!-- Actor Node -->
+    <div class="entity-node en-actor" id="en-actor" style="top: 330px; left: 620px; min-width: 280px;">
+      <h4>Actor</h4>
+      <div class="etype">People and organizations in the AI lifecycle</div>
+      <div class="variants">
+        <span>provider</span>
+        <span>deployer</span>
+        <span>importer</span>
+        <span>distributor</span>
+        <span>auditor</span>
+        <span>regulator</span>
+        <span>data_subject</span>
+      </div>
+    </div>
+  </div>
+
+  <h2 style="font-size:16px; color:#94a3b8; margin-bottom:14px;">Seven Relationship Types</h2>
+  <div class="rel-legend">
+    <div class="rel-item"><div class="arrow" style="color:#14b8a6;">&#x2192;</div><div><div class="rl">wraps</div><div class="rd">Component contains another component</div></div></div>
+    <div class="rel-item"><div class="arrow" style="color:#14b8a6;">&#x2192;</div><div><div class="rl">calls</div><div class="rd">Component invokes another at runtime</div></div></div>
+    <div class="rel-item"><div class="arrow" style="color:#14b8a6;">&#x2192;</div><div><div class="rl">fine_tunes</div><div class="rd">Component fine-tunes a base model</div></div></div>
+    <div class="rel-item"><div class="arrow" style="color:#3b82f6;">&#x2192;</div><div><div class="rl">deploys</div><div class="rd">Subject deploys a component</div></div></div>
+    <div class="rel-item"><div class="arrow" style="color:#8b5cf6;">&#x2192;</div><div><div class="rl">trains_on</div><div class="rd">Subject/component trained on a dataset</div></div></div>
+    <div class="rel-item"><div class="arrow" style="color:#8b5cf6;">&#x2192;</div><div><div class="rl">evaluates_with</div><div class="rd">Component evaluated using a dataset</div></div></div>
+    <div class="rel-item"><div class="arrow" style="color:#d97706;">&#x2192;</div><div><div class="rl">oversees</div><div class="rd">Actor oversees a subject/component</div></div></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW 4: 16 RECORD TYPES -->
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<div class="view" id="view-records">
+  <h1>16 Core Record Types</h1>
+  <p class="subtitle">Frozen in v1. Each has a dedicated JSON Schema for its payload. The variant registry extends base types with 12 discriminated variants.</p>
+
+  <div class="rt-grid">
+    <div class="rt-card"><h4>risk_register</h4><p>Risk identification and assessment — hazard catalogs, risk matrices, likelihood/severity ratings.</p><span class="cat cat-gov">Governance</span></div>
+    <div class="rt-card"><h4>risk_treatment</h4><p>Mitigation measures, testing logs, residual risk acceptance decisions.</p><span class="cat cat-gov">Governance</span></div>
+    <div class="rt-card"><h4>dataset_card</h4><p>Dataset documentation — source, composition, bias analysis, quality metrics, preprocessing.</p><span class="cat cat-data">Data</span></div>
+    <div class="rt-card"><h4>data_provenance</h4><p>Acquisition method, licensing terms, copyright status, jurisdictional origin.</p><span class="cat cat-data">Data</span></div>
+    <div class="rt-card"><h4>evaluation_report</h4><p>Model or system evaluation — metrics, benchmarks, test results, accuracy, fairness.</p><span class="cat cat-test">Testing</span></div>
+    <div class="rt-card"><h4>event_log</h4><p>Runtime events — inference, training, deployment, errors, overrides. Logging specification variant.</p><span class="cat cat-ops">Operations</span></div>
+    <div class="rt-card"><h4>human_oversight_action</h4><p>Human override decisions, intervention logs, escalation actions with justifications.</p><span class="cat cat-over">Oversight</span></div>
+    <div class="rt-card"><h4>transparency_disclosure</h4><p>Public-facing disclosures about AI system capabilities, limitations, intended use.</p><span class="cat cat-trans">Transparency</span></div>
+    <div class="rt-card"><h4>transparency_marking</h4><p>Synthetic content metadata — watermarks, C2PA manifests, detection signatures.</p><span class="cat cat-trans">Transparency</span></div>
+    <div class="rt-card"><h4>disclosure_labeling</h4><p>User-facing labels declaring AI involvement — BCP 47 language tags, jurisdiction field.</p><span class="cat cat-trans">Transparency</span></div>
+    <div class="rt-card"><h4>copyright_rights_reservation</h4><p>Machine-readable rights reservation declarations for training data opt-out.</p><span class="cat cat-ip">IP</span></div>
+    <div class="rt-card"><h4>license_record</h4><p>License terms, attribution requirements, usage restrictions for data and models.</p><span class="cat cat-ip">IP</span></div>
+    <div class="rt-card"><h4>incident_report</h4><p>Post-deployment incident documentation — root cause, impact, remediation, notification.</p><span class="cat cat-ops">Operations</span></div>
+    <div class="rt-card"><h4>governance_policy</h4><p>AI governance policies, use-case inventory, management review records.</p><span class="cat cat-gov">Governance</span></div>
+    <div class="rt-card"><h4>conformity_declaration</h4><p>Formal conformity assessments, notified body certificates, self-declarations.</p><span class="cat cat-gov">Governance</span></div>
+    <div class="rt-card"><h4>evidence_gap</h4><p>Documented missing evidence with remediation plan and timeline. Triggers GAP_ACKNOWLEDGED in rollup.</p><span class="cat cat-meta">Meta</span></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW 5: VALIDATION PIPELINE -->
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<div class="view" id="view-validation">
+  <h1>Validation Pipeline</h1>
+  <p class="subtitle">Four sequential phases. Each collects all errors before stopping. Click a phase to see what it checks.</p>
+
+  <div class="val-phases">
+    <div class="val-phase vp1 vp-active" onclick="showValPhase(1)">
+      <div class="vp-num">Phase 1</div>
+      <h4>Schema</h4>
+      <p>JSON Schema validation for manifest, envelopes, and payloads</p>
+    </div>
+    <div class="val-phase vp2" onclick="showValPhase(2)">
+      <div class="vp-num">Phase 2</div>
+      <h4>Integrity</h4>
+      <p>SHA-256 hashes, Merkle tree root, JWS signature verification</p>
+    </div>
+    <div class="val-phase vp3" onclick="showValPhase(3)">
+      <div class="vp-num">Phase 3</div>
+      <h4>References</h4>
+      <p>Entity URN resolution, file paths, duplicates, attachment hashes</p>
+    </div>
+    <div class="val-phase vp4" onclick="showValPhase(4)">
+      <div class="vp-num">Phase 4</div>
+      <h4>Rules</h4>
+      <p>DSL operator evaluation, provision rollup, per-subject assessment</p>
+    </div>
+  </div>
+
+  <div class="val-detail active" id="vd-1">
+    <h3 style="color:#93c5fd;">Phase 1: Schema Validation</h3>
+    <p style="font-size:13px; color:#94a3b8; margin-bottom:16px;">Verifies the structural correctness of every JSON document in the bundle against the ACEF JSON Schema registry.</p>
+    <ul class="check-list">
+      <li><span class="ci">&#x2714;</span>Validate acef-manifest.json against manifest.schema.json</li>
+      <li><span class="ci">&#x2714;</span>Validate each record's common envelope against record-envelope.schema.json</li>
+      <li><span class="ci">&#x2714;</span>Validate each record's payload against its type-specific schema (e.g., risk_register.schema.json)</li>
+      <li><span class="ci">&#x2714;</span>Check module version compatibility (core_version, profiles_version)</li>
+      <li><span class="ci">&#x2714;</span>Verify record_type is one of the 16 v1 types or a valid x- extension</li>
+    </ul>
+    <div class="err-codes">
+      <span class="err-tag">ACEF-001</span><span class="err-tag">ACEF-002</span><span class="err-tag">ACEF-003</span><span class="err-tag">ACEF-004</span>
+    </div>
+  </div>
+
+  <div class="val-detail" id="vd-2">
+    <h3 style="color:#5eead4;">Phase 2: Integrity Verification</h3>
+    <p style="font-size:13px; color:#94a3b8; margin-bottom:16px;">Verifies that no file has been tampered with since the bundle was sealed.</p>
+    <ul class="check-list">
+      <li><span class="ci">&#x2714;</span>Recompute SHA-256 of every file in the hash domain (manifest, records, artifacts)</li>
+      <li><span class="ci">&#x2714;</span>Compare computed hashes against content-hashes.json — mismatch = ACEF-010</li>
+      <li><span class="ci">&#x2714;</span>Verify content-hashes.json is complete (no missing files, no extra entries) — ACEF-014</li>
+      <li><span class="ci">&#x2714;</span>Recompute Merkle tree from content hashes; verify root matches merkle-tree.json — ACEF-011</li>
+      <li><span class="ci">&#x2714;</span>If signatures present: verify each JWS against its public key; check algorithm is RS256 or ES256 — ACEF-012, ACEF-013</li>
+    </ul>
+    <div class="err-codes">
+      <span class="err-tag">ACEF-010</span><span class="err-tag">ACEF-011</span><span class="err-tag">ACEF-012</span><span class="err-tag">ACEF-013</span><span class="err-tag">ACEF-014</span>
+    </div>
+  </div>
+
+  <div class="val-detail" id="vd-3">
+    <h3 style="color:#c4b5fd;">Phase 3: Reference Checking</h3>
+    <p style="font-size:13px; color:#94a3b8; margin-bottom:16px;">Verifies all internal references are consistent — no dangling pointers, no duplicates, no missing files.</p>
+    <ul class="check-list">
+      <li><span class="ci">&#x2714;</span>Resolve every entity_ref URN in every record — dangling refs = ACEF-020</li>
+      <li><span class="ci">&#x2714;</span>Check for duplicate URNs across entities — ACEF-021</li>
+      <li><span class="ci">&#x2714;</span>Verify record_files paths in manifest point to existing files — ACEF-022</li>
+      <li><span class="ci">&#x2714;</span>Verify attachment paths are under artifacts/ and exist — ACEF-023</li>
+      <li><span class="ci">&#x2714;</span>Verify record counts match manifest declarations — ACEF-025</li>
+      <li><span class="ci">&#x2714;</span>Check for duplicate record_id values — ACEF-026</li>
+      <li><span class="ci">&#x2714;</span>Verify attachment advisory hashes (warning if mismatch) — ACEF-027</li>
+    </ul>
+    <div class="err-codes">
+      <span class="err-tag">ACEF-020</span><span class="err-tag">ACEF-021</span><span class="err-tag">ACEF-022</span><span class="err-tag">ACEF-023</span><span class="err-tag">ACEF-025</span><span class="err-tag">ACEF-026</span><span class="err-tag">ACEF-027</span>
+    </div>
+  </div>
+
+  <div class="val-detail" id="vd-4">
+    <h3 style="color:#fcd34d;">Phase 4: Rule Evaluation</h3>
+    <p style="font-size:13px; color:#94a3b8; margin-bottom:16px;">Evaluates evidence against regulation template rules using the DSL engine, then rolls up per-provision outcomes.</p>
+    <ul class="check-list">
+      <li><span class="ci">&#x2714;</span>Load regulation templates for each declared profile</li>
+      <li><span class="ci">&#x2714;</span>For each subject &times; provision &times; rule: evaluate DSL operator with record set</li>
+      <li><span class="ci">&#x2714;</span>10 operators: has_record_type, field_present, field_value, evidence_freshness, exists_where, attachment_kind_exists, all_records_match, count_satisfies, redaction_compliant, scope_filter</li>
+      <li><span class="ci">&#x2714;</span>Apply empty-set semantics: existential operators FAIL on zero records, universal operators PASS vacuously</li>
+      <li><span class="ci">&#x2714;</span>Run 7-step provision rollup: errors &#x2192; future &#x2192; gap &#x2192; fail &#x2192; warning &#x2192; info &#x2192; all-pass</li>
+      <li><span class="ci">&#x2714;</span>Produce per-subject provision summaries and per-rule evidence links</li>
+    </ul>
+    <div class="err-codes">
+      <span class="err-tag">ACEF-030</span><span class="err-tag">ACEF-031</span><span class="err-tag">ACEF-032</span><span class="err-tag">ACEF-040</span><span class="err-tag">ACEF-041</span><span class="err-tag">ACEF-042</span><span class="err-tag">ACEF-043</span><span class="err-tag">ACEF-044</span><span class="err-tag">ACEF-045</span>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW 6: REGULATORY MAP -->
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<div class="view" id="view-regulations">
+  <h1>Regulatory Coverage</h1>
+  <p class="subtitle">11 bundled regulation mapping templates across 8 jurisdictions. Each template encodes provisions, required evidence types, and machine-executable evaluation rules.</p>
+
+  <div class="reg-grid">
+    <div class="reg-card">
+      <h4>EU AI Act 2024</h4>
+      <div class="jurisdiction">European Union</div>
+      <div class="reg-meta"><span class="tag force-binding">Binding</span><span class="tag" style="background:#1e293b; color:#94a3b8; border:1px solid #334155;">30+ provisions</span></div>
+      <p>Articles 9-17, 50, 53, Annexes IV/XI/XII. The most comprehensive template — covers high-risk obligations, GPAI requirements, and transparency for all risk levels.</p>
+    </div>
+    <div class="reg-card">
+      <h4>GPAI Code of Practice 2025</h4>
+      <div class="jurisdiction">European Union</div>
+      <div class="reg-meta"><span class="tag force-binding">Binding</span></div>
+      <p>Training data transparency, copyright compliance, safety evaluation. Applies specifically to general-purpose AI model providers.</p>
+    </div>
+    <div class="reg-card">
+      <h4>EU Labelling CoP 2026</h4>
+      <div class="jurisdiction">European Union</div>
+      <div class="reg-meta"><span class="tag force-binding">Binding</span></div>
+      <p>Article 50 synthetic content marking and labelling requirements. Secured metadata, watermarks, and user-facing disclosure labels.</p>
+    </div>
+    <div class="reg-card">
+      <h4>NIST AI RMF 1.0</h4>
+      <div class="jurisdiction">United States</div>
+      <div class="reg-meta"><span class="tag force-voluntary">Voluntary</span></div>
+      <p>GOVERN, MAP, MEASURE, MANAGE functions. Cross-cutting risk management framework applicable to any AI system.</p>
+    </div>
+    <div class="reg-card">
+      <h4>NIST AI 600-1 GAI Profile</h4>
+      <div class="jurisdiction">United States</div>
+      <div class="reg-meta"><span class="tag force-voluntary">Voluntary</span></div>
+      <p>Generative AI-specific controls layered on top of AI RMF. Addresses unique risks of foundation models and generative systems.</p>
+    </div>
+    <div class="reg-card">
+      <h4>US Copyright Office Part 3</h4>
+      <div class="jurisdiction">United States</div>
+      <div class="reg-meta"><span class="tag force-advisory">Advisory</span></div>
+      <p>Lawful acquisition of training data, fair use analysis, output guardrails. Evidence of copyright compliance for AI training pipelines.</p>
+    </div>
+    <div class="reg-card">
+      <h4>OMB M-24-10</h4>
+      <div class="jurisdiction">United States (Federal)</div>
+      <div class="reg-meta"><span class="tag force-binding">Binding (federal)</span></div>
+      <p>Federal AI use-case inventory and governance requirements. Chief AI Officer accountability and rights-impacting AI safeguards.</p>
+    </div>
+    <div class="reg-card">
+      <h4>China CAC Labeling 2025</h4>
+      <div class="jurisdiction">China</div>
+      <div class="reg-meta"><span class="tag force-binding">Binding</span></div>
+      <p>Explicit and implicit labeling of AI-generated content. 6-month log retention requirement. Jurisdiction-specific marking requirements.</p>
+    </div>
+    <div class="reg-card">
+      <h4>ISO/IEC 42001:2023</h4>
+      <div class="jurisdiction">International</div>
+      <div class="reg-meta"><span class="tag force-voluntary">Voluntary</span></div>
+      <p>AI management system standard. Organizational governance, roles, documentation, and continuous improvement requirements.</p>
+    </div>
+    <div class="reg-card">
+      <h4>ISO/IEC 23894:2023</h4>
+      <div class="jurisdiction">International</div>
+      <div class="reg-meta"><span class="tag force-voluntary">Voluntary</span></div>
+      <p>AI risk management guidance. Risk identification, analysis, evaluation, and treatment for AI systems throughout their lifecycle.</p>
+    </div>
+    <div class="reg-card">
+      <h4>UK AI & Copyright 2026</h4>
+      <div class="jurisdiction">United Kingdom</div>
+      <div class="reg-meta"><span class="tag force-advisory">Advisory</span></div>
+      <p>Training data disclosure requirements and rights reservation mechanisms. Anticipated legislative framework for AI and copyright.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+function showView(id) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('view-' + id).classList.add('active');
+  event.target.classList.add('active');
+  window.scrollTo({top: 0, behavior: 'smooth'});
+  // Redraw entity lines when switching to the entities view
+  if (id === 'entities') {
+    requestAnimationFrame(() => requestAnimationFrame(drawEntityLines));
+  }
+}
+
+function showDetail(el) {
+  const detailId = el.dataset.detail;
+  document.querySelectorAll('.ft-item').forEach(i => i.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.detail-card').forEach(d => d.classList.remove('active'));
+  const target = document.getElementById('detail-' + detailId);
+  if (target) target.classList.add('active');
+}
+
+function showValPhase(n) {
+  document.querySelectorAll('.val-phase').forEach(p => p.classList.remove('vp-active'));
+  document.querySelectorAll('.val-detail').forEach(d => d.classList.remove('active'));
+  document.querySelector('.vp' + n).classList.add('vp-active');
+  document.getElementById('vd-' + n).classList.add('active');
+}
+
+/* ── Dynamic Entity Relationship Lines ── */
+function getNodeRect(id) {
+  const canvas = document.getElementById('entity-canvas');
+  const node = document.getElementById(id);
+  if (!canvas || !node) return null;
+  const cr = canvas.getBoundingClientRect();
+  const nr = node.getBoundingClientRect();
+  return {
+    left:   nr.left - cr.left,
+    top:    nr.top - cr.top,
+    right:  nr.right - cr.left,
+    bottom: nr.bottom - cr.top,
+    cx:     (nr.left + nr.right) / 2 - cr.left,
+    cy:     (nr.top + nr.bottom) / 2 - cr.top,
+    w:      nr.width,
+    h:      nr.height,
+  };
+}
+
+function makeLine(x1, y1, x2, y2, color, marker) {
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+  line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+  line.setAttribute('stroke', color);
+  line.classList.add('rel-line');
+  line.setAttribute('marker-end', `url(#${marker})`);
+  return line;
+}
+
+function makeCurve(d, color, marker) {
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', d);
+  path.setAttribute('stroke', color);
+  path.classList.add('rel-line');
+  path.setAttribute('marker-end', `url(#${marker})`);
+  return path;
+}
+
+function makeLabel(x, y, text, color) {
+  const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t.setAttribute('x', x); t.setAttribute('y', y);
+  t.setAttribute('fill', color);
+  t.classList.add('rel-label');
+  t.textContent = text;
+  return t;
+}
+
+function drawEntityLines() {
+  const svg = document.getElementById('entity-svg');
+  const canvas = document.getElementById('entity-canvas');
+  if (!svg || !canvas) return;
+
+  const s = getNodeRect('en-subject');
+  const c = getNodeRect('en-component');
+  const d = getNodeRect('en-dataset');
+  const a = getNodeRect('en-actor');
+  if (!s || !c || !d || !a) return;
+  // Bail if the view is hidden (display:none → all rects are zero)
+  if (s.w === 0 || c.w === 0 || d.w === 0 || a.w === 0) return;
+
+  // Size the SVG to match the canvas
+  const cRect = canvas.getBoundingClientRect();
+  svg.setAttribute('width', cRect.width);
+  svg.setAttribute('height', cRect.height);
+  svg.setAttribute('viewBox', `0 0 ${cRect.width} ${cRect.height}`);
+
+  // Clear old lines (keep defs)
+  const defs = svg.querySelector('defs');
+  svg.innerHTML = '';
+  svg.appendChild(defs);
+
+  // 1. deploys: Subject bottom-center → Component top-center
+  const dep_x1 = s.cx, dep_y1 = s.bottom;
+  const dep_x2 = c.cx, dep_y2 = c.top;
+  svg.appendChild(makeLine(dep_x1, dep_y1, dep_x2, dep_y2, '#3b82f6', 'arrow-blue'));
+  svg.appendChild(makeLabel((dep_x1+dep_x2)/2 + 8, (dep_y1+dep_y2)/2, 'deploys', '#3b82f6'));
+
+  // 2. trains_on: Subject right-center → Dataset left-center
+  const tr_x1 = s.right, tr_y1 = s.cy;
+  const tr_x2 = d.left, tr_y2 = d.cy;
+  svg.appendChild(makeLine(tr_x1, tr_y1, tr_x2, tr_y2, '#8b5cf6', 'arrow-purple'));
+  svg.appendChild(makeLabel((tr_x1+tr_x2)/2, (tr_y1+tr_y2)/2 - 10, 'trains_on', '#8b5cf6'));
+
+  // 3. evaluates_with: Component right → Dataset left-bottom area
+  const ev_x1 = c.right, ev_y1 = c.cy - 10;
+  const ev_x2 = d.left, ev_y2 = d.bottom;
+  const evCurve = `M ${ev_x1} ${ev_y1} C ${ev_x1 + 80} ${ev_y1}, ${ev_x2 - 80} ${ev_y2}, ${ev_x2} ${ev_y2}`;
+  svg.appendChild(makeCurve(evCurve, '#8b5cf6', 'arrow-purple'));
+  svg.appendChild(makeLabel((ev_x1+ev_x2)/2 - 10, (ev_y1+ev_y2)/2 + 20, 'evaluates_with', '#8b5cf6'));
+
+  // 4. fine_tunes: Component right-top → Dataset left (midway)
+  const ft_x1 = c.right, ft_y1 = c.top + 15;
+  const ft_x2 = d.left, ft_y2 = d.cy + 20;
+  const ftCurve = `M ${ft_x1} ${ft_y1} C ${ft_x1 + 100} ${ft_y1 - 40}, ${ft_x2 - 100} ${ft_y2 + 30}, ${ft_x2} ${ft_y2}`;
+  svg.appendChild(makeCurve(ftCurve, '#14b8a6', 'arrow-teal'));
+  svg.appendChild(makeLabel((ft_x1+ft_x2)/2 + 30, (ft_y1+ft_y2)/2 - 20, 'fine_tunes', '#14b8a6'));
+
+  // 5. oversees: Actor left-center → Subject right-bottom
+  const ov_x1 = a.left, ov_y1 = a.cy;
+  const ov_x2 = s.right, ov_y2 = s.bottom - 10;
+  const ovCurve = `M ${ov_x1} ${ov_y1} C ${ov_x1 - 120} ${ov_y1 - 80}, ${ov_x2 + 120} ${ov_y2 + 80}, ${ov_x2} ${ov_y2}`;
+  svg.appendChild(makeCurve(ovCurve, '#d97706', 'arrow-amber'));
+  svg.appendChild(makeLabel((ov_x1+ov_x2)/2 + 60, (ov_y1+ov_y2)/2 + 5, 'oversees', '#d97706'));
+
+  // 6. calls: Component self-loop (right side, curving out and back)
+  const cl_x = c.right, cl_y1 = c.cy - 25, cl_y2 = c.cy + 15;
+  const callCurve = `M ${cl_x} ${cl_y1} C ${cl_x + 55} ${cl_y1 - 20}, ${cl_x + 55} ${cl_y2 + 20}, ${cl_x} ${cl_y2}`;
+  svg.appendChild(makeCurve(callCurve, '#14b8a6', 'arrow-teal'));
+  svg.appendChild(makeLabel(cl_x + 40, (cl_y1+cl_y2)/2 + 4, 'calls', '#14b8a6'));
+
+  // 7. wraps: Component self-loop (left side, curving out and back)
+  const wr_x = c.left, wr_y1 = c.cy - 20, wr_y2 = c.cy + 20;
+  const wrapCurve = `M ${wr_x} ${wr_y1} C ${wr_x - 55} ${wr_y1 - 20}, ${wr_x - 55} ${wr_y2 + 20}, ${wr_x} ${wr_y2}`;
+  svg.appendChild(makeCurve(wrapCurve, '#14b8a6', 'arrow-teal'));
+  svg.appendChild(makeLabel(wr_x - 70, (wr_y1+wr_y2)/2 + 4, 'wraps', '#14b8a6'));
+}
+
+// Draw lines on load and resize
+window.addEventListener('load', () => {
+  requestAnimationFrame(() => requestAnimationFrame(drawEntityLines));
+});
+window.addEventListener('resize', drawEntityLines);
+</script>
+
+</body>
+</html>

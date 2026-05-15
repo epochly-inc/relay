@@ -1,0 +1,446 @@
+{
+  "template_id": "eu-gpai-code-of-practice-2025",
+  "template_name": "EU General-Purpose AI Code of Practice",
+  "version": "1.0.0",
+  "jurisdiction": "EU",
+  "source_legislation": "GPAI Code of Practice (July 2025)",
+  "instrument_type": "code_of_practice",
+  "legal_force": "voluntary",
+  "instrument_status": "final",
+  "default_effective_date": "2025-08-02",
+  "superseded_by": null,
+  "applicable_system_types": ["gpai", "gpai-systemic"],
+  "provisions": [
+    {
+      "provision_id": "gpai-transparency-1",
+      "provision_name": "Training Data Summary",
+      "normative_text_ref": "GPAI Code of Practice Transparency Commitment 1",
+      "description": "GPAI model providers shall publish a sufficiently detailed training data summary including modalities, data size, language and demographic coverage, and intended purpose, as required by Art. 53(1)(d) of the EU AI Act",
+      "effective_date": "2025-08-02",
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [
+        {
+          "provision_id": "gpai-transparency-1.1",
+          "normative_text_ref": "GPAI CoP Transparency 1.1",
+          "description": "The training data summary must cover data modalities, size, and language coverage used for model pre-training"
+        },
+        {
+          "provision_id": "gpai-transparency-1.2",
+          "normative_text_ref": "GPAI CoP Transparency 1.2",
+          "description": "Demographic and representativeness characteristics of training data must be documented"
+        }
+      ],
+      "required_evidence_types": [
+        "data_provenance"
+      ],
+      "minimum_evidence_count": {
+        "data_provenance": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gpai-t1-data-provenance",
+          "rule": "has_record_type",
+          "params": {"type": "data_provenance", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one data_provenance record is required — GPAI Code of Practice Transparency Commitment 1 mandates a sufficiently detailed training data summary"
+        },
+        {
+          "rule_id": "gpai-t1-source-type",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/source_type"},
+          "severity": "fail",
+          "message": "Every data_provenance record must specify source_type (licensed, scraped, public_domain, synthetic, user_generated) per the GPAI training data summary requirements"
+        },
+        {
+          "rule_id": "gpai-t1-training-summary",
+          "rule": "exists_where",
+          "params": {
+            "record_type": "data_provenance",
+            "field": "/payload/summary_type",
+            "op": "eq",
+            "value": "training_data_summary",
+            "min_count": 1
+          },
+          "severity": "fail",
+          "message": "At least one data_provenance record with summary_type='training_data_summary' is required — the GPAI Code of Practice mandates a structured training data summary with modalities, size, and coverage details"
+        },
+        {
+          "rule_id": "gpai-t1-modalities-present",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/modalities"},
+          "severity": "warning",
+          "message": "Data provenance records should specify data modalities (text, image, audio, video, code, etc.) per GPAI training data summary disclosure requirements"
+        },
+        {
+          "rule_id": "gpai-t1-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "data_provenance", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Data provenance records should be linked to a subject entity to identify which GPAI model the training data summary pertains to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gpai-transparency-2",
+      "provision_name": "Data Source Documentation",
+      "normative_text_ref": "GPAI Code of Practice Transparency Commitment 2",
+      "description": "GPAI model providers shall document individual data sources including source URIs, acquisition methods, crawler identifiers, and crawl timing windows for web-scraped data",
+      "effective_date": "2025-08-02",
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [
+        {
+          "provision_id": "gpai-transparency-2.1",
+          "normative_text_ref": "GPAI CoP Transparency 2.1",
+          "description": "For web-scraped data, documentation must include top domains, crawler identifiers, and crawl timing windows"
+        }
+      ],
+      "required_evidence_types": [
+        "data_provenance"
+      ],
+      "minimum_evidence_count": {
+        "data_provenance": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gpai-t2-data-provenance",
+          "rule": "has_record_type",
+          "params": {"type": "data_provenance", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one data_provenance record is required — GPAI Code of Practice Transparency Commitment 2 mandates documentation of individual data sources"
+        },
+        {
+          "rule_id": "gpai-t2-source-uris",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/source_uris"},
+          "severity": "fail",
+          "message": "Every data_provenance record must specify source_uris — the GPAI Code of Practice requires documented data source locations for transparency"
+        },
+        {
+          "rule_id": "gpai-t2-acquisition-method",
+          "rule": "field_present",
+          "params": {"record_type": "data_provenance", "field": "/payload/acquisition_method"},
+          "severity": "warning",
+          "message": "Data provenance records should specify the acquisition_method (licensed, scraped, public_domain, synthetic) for each data source per GPAI transparency requirements"
+        },
+        {
+          "rule_id": "gpai-t2-dataset-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "data_provenance", "entity_type": "dataset"},
+          "severity": "warning",
+          "message": "Data provenance records should be linked to dataset entities for proper data source traceability"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gpai-copyright-1",
+      "provision_name": "TDM Opt-Out Compliance",
+      "normative_text_ref": "GPAI Code of Practice Copyright Commitment 1",
+      "description": "GPAI model providers shall comply with text and data mining (TDM) opt-out mechanisms per Directive (EU) 2019/790 Art. 4, including detection and respect of robots.txt, TDMRep protocol, and HTTP headers indicating rights reservations",
+      "effective_date": "2025-08-02",
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [
+        {
+          "provision_id": "gpai-copyright-1.1",
+          "normative_text_ref": "GPAI CoP Copyright 1.1",
+          "description": "Providers must implement opt-out detection methods including robots.txt, TDMRep, and HTTP headers"
+        },
+        {
+          "provision_id": "gpai-copyright-1.2",
+          "normative_text_ref": "GPAI CoP Copyright 1.2",
+          "description": "Providers must document their process for removing or excluding opted-out content from training data"
+        }
+      ],
+      "required_evidence_types": [
+        "copyright_rights_reservation"
+      ],
+      "minimum_evidence_count": {
+        "copyright_rights_reservation": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gpai-c1-copyright-reservation",
+          "rule": "has_record_type",
+          "params": {"type": "copyright_rights_reservation", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one copyright_rights_reservation record is required — GPAI Code of Practice Copyright Commitment 1 mandates documented TDM opt-out compliance per EU Directive 2019/790 Art. 4"
+        },
+        {
+          "rule_id": "gpai-c1-opt-out-method",
+          "rule": "field_present",
+          "params": {"record_type": "copyright_rights_reservation", "field": "/payload/opt_out_detection_method"},
+          "severity": "fail",
+          "message": "Every copyright_rights_reservation record must specify the opt_out_detection_method (robots.txt, TDMRep, HTTP headers) used for TDM rights reservation compliance"
+        },
+        {
+          "rule_id": "gpai-c1-compliance-date",
+          "rule": "field_present",
+          "params": {"record_type": "copyright_rights_reservation", "field": "/payload/compliance_verification_date"},
+          "severity": "warning",
+          "message": "Copyright rights reservation records should include a compliance_verification_date documenting when TDM opt-out compliance was last verified"
+        },
+        {
+          "rule_id": "gpai-c1-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "copyright_rights_reservation", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Copyright rights reservation records should be linked to a subject entity to identify which GPAI model's training data the TDM compliance applies to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gpai-copyright-2",
+      "provision_name": "Licensed Content Documentation",
+      "normative_text_ref": "GPAI Code of Practice Copyright Commitment 2",
+      "description": "GPAI model providers shall document licensing agreements for copyrighted content used in training, including licensor, scope, content type, and agreement references",
+      "effective_date": "2025-08-02",
+      "applicable_to": ["gpai", "gpai-systemic"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "license_record"
+      ],
+      "minimum_evidence_count": {
+        "license_record": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gpai-c2-license-record",
+          "rule": "has_record_type",
+          "params": {"type": "license_record", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one license_record is required — GPAI Code of Practice Copyright Commitment 2 mandates documentation of licensing agreements for copyrighted training content"
+        },
+        {
+          "rule_id": "gpai-c2-licensor-present",
+          "rule": "field_present",
+          "params": {"record_type": "license_record", "field": "/payload/licensor"},
+          "severity": "warning",
+          "message": "License records should specify the licensor to establish the granting party for training data licensing compliance"
+        },
+        {
+          "rule_id": "gpai-c2-scope-present",
+          "rule": "field_present",
+          "params": {"record_type": "license_record", "field": "/payload/scope"},
+          "severity": "warning",
+          "message": "License records should specify the scope of the licensing agreement to verify coverage of intended training uses"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gpai-safety-1",
+      "provision_name": "Safety and Security Framework",
+      "normative_text_ref": "GPAI Code of Practice Safety Commitment 1",
+      "description": "Providers of GPAI models with systemic risk shall maintain a safety and security framework document covering responsibilities, evaluation triggers, risk forecasting methodology, and mitigations",
+      "effective_date": "2025-08-02",
+      "applicable_to": ["gpai-systemic"],
+      "sub_provisions": [
+        {
+          "provision_id": "gpai-safety-1.1",
+          "normative_text_ref": "GPAI CoP Safety 1.1",
+          "description": "The safety framework must define responsibilities, evaluation triggers, and risk forecasting methodology"
+        },
+        {
+          "provision_id": "gpai-safety-1.2",
+          "normative_text_ref": "GPAI CoP Safety 1.2",
+          "description": "The safety framework must document mitigations for identified systemic risks"
+        }
+      ],
+      "required_evidence_types": [
+        "governance_policy"
+      ],
+      "minimum_evidence_count": {
+        "governance_policy": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gpai-s1-governance-policy",
+          "rule": "has_record_type",
+          "params": {"type": "governance_policy", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one governance_policy record is required — GPAI Code of Practice Safety Commitment 1 mandates a safety and security framework document for systemic risk GPAI models",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "gpai-s1-policy-attachment",
+          "rule": "attachment_exists",
+          "params": {"record_type": "governance_policy"},
+          "severity": "warning",
+          "message": "Safety framework governance_policy records should include attached framework documents (PDF or similar) demonstrating comprehensive safety and security coverage",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "gpai-s1-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "governance_policy", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Safety framework governance_policy records should be linked to a subject entity to identify which systemic risk GPAI model the framework covers",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gpai-safety-2",
+      "provision_name": "Systemic Risk Assessments",
+      "normative_text_ref": "GPAI Code of Practice Safety Commitment 2",
+      "description": "Providers of GPAI models with systemic risk shall conduct and document systemic risk assessments covering CBRN risks, loss of control, cyber offense, manipulation, and other categories, including adversarial and red-team evaluation results",
+      "effective_date": "2025-08-02",
+      "applicable_to": ["gpai-systemic"],
+      "sub_provisions": [
+        {
+          "provision_id": "gpai-safety-2.1",
+          "normative_text_ref": "GPAI CoP Safety 2.1",
+          "description": "Risk assessments must cover CBRN, loss of control, cyber offense, and manipulation risk categories"
+        },
+        {
+          "provision_id": "gpai-safety-2.2",
+          "normative_text_ref": "GPAI CoP Safety 2.2",
+          "description": "Risk assessments must include adversarial and red-team evaluation results with independent evaluator identification"
+        }
+      ],
+      "required_evidence_types": [
+        "risk_register"
+      ],
+      "minimum_evidence_count": {
+        "risk_register": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gpai-s2-risk-register",
+          "rule": "has_record_type",
+          "params": {"type": "risk_register", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_register record is required — GPAI Code of Practice Safety Commitment 2 mandates documented systemic risk assessments for GPAI models classified as having systemic risk",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "gpai-s2-risk-category",
+          "rule": "field_present",
+          "params": {"record_type": "risk_register", "field": "/payload/risk_category"},
+          "severity": "fail",
+          "message": "Every risk_register record must specify risk_category (e.g., cbrn, loss_of_control, cyber_offense, manipulation) per GPAI systemic risk assessment requirements",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "gpai-s2-assessment-method",
+          "rule": "field_present",
+          "params": {"record_type": "risk_register", "field": "/payload/assessment_method"},
+          "severity": "warning",
+          "message": "Risk register records should specify the assessment_method (adversarial testing, red-team evaluation, expert review) used for systemic risk assessment",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "gpai-s2-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "risk_register", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Risk register records should be linked to a subject entity to identify which systemic risk GPAI model was assessed",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "gpai-safety-3",
+      "provision_name": "Incident Reporting",
+      "normative_text_ref": "GPAI Code of Practice Safety Commitment 3",
+      "description": "Providers of GPAI models with systemic risk shall report serious incidents to the AI Office within 2-15 days of becoming aware, documenting incident type, severity, notification date, and AI Office reference",
+      "effective_date": "2025-08-02",
+      "applicable_to": ["gpai-systemic"],
+      "sub_provisions": [
+        {
+          "provision_id": "gpai-safety-3.1",
+          "normative_text_ref": "GPAI CoP Safety 3.1",
+          "description": "Incident reports must be submitted to the AI Office within 2 days for immediate notification and 15 days for the full report"
+        }
+      ],
+      "required_evidence_types": [
+        "incident_report"
+      ],
+      "minimum_evidence_count": {
+        "incident_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "gpai-s3-incident-report",
+          "rule": "has_record_type",
+          "params": {"type": "incident_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one incident_report record is required — GPAI Code of Practice Safety Commitment 3 mandates documented incident reporting to the AI Office for systemic risk GPAI models",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "gpai-s3-incident-severity",
+          "rule": "field_present",
+          "params": {"record_type": "incident_report", "field": "/payload/severity"},
+          "severity": "fail",
+          "message": "Every incident_report record must specify severity to determine the notification timeline (2-day vs 15-day) per GPAI incident reporting requirements",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "gpai-s3-notification-date",
+          "rule": "field_present",
+          "params": {"record_type": "incident_report", "field": "/payload/notification_date"},
+          "severity": "warning",
+          "message": "Incident reports should include notification_date to verify compliance with the 2-15 day reporting timeline to the AI Office",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        },
+        {
+          "rule_id": "gpai-s3-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "incident_report", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Incident reports should be linked to a subject entity to identify which GPAI model experienced the incident",
+          "condition": {
+            "if_system_type": ["gpai-systemic"]
+          }
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": [
+    "test-vectors/gpai-cop/gpai-transparency-training-summary-pass.acef/",
+    "test-vectors/gpai-cop/gpai-copyright-tdm-opt-out-pass.acef/",
+    "test-vectors/gpai-cop/gpai-copyright-missing-license-fail.acef/",
+    "test-vectors/gpai-cop/gpai-systemic-safety-framework-pass.acef/",
+    "test-vectors/gpai-cop/gpai-systemic-incident-reporting-pass.acef/"
+  ]
+}

@@ -1,0 +1,286 @@
+{
+  "template_id": "iso-iec-42001-2023",
+  "template_name": "ISO/IEC 42001:2023 — Artificial Intelligence Management System",
+  "version": "1.0.0",
+  "jurisdiction": "International",
+  "source_legislation": "ISO/IEC 42001:2023 Information technology — Artificial intelligence — Management system",
+  "instrument_type": "standard",
+  "legal_force": "voluntary",
+  "instrument_status": "final",
+  "default_effective_date": null,
+  "superseded_by": null,
+  "applicable_system_types": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+  "provisions": [
+    {
+      "provision_id": "iso42001-leadership",
+      "provision_name": "Leadership and AI Policy",
+      "normative_text_ref": "ISO/IEC 42001:2023 Clauses 5.1, 5.2",
+      "description": "Top management shall demonstrate leadership and commitment with respect to the AIMS by establishing an AI policy, ensuring that resources are available, and communicating the importance of effective AI management and conformity to AIMS requirements",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "iso42001-leadership.5.1",
+          "normative_text_ref": "ISO/IEC 42001:2023 Clause 5.1",
+          "description": "Top management leadership and commitment to the AI management system"
+        },
+        {
+          "provision_id": "iso42001-leadership.5.2",
+          "normative_text_ref": "ISO/IEC 42001:2023 Clause 5.2",
+          "description": "Establishment and maintenance of an AI policy appropriate to the organization's purpose"
+        }
+      ],
+      "required_evidence_types": [
+        "governance_policy"
+      ],
+      "minimum_evidence_count": {
+        "governance_policy": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso42001-lead-governance-policy",
+          "rule": "has_record_type",
+          "params": {"type": "governance_policy", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one governance_policy record is required — ISO/IEC 42001 Clauses 5.1 and 5.2 mandate documented AI policy demonstrating leadership commitment and organizational AI management principles"
+        },
+        {
+          "rule_id": "iso42001-lead-policy-title",
+          "rule": "field_present",
+          "params": {"record_type": "governance_policy", "field": "/payload/title"},
+          "severity": "warning",
+          "message": "Governance policy records should include a title identifying the policy document per ISO/IEC 42001 documentation requirements"
+        },
+        {
+          "rule_id": "iso42001-lead-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "governance_policy", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Governance policy records should be linked to a subject entity to identify which AI system the management policy covers"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "iso42001-risk",
+      "provision_name": "Risk Management",
+      "normative_text_ref": "ISO/IEC 42001:2023 Clause 6.1",
+      "description": "The organization shall determine risks and opportunities that need to be addressed to ensure the AIMS can achieve its intended outcomes, prevent or reduce undesired effects, and achieve continual improvement, including risk assessment and risk treatment planning",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [
+        {
+          "provision_id": "iso42001-risk.6.1.1",
+          "normative_text_ref": "ISO/IEC 42001:2023 Clause 6.1.1",
+          "description": "Actions to address AI-related risks and opportunities"
+        },
+        {
+          "provision_id": "iso42001-risk.6.1.2",
+          "normative_text_ref": "ISO/IEC 42001:2023 Clause 6.1.2",
+          "description": "AI risk assessment process covering risk identification, analysis, and evaluation"
+        },
+        {
+          "provision_id": "iso42001-risk.6.1.3",
+          "normative_text_ref": "ISO/IEC 42001:2023 Clause 6.1.3",
+          "description": "AI risk treatment planning and implementation of treatment measures"
+        }
+      ],
+      "required_evidence_types": [
+        "risk_register",
+        "risk_treatment"
+      ],
+      "minimum_evidence_count": {
+        "risk_register": 1,
+        "risk_treatment": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso42001-risk-register",
+          "rule": "has_record_type",
+          "params": {"type": "risk_register", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_register record is required — ISO/IEC 42001 Clause 6.1 mandates documented AI risk assessment covering risk identification, analysis, and evaluation"
+        },
+        {
+          "rule_id": "iso42001-risk-treatment",
+          "rule": "has_record_type",
+          "params": {"type": "risk_treatment", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one risk_treatment record is required — ISO/IEC 42001 Clause 6.1.3 mandates documented risk treatment plans with selected treatment options and implementation status"
+        },
+        {
+          "rule_id": "iso42001-risk-entity-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "risk_register", "entity_type": "subject"},
+          "severity": "warning",
+          "message": "Risk register records should be linked to a subject entity to establish which AI system the risk applies to"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "iso42001-data",
+      "provision_name": "Data Management",
+      "normative_text_ref": "ISO/IEC 42001:2023 Annex A.7.4",
+      "description": "The organization shall determine and document requirements for data used in AI systems, including data quality, representativeness, provenance, and governance processes for the AI system lifecycle",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "dataset_card",
+        "data_provenance"
+      ],
+      "minimum_evidence_count": {
+        "dataset_card": 1,
+        "data_provenance": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso42001-data-dataset-card",
+          "rule": "has_record_type",
+          "params": {"type": "dataset_card", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one dataset_card record is required — ISO/IEC 42001 Annex A.7.4 mandates documentation of dataset characteristics, quality assessments, and known limitations"
+        },
+        {
+          "rule_id": "iso42001-data-provenance",
+          "rule": "has_record_type",
+          "params": {"type": "data_provenance", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one data_provenance record is required — ISO/IEC 42001 Annex A.7.4 mandates documentation of data acquisition, source, and chain of custody"
+        },
+        {
+          "rule_id": "iso42001-data-dataset-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "dataset_card", "entity_type": "dataset"},
+          "severity": "warning",
+          "message": "Dataset card records should be linked to dataset entities for proper traceability of data management documentation"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "iso42001-performance",
+      "provision_name": "Performance Evaluation",
+      "normative_text_ref": "ISO/IEC 42001:2023 Clause 9.1",
+      "description": "The organization shall determine what needs to be monitored and measured, the methods for monitoring, measurement, analysis, and evaluation, and when monitoring and measuring shall be performed, to evaluate AI system performance and the effectiveness of the AIMS",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "evaluation_report"
+      ],
+      "minimum_evidence_count": {
+        "evaluation_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso42001-perf-evaluation-report",
+          "rule": "has_record_type",
+          "params": {"type": "evaluation_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one evaluation_report record is required — ISO/IEC 42001 Clause 9.1 mandates documented performance monitoring and measurement of AI systems"
+        },
+        {
+          "rule_id": "iso42001-perf-methodology",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/methodology"},
+          "severity": "warning",
+          "message": "Evaluation reports should document the methodology used for performance measurement per ISO/IEC 42001 Clause 9.1 requirements"
+        },
+        {
+          "rule_id": "iso42001-perf-metrics",
+          "rule": "field_present",
+          "params": {"record_type": "evaluation_report", "field": "/payload/metrics"},
+          "severity": "warning",
+          "message": "Evaluation reports should include quantified metrics for performance assessment per ISO/IEC 42001 monitoring and measurement requirements"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "iso42001-incident",
+      "provision_name": "Nonconformity and Corrective Action",
+      "normative_text_ref": "ISO/IEC 42001:2023 Clause 10.2",
+      "description": "When a nonconformity occurs, the organization shall react to the nonconformity by taking action to control and correct it, evaluate the need for action to eliminate the causes, implement any action needed, and review the effectiveness of corrective action taken",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "incident_report"
+      ],
+      "minimum_evidence_count": {
+        "incident_report": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso42001-inc-incident-report",
+          "rule": "has_record_type",
+          "params": {"type": "incident_report", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one incident_report record is required — ISO/IEC 42001 Clause 10.2 mandates documented nonconformity handling including corrective actions, root cause analysis, and effectiveness review"
+        },
+        {
+          "rule_id": "iso42001-inc-severity",
+          "rule": "field_present",
+          "params": {"record_type": "incident_report", "field": "/payload/severity"},
+          "severity": "warning",
+          "message": "Incident reports should specify severity to support the nonconformity classification and corrective action prioritization per ISO/IEC 42001"
+        },
+        {
+          "rule_id": "iso42001-inc-corrective-actions",
+          "rule": "field_present",
+          "params": {"record_type": "incident_report", "field": "/payload/corrective_actions"},
+          "severity": "warning",
+          "message": "Incident reports should include corrective_actions documenting the actions taken to eliminate nonconformity causes per ISO/IEC 42001 Clause 10.2"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "iso42001-oversight",
+      "provision_name": "Human Oversight of AI Systems",
+      "normative_text_ref": "ISO/IEC 42001:2023 Annex A.8.4",
+      "description": "The organization shall determine and implement human oversight measures for AI systems commensurate with assessed risks, including intervention, override, and monitoring capabilities",
+      "effective_date": null,
+      "applicable_to": ["high-risk", "gpai", "gpai-systemic", "limited-risk", "minimal-risk"],
+      "sub_provisions": [],
+      "required_evidence_types": [
+        "human_oversight_action"
+      ],
+      "minimum_evidence_count": {
+        "human_oversight_action": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "iso42001-oversight-action",
+          "rule": "has_record_type",
+          "params": {"type": "human_oversight_action", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one human_oversight_action record is required — ISO/IEC 42001 Annex A.8.4 mandates documented human oversight measures including intervention and monitoring capabilities"
+        },
+        {
+          "rule_id": "iso42001-oversight-actor-linked",
+          "rule": "entity_linked",
+          "params": {"record_type": "human_oversight_action", "entity_type": "actor"},
+          "severity": "warning",
+          "message": "Human oversight action records should be linked to an actor entity to establish who performed the oversight per ISO/IEC 42001 accountability requirements"
+        }
+      ],
+      "evaluation_scope": "package"
+    }
+  ],
+  "test_vectors": []
+}

@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/assessment-bundle.schema.json",
+  "title": "ACEF Assessment Bundle",
+  "description": "JSON Schema for .acef-assessment.json — a separate, signed JSON artifact that captures validation results. Produced by validators, auditors, or notified bodies. References an Evidence Bundle by content hash. Contains per-rule outcomes, provision roll-ups, structural errors, and an optional integrity signature.",
+  "type": "object",
+  "required": [
+    "versioning",
+    "assessment_id",
+    "timestamp",
+    "evaluation_instant",
+    "assessor",
+    "evidence_bundle_ref",
+    "profiles_evaluated",
+    "template_digests",
+    "results",
+    "provision_summary",
+    "structural_errors",
+    "integrity"
+  ],
+  "properties": {
+    "versioning": {
+      "type": "object",
+      "description": "Module version declarations. Assessment Bundles declare core_version and assessment_version.",
+      "required": ["core_version", "assessment_version"],
+      "properties": {
+        "core_version": {
+          "type": "string",
+          "description": "ACEF Core module version (semver).",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "assessment_version": {
+          "type": "string",
+          "description": "ACEF Assessment module version (semver).",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "assessment_id": {
+      "type": "string",
+      "description": "URN identifier for this assessment (urn:acef:asx:<uuid>).",
+      "pattern": "^urn:acef:asx:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "When this assessment was created (ISO 8601).",
+      "format": "date-time"
+    },
+    "evaluation_instant": {
+      "type": "string",
+      "description": "The single reference time for all date-sensitive rule logic. Set by the validator at the start of evaluation. All rules using validation_time resolve to this value. Ensures reproducible evaluation.",
+      "format": "date-time"
+    },
+    "assessor": {
+      "type": "object",
+      "description": "Tool or entity that performed the assessment.",
+      "required": ["name", "version"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Assessor tool or organization name."
+        },
+        "version": {
+          "type": "string",
+          "description": "Assessor tool version."
+        },
+        "organization": {
+          "type": "string",
+          "description": "Organization that performed the assessment."
+        }
+      },
+      "additionalProperties": true
+    },
+    "evidence_bundle_ref": {
+      "type": "object",
+      "description": "Reference to the Evidence Bundle being assessed.",
+      "required": ["content_hash", "package_id"],
+      "properties": {
+        "content_hash": {
+          "type": "string",
+          "description": "SHA-256 hash of the RFC 8785-canonicalized content-hashes.json from the Evidence Bundle (the bundle digest).",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "package_id": {
+          "type": "string",
+          "description": "URN of the Evidence Bundle package.",
+          "pattern": "^urn:acef:pkg:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "additionalProperties": true
+    },
+    "profiles_evaluated": {
+      "type": "array",
+      "description": "List of profile_id:version strings for each regulation mapping template evaluated.",
+      "items": {
+        "type": "string",
+        "description": "Profile identifier with version (e.g., 'eu-ai-act-2024:1.0.0')."
+      }
+    },
+    "template_digests": {
+      "type": "object",
+      "description": "Map of profile_id:version to SHA-256 hash of the template file used. Ensures reproducibility even if templates are later updated.",
+      "additionalProperties": {
+        "type": "string",
+        "description": "SHA-256 hash of the regulation mapping template.",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "results": {
+      "type": "array",
+      "description": "Per-rule evaluation results.",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "provision_id", "profile_id", "rule_severity", "outcome"],
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "description": "Unique rule identifier within the template (as declared in the template's evaluation rules)."
+          },
+          "provision_id": {
+            "type": "string",
+            "description": "The provision this rule belongs to (e.g., 'article-9')."
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "The regulation profile this rule belongs to (e.g., 'eu-ai-act-2024')."
+          },
+          "rule_severity": {
+            "type": "string",
+            "description": "The importance level declared by the rule in the template. This is a property of the rule, not the result.",
+            "enum": ["fail", "warning", "info"]
+          },
+          "outcome": {
+            "type": "string",
+            "description": "The result of evaluating the rule against the evidence. 'skipped' means the rule's condition evaluated to false. 'error' means the rule could not be evaluated.",
+            "enum": ["passed", "failed", "skipped", "error"]
+          },
+          "message": {
+            "type": ["string", "null"],
+            "description": "Human-readable explanation of the outcome. Null if passed without comment."
+          },
+          "evidence_refs": {
+            "type": "array",
+            "description": "URNs of evidence records that contributed to this result.",
+            "items": {
+              "type": "string",
+              "pattern": "^urn:acef:rec:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "subject_scope": {
+            "type": "array",
+            "description": "URNs of subjects this result applies to (for per-subject evaluation).",
+            "items": {
+              "type": "string",
+              "pattern": "^urn:acef:sub:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "provision_summary": {
+      "type": "array",
+      "description": "Per-provision roll-up results computed using the 7-step deterministic precedence algorithm.",
+      "items": {
+        "type": "object",
+        "required": ["provision_id", "profile_id", "provision_outcome"],
+        "properties": {
+          "provision_id": {
+            "type": "string",
+            "description": "The provision being summarized (e.g., 'article-9')."
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "The regulation profile this provision belongs to."
+          },
+          "provision_outcome": {
+            "type": "string",
+            "description": "Roll-up outcome computed using the 7-step precedence: not-satisfied > not-assessed > skipped > gap-acknowledged > partially-satisfied > satisfied.",
+            "enum": ["satisfied", "partially-satisfied", "not-satisfied", "not-assessed", "skipped", "gap-acknowledged"]
+          },
+          "subject_scope": {
+            "type": "array",
+            "description": "URNs of subjects this summary covers. Required for per-subject evaluation in multi-subject bundles.",
+            "items": {
+              "type": "string",
+              "pattern": "^urn:acef:sub:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "fail_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of rules with severity 'fail' that had outcome 'failed'."
+          },
+          "warning_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of rules with severity 'warning' that had outcome 'failed'."
+          },
+          "skipped_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of rules with outcome 'skipped'."
+          },
+          "evidence_refs": {
+            "type": "array",
+            "description": "URNs of all evidence records relevant to this provision.",
+            "items": {
+              "type": "string",
+              "pattern": "^urn:acef:rec:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "structural_errors": {
+      "type": "array",
+      "description": "Structural errors found in the Evidence Bundle during validation. Uses the normative error taxonomy from Section 3.6 with JSON Pointer paths for precise location.",
+      "items": {
+        "type": "object",
+        "required": ["code", "severity", "message"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Error code from the ACEF error taxonomy (e.g., 'ACEF-002', 'ACEF-020').",
+            "pattern": "^ACEF-[0-9]{3}$"
+          },
+          "severity": {
+            "type": "string",
+            "description": "Severity level from the error taxonomy.",
+            "enum": ["fatal", "error", "warning", "info"]
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable description of the error."
+          },
+          "path": {
+            "type": "string",
+            "description": "JSON Pointer (RFC 6901) to the location in the Evidence Bundle where the error was found."
+          },
+          "context": {
+            "type": "object",
+            "description": "Additional structured context about the error (e.g., expected vs. actual hash, missing URN).",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "integrity": {
+      "description": "JWS signature over the Assessment Bundle. Set to null before signing; populated after signing. Always present in the JSON structure (never removed).",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["signature"],
+          "properties": {
+            "signature": {
+              "type": "object",
+              "required": ["method", "signer", "value"],
+              "properties": {
+                "method": {
+                  "type": "string",
+                  "description": "Signature method. v1 restricts to 'jws'.",
+                  "const": "jws"
+                },
+                "signer": {
+                  "type": "string",
+                  "description": "Signer identity (URN or X.509 subject)."
+                },
+                "value": {
+                  "type": "string",
+                  "description": "JWS compact serialization computed over RFC 8785-canonicalized Assessment Bundle JSON with integrity set to null."
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/variant-registry.json",
+  "title": "ACEF Payload Variant Registry",
+  "description": "Machine-readable mapping of Section 2 artifact names to their parent record types, discriminator fields (JSON Pointer), and discriminator values. Enables template authors to use exists_where rules with well-known discriminator paths, and SDK implementations to validate that variant names in templates resolve to real record types and payload fields.",
+  "variants": [
+    {
+      "artifact_name": "management_review",
+      "record_type": "risk_register",
+      "discriminator_field": "/payload/review_type",
+      "discriminator_value": "management_review"
+    },
+    {
+      "artifact_name": "post_market_monitoring_plan",
+      "record_type": "risk_register",
+      "discriminator_field": "/payload/review_type",
+      "discriminator_value": "post_market_monitoring_plan"
+    },
+    {
+      "artifact_name": "risk_testing_log",
+      "record_type": "risk_treatment",
+      "discriminator_field": "/payload/treatment_subtype",
+      "discriminator_value": "testing_log"
+    },
+    {
+      "artifact_name": "marking_standards_compliance",
+      "record_type": "transparency_marking",
+      "discriminator_field": "/payload/marking_subtype",
+      "discriminator_value": "standards_compliance"
+    },
+    {
+      "artifact_name": "interaction_disclosure",
+      "record_type": "disclosure_labeling",
+      "discriminator_field": "/payload/disclosure_subtype",
+      "discriminator_value": "interaction"
+    },
+    {
+      "artifact_name": "biometric_disclosure",
+      "record_type": "disclosure_labeling",
+      "discriminator_field": "/payload/disclosure_subtype",
+      "discriminator_value": "biometric"
+    },
+    {
+      "artifact_name": "logging_spec",
+      "record_type": "event_log",
+      "discriminator_field": "/payload/event_type",
+      "discriminator_value": "logging_spec"
+    },
+    {
+      "artifact_name": "gpai_annex_xi_model_doc",
+      "record_type": "evaluation_report",
+      "discriminator_field": "/payload/variant",
+      "discriminator_value": "gpai_annex_xi_model_doc"
+    },
+    {
+      "artifact_name": "ai_use_case_inventory_entry",
+      "record_type": "governance_policy",
+      "discriminator_field": "/payload/variant",
+      "discriminator_value": "ai_use_case_inventory_entry"
+    },
+    {
+      "artifact_name": "mark_detectability_test",
+      "record_type": "evaluation_report",
+      "discriminator_field": "/payload/variant",
+      "discriminator_value": "mark_detectability_test"
+    },
+    {
+      "artifact_name": "training_competency_record",
+      "record_type": "governance_policy",
+      "discriminator_field": "/payload/variant",
+      "discriminator_value": "training_competency_record"
+    },
+    {
+      "artifact_name": "publication_evidence",
+      "record_type": "transparency_disclosure",
+      "discriminator_field": "/payload/variant",
+      "discriminator_value": "publication_evidence"
+    }
+  ]
+}

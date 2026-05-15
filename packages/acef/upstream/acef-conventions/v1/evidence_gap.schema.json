@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/evidence_gap.schema.json",
+  "title": "ACEF Evidence Gap Payload",
+  "description": "Payload schema for evidence_gap records. Explicit acknowledgment that required evidence is not yet present, with reason and remediation plan. Distinguishes 'evidence is missing because we forgot' from 'evidence is missing because the system has not reached that lifecycle phase' or 'evidence is confidential and hash-committed'. Used by all regulations to trigger gap-acknowledged provision outcome in assessment.",
+  "type": "object",
+  "required": ["missing_record_type", "reason"],
+  "properties": {
+    "missing_record_type": {
+      "type": "string",
+      "description": "The record type that is missing or incomplete (e.g., 'robustness_assessment', 'evaluation_report')."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the evidence is missing.",
+      "enum": [
+        "not_yet_collected",
+        "lifecycle_phase_not_reached",
+        "confidential_hash_committed",
+        "under_nda",
+        "third_party_dependency",
+        "in_progress",
+        "not_applicable_with_justification",
+        "scheduled",
+        "other"
+      ]
+    },
+    "reason_description": {
+      "type": "string",
+      "description": "Detailed human-readable explanation of why the evidence is missing."
+    },
+    "expected_completion_date": {
+      "type": ["string", "null"],
+      "description": "Expected date when the evidence will be available (ISO 8601). Null if unknown.",
+      "format": "date"
+    },
+    "remediation_plan": {
+      "type": "string",
+      "description": "Description of the plan to remediate the evidence gap."
+    },
+    "remediation_owner": {
+      "type": "string",
+      "description": "Person or team responsible for the remediation."
+    },
+    "gap_severity": {
+      "type": "string",
+      "description": "How critical this evidence gap is to overall compliance.",
+      "enum": ["critical", "major", "minor", "informational"]
+    },
+    "blocking_provisions": {
+      "type": "array",
+      "description": "Regulatory provisions that are blocked or affected by this evidence gap.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "alternative_evidence": {
+      "type": "string",
+      "description": "Description of any alternative or partial evidence available."
+    },
+    "alternative_evidence_ref": {
+      "type": "string",
+      "description": "URN reference to alternative evidence record, if available."
+    },
+    "hash_commitment": {
+      "type": "string",
+      "description": "SHA-256 hash commitment of the confidential evidence (when reason is 'confidential_hash_committed')."
+    },
+    "nda_reference": {
+      "type": "string",
+      "description": "Reference to the NDA covering this evidence (when reason is 'under_nda')."
+    },
+    "third_party_name": {
+      "type": "string",
+      "description": "Name of the third party blocking evidence collection (when reason is 'third_party_dependency')."
+    },
+    "third_party_contact_date": {
+      "type": "string",
+      "description": "Date the third party was contacted about providing the evidence (ISO 8601).",
+      "format": "date"
+    },
+    "not_applicable_justification": {
+      "type": "string",
+      "description": "Justification for why the evidence is not applicable (when reason is 'not_applicable_with_justification')."
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,274 @@
+{
+  "template_id": "china-cac-labeling-2025",
+  "template_name": "CAC Measures for Labeling AI-Generated and Synthesized Content",
+  "version": "1.0.0",
+  "jurisdiction": "CN",
+  "source_legislation": "Measures for Labeling AI-Generated and Synthesized Content (Cyberspace Administration of China, 2025)",
+  "instrument_type": "law",
+  "legal_force": "binding",
+  "instrument_status": "final",
+  "default_effective_date": "2025-09-01",
+  "superseded_by": null,
+  "applicable_system_types": ["high-risk", "gpai", "gpai-systemic", "limited-risk"],
+  "provisions": [
+    {
+      "provision_id": "cac-explicit-label",
+      "provision_name": "Explicit Visible Labels",
+      "normative_text_ref": "CAC Labeling Measures Art. 5-7",
+      "description": "Internet information service providers using generative AI shall add explicit visible labels to AI-generated content including text superscripts, audio cues, and graphic watermarks that persist across sharing and download",
+      "effective_date": "2025-09-01",
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "cac-explicit-label.text",
+          "normative_text_ref": "CAC Labeling Measures Art. 5",
+          "description": "AI-generated text content shall bear explicit visible labels such as superscript annotations"
+        },
+        {
+          "provision_id": "cac-explicit-label.audiovisual",
+          "normative_text_ref": "CAC Labeling Measures Art. 6",
+          "description": "AI-generated audio and visual content shall bear explicit visible labels such as audio cues and graphic watermarks"
+        }
+      ],
+      "required_evidence_types": [
+        "disclosure_labeling"
+      ],
+      "minimum_evidence_count": {
+        "disclosure_labeling": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "cac-explicit-disclosure-exists",
+          "rule": "has_record_type",
+          "params": {"type": "disclosure_labeling", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one disclosure_labeling record is required — CAC measures mandate explicit visible labels on all AI-generated content"
+        },
+        {
+          "rule_id": "cac-explicit-presentation",
+          "rule": "field_present",
+          "params": {"record_type": "disclosure_labeling", "field": "/payload/presentation"},
+          "severity": "fail",
+          "message": "Every disclosure_labeling record must specify the presentation method (e.g., visible_icon_plus_text, audio_cue, text_superscript) — CAC requires explicit visible labeling"
+        },
+        {
+          "rule_id": "cac-explicit-label-type",
+          "rule": "field_present",
+          "params": {"record_type": "disclosure_labeling", "field": "/payload/label_type"},
+          "severity": "warning",
+          "message": "Disclosure labeling records should specify label_type to categorize the kind of explicit label applied"
+        },
+        {
+          "rule_id": "cac-explicit-locale",
+          "rule": "field_present",
+          "params": {"record_type": "disclosure_labeling", "field": "/payload/locale"},
+          "severity": "warning",
+          "message": "Disclosure labeling records should specify the locale (e.g., zh-CN) for proper language-appropriate labeling"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "cac-implicit-metadata",
+      "provision_name": "Implicit Metadata Labels",
+      "normative_text_ref": "CAC Labeling Measures Art. 8-9",
+      "description": "Service providers shall embed implicit metadata labels in AI-generated content containing provider identification, content identifier, content type, and reference number, enabling machine-readable provenance verification",
+      "effective_date": "2025-09-01",
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "cac-implicit-metadata.fields",
+          "normative_text_ref": "CAC Labeling Measures Art. 8",
+          "description": "Implicit metadata must include provider name/code, content ID, content type, and reference number"
+        },
+        {
+          "provision_id": "cac-implicit-metadata.persistence",
+          "normative_text_ref": "CAC Labeling Measures Art. 9",
+          "description": "Implicit metadata labels shall persist across content sharing, downloading, and redistribution"
+        }
+      ],
+      "required_evidence_types": [
+        "transparency_marking"
+      ],
+      "minimum_evidence_count": {
+        "transparency_marking": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "cac-implicit-marking-exists",
+          "rule": "has_record_type",
+          "params": {"type": "transparency_marking", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one transparency_marking record is required — CAC measures mandate implicit metadata labels embedded in AI-generated content"
+        },
+        {
+          "rule_id": "cac-implicit-marking-scheme-id",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/marking_scheme_id"},
+          "severity": "fail",
+          "message": "Every transparency_marking record must specify marking_scheme_id to identify the implicit labeling scheme used (e.g., cn-cac-implicit-label-2025)"
+        },
+        {
+          "rule_id": "cac-implicit-jurisdiction",
+          "rule": "field_value",
+          "params": {
+            "record_type": "transparency_marking",
+            "field": "/payload/jurisdiction",
+            "op": "eq",
+            "value": "CN"
+          },
+          "severity": "fail",
+          "message": "Transparency marking records for CAC compliance must have jurisdiction set to 'CN' to indicate Chinese regulatory applicability"
+        },
+        {
+          "rule_id": "cac-implicit-modality",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/modality"},
+          "severity": "warning",
+          "message": "Transparency marking records should specify the content modality (text, image, audio, video, multimodal) for jurisdiction-specific validation"
+        },
+        {
+          "rule_id": "cac-implicit-metadata-container",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/metadata_container"},
+          "severity": "warning",
+          "message": "Transparency marking records should specify the metadata_container describing where implicit metadata is embedded (e.g., file-header, exif)"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "cac-watermark",
+      "provision_name": "Digital Watermarks",
+      "normative_text_ref": "CAC Labeling Measures Art. 10",
+      "description": "Service providers are encouraged to apply digital watermarks to AI-generated content for robustness against tampering, compression, and format conversion, complementing explicit and implicit labeling",
+      "effective_date": "2025-09-01",
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "cac-watermark.robustness",
+          "normative_text_ref": "CAC Labeling Measures Art. 10(2)",
+          "description": "Digital watermarks should be robust against common transformations including compression, cropping, and format conversion"
+        }
+      ],
+      "required_evidence_types": [
+        "transparency_marking"
+      ],
+      "minimum_evidence_count": {
+        "transparency_marking": 1
+      },
+      "evidence_freshness_max_days": null,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "cac-watermark-applied",
+          "rule": "field_value",
+          "params": {
+            "record_type": "transparency_marking",
+            "field": "/payload/watermark_applied",
+            "op": "eq",
+            "value": true
+          },
+          "severity": "warning",
+          "message": "CAC measures encourage digital watermarks for AI-generated content — at least one transparency_marking record should have watermark_applied set to true"
+        },
+        {
+          "rule_id": "cac-watermark-family",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/watermark_family"},
+          "severity": "info",
+          "message": "Transparency marking records with watermarks should specify the watermark_family (e.g., spectral_embedding, robust-imperceptible) for interoperability"
+        },
+        {
+          "rule_id": "cac-watermark-verification",
+          "rule": "field_present",
+          "params": {"record_type": "transparency_marking", "field": "/payload/verification_method_ref"},
+          "severity": "info",
+          "message": "Transparency marking records with watermarks should include a verification_method_ref pointing to the detection or verification mechanism"
+        }
+      ],
+      "evaluation_scope": null
+    },
+    {
+      "provision_id": "cac-log-retention",
+      "provision_name": "Log Retention",
+      "normative_text_ref": "CAC Labeling Measures Art. 14-15",
+      "description": "Service providers shall retain event logs for AI-generated content for a minimum of 6 months (180 days), particularly when explicit labels are omitted at user request, to enable regulatory audit and platform verification",
+      "effective_date": "2025-09-01",
+      "applicable_to": [],
+      "sub_provisions": [
+        {
+          "provision_id": "cac-log-retention.unlabeled",
+          "normative_text_ref": "CAC Labeling Measures Art. 14",
+          "description": "When explicit labeling is omitted at user request, the provider must retain audit logs for a minimum of 6 months"
+        },
+        {
+          "provision_id": "cac-log-retention.platform",
+          "normative_text_ref": "CAC Labeling Measures Art. 15",
+          "description": "Platform operators must implement content verification duties and maintain logs for regulatory compliance"
+        }
+      ],
+      "required_evidence_types": [
+        "event_log"
+      ],
+      "minimum_evidence_count": {
+        "event_log": 1
+      },
+      "evidence_freshness_max_days": 180,
+      "retention_years": null,
+      "evaluation": [
+        {
+          "rule_id": "cac-event-log-exists",
+          "rule": "has_record_type",
+          "params": {"type": "event_log", "min_count": 1},
+          "severity": "fail",
+          "message": "At least one event_log record is required — CAC measures mandate retention of event logs for AI-generated content for regulatory audit purposes"
+        },
+        {
+          "rule_id": "cac-log-freshness",
+          "rule": "evidence_freshness",
+          "params": {"max_days": 180, "reference_date": "validation_time"},
+          "severity": "fail",
+          "message": "Event log evidence must be within the 180-day (6-month) retention window — CAC mandates 6-month log retention for unlabeled content and platform verification"
+        },
+        {
+          "rule_id": "cac-log-event-type",
+          "rule": "field_present",
+          "params": {"record_type": "event_log", "field": "/payload/event_type"},
+          "severity": "fail",
+          "message": "Every event_log record must have an event_type field for structured log categorization supporting regulatory audit"
+        },
+        {
+          "rule_id": "cac-log-correlation-id",
+          "rule": "field_present",
+          "params": {"record_type": "event_log", "field": "/payload/correlation_id"},
+          "severity": "warning",
+          "message": "Event log records should include correlation_id for traceability across related events and content generation sessions"
+        },
+        {
+          "rule_id": "cac-log-label-exception",
+          "rule": "exists_where",
+          "params": {
+            "record_type": "event_log",
+            "field": "/payload/label_exception",
+            "op": "eq",
+            "value": true,
+            "min_count": 0
+          },
+          "severity": "info",
+          "message": "Event logs with label_exception=true indicate content where explicit labeling was omitted at user request, triggering the mandatory 6-month retention obligation"
+        }
+      ],
+      "evaluation_scope": null
+    }
+  ],
+  "test_vectors": [
+    "test-vectors/china-cac/cac-explicit-implicit-pass.acef/",
+    "test-vectors/china-cac/cac-missing-implicit-metadata-fail.acef/",
+    "test-vectors/china-cac/cac-label-exception-retention-pass.acef/"
+  ]
+}

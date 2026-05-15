@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acef.ai/schemas/v1/record-envelope.schema.json",
+  "title": "ACEF Record Envelope",
+  "description": "JSON Schema for individual evidence records stored in JSONL files within records/. Each line in a JSONL file is one record conforming to this schema. The payload field is validated separately by the corresponding record-type schema.",
+  "type": "object",
+  "required": [
+    "record_id",
+    "record_type",
+    "provisions_addressed",
+    "timestamp",
+    "lifecycle_phase",
+    "collector",
+    "obligation_role",
+    "confidentiality",
+    "trust_level",
+    "entity_refs",
+    "payload"
+  ],
+  "properties": {
+    "record_id": {
+      "type": "string",
+      "description": "URN identifier for this record (urn:acef:rec:<uuid>).",
+      "pattern": "^urn:acef:rec:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "record_type": {
+      "type": "string",
+      "description": "Semantic type from ACEF conventions (e.g., 'risk_register', 'dataset_card', 'event_log'). Must match a known record type or use x-vendorname/ prefix for extensions."
+    },
+    "provisions_addressed": {
+      "type": "array",
+      "description": "Which regulatory provisions this evidence supports (dotted notation: 'article-9.1.a', 'govern-1.1').",
+      "items": {
+        "type": "string"
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "When this evidence was created or collected (ISO 8601).",
+      "format": "date-time"
+    },
+    "lifecycle_phase": {
+      "type": "string",
+      "description": "Which lifecycle phase this evidence relates to.",
+      "enum": ["design", "development", "testing", "deployment", "monitoring", "decommission"]
+    },
+    "collector": {
+      "description": "Tool or person that collected this evidence.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the collection tool or person."
+            },
+            "version": {
+              "type": "string",
+              "description": "Version of the collection tool."
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "obligation_role": {
+      "type": "string",
+      "description": "Who is responsible for producing this evidence. Required for transparency_marking, disclosure_labeling, and event_log records per EU AI Act and CAC split obligations.",
+      "enum": ["provider", "deployer", "importer", "distributor", "authorised_representative", "notified_body", "platform"]
+    },
+    "confidentiality": {
+      "type": "string",
+      "description": "Confidentiality classification for this record.",
+      "enum": ["public", "redacted", "hash-committed", "regulator-only", "under-nda"]
+    },
+    "redaction_method": {
+      "type": ["string", "null"],
+      "description": "If confidentiality is not 'public', describes the redaction approach: hash algorithm, ZKP reference, or attestation method."
+    },
+    "access_policy": {
+      "description": "Who can see the full payload. Null if public.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "roles": {
+              "type": "array",
+              "description": "Roles that may access this record.",
+              "items": {
+                "type": "string"
+              }
+            },
+            "organizations": {
+              "type": "array",
+              "description": "Organizations that may access this record.",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "trust_level": {
+      "type": "string",
+      "description": "Provenance level of this evidence.",
+      "enum": ["self-attested", "peer-reviewed", "independently-verified", "notified-body-certified"]
+    },
+    "entity_refs": {
+      "type": "object",
+      "description": "Links to entities this record concerns.",
+      "required": ["subject_refs"],
+      "properties": {
+        "subject_refs": {
+          "type": "array",
+          "description": "URNs of subjects this record relates to.",
+          "items": {
+            "type": "string",
+            "pattern": "^urn:acef:sub:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "component_refs": {
+          "type": "array",
+          "description": "URNs of components this record relates to.",
+          "items": {
+            "type": "string",
+            "pattern": "^urn:acef:cmp:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "dataset_refs": {
+          "type": "array",
+          "description": "URNs of datasets this record relates to.",
+          "items": {
+            "type": "string",
+            "pattern": "^urn:acef:dat:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "actor_refs": {
+          "type": "array",
+          "description": "URNs of actors this record relates to.",
+          "items": {
+            "type": "string",
+            "pattern": "^urn:acef:act:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "payload": {
+      "type": "object",
+      "description": "The actual evidence data. Schema varies by record_type — validated separately by the corresponding record-type schema in acef-conventions/v{major}/{record_type}.schema.json."
+    },
+    "attachments": {
+      "type": "array",
+      "description": "References to files in the artifacts/ directory of the bundle.",
+      "items": {
+        "type": "object",
+        "required": ["path", "media_type"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Relative path within the bundle (e.g., 'artifacts/eval-report-v3.pdf'). Must use forward slashes, UTF-8 NFC, no . or .. segments."
+          },
+          "hash": {
+            "type": "string",
+            "description": "SHA-256 hash (advisory — content-hashes.json is authoritative for integrity; this field is for quick client-side checks)."
+          },
+          "media_type": {
+            "type": "string",
+            "description": "MIME type of the attachment (e.g., 'application/pdf', 'text/markdown')."
+          },
+          "attachment_type": {
+            "type": "string",
+            "description": "Logical kind (e.g., 'management_review', 'post_market_monitoring_plan', 'qms_policy'). Used by DSL attachment_kind_exists operator."
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable description of the attachment."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "attestation": {
+      "description": "Optional cryptographic attestation of evidence authenticity.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["method", "signer", "signed_fields", "signature"],
+          "properties": {
+            "method": {
+              "type": "string",
+              "description": "Attestation method. v1 restricts to 'jws' only.",
+              "const": "jws"
+            },
+            "signer": {
+              "type": "string",
+              "description": "Signer identity (URN or X.509 subject)."
+            },
+            "signed_fields": {
+              "type": "array",
+              "description": "JSON Pointer array of fields included in signature scope. MUST include '/payload'.",
+              "items": {
+                "type": "string"
+              },
+              "contains": {
+                "const": "/payload"
+              }
+            },
+            "signature": {
+              "type": "string",
+              "description": "Detached JWS over RFC 8785-canonicalized JSON of the signed fields extracted from the record."
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retention": {
+      "description": "Per-record retention requirements. May differ from package-level retention.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "min_retention_days": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Minimum retention period in days (e.g., 180 for 6-month log retention)."
+            },
+            "retention_start_event": {
+              "type": "string",
+              "description": "When the retention clock starts.",
+              "enum": ["first_use", "first_deployment", "record_creation", "custom"]
+            },
+            "legal_basis": {
+              "type": "string",
+              "description": "Regulation requiring this retention (e.g., 'eu-ai-act-2024:article-12')."
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": true
+}
