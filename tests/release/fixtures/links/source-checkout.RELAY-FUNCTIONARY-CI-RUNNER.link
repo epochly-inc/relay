@@ -1,0 +1,25 @@
+{
+  "signed": {
+    "_type": "link",
+    "schema_version": "relay-link-v0.1",
+    "name": "source-checkout",
+    "command": "git checkout abcdef0123456789abcdef0123456789abcdef01",
+    "materials": [],
+    "products": [
+      {
+        "uri": "git+commit://abcdef0123456789abcdef0123456789abcdef01",
+        "digest": {
+          "sha256": "10c5122dc6b62b0abf0778e5be18c6d0c280b14df55a21dfc391663a3131d44d"
+        }
+      }
+    ],
+    "byproducts": {
+      "runner": "ubuntu-latest",
+      "repo": "epochly-inc/relay",
+      "tag": "v0.1.0"
+    },
+    "environment": {},
+    "key_id_hint": "RELAY-FUNCTIONARY-CI-RUNNER"
+  },
+  "signatures": []
+}

@@ -1,0 +1,463 @@
+# Relay v0.1 OSS - in-toto Layout + Link Metadata Release Workflow
+# (sub-feature w12.4)
+#
+# Emits in-toto link metadata for every declared step of the v0.1 release
+# supply chain (source checkout -> build -> upload), and verifies the
+# signed in-toto layout (release.layout) against the emitted links via
+# the offline guard scripts/check-in-toto-attestations.py.
+#
+# Why a separate workflow:
+#   The PyPI and npm release workflows (.github/workflows/release-pypi.yml
+#   and .github/workflows/release-npm.yml, sub-features w12.1, w12.2,
+#   w12.3) already wire SLSA L3 provenance via the
+#   slsa-framework/slsa-github-generator reusable workflow. SLSA
+#   provenance binds artifact digests to the canonical builder identity
+#   and is the authoritative offline-verifiable attestation.
+#
+#   in-toto link metadata layers complementary supply-chain evidence on
+#   top:
+#     - per-step granularity (one .link per build step, not one per
+#       artifact)
+#     - chain validation (products of step N == materials of step N+1)
+#     - functionary key registry (which key may sign which step)
+#     - layout signing key rotation per spec section L
+#
+#   Splitting in-toto into its own workflow keeps the SLSA / npm-publish
+#   / PyPI-publish jobs focused, and lets the in-toto layout cover the
+#   ENTIRE release pipeline (both Python and TypeScript artifacts) under
+#   a single signed contract.
+#
+# Scope of v0.1 (sub-feature w12.4):
+#   This workflow emits link metadata for SIX declared build steps:
+#     1. source-checkout
+#     2. build-python-sdist
+#     3. build-python-wheel
+#     4. build-ts-package-sdk
+#     5. build-ts-package-sidecar-bundle
+#     6. upload-release-artifacts
+#
+#   Sidecar binary build + sign per-OS/arch links (5 architectures, 10
+#   total step links) are owned by sub-feature w12.5 and will additively
+#   extend the layout when w12.5 lands. The layout file is versioned
+#   (relay-layout-v0.1) so additive extensions in later sub-features
+#   produce a relay-layout-v0.2 without breaking historical verification.
+#
+# This workflow is the ONLY path that may emit signed in-toto link
+# metadata for an epochly-relay release. The layout signing key lives
+# only in relay-platform KMS (CLAUDE.md banned pattern #14); this OSS
+# workflow uses a fork-friendly placeholder key id and emits unsigned
+# links when running outside the canonical repository (dry-run-unsigned
+# mode, sister of VAL-W12-044).
+#
+# Static guard: scripts/check-in-toto-attestations.py enforces the
+# VAL-W12-016..019 invariants on this file and on emitted artifacts.
+#
+# Spec citations:
+#   - Eng plan L4 line 227 (in-toto link metadata for each build step)
+#   - Spec section AO.4 (publicly readable provenance via JWKS)
+#   - Spec section L.3 / L.4 (signing key rotation + revocation)
+#   - Contract VAL-W12-016 / 017 / 018 / 019
+
+name: "release-in-toto"
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions: {}
+
+# Canonical declared build steps for layout v0.1. The static guard
+# (scripts/check-in-toto-attestations.py --mode workflow) asserts that
+# this list matches exactly the steps enumerated in the committed
+# tests/release/fixtures/release.layout file. A drift between the
+# workflow declaration and the layout fails RELAY-RELEASE-017.
+env:
+  RELAY_INTOTO_DECLARED_STEPS: >-
+    source-checkout
+    build-python-sdist
+    build-python-wheel
+    build-ts-package-sdk
+    build-ts-package-sidecar-bundle
+    upload-release-artifacts
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Pre-flight: detect whether this is a fork run (no signing key).
+  # Sister of VAL-W12-044. A fork PR / fork-tag run produces UNSIGNED
+  # in-toto link metadata so the chain validation can still execute
+  # offline; only the layout signature step is skipped.
+  # ---------------------------------------------------------------------------
+  detect-fork:
+    name: "Detect fork (dry-run-unsigned mode)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      dry_run_unsigned: ${{ steps.detect.outputs.dry_run_unsigned }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Detect fork"
+        id: detect
+        env:
+          RELAY_RELEASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "${RELAY_RELEASE_REPO}" != "epochly-inc/relay" ]; then
+            echo "RELAY-RELEASE-DRY-RUN-UNSIGNED: fork detected (${RELAY_RELEASE_REPO}); links will be unsigned."
+            echo "dry_run_unsigned=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Production repository run; links will be signed by the canonical layout key."
+            echo "dry_run_unsigned=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Static workflow guard: ensures this workflow declares all 6
+  # canonical v0.1 build steps and that the layout file is wired in.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: "Static guard: in-toto layout + step coverage"
+    runs-on: ubuntu-latest
+    needs: [detect-fork]
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Static guard: workflow declares full step coverage (VAL-W12-017)"
+        # Asserts the env.RELAY_INTOTO_DECLARED_STEPS list matches
+        # exactly the steps enumerated in the committed
+        # tests/release/fixtures/release.layout file. A drift between
+        # the workflow declaration and the layout fails RELAY-RELEASE-017.
+        run: python scripts/check-in-toto-attestations.py --mode workflow
+
+      - name: "Static guard: layout schema + signing-key rotation (VAL-W12-019)"
+        # Validates the committed release.layout against the in-toto
+        # layout schema AND verifies the layout-signing key id is
+        # within its rotation window per spec section L.
+        run: |
+          python scripts/check-in-toto-attestations.py \
+            --mode layout \
+            --layout tests/release/fixtures/release.layout
+
+  # ---------------------------------------------------------------------------
+  # Step 1: source-checkout link (VAL-W12-016).
+  # ---------------------------------------------------------------------------
+  emit-link-source-checkout:
+    name: "Emit link: source-checkout"
+    runs-on: ubuntu-latest
+    needs: [guard]
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Generate source-checkout link"
+        env:
+          RELAY_RELEASE_REPO: ${{ github.repository }}
+          RELAY_RELEASE_TAG: ${{ github.ref_name }}
+          RELAY_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python scripts/generate-in-toto-link.py \
+            --step-name source-checkout \
+            --command "git checkout ${RELAY_RELEASE_SHA}" \
+            --no-materials \
+            --product-from-git-sha "${RELAY_RELEASE_SHA}" \
+            --byproduct runner=ubuntu-latest \
+            --byproduct repo="${RELAY_RELEASE_REPO}" \
+            --byproduct tag="${RELAY_RELEASE_TAG}" \
+            --output links/source-checkout.relay-layout.link
+
+      - name: "Upload link artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: in-toto-link-source-checkout
+          path: links/
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Steps 2 + 3: build-python-sdist + build-python-wheel (VAL-W12-016).
+  # The product of source-checkout (the source tree at the release SHA)
+  # is the material of these build steps (VAL-W12-018 chain anchor).
+  # ---------------------------------------------------------------------------
+  emit-link-build-python:
+    name: "Emit links: build-python-sdist + build-python-wheel"
+    runs-on: ubuntu-latest
+    needs: [emit-link-source-checkout]
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Install build frontend"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build==1.2.2.post1
+
+      - name: "Build sdist + wheel"
+        run: python -m build --sdist --wheel packages/sdk-python --outdir dist/
+
+      - name: "Generate build-python-sdist link"
+        env:
+          RELAY_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python scripts/generate-in-toto-link.py \
+            --step-name build-python-sdist \
+            --command "python -m build --sdist packages/sdk-python --outdir dist/" \
+            --material-from-git-sha "${RELAY_RELEASE_SHA}" \
+            --product-glob "dist/*.tar.gz" \
+            --byproduct runner=ubuntu-latest \
+            --byproduct python-version=3.12 \
+            --output links/build-python-sdist.relay-layout.link
+
+      - name: "Generate build-python-wheel link"
+        env:
+          RELAY_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python scripts/generate-in-toto-link.py \
+            --step-name build-python-wheel \
+            --command "python -m build --wheel packages/sdk-python --outdir dist/" \
+            --material-from-git-sha "${RELAY_RELEASE_SHA}" \
+            --product-glob "dist/*.whl" \
+            --byproduct runner=ubuntu-latest \
+            --byproduct python-version=3.12 \
+            --output links/build-python-wheel.relay-layout.link
+
+      - name: "Upload link artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: in-toto-link-build-python
+          path: links/
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Steps 4 + 5: build-ts-package-sdk + build-ts-package-sidecar-bundle
+  # (VAL-W12-016). Same chain anchor (source-checkout product) as the
+  # Python builds.
+  # ---------------------------------------------------------------------------
+  emit-link-build-ts:
+    name: "Emit links: build-ts-package-sdk + build-ts-package-sidecar-bundle"
+    runs-on: ubuntu-latest
+    needs: [emit-link-source-checkout]
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Node"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Install workspace dependencies"
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: "Build TS workspaces"
+        run: npm run build --workspaces --if-present
+
+      - name: "Pack SDK tarball"
+        run: npm pack --workspace=packages/sdk-typescript --pack-destination=dist/
+
+      - name: "Generate build-ts-package-sdk link"
+        env:
+          RELAY_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python scripts/generate-in-toto-link.py \
+            --step-name build-ts-package-sdk \
+            --command "npm pack --workspace=packages/sdk-typescript --pack-destination=dist/" \
+            --material-from-git-sha "${RELAY_RELEASE_SHA}" \
+            --product-glob "dist/epochly-relay-*.tgz" \
+            --byproduct runner=ubuntu-latest \
+            --byproduct node-version=22 \
+            --output links/build-ts-package-sdk.relay-layout.link
+
+      - name: "Pack sidecar-bundle tarball"
+        run: |
+          npm pack --workspace=packages/sidecar-bundle --pack-destination=dist/ \
+            || echo "RELAY-RELEASE-INFO: sidecar-bundle workspace not yet present (w12.5 wires it); emitting placeholder link"
+
+      - name: "Generate build-ts-package-sidecar-bundle link"
+        env:
+          RELAY_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python scripts/generate-in-toto-link.py \
+            --step-name build-ts-package-sidecar-bundle \
+            --command "npm pack --workspace=packages/sidecar-bundle --pack-destination=dist/" \
+            --material-from-git-sha "${RELAY_RELEASE_SHA}" \
+            --product-glob "dist/epochly-relay-sidecar-bundle-*.tgz" \
+            --allow-empty-products \
+            --byproduct runner=ubuntu-latest \
+            --byproduct node-version=22 \
+            --byproduct sidecar-bundle-source=w12.5 \
+            --output links/build-ts-package-sidecar-bundle.relay-layout.link
+
+      - name: "Upload link artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: in-toto-link-build-ts
+          path: links/
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Step 6: upload-release-artifacts (VAL-W12-016).
+  # The products of the four build steps (sdist, wheel, sdk tgz,
+  # sidecar-bundle tgz) are the materials of upload-release-artifacts
+  # (VAL-W12-018 final chain anchor).
+  # ---------------------------------------------------------------------------
+  emit-link-upload:
+    name: "Emit link: upload-release-artifacts"
+    runs-on: ubuntu-latest
+    needs:
+      - emit-link-build-python
+      - emit-link-build-ts
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Download build link artifacts (collects products)"
+        uses: actions/download-artifact@v4
+        with:
+          path: links-collected/
+          pattern: in-toto-link-build-*
+          merge-multiple: true
+
+      - name: "Generate upload-release-artifacts link"
+        # Materials are the products of every preceding build step,
+        # extracted from the collected build link files. The script
+        # composes the link's materials list from the union of upstream
+        # products to anchor the final chain link.
+        run: |
+          python scripts/generate-in-toto-link.py \
+            --step-name upload-release-artifacts \
+            --command "gh release upload" \
+            --materials-from-link-products links-collected/build-python-sdist.relay-layout.link \
+            --materials-from-link-products links-collected/build-python-wheel.relay-layout.link \
+            --materials-from-link-products links-collected/build-ts-package-sdk.relay-layout.link \
+            --materials-from-link-products links-collected/build-ts-package-sidecar-bundle.relay-layout.link \
+            --no-products \
+            --byproduct runner=ubuntu-latest \
+            --output links/upload-release-artifacts.relay-layout.link
+
+      - name: "Upload link artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: in-toto-link-upload
+          path: links/
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Verify chain: products[step N] == materials[step N+1] (VAL-W12-018).
+  # Also asserts every declared step has a corresponding .link file
+  # (VAL-W12-016).
+  # ---------------------------------------------------------------------------
+  verify-chain:
+    name: "Verify in-toto link chain (VAL-W12-016, VAL-W12-018)"
+    runs-on: ubuntu-latest
+    needs: [emit-link-upload]
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Download all link artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          path: links-collected/
+          pattern: in-toto-link-*
+          merge-multiple: true
+
+      - name: "Verify per-step coverage (VAL-W12-016)"
+        run: |
+          python scripts/check-in-toto-attestations.py \
+            --mode chain \
+            --layout tests/release/fixtures/release.layout \
+            --link-dir links-collected/ \
+            --check-coverage-only
+
+      - name: "Verify chain digests (VAL-W12-018)"
+        run: |
+          python scripts/check-in-toto-attestations.py \
+            --mode chain \
+            --layout tests/release/fixtures/release.layout \
+            --link-dir links-collected/
+
+  # ---------------------------------------------------------------------------
+  # Sign layout (production runs only; fork runs publish unsigned).
+  # The layout-signing key lives in relay-platform KMS only
+  # (CLAUDE.md banned pattern #14). The OSS path here references the
+  # signing operation by key id; the actual signing happens out-of-band
+  # via a relay-platform job that is not committed to this repository.
+  # ---------------------------------------------------------------------------
+  sign-layout:
+    name: "Sign release.layout (production-only)"
+    needs: [verify-chain, detect-fork]
+    if: needs.detect-fork.outputs.dry_run_unsigned != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+    permissions:
+      contents: read
+      id-token: write   # for KMS OIDC exchange (relay-platform consumes)
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Verify layout signing key rotation window (VAL-W12-019)"
+        # Refuses to proceed when the layout-signing key is past its
+        # not_after timestamp without a witness signature. The runtime
+        # signing operation occurs in relay-platform; this OSS job
+        # validates only that the requested key id is in-rotation.
+        run: |
+          python scripts/check-in-toto-attestations.py \
+            --mode rotation \
+            --layout tests/release/fixtures/release.layout

@@ -1,0 +1,31 @@
+{
+  "signed": {
+    "_type": "link",
+    "schema_version": "relay-link-v0.1",
+    "name": "build-python-sdist",
+    "command": "python -m build --sdist packages/sdk-python --outdir dist/",
+    "materials": [
+      {
+        "uri": "git+commit://abcdef0123456789abcdef0123456789abcdef01",
+        "digest": {
+          "sha256": "10c5122dc6b62b0abf0778e5be18c6d0c280b14df55a21dfc391663a3131d44d"
+        }
+      }
+    ],
+    "products": [
+      {
+        "uri": "tests/release/fixtures/dist-stub/epochly_relay-0.1.0.tar.gz",
+        "digest": {
+          "sha256": "efc9ce8a633a18c50432d8db6c46c9923c2d9b37b436bca5c8376b2864993bdd"
+        }
+      }
+    ],
+    "byproducts": {
+      "runner": "ubuntu-latest",
+      "python-version": "3.12"
+    },
+    "environment": {},
+    "key_id_hint": "RELAY-FUNCTIONARY-CI-RUNNER"
+  },
+  "signatures": []
+}

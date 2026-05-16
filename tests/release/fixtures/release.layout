@@ -1,0 +1,147 @@
+{
+  "_comment": "Relay v0.1 in-toto release layout (fixture). The real layout-signing key id, public key bytes, and signature live only in relay-platform KMS (CLAUDE.md banned pattern #14). The placeholders below are public OSS fixture values used to drive offline verifier tests; they MUST NOT be treated as a signed production layout. The layout's signed.expires and signed.keys[*].not_after values are set far in the future so the rotation check passes at fixture time without requiring a signed time source. Tests that exercise the EXPIRED path use --now to drive the assertion deterministically.",
+  "signed": {
+    "_type": "layout",
+    "expires": "2099-12-31T23:59:59Z",
+    "readme": "Relay v0.1 release supply chain layout (sub-feature w12.4). Enumerates source-checkout, the four artifact builds (Python sdist+wheel, TS SDK tarball, TS sidecar-bundle tarball), and the final upload step. Sidecar binary build + sign per OS/arch (5 architectures, 10 step links) are owned by sub-feature w12.5 and will additively extend this layout to relay-layout-v0.2 when w12.5 lands.",
+    "layout_version": "relay-layout-v0.1",
+    "keys": {
+      "RELAY-LAYOUT-KEY-V1-PLACEHOLDER": {
+        "_comment": "Placeholder layout-signing key id. The real key is RSA-4096 / Ed25519 held in relay-platform KMS; the public key bytes are published at https://relay.epochly.com/.well-known/layout-keys/<keyid>.pem. Per spec section L.3 the key rotation window defaults to 12 months; not_after below is a fixture value set far in the future so tests that exercise the IN-ROTATION path do not need to mock time.",
+        "keytype": "ed25519",
+        "scheme": "ed25519",
+        "keyval": {
+          "public": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "not_before": "2026-05-15T00:00:00Z",
+        "not_after": "2099-12-31T23:59:59Z"
+      },
+      "RELAY-LAYOUT-KEY-V0-PREDECESSOR": {
+        "_comment": "Predecessor key id used to demonstrate the witness-signature rotation path. Tests can swap signatures[].keyid to this key id and add a witness_signature pointing at RELAY-LAYOUT-KEY-V1-PLACEHOLDER to verify the spec section L.3 two-phase commit path remains green even when the primary signing key is past its not_after.",
+        "keytype": "ed25519",
+        "scheme": "ed25519",
+        "keyval": {
+          "public": "0000000000000000000000000000000000000000000000000000000000000001"
+        },
+        "not_before": "2025-05-15T00:00:00Z",
+        "not_after": "2026-05-14T23:59:59Z"
+      },
+      "RELAY-FUNCTIONARY-CI-RUNNER": {
+        "_comment": "Functionary key id for the GitHub Actions runner that emits link metadata. Per the in-toto layout DSL, every step's pubkeys[] list references one or more functionary key ids; the runner's keyless Sigstore identity is bound to this id at workflow runtime via the relay-platform signing service.",
+        "keytype": "ed25519",
+        "scheme": "ed25519",
+        "keyval": {
+          "public": "0000000000000000000000000000000000000000000000000000000000000002"
+        },
+        "not_before": "2026-05-15T00:00:00Z",
+        "not_after": "2099-12-31T23:59:59Z"
+      }
+    },
+    "steps": [
+      {
+        "name": "source-checkout",
+        "expected_command": ["git", "checkout", "<release-sha>"],
+        "expected_materials": [],
+        "expected_products": [
+          ["ALLOW", "*"]
+        ],
+        "pubkeys": ["RELAY-FUNCTIONARY-CI-RUNNER"],
+        "threshold": 1
+      },
+      {
+        "name": "build-python-sdist",
+        "expected_command": [
+          "python", "-m", "build", "--sdist",
+          "packages/sdk-python", "--outdir", "dist/"
+        ],
+        "expected_materials": [
+          "MATCH * WITH PRODUCTS FROM source-checkout",
+          ["DISALLOW", "*"]
+        ],
+        "expected_products": [
+          ["CREATE", "dist/*.tar.gz"],
+          ["DISALLOW", "*"]
+        ],
+        "pubkeys": ["RELAY-FUNCTIONARY-CI-RUNNER"],
+        "threshold": 1
+      },
+      {
+        "name": "build-python-wheel",
+        "expected_command": [
+          "python", "-m", "build", "--wheel",
+          "packages/sdk-python", "--outdir", "dist/"
+        ],
+        "expected_materials": [
+          "MATCH * WITH PRODUCTS FROM source-checkout",
+          ["DISALLOW", "*"]
+        ],
+        "expected_products": [
+          ["CREATE", "dist/*.whl"],
+          ["DISALLOW", "*"]
+        ],
+        "pubkeys": ["RELAY-FUNCTIONARY-CI-RUNNER"],
+        "threshold": 1
+      },
+      {
+        "name": "build-ts-package-sdk",
+        "expected_command": [
+          "npm", "pack",
+          "--workspace=packages/sdk-typescript",
+          "--pack-destination=dist/"
+        ],
+        "expected_materials": [
+          "MATCH * WITH PRODUCTS FROM source-checkout",
+          ["DISALLOW", "*"]
+        ],
+        "expected_products": [
+          ["CREATE", "dist/epochly-relay-*.tgz"],
+          ["DISALLOW", "*"]
+        ],
+        "pubkeys": ["RELAY-FUNCTIONARY-CI-RUNNER"],
+        "threshold": 1
+      },
+      {
+        "name": "build-ts-package-sidecar-bundle",
+        "expected_command": [
+          "npm", "pack",
+          "--workspace=packages/sidecar-bundle",
+          "--pack-destination=dist/"
+        ],
+        "expected_materials": [
+          "MATCH * WITH PRODUCTS FROM source-checkout",
+          ["DISALLOW", "*"]
+        ],
+        "expected_products": [
+          ["CREATE", "dist/epochly-relay-sidecar-bundle-*.tgz"],
+          ["DISALLOW", "*"]
+        ],
+        "pubkeys": ["RELAY-FUNCTIONARY-CI-RUNNER"],
+        "threshold": 1
+      },
+      {
+        "name": "upload-release-artifacts",
+        "expected_command": ["gh", "release", "upload"],
+        "expected_materials": [
+          "MATCH * WITH PRODUCTS FROM build-python-sdist",
+          "MATCH * WITH PRODUCTS FROM build-python-wheel",
+          "MATCH * WITH PRODUCTS FROM build-ts-package-sdk",
+          "MATCH * WITH PRODUCTS FROM build-ts-package-sidecar-bundle",
+          ["DISALLOW", "*"]
+        ],
+        "expected_products": [
+          ["ALLOW", "*"]
+        ],
+        "pubkeys": ["RELAY-FUNCTIONARY-CI-RUNNER"],
+        "threshold": 1
+      }
+    ],
+    "inspect": []
+  },
+  "signatures": [
+    {
+      "_comment": "Placeholder Ed25519 signature over the canonicalized signed{} block. The real signature is produced by the relay-platform signing service when the release-in-toto.yml sign-layout job runs in the canonical repository (epochly-inc/relay) under the 'release' GitHub environment with required-reviewer approval. Verifier tests treat this fixture's signature as a structural placeholder and skip cryptographic signature verification (which is the responsibility of the in-toto-verify upstream tool, not the Relay guard).",
+      "keyid": "RELAY-LAYOUT-KEY-V1-PLACEHOLDER",
+      "sig": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

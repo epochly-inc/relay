@@ -1,0 +1,41 @@
+{
+  "signed": {
+    "_type": "link",
+    "schema_version": "relay-link-v0.1",
+    "name": "upload-release-artifacts",
+    "command": "gh release upload",
+    "materials": [
+      {
+        "uri": "tests/release/fixtures/dist-stub/epochly_relay-0.1.0.tar.gz",
+        "digest": {
+          "sha256": "efc9ce8a633a18c50432d8db6c46c9923c2d9b37b436bca5c8376b2864993bdd"
+        }
+      },
+      {
+        "uri": "tests/release/fixtures/dist-stub/epochly_relay-0.1.0-py3-none-any.whl",
+        "digest": {
+          "sha256": "ace407229658130fc23227926cb5bde76f7efea166ad110469471e9d8b13beb0"
+        }
+      },
+      {
+        "uri": "tests/release/fixtures/dist-stub/epochly-relay-0.1.0.tgz",
+        "digest": {
+          "sha256": "4fd6a730c2717591f6dbc578c8e717d17e7edb36920579b6fa7fb93f59184dc7"
+        }
+      },
+      {
+        "uri": "tests/release/fixtures/dist-stub/epochly-relay-sidecar-bundle-0.1.0.tgz",
+        "digest": {
+          "sha256": "d8fe870fc0aa610d5a90b36807b6c8237ea6d5172376031284e35a8c635fad86"
+        }
+      }
+    ],
+    "products": [],
+    "byproducts": {
+      "runner": "ubuntu-latest"
+    },
+    "environment": {},
+    "key_id_hint": "RELAY-FUNCTIONARY-CI-RUNNER"
+  },
+  "signatures": []
+}
