@@ -25,6 +25,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import uuid
@@ -394,18 +395,57 @@ async def compare_and_set_state(
                     "rejected_reason": INVALID_TRANSITION,
                 }
                 full_payload.update(payload_in)
+                # Round-3 P1 fix #2: the INVALID_TRANSITION branch performs
+                # async I/O (screen_payload, maybe_spillover) and a fresh
+                # micro-txn AFTER the parent ROLLBACK. Per CLAUDE.md
+                # keystone #1 (control plane writes the result), callers
+                # are entitled to a structured StateTransitionResult on
+                # every path -- a propagating exception is observed as
+                # "unknown state" and provokes unsafe retries. We wrap
+                # the secondary I/O so failures are reported as
+                # ``extras['secondary_error_reason']`` on the
+                # INVALID_TRANSITION result; the canonical reason is
+                # preserved.
+                #
                 # W2.5 VAL-W2-057: anti-bypass screen on the caller-supplied
                 # payload portion. The engine-supplied keys above never
                 # contain bypass markers, but ``payload_in`` is caller-
                 # controlled. We screen the merged payload defensively.
-                raise_on_reject(
-                    await screen_payload(
-                        payload=full_payload,
-                        event_kind="state_invalid_transition",
-                    )
-                )
                 # W2.5 VAL-W2-038: blob spillover for oversize payloads.
-                full_payload_on_row = maybe_spillover(full_payload)
+                try:
+                    raise_on_reject(
+                        await screen_payload(
+                            payload=full_payload,
+                            event_kind="state_invalid_transition",
+                        )
+                    )
+                    full_payload_on_row = maybe_spillover(full_payload)
+                except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+                    # Cooperative cancellation + interpreter teardown
+                    # MUST propagate; otherwise the asyncio cancellation
+                    # contract is violated.
+                    raise
+                except Exception as secondary_exc:  # noqa: BLE001
+                    # Surface as structured outcome. We do NOT lose the
+                    # INVALID_TRANSITION verdict -- the scope_state row
+                    # was already ROLLBACK-ed above, so the canonical
+                    # reason is unchanged; only the forensic log row was
+                    # not written. Callers branch on
+                    # ``extras['secondary_error_reason']`` if they need
+                    # to distinguish the lost-forensic case from the
+                    # clean rejection.
+                    return StateTransitionResult(
+                        ok=False,
+                        reason=INVALID_TRANSITION,
+                        observed_state=current_state,
+                        epoch=current_epoch,
+                        extras={
+                            "secondary_error_reason": (
+                                f"{type(secondary_exc).__name__}: "
+                                f"{secondary_exc}"
+                            ),
+                        },
+                    )
                 # Compute next ingest_sequence in a fresh BEGIN IMMEDIATE.
                 await conn.execute("BEGIN IMMEDIATE")
                 try:

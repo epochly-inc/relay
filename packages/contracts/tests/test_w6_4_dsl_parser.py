@@ -454,8 +454,12 @@ def test_runtime_invokes_application_udf_and_records_in_envelope() -> None:
     assert "my_check" in envelope["udfs_invoked"]
     assert envelope["outcome"] == "pass"
     # JCS-canonical UDF outputs MUST be bytes-stringifiable.
+    # Round-3 P1 fix #3: captures are list-valued so a multi-call CEL
+    # expression preserves every invocation's return value (keystone
+    # invariant 2). A single-call invocation is therefore a one-element
+    # list, not a bare scalar.
     udf_outputs = json.loads(envelope["udf_outputs_jcs"])
-    assert udf_outputs.get("my_check") is True
+    assert udf_outputs.get("my_check") == [True]
 
 
 @pytest.mark.plumbing

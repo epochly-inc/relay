@@ -23,6 +23,27 @@
 
 import { RelayCelNumericOutOfBoundsError } from "./errors.js";
 
+// Round-3 P1 fix #5: wire-stable code for the BMP-only key screen.
+// JS strings sort by UTF-16 code unit; Python strings sort by codepoint.
+// For BMP keys (< U+10000) these match. For supplementary-plane keys
+// (>= U+10000) they diverge -- the same input produces DIFFERENT
+// canonical bytes between runtimes, silently breaking cross-runtime
+// signature verification (CLAUDE.md keystone invariant #11). Until
+// both encoders implement the full UTF-16-code-unit sort, both runtimes
+// fail-closed on supplementary-plane KEYS. Values may contain
+// supplementary-plane characters; only keys are sorted.
+export const CANONICAL_NON_BMP_KEY_CODE = "RELAY-CANON-NON-BMP-KEY" as const;
+
+export class CanonicalEncodingError extends Error {
+  public readonly code: string;
+
+  constructor(message: string, code: string = CANONICAL_NON_BMP_KEY_CODE) {
+    super(message);
+    this.name = "CanonicalEncodingError";
+    this.code = code;
+  }
+}
+
 // RFC 8785 section 3.2.2.1: control characters U+0000..U+001F MUST be
 // escaped using the short forms or \\u00xx; quote and backslash also.
 // The map mirrors packages/contracts/src/relay_contracts/canonical.py:36-47.
@@ -125,15 +146,36 @@ function encode(value: unknown): string {
   if (t === "object") {
     // RFC 8785 section 3.2.3: keys sorted by their UTF-16 code-unit
     // sequence. JS string `<` operator compares by code unit, which
-    // matches the spec for BMP. SMP (>= U+10000) characters compare
-    // by surrogate-pair code units in JS; the Python encoder uses
-    // code-point ordering -- divergence is possible but Relay contract
-    // keys are ASCII / BMP in practice. The conformance corpus pins
-    // BMP-only keys for the parity contract.
+    // matches the spec for BMP. For supplementary-plane (>= U+10000)
+    // characters JS compares by surrogate-pair code units while Python
+    // sorts by codepoint -- divergent canonical bytes silently break
+    // cross-runtime signature verification. Round-3 P1 fix #5: both
+    // runtimes fail-closed on supplementary-plane KEYS. Values may
+    // contain supplementary-plane characters; only keys are screened.
     const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj).slice().sort();
-    const parts: string[] = [];
+    const keys = Object.keys(obj);
     for (const k of keys) {
+      // for...of on a string iterates Unicode codepoints (surrogate
+      // pairs collapse to a single iteration step yielding the full
+      // codepoint via codePointAt(0)).
+      for (const ch of k) {
+        const cp = ch.codePointAt(0);
+        if (cp !== undefined && cp >= 0x10000) {
+          throw new CanonicalEncodingError(
+            "JCS: non-BMP codepoint U+" +
+              cp.toString(16).toUpperCase().padStart(4, "0") +
+              " in object key " +
+              JSON.stringify(k) +
+              "; supplementary-plane keys produce runtime-divergent " +
+              "canonical bytes and are refused. Re-key the object " +
+              "with BMP-only strings.",
+          );
+        }
+      }
+    }
+    const sortedKeys = keys.slice().sort();
+    const parts: string[] = [];
+    for (const k of sortedKeys) {
       // Object.keys returns own-enumerable string keys; values are
       // looked up explicitly to keep TS happy under
       // noUncheckedIndexedAccess.

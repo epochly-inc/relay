@@ -85,7 +85,10 @@ from .errors import RelaySQLiteBusyExhausted
 from .health import HealthState, _register_health_routes
 from .lockfile import relay_home, resolve_lockfile_path
 from .primitives import local_atomic_file_write
-from .primitives.transactional_db_write import set_active_database
+from .primitives.transactional_db_write import (
+    set_active_database,
+    transactional_db_write,
+)
 from .quiesce import (
     InflightTracker,
     QuiesceState,
@@ -692,30 +695,46 @@ async def _execute_forced_stop(app: FastAPI, state: RuntimeState) -> None:
     """Emit ``sidecar.forced_stop`` event_log row, then signal exit.
 
     Per VAL-W2-046: the row MUST be emitted BEFORE the in-flight
-    transaction is killed. Since SQLite-on-aiosqlite serialises writes
-    on the writer connection and the W2.4 state engine holds
-    ``_state_engine_writer_lock`` during a CAS transaction, we cannot
-    INSERT the forced_stop row through the same writer while a
-    transaction is open. We instead open a SEPARATE short-lived
-    aiosqlite connection to the same database file (WAL mode permits
-    concurrent read+write across connections) and INSERT directly. This
-    is the ONE place outside the four atomic-persistence primitives
-    where a direct write to event_log_entries is acceptable: it is the
-    forensic post-mortem record of an aborted transaction; routing
-    through transactional_db_write would deadlock against the locked
-    writer queue. The CAS transaction, if any, is then ROLLBACK-ed by
-    the lifespan tear-down's ``database.close()`` which cancels the
-    writer task (any pending future is failed via the W2.3 close path).
+    transaction is killed. Per CLAUDE.md keystone invariant #8 (atomic
+    persistence -- four primitives only), the row is written through
+    ``transactional_db_write`` (atomic primitive #2). The primitive
+    enqueues onto the SidecarDatabase writer queue, which serialises
+    behind any in-flight CAS transaction holding the writer connection;
+    the queued write completes once that transaction commits or rolls
+    back. The CAS transaction, if any, is then ROLLBACK-ed by the
+    lifespan tear-down's ``database.close()`` which cancels the writer
+    task (any pending future is failed via the W2.3 close path).
 
-    Idempotent: the function checks ``force_stop_reason_recorded`` to
+    History: an earlier implementation opened a separate short-lived
+    aiosqlite (db-connect) handle and INSERTed directly, justifying it
+    as the "one place" outside the four primitives. That violated
+    keystone #8. Routing through ``transactional_db_write`` is correct
+    because:
+
+      - The CAS path holds ``database._state_engine_writer_lock`` (an
+        asyncio.Lock among CAS callers), NOT the queue itself. The
+        queue's writer task and the CAS path SHARE the underlying
+        ``database._writer`` connection; SQLite-level serialisation
+        across them is exactly what we want.
+      - The forced_stop event is always emitted from a fresh asyncio
+        task scheduled by ``_on_force_stop`` -- no awaiter is blocked on
+        the queued write completing, so there is no opportunity for
+        deadlock.
+
+    Idempotent: the function checks ``_force_stop_row_written`` to
     avoid double-writing on multiple invocations.
     """
     if getattr(state.quiesce, "_force_stop_row_written", False):
         return
     db_path = state.sqlite_path
-    if not db_path.exists():
-        # Database file never materialised; nothing to record.
+    if not db_path.exists() or state.database is None:
+        # Database file never materialised OR database manager not
+        # registered (lifespan startup failed before DB open). Nothing
+        # to record; mark and proceed to the exit signal.
         state.quiesce._force_stop_row_written = True  # type: ignore[attr-defined]
+        server = getattr(app.state, "uvicorn_server", None)
+        if server is not None:
+            server.should_exit = True
         return
     event_id = str(uuid.uuid4())
     occurred_at = (
@@ -740,54 +759,33 @@ async def _execute_forced_stop(app: FastAPI, state: RuntimeState) -> None:
     # convention for sidecar-internal observability rows.
     sentinel_project_id = "00000000-0000-0000-0000-000000000000"
     sentinel_scope_id = "00000000-0000-0000-0000-000000000000"
-    try:
-        async with aiosqlite.connect(str(db_path)) as conn:
-            # Compute next ingest_sequence in a fresh BEGIN IMMEDIATE so
-            # we don't race with the writer queue. SQLITE_BUSY is
-            # tolerated -- if the writer holds the lock we wait via the
-            # default busy_timeout (0; we set it to 5s here for parity).
-            await conn.execute("PRAGMA busy_timeout = 5000")
-            await conn.execute("BEGIN IMMEDIATE")
-            try:
-                async with conn.execute(
-                    "SELECT COALESCE(MAX(ingest_sequence), -1) + 1 "
-                    "FROM event_log_entries"
-                ) as cur:
-                    row = await cur.fetchone()
-                next_seq = int(row[0]) if row is not None else 0
-                await conn.execute(
-                    "INSERT INTO event_log_entries ("
-                    "  event_id, schema_version, project_id, scope_type, "
-                    "  scope_id, event_type, actor_kind, payload, "
-                    "  occurred_at, ingest_sequence, event_kind"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        event_id,
-                        "relay.event_log_entry.v1",
-                        sentinel_project_id,
-                        "other",
-                        sentinel_scope_id,
-                        "sidecar.forced_stop",
-                        "control_plane",
-                        json.dumps(
-                            payload, sort_keys=True, separators=(",", ":")
-                        ),
-                        occurred_at,
-                        next_seq,
-                        "sidecar_forced_stop",
-                    ),
-                )
-                await conn.execute("COMMIT")
-            except BaseException:
-                with contextlib.suppress(Exception):
-                    await conn.execute("ROLLBACK")
-                raise
-    except Exception:
-        # Best-effort forensic write. If the database is too contended
-        # to accept the row we proceed with the exit path; the
-        # in-process state of state.quiesce.force_stop_* still records
-        # the forced-stop intent.
-        pass
+    row: dict[str, Any] = {
+        "event_id": event_id,
+        "schema_version": "relay.event_log_entry.v1",
+        "project_id": sentinel_project_id,
+        "scope_type": "other",
+        "scope_id": sentinel_scope_id,
+        "event_type": "sidecar.forced_stop",
+        "actor_kind": "control_plane",
+        "actor_id": None,
+        "manifest_commit_hash": None,
+        "payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        "occurred_at": occurred_at,
+        "event_kind": "sidecar_forced_stop",
+    }
+    # Atomic primitive #2 -- the only sanctioned write path per
+    # keystone #8. The primitive's busy-retry + backoff loop handles
+    # SQLITE_BUSY transparently. Best-effort forensic write: if the
+    # writer task has already been cancelled or the budget is exhausted
+    # under heavy contention, we proceed with the exit path; the
+    # in-process state of state.quiesce.force_stop_* still records the
+    # forced-stop intent.
+    with contextlib.suppress(Exception):
+        await transactional_db_write(
+            table="event_log_entries",
+            row=row,
+            scope_id=sentinel_scope_id,
+        )
     # Mark recorded to avoid double-writes on repeat triggers.
     state.quiesce._force_stop_row_written = True  # type: ignore[attr-defined]
     # Signal exit. If running under uvicorn, app.state.uvicorn_server

@@ -21,6 +21,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -89,14 +90,83 @@ def _detect_banned_tokens(command_line: str) -> tuple[str, ...]:
 
     Tokens are matched as whole shell args; substring near-misses do
     NOT match (``--no-verifyx`` does not flag).
+
+    Round-3 P1 fix #6: parse ``command_line`` with :func:`shlex.split`
+    so banned tokens hidden in shell quotes or parentheses are
+    surfaced. Pre-fix the regex required whitespace boundaries; tokens
+    adjacent to quote / paren characters slipped through. Examples
+    that were missed pre-fix:
+
+      ``sh -c 'git commit --no-verify'``         (trailing ``'`` adjacent)
+      ``(git commit --no-verify)``               (trailing ``)`` adjacent)
+      ``bash -c "(--no-verify)"``                (both adjacencies)
+
+    Falls back to the regex-based scan when ``shlex.split`` raises
+    (malformed quote balance, etc.) so a deliberately-adversarial
+    malformed input cannot DoS the gate engine by triggering an
+    uncaught ValueError; the regex scan is then the conservative
+    backstop.
     """
     if not command_line:
         return ()
     found: list[str] = []
+    found_set: set[str] = set()
+    try:
+        # POSIX shlex splits on whitespace AND strips quote characters,
+        # exposing tokens that were previously hidden by adjacency to a
+        # quote. Parentheses do not have lexical meaning to shlex (it
+        # does not enforce shell grammar), but they ARE included in the
+        # adjacent token, which our exact-match check then detects via
+        # token-equality OR strip. We additionally strip leading /
+        # trailing ASCII punctuation characters that shells use as
+        # grouping or pipeline metacharacters so an unquoted
+        # ``(--no-verify)`` token is matched as ``--no-verify``.
+        tokens = shlex.split(command_line, posix=True)
+    except ValueError:
+        tokens = ()
+    # Strip surrounding shell-grouping punctuation. We do NOT strip
+    # arbitrary characters -- only the punctuation set that real
+    # shells use for grouping / sequencing.
+    _GROUPING = "()[]{};|&"
+    # Recursively re-shlex tokens that contain whitespace -- this
+    # handles ``sh -c 'git commit --no-verify'`` where shlex strips
+    # the outer single-quotes but leaves the inner shell command as
+    # a single multi-word token. Without the inner re-split, the
+    # embedded ``--no-verify`` is never seen as a standalone token.
+    expanded: list[str] = []
+    for t in tokens:
+        if any(ws in t for ws in (" ", "\t", "\n")):
+            try:
+                expanded.extend(shlex.split(t, posix=True))
+            except ValueError:
+                # Inner token is malformed -- contribute it raw; the
+                # regex fallback at the bottom of this function will
+                # still scan the original command_line.
+                expanded.append(t)
+        else:
+            expanded.append(t)
+    stripped_tokens = [t.strip(_GROUPING) for t in expanded]
+    banned_set = set(BANNED_BYPASS_TOKENS)
+    for tok in stripped_tokens:
+        if tok in banned_set and tok not in found_set:
+            found_set.add(tok)
+            found.append(tok)
+    # Regex fallback / belt-and-suspenders: even when shlex.split
+    # succeeds, the regex catches the (pre-fix) cases that already
+    # worked. This preserves the existing behavior for whitespace-
+    # bounded tokens and also handles any token shape that shlex
+    # surfaces in an unexpected form. Order of BANNED_BYPASS_TOKENS
+    # preserved.
     for token, pattern in _BANNED_PATTERNS:
-        if pattern.search(command_line):
+        if token not in found_set and pattern.search(command_line):
+            found_set.add(token)
             found.append(token)
-    return tuple(found)
+    # Stable order: BANNED_BYPASS_TOKENS canonical order.
+    canonical: list[str] = []
+    for token in BANNED_BYPASS_TOKENS:
+        if token in found_set:
+            canonical.append(token)
+    return tuple(canonical)
 
 
 # ----------------------------------------------------------------------------

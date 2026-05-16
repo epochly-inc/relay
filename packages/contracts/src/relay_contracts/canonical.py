@@ -27,9 +27,39 @@ from __future__ import annotations
 
 import math
 import unicodedata
-from typing import Any
+from typing import Any, Final
 
 from .errors import RelayCelNumericOutOfBoundsError
+
+# Round-3 P1 fix #5: wire-stable code for the BMP-only key screen.
+# Python str sorts by codepoint; JS strings sort by UTF-16 code unit.
+# For Basic Multilingual Plane keys (< U+10000) these match. For
+# supplementary-plane keys (>= U+10000) the orderings diverge, which
+# silently produces DIFFERENT JCS bytes between cel-python and cel-js
+# for the same input -- breaking cross-runtime signature verification
+# (CLAUDE.md keystone invariant #11: trust anchor / cross-runtime byte
+# equality). Until both encoders implement the full UTF-16-code-unit
+# sort, we fail-closed on supplementary-plane KEYS. Values may still
+# contain supplementary-plane chars; only object keys are sorted.
+CANONICAL_NON_BMP_KEY_CODE: Final[str] = "RELAY-CANON-NON-BMP-KEY"
+
+
+class CanonicalEncodingError(Exception):
+    """Raised when the JCS encoder cannot produce cross-runtime-stable bytes.
+
+    Currently raised for non-BMP object keys (Round-3 P1 fix #5). Future
+    encoder hardening may add additional reasons; ``code`` discriminates.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = CANONICAL_NON_BMP_KEY_CODE,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
 
 # RFC 8785 section 3.2.2.1: control characters U+0000..U+001F MUST be
 # escaped using the short forms or \\u00xx; quote and backslash also.
@@ -147,10 +177,25 @@ def _encode(value: Any) -> str:
     if isinstance(value, dict):
         # RFC 8785 section 3.2.3: keys sorted by their UTF-16 code-unit
         # sequence. Python str compares by code point; for the BMP these
-        # match. For SMP characters (>= U+10000) the orderings diverge --
-        # Relay contract keys are ASCII / BMP in practice, but enforce
-        # by using the same key ordering on both runtimes.
-        items = sorted(((str(k), v) for k, v in value.items()), key=lambda kv: kv[0])
+        # match. For supplementary-plane characters (>= U+10000) the
+        # orderings diverge silently -- a Python encoder and a JS
+        # encoder produce DIFFERENT canonical bytes for the same input,
+        # which breaks cross-runtime signature verification (CLAUDE.md
+        # keystone invariant #11). Round-3 P1 fix #5: fail-closed on
+        # supplementary-plane object KEYS. Values may contain
+        # supplementary-plane characters -- only keys are sorted.
+        items_raw = [(str(k), v) for k, v in value.items()]
+        for k, _v in items_raw:
+            for ch in k:
+                if ord(ch) >= 0x10000:
+                    raise CanonicalEncodingError(
+                        f"JCS: non-BMP codepoint U+{ord(ch):04X} in object "
+                        f"key {k!r}; supplementary-plane keys produce "
+                        f"runtime-divergent canonical bytes and are "
+                        f"refused. Re-key the object with BMP-only "
+                        f"strings."
+                    )
+        items = sorted(items_raw, key=lambda kv: kv[0])
         parts = [_encode_string(k) + ":" + _encode(v) for k, v in items]
         return "{" + ",".join(parts) + "}"
     raise TypeError(

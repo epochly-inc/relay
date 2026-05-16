@@ -15,6 +15,7 @@ Code-to-subtype map (W6.1 scope; mirror in cel-js TS module on W6.2):
     RELAY-CEL-004  RELAY-CEL-UDF-IMPURE
     RELAY-CEL-006  RELAY-CEL-NUMERIC-OOB
     RELAY-CEL-007  RELAY-CEL-PROFILE-REGEX-BACKREF
+    RELAY-CEL-008  RELAY-CEL-RESOURCE-EXHAUSTED
 
 Spec anchors: D, B.4 (closed error envelope).
 Eng plan anchors: CQ1 lines 145-157, X4 line 216.
@@ -39,6 +40,7 @@ SUBTYPE_PROFILE_REGEX_BACKREF: Final[str] = "RELAY-CEL-PROFILE-REGEX-BACKREF"
 SUBTYPE_TIMEOUT: Final[str] = "RELAY-CEL-TIMEOUT-001"
 SUBTYPE_UDF_IMPURE: Final[str] = "RELAY-CEL-UDF-IMPURE"
 SUBTYPE_NUMERIC_OOB: Final[str] = "RELAY-CEL-NUMERIC-OOB"
+SUBTYPE_RESOURCE_EXHAUSTED: Final[str] = "RELAY-CEL-RESOURCE-EXHAUSTED"
 
 
 @dataclass(frozen=True)
@@ -127,3 +129,22 @@ class RelayCelRegexBackreferenceError(RelayCelProfileError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, subtype=SUBTYPE_PROFILE_REGEX_BACKREF)
+
+
+class RelayCelResourceExhaustedError(RelayCelError):
+    """Evaluator orphan-thread cap reached (Round-3 P1 fix #4).
+
+    Cel-python evaluation is not interruptible from another thread, so a
+    wall-clock timeout leaves the worker thread alive until cel-python
+    finishes computing. Under adversarial inputs (loop of pathological
+    evaluations) orphans accumulate without bound -- a trivial DoS
+    vector. The evaluator bounds the live orphan count at
+    ``MAX_ORPHAN_THREADS``; once reached, new evaluations raise this
+    error instead of spawning yet another orphan.
+
+    The bound exists because cel-python lacks cancellation support; if
+    cel-python ever exposes a cancel handle the bound can be lifted.
+    """
+
+    code = RelayErrorCode.RELAY_CEL_008
+    subtype = SUBTYPE_RESOURCE_EXHAUSTED

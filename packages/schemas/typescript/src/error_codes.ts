@@ -17,6 +17,7 @@
 export const RelayErrorCode = {
   RELAY_AUTH_001: "RELAY-AUTH-001",
   RELAY_AUTH_014: "RELAY-AUTH-014",
+  RELAY_CANON_001: "RELAY-CANON-001",
   RELAY_CEL_001: "RELAY-CEL-001",
   RELAY_CEL_002: "RELAY-CEL-002",
   RELAY_CEL_003: "RELAY-CEL-003",
@@ -24,6 +25,7 @@ export const RelayErrorCode = {
   RELAY_CEL_005: "RELAY-CEL-005",
   RELAY_CEL_006: "RELAY-CEL-006",
   RELAY_CEL_007: "RELAY-CEL-007",
+  RELAY_CEL_008: "RELAY-CEL-008",
   RELAY_CLI_070: "RELAY-CLI-070",
   RELAY_CLI_130: "RELAY-CLI-130",
   RELAY_CONTRACT_001: "RELAY-CONTRACT-001",
@@ -159,6 +161,7 @@ export type RelayErrorCodeToken = (typeof RelayErrorCode)[keyof typeof RelayErro
 export const RELAY_ERROR_CODE_SET: ReadonlySet<string> = new Set<string>([
   "RELAY-AUTH-001",
   "RELAY-AUTH-014",
+  "RELAY-CANON-001",
   "RELAY-CEL-001",
   "RELAY-CEL-002",
   "RELAY-CEL-003",
@@ -166,6 +169,7 @@ export const RELAY_ERROR_CODE_SET: ReadonlySet<string> = new Set<string>([
   "RELAY-CEL-005",
   "RELAY-CEL-006",
   "RELAY-CEL-007",
+  "RELAY-CEL-008",
   "RELAY-CLI-070",
   "RELAY-CLI-130",
   "RELAY-CONTRACT-001",

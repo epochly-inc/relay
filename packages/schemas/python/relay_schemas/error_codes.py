@@ -32,6 +32,7 @@ class RelayErrorCode:
 
     RELAY_AUTH_001: Final[str] = "RELAY-AUTH-001"
     RELAY_AUTH_014: Final[str] = "RELAY-AUTH-014"
+    RELAY_CANON_001: Final[str] = "RELAY-CANON-001"
     RELAY_CEL_001: Final[str] = "RELAY-CEL-001"
     RELAY_CEL_002: Final[str] = "RELAY-CEL-002"
     RELAY_CEL_003: Final[str] = "RELAY-CEL-003"
@@ -39,6 +40,7 @@ class RelayErrorCode:
     RELAY_CEL_005: Final[str] = "RELAY-CEL-005"
     RELAY_CEL_006: Final[str] = "RELAY-CEL-006"
     RELAY_CEL_007: Final[str] = "RELAY-CEL-007"
+    RELAY_CEL_008: Final[str] = "RELAY-CEL-008"
     RELAY_CLI_070: Final[str] = "RELAY-CLI-070"
     RELAY_CLI_130: Final[str] = "RELAY-CLI-130"
     RELAY_CONTRACT_001: Final[str] = "RELAY-CONTRACT-001"
@@ -177,6 +179,7 @@ class RelayErrorCode:
 _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-AUTH-001",
     "RELAY-AUTH-014",
+    "RELAY-CANON-001",
     "RELAY-CEL-001",
     "RELAY-CEL-002",
     "RELAY-CEL-003",
@@ -184,6 +187,7 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-CEL-005",
     "RELAY-CEL-006",
     "RELAY-CEL-007",
+    "RELAY-CEL-008",
     "RELAY-CLI-070",
     "RELAY-CLI-130",
     "RELAY-CONTRACT-001",

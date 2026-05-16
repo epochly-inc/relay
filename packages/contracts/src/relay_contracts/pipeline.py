@@ -256,7 +256,22 @@ def evaluate_assertion(
     extra_udfs_tuple = tuple(extra_udfs)
     # Wrap each UDF callable so we can capture its return value for the
     # envelope without mutating the underlying PureUdf object.
-    captured_outputs: dict[str, Any] = {}
+    #
+    # Round-3 P1 fix #3: capture is a LIST per UDF name, not a scalar.
+    # A CEL expression may call the same UDF multiple times with
+    # different arguments (e.g., ``my_check("a") && my_check("b")``);
+    # an overwrite-on-store would erase all but the LAST return value,
+    # breaking keystone invariant 2 (the forensic envelope must record
+    # every invocation that contributed to the outcome). The wrapper
+    # appends to ``captured_outputs[name]`` so every invocation is
+    # preserved in CEL-evaluation order.
+    #
+    # The wrapper is scoped per evaluate_assertion call (the closure
+    # ``captured_outputs`` lives only for this stack frame); it is NOT
+    # a process global. Concurrent evaluations on different threads /
+    # tasks each get their own ``captured_outputs`` dict, so there is
+    # no cross-evaluation contamination.
+    captured_outputs: dict[str, list[Any]] = {}
     wrapped_udfs: list[PureUdf] = []
     from .udf import register_udf
 
@@ -266,7 +281,7 @@ def evaluate_assertion(
         def _make_wrapper(name: str, fn: Any) -> Any:
             def _wrapper(*args: Any, **kwargs: Any) -> Any:
                 result = fn(*args, **kwargs)
-                captured_outputs[name] = result
+                captured_outputs.setdefault(name, []).append(result)
                 return result
             return _wrapper
 
