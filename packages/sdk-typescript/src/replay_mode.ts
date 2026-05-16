@@ -207,22 +207,90 @@ export function requireInstrumentedHttpClients(
 // ---------------------------------------------------------------------------
 
 /**
- * Loopback host classifier. Accepts ``localhost``, IPv4 127.0.0.0/8, and
- * IPv6 ``::1``. Hostnames other than literal IP addresses are NOT
- * accepted -- the interceptor must not be bypassable via DNS.
+ * Loopback host classifier. Accepts ``localhost``, IPv4 127.0.0.0/8,
+ * IPv6 ``::1``, and IPv4-mapped IPv6 loopback (``::ffff:127.x.x.x``).
+ * Hostnames other than literal IP addresses are NOT accepted -- the
+ * interceptor must not be bypassable via DNS.
+ *
+ * Parity contract: behaviour must match the Python SDK's
+ * ``relay.replay_mode._is_loopback_address`` which is implemented atop
+ * the Python stdlib ``ipaddress`` module. In particular:
+ *
+ *   * Non-canonical IPv4 forms (leading zeros like ``127.0.0.001``,
+ *     octets > 255, wrong octet count) are REJECTED. Python's
+ *     ``ipaddress.ip_address`` raises ``ValueError`` on these; TS must
+ *     reject for parity so an attacker cannot pick a form that bypasses
+ *     one SDK but not the other.
+ *   * ``::ffff:127.0.0.1`` (IPv4-mapped IPv6) is ACCEPTED because
+ *     Python's ``ip.is_loopback`` returns True for it.
  */
 export function isLoopbackHost(host: string): boolean {
-  if (host === "" ) return false;
-  const lower = host.toLowerCase();
-  if (lower === "localhost") return true;
-  if (lower === "::1" || lower === "[::1]") return true;
-  // IPv4 dotted quad.
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(lower);
-  if (v4 !== null) {
-    const a = Number.parseInt(v4[1] as string, 10);
-    return a === 127;
+  if (host === "") return false;
+  let s = host.toLowerCase();
+  if (s === "localhost") return true;
+  // Strip bracketed IPv6 form (``[::1]``, ``[::ffff:127.0.0.1]``).
+  if (s.startsWith("[") && s.endsWith("]")) {
+    s = s.slice(1, -1);
+  }
+  // Strip IPv6 zone id (``fe80::1%eth0``).
+  const pct = s.indexOf("%");
+  if (pct >= 0) {
+    s = s.slice(0, pct);
+  }
+  return _isLoopbackIp(s);
+}
+
+/**
+ * Internal IP-literal loopback classifier. Returns true iff ``addr`` is
+ * a canonically-formatted IPv4 loopback (127.0.0.0/8), IPv6 ``::1``, or
+ * IPv4-mapped IPv6 loopback (``::ffff:127.x.x.x`` in any letter case).
+ *
+ * Implementation note: we deliberately do NOT use ``node:net.isIP``
+ * because Node's implementation historically accepts non-canonical IPv4
+ * forms (leading zeros, hex). Parity with Python's stdlib ``ipaddress``
+ * requires a strict canonical parser; we implement it here directly.
+ */
+function _isLoopbackIp(addr: string): boolean {
+  if (addr === "") return false;
+  // IPv4 path: must be exactly four canonical decimal octets.
+  if (addr.indexOf(":") < 0) {
+    return _isCanonicalIpv4Loopback(addr);
+  }
+  // IPv6 path.
+  if (addr === "::1") return true;
+  // IPv4-mapped IPv6: ``::ffff:a.b.c.d`` -- only the ``::ffff:`` prefix
+  // form is loopback iff the embedded IPv4 is loopback. (Other v4-in-v6
+  // forms like ``::a.b.c.d`` are deprecated IPv4-compatible addresses
+  // which the stdlib ``ipaddress`` does NOT treat as loopback unless the
+  // embedded IPv4 itself is a loopback, but for parity with Python's
+  // behaviour we follow the same rule: check the embedded IPv4 only when
+  // the prefix is exactly ``::ffff:``.)
+  if (addr.startsWith("::ffff:")) {
+    const tail = addr.slice("::ffff:".length);
+    if (tail.indexOf(".") >= 0) {
+      return _isCanonicalIpv4Loopback(tail);
+    }
   }
   return false;
+}
+
+/**
+ * Strict canonical IPv4 loopback check. Rejects leading zeros (``001``),
+ * empty octets, oversize octets (>255), and any non-four-octet form.
+ */
+function _isCanonicalIpv4Loopback(addr: string): boolean {
+  const parts = addr.split(".");
+  if (parts.length !== 4) return false;
+  const octets: number[] = [];
+  for (const p of parts) {
+    if (p.length === 0) return false;
+    if (p.length > 1 && p[0] === "0") return false; // no leading zeros
+    if (!/^\d+$/.test(p)) return false;
+    const n = Number.parseInt(p, 10);
+    if (!Number.isFinite(n) || n < 0 || n > 255) return false;
+    octets.push(n);
+  }
+  return octets[0] === 127;
 }
 
 /**

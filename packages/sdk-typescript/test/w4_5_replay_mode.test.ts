@@ -137,6 +137,44 @@ describe("VAL-W4-035: undici interceptor catches non-loopback egress", () => {
     expect(isLoopbackHost("8.8.8.8")).toBe(false);
   });
 
+  // Cross-language parity (matches Python sdk-python relay.replay_mode
+  // _is_loopback_address). The Python side uses ipaddress.ip_address(...)
+  // .is_loopback which covers IPv4-mapped IPv6 and rejects non-canonical
+  // dotted-quad forms. The TS classifier MUST do the same so the two SDKs
+  // make identical egress decisions.
+  it("isLoopbackHost accepts IPv4-mapped IPv6 loopback ::ffff:127.0.0.1", () => {
+    expect(isLoopbackHost("::ffff:127.0.0.1")).toBe(true);
+    expect(isLoopbackHost("[::ffff:127.0.0.1]")).toBe(true);
+    expect(isLoopbackHost("::FFFF:127.0.0.1")).toBe(true);
+    expect(isLoopbackHost("::ffff:127.255.255.255")).toBe(true);
+  });
+
+  it("isLoopbackHost accepts the full 127.0.0.0/8 range", () => {
+    expect(isLoopbackHost("127.0.0.0")).toBe(true);
+    expect(isLoopbackHost("127.255.255.255")).toBe(true);
+  });
+
+  it("isLoopbackHost rejects non-canonical IPv4 (leading zeros, oversize)", () => {
+    // Python's ipaddress.ip_address("127.0.0.001") raises ValueError; TS
+    // must reject for parity.
+    expect(isLoopbackHost("127.0.0.001")).toBe(false);
+    expect(isLoopbackHost("127.0.0.01")).toBe(false);
+    expect(isLoopbackHost("127.000.000.001")).toBe(false);
+    // Octet > 255 is not a valid IPv4 octet.
+    expect(isLoopbackHost("127.0.0.256")).toBe(false);
+    expect(isLoopbackHost("127.300.0.1")).toBe(false);
+    // Not enough or too many octets.
+    expect(isLoopbackHost("127.0.0")).toBe(false);
+    expect(isLoopbackHost("127.0.0.0.1")).toBe(false);
+  });
+
+  it("isLoopbackHost rejects non-loopback IPv6 addresses", () => {
+    expect(isLoopbackHost("::2")).toBe(false);
+    expect(isLoopbackHost("2001:db8::1")).toBe(false);
+    expect(isLoopbackHost("::ffff:8.8.8.8")).toBe(false);
+    expect(isLoopbackHost("0.0.0.0")).toBe(false);
+  });
+
   it("interceptor throws RelayReplayEgressDeniedError on non-loopback origin", () => {
     const interceptor = buildEgressDenyInterceptor();
     const dispatch = (() => true) as (

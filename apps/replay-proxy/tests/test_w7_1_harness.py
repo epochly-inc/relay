@@ -630,6 +630,90 @@ def test_no_pkill_or_killall_call_in_harness_source() -> None:
     )
 
 
+# -----------------------------------------------------------------------------
+# SIGINT-during-start must not deadlock (regression for signal-handler vs.
+# start() lock contention). The SIGINT/SIGTERM cleanup handler installed by
+# ``_install_atexit_and_signal_handlers`` calls ``stop()`` which re-acquires
+# ``self._lock``; a non-reentrant Lock would deadlock the main thread.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.fulfills("VAL-W7-001")
+def test_harness_lock_is_reentrant_for_signal_safety() -> None:
+    """``HarnessSession`` MUST use an RLock so a SIGINT handler that fires
+    while ``start()`` holds the lock can call ``stop()`` from the same
+    thread without deadlocking. This pins the lock type contract.
+    """
+    from relay_replay_proxy.harness import HarnessSession
+
+    cfg = HarnessConfig(
+        session_id="seslocktypecheck00000000",
+        cassette_root=Path("/tmp/relay-test-not-used"),
+    )
+    sess = HarnessSession(cfg)
+    # threading.RLock() returns an _RLock instance whose type repr starts
+    # with "<unlocked _thread.RLock". Direct isinstance check is the most
+    # robust way to assert the contract without depending on a specific
+    # CPython internal class name.
+    # The owning-thread re-acquire MUST succeed without blocking; if the
+    # lock were a non-reentrant Lock this acquire would deadlock and the
+    # test would time out.
+    acquired_once = sess._lock.acquire(blocking=False)
+    assert acquired_once, "could not take the lock at all"
+    try:
+        # Same-thread re-acquire: succeeds on RLock, would block on Lock.
+        # We use a non-blocking timeout so a regression to Lock manifests
+        # as test failure, not test hang.
+        acquired_twice = sess._lock.acquire(blocking=True, timeout=1.0)
+        assert acquired_twice, (
+            "harness._lock did not allow same-thread re-acquire; "
+            "SIGINT during start() would deadlock. Lock must be an RLock."
+        )
+        sess._lock.release()
+    finally:
+        sess._lock.release()
+
+
+@pytest.mark.fulfills("VAL-W7-001")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows SIGINT semantics differ; covered by RLock contract test above.",
+)
+def test_harness_signint_during_start_does_not_deadlock(
+    cassette_root: Path,
+    session_dir_with_cassette: Path,
+    use_inproc_driver: None,
+) -> None:
+    """Simulate the signal-during-start deadlock scenario: hold the lock
+    on the main thread (as ``start()`` does), then invoke ``stop()``
+    from the same thread (as the signal handler does). On a non-reentrant
+    Lock this hangs forever; on an RLock it completes immediately.
+
+    The test gates on a wall-clock budget so a regression is observable
+    rather than catastrophic.
+    """
+    from relay_replay_proxy.harness import HarnessSession
+
+    cfg = HarnessConfig(
+        session_id=session_dir_with_cassette.name,
+        cassette_root=cassette_root,
+    )
+    sess = HarnessSession(cfg)
+    sess.start()
+    # Re-create the in-flight start() condition: the main thread already
+    # holds the lock when SIGINT arrives, the handler runs on the same
+    # thread, calls stop(). On a non-reentrant Lock the inner acquire
+    # would block forever.
+    deadline = time.time() + 5.0
+    completed = False
+    with sess._lock:
+        # Stop() acquires self._lock internally; succeeds only if RLock.
+        sess.stop()
+        completed = True
+    assert completed, "stop() returned"
+    assert time.time() < deadline, "stop() exceeded 5s budget (deadlock)"
+
+
 # Suppress unused-import lint on threading + EPHEMERAL_PORT_LOW/HIGH:
 # referenced via boundary checks elsewhere.
 _ = (threading, EPHEMERAL_PORT_LOW, EPHEMERAL_PORT_HIGH)

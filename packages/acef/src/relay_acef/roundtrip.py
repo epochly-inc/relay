@@ -140,24 +140,56 @@ def _encode_string(s: str) -> str:
     return "".join(out)
 
 
+_ECMA_262_DECIMAL_RANGE_LOW = Decimal("1E-6")
+_ECMA_262_DECIMAL_RANGE_HIGH = Decimal("1E+21")
+
+
 def _encode_decimal(d: Decimal) -> str:
-    """Emit a Decimal with every digit preserved; no ULP drift.
+    """Emit a Decimal per RFC 8785 / ECMA-262 NumberToString.
 
     A Decimal value arrives with explicit precision (e.g.,
-    ``Decimal("0.1234567890123456789")``). We emit via ``str(Decimal)``,
-    strip a leading ``+`` if present, and reject NaN/Inf defensively
-    (no canonical text form for non-finite per JCS section 3.2.2).
+    ``Decimal("0.1234567890123456789")``). ECMA-262 NumberToString emits
+    decimal form when ``1e-6 <= |n| < 1e21`` and exponential form
+    otherwise. ``str(Decimal)`` is NOT RFC 8785 compliant -- it preserves
+    the parsed exponent form (e.g., ``Decimal("1E+5")`` stringifies to
+    ``"1E+5"``), which JS / RFC 8785 verifiers would re-encode to
+    ``"100000"``. We implement the spec explicitly so Python emits the
+    same canonical bytes a JS verifier would.
+
+    NaN / Inf are rejected (no canonical text form per JCS 3.2.2).
+    Negative zero collapses to ``"0"`` per ECMA-262.
     """
     if not d.is_finite():
         raise JCSEncodeError(f"JCS cannot encode non-finite Decimal: {d!r}")
-    # ECMA-262 NumberToString collapses negative zero to "0". Without this
-    # the second emit drifts (parse loses the sign on JSON's numeric -0).
     if d.is_zero():
         return "0"
-    text = str(d)
-    if text.startswith("+"):
-        text = text[1:]
-    return text
+    abs_d = abs(d)
+    if _ECMA_262_DECIMAL_RANGE_LOW <= abs_d < _ECMA_262_DECIMAL_RANGE_HIGH:
+        # Decimal form. ``format(d, 'f')`` expands exponent notation to
+        # full positional form while preserving every parsed digit.
+        text = format(d, "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        if text.startswith("+"):
+            text = text[1:]
+        return text or "0"
+    # Exponential form. Reconstruct mantissa + exponent from the
+    # canonical decimal tuple so the shortest round-tripping
+    # representation is emitted (e.g., ``1.0E+22`` -> ``1e+22``).
+    sign, digits, exp = d.as_tuple()
+    digits_str = "".join(str(c) for c in digits).rstrip("0")
+    if not digits_str:
+        return "0"
+    mantissa = (
+        digits_str if len(digits_str) == 1 else digits_str[0] + "." + digits_str[1:]
+    )
+    # Effective exponent: parsed exponent + (number of trailing zeros
+    # we stripped) + (digits left of decimal point - 1).
+    stripped_trailing = len("".join(str(c) for c in digits)) - len(digits_str)
+    true_exp = exp + stripped_trailing + (len(digits_str) - 1)
+    sign_str = "-" if sign else ""
+    sign_exp = "+" if true_exp >= 0 else ""
+    return f"{sign_str}{mantissa}e{sign_exp}{true_exp}"
 
 
 def _encode_number(n: int | float) -> str:

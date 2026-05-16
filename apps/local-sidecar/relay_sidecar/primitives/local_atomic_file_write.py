@@ -61,6 +61,7 @@ import contextlib
 import os
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import portalocker
@@ -71,10 +72,11 @@ DEFAULT_MODE: int = 0o600
 
 def local_atomic_file_write(
     path: Path | str,
-    body: bytes,
+    body: bytes | None = None,
     *,
     mode: int = DEFAULT_MODE,
     append: bool = False,
+    body_fn: Callable[[bytes], bytes] | None = None,
 ) -> None:
     """Atomic write of ``body`` to ``path``.
 
@@ -83,18 +85,51 @@ def local_atomic_file_write(
             responsible for ``parent.mkdir(parents=True, exist_ok=True)``
             ahead of the call so this primitive remains a pure write).
         body: Raw bytes to write. ``b""`` is permitted (used by
-            VAL-W2-009 STALE_PID branch to clear the lockfile).
+            VAL-W2-009 STALE_PID branch to clear the lockfile). Mutually
+            exclusive with ``body_fn``.
         mode: POSIX permission bits. Default 0o600. Ignored on Windows
             (where ACL hardening takes over).
         append: If True, prepend ``body`` with the current file's content
             (atomic read-modify-write). Used by the local JSONL event
-            log writer. Defaults to False.
+            log writer. Defaults to False. Mutually exclusive with
+            ``body_fn``.
+        body_fn: Optional callback invoked INSIDE the exclusive lock with
+            the destination's current bytes (b"" when absent). Must return
+            the full bytes to write to the destination. Enables atomic
+            read-modify-write that depends on the existing content (for
+            example: line-count + append used by the event-log
+            ingest-sequence assignment). Mutually exclusive with ``body``
+            and with ``append``. When ``body_fn`` is supplied, ``body``
+            must be ``None``.
 
     Raises:
         FileNotFoundError: parent directory missing.
         PermissionError: filesystem refuses the rename or mode change.
         OSError: any other I/O failure.
+        ValueError: arguments are inconsistent (both ``body`` and
+            ``body_fn`` provided; neither provided; ``body_fn`` combined
+            with ``append=True``).
     """
+    # Argument validation. ``body_fn`` is mutually exclusive with both
+    # ``body`` and ``append``: it already composes the full payload from
+    # the existing content, so combining it with the legacy append-concat
+    # path would double-count.
+    if body_fn is not None:
+        if body is not None:
+            raise ValueError(
+                "local_atomic_file_write: 'body' and 'body_fn' are mutually "
+                "exclusive; pass exactly one."
+            )
+        if append:
+            raise ValueError(
+                "local_atomic_file_write: 'body_fn' implies its own "
+                "read-modify-write; do not combine with append=True."
+            )
+    elif body is None:
+        raise ValueError(
+            "local_atomic_file_write: must supply either 'body' or 'body_fn'."
+        )
+
     destination = Path(path)
     parent = destination.parent
     if not parent.is_dir():
@@ -142,17 +177,30 @@ def local_atomic_file_write(
         mode="r+b",
         flags=portalocker.LOCK_EX,
     ):
-        if append:
+        if body_fn is not None or append:
             # Read the destination's CURRENT content fresh inside the
             # critical section -- NOT through the lock-file fd. Because
             # the lock is held, no peer can be mid-replace, so this read
-            # observes a fully-committed prior write.
+            # observes a fully-committed prior write. Both ``append`` and
+            # ``body_fn`` paths depend on this serialized read.
             try:
                 existing = destination.read_bytes()
             except FileNotFoundError:
                 existing = b""
-            payload = existing + body
+            if body_fn is not None:
+                # Caller-supplied callback composes the full payload from
+                # the existing bytes. The lock is held for the duration
+                # of the callback; the callback observes a fully-committed
+                # prior state. Used by ``append_event`` for sequence
+                # assignment that depends on the current line count.
+                payload = body_fn(existing)
+            else:
+                # body is non-None here because argument validation above
+                # rejected ``append=True`` with ``body=None``.
+                assert body is not None  # noqa: S101
+                payload = existing + body
         else:
+            assert body is not None  # noqa: S101
             payload = body
 
         # Write to a sibling tempfile (same directory for cross-device-safe

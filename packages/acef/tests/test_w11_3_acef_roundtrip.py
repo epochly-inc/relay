@@ -832,6 +832,129 @@ def test_decimal_preserves_at_least_twenty_distinct_values() -> None:
 
 
 # =============================================================================
+# VAL-W11-021 (extended): ECMA-262 NumberToString compliance for Decimal
+# =============================================================================
+#
+# RFC 8785 JCS section 3.2.2 numbers MUST follow ECMA-262 NumberToString.
+# The Decimal encoder previously emitted ``str(Decimal)`` which preserves
+# exponent notation (e.g., ``"1E+5"`` for ``Decimal("1E+5")``) -- not a
+# valid ECMA-262 number string. ECMA-262 NumberToString uses exponential
+# form only when |n| < 1e-6 or |n| >= 1e21; otherwise it uses decimal form.
+# These tests pin the contract against ECMA-262, verified against Node's
+# ``String(Number(...))``.
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W11-021")
+def test_encode_decimal_exponent_to_decimal_form() -> None:
+    """Decimal values written in scientific form are emitted as decimal.
+
+    ECMA-262 NumberToString: ``1E+5`` (=100000) is in [1e-6, 1e21) so
+    MUST emit as ``"100000"``, not ``"1E+5"``. Same for ``1E-3``.
+    """
+    from relay_acef.roundtrip import _encode_decimal
+
+    assert _encode_decimal(Decimal("1E+5")) == "100000"
+    assert _encode_decimal(Decimal("1E-3")) == "0.001"
+    assert _encode_decimal(Decimal("1E+0")) == "1"
+    assert _encode_decimal(Decimal("1.5E+2")) == "150"
+    # 1e-6 is the exact boundary: ECMA-262 emits decimal form.
+    assert _encode_decimal(Decimal("1E-6")) == "0.000001"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W11-021")
+def test_encode_decimal_large_uses_exponential_form() -> None:
+    """Magnitudes >= 1e21 emit exponential form per ECMA-262.
+
+    Verified against ``node -e 'console.log(String(1e22))'`` => ``1e+22``.
+    """
+    from relay_acef.roundtrip import _encode_decimal
+
+    assert _encode_decimal(Decimal("1E+22")) == "1e+22"
+    assert _encode_decimal(Decimal("1E+21")) == "1e+21"
+    # Negative magnitude analogue.
+    assert _encode_decimal(Decimal("-1E+22")) == "-1e+22"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W11-021")
+def test_encode_decimal_tiny_uses_exponential_form() -> None:
+    """Magnitudes < 1e-6 emit exponential form per ECMA-262.
+
+    Verified against ``node -e 'console.log(String(1e-7))'`` => ``1e-7``.
+    """
+    from relay_acef.roundtrip import _encode_decimal
+
+    assert _encode_decimal(Decimal("1E-7")) == "1e-7"
+    assert _encode_decimal(Decimal("1E-10")) == "1e-10"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W11-021")
+def test_encode_decimal_preserves_high_precision_digits() -> None:
+    """A 17-digit Decimal in [1e-6, 1e21) emits full-precision decimal form."""
+    from relay_acef.roundtrip import _encode_decimal
+
+    # Digits MUST be preserved; this is the load-bearing Decimal contract.
+    assert _encode_decimal(Decimal("0.30000000000000004")) == "0.30000000000000004"
+    assert _encode_decimal(Decimal("0.99999999999999999")) == "0.99999999999999999"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W11-021")
+def test_encode_decimal_negative_zero_collapses_to_zero() -> None:
+    """ECMA-262 NumberToString collapses negative zero to ``"0"``."""
+    from relay_acef.roundtrip import _encode_decimal
+
+    assert _encode_decimal(Decimal("0")) == "0"
+    assert _encode_decimal(Decimal("-0")) == "0"
+    assert _encode_decimal(Decimal("0.0")) == "0"
+    assert _encode_decimal(Decimal("-0.0")) == "0"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W11-021")
+def test_encode_decimal_rejects_non_finite() -> None:
+    """NaN and Inf Decimals have no JCS canonical form; encoder rejects."""
+    from relay_acef.roundtrip import JCSEncodeError, _encode_decimal
+
+    with pytest.raises(JCSEncodeError):
+        _encode_decimal(Decimal("NaN"))
+    with pytest.raises(JCSEncodeError):
+        _encode_decimal(Decimal("Infinity"))
+    with pytest.raises(JCSEncodeError):
+        _encode_decimal(Decimal("-Infinity"))
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W11-021")
+def test_encode_number_negative_zero_collapses_to_zero() -> None:
+    """ECMA-262 NumberToString: float -0.0 emits as ``"0"``."""
+    from relay_acef.roundtrip import _encode_number
+
+    assert _encode_number(0) == "0"
+    assert _encode_number(0.0) == "0"
+    assert _encode_number(-0.0) == "0"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W11-021")
+def test_encode_number_special_values_raise() -> None:
+    """NaN / +Inf / -Inf raise JCSEncodeError; no canonical form exists."""
+    import math
+
+    from relay_acef.roundtrip import JCSEncodeError, _encode_number
+
+    with pytest.raises(JCSEncodeError):
+        _encode_number(float("nan"))
+    with pytest.raises(JCSEncodeError):
+        _encode_number(float("inf"))
+    with pytest.raises(JCSEncodeError):
+        _encode_number(-math.inf)
+
+
+# =============================================================================
 # VAL-W11-022: Bundle determinism survives temporal + host noise
 # =============================================================================
 #

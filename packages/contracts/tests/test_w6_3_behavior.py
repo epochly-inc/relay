@@ -183,6 +183,26 @@ def test_schema_match_type_number_accepts_int_and_float_excludes_bool() -> None:
 
 
 @pytest.mark.plumbing
+def test_schema_match_number_rejects_nan_inf() -> None:
+    """NaN / +Inf / -Inf MUST be rejected for ``"type": "number"``.
+
+    The TypeScript mirror uses ``Number.isFinite`` and rejects them.
+    Python had previously accepted them via ``isinstance(int | float)``;
+    same payload returned True in Python but False in TS, breaking the
+    byte-identical JCS parity guarantee promised in the module docstring.
+    """
+    assert relay_schema_match(float("nan"), {"type": "number"}) is False
+    assert relay_schema_match(float("inf"), {"type": "number"}) is False
+    assert relay_schema_match(float("-inf"), {"type": "number"}) is False
+    # Plain finite values still pass.
+    assert relay_schema_match(42, {"type": "number"}) is True
+    assert relay_schema_match(3.14, {"type": "number"}) is True
+    # Booleans still excluded (subclass-of-int gotcha).
+    assert relay_schema_match(True, {"type": "number"}) is False
+    assert relay_schema_match(False, {"type": "number"}) is False
+
+
+@pytest.mark.plumbing
 def test_schema_match_type_boolean() -> None:
     assert relay_schema_match(True, {"type": "boolean"}) is True
     assert relay_schema_match(False, {"type": "boolean"}) is True

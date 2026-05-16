@@ -208,3 +208,70 @@ def test_replay_record_writes_cassette_marker_with_mode() -> None:
     """``replay_record`` mirrors ``replay_run`` shape for evidence binding."""
     rec = replay_record(case_id="01H1234567890ABCDEFGHJKMNP")
     assert rec.mode == "cassette"
+
+
+# ---------------------------------------------------------------------------
+# Cross-language parity (matches TS sdk-typescript src/replay_mode.ts
+# isLoopbackHost). Both SDKs must accept/reject the same set of host
+# literals so they make identical egress decisions when run side by side.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+def test_is_loopback_address_accepts_ipv4_127_range() -> None:
+    from relay.replay_mode import _is_loopback_address
+
+    assert _is_loopback_address("127.0.0.1") is True
+    assert _is_loopback_address("127.0.0.0") is True
+    assert _is_loopback_address("127.255.255.255") is True
+    assert _is_loopback_address("127.99.0.1") is True
+
+
+@pytest.mark.plumbing
+def test_is_loopback_address_accepts_ipv6_loopback() -> None:
+    from relay.replay_mode import _is_loopback_address
+
+    assert _is_loopback_address("::1") is True
+    assert _is_loopback_address("localhost") is True
+
+
+@pytest.mark.plumbing
+def test_is_loopback_address_accepts_ipv4_mapped_ipv6_loopback() -> None:
+    from relay.replay_mode import _is_loopback_address
+
+    assert _is_loopback_address("::ffff:127.0.0.1") is True
+    assert _is_loopback_address("::FFFF:127.0.0.1") is True
+    assert _is_loopback_address("::ffff:127.255.255.255") is True
+
+
+@pytest.mark.plumbing
+def test_is_loopback_address_rejects_non_loopback_hosts() -> None:
+    from relay.replay_mode import _is_loopback_address
+
+    assert _is_loopback_address("") is False
+    assert _is_loopback_address("example.com") is False
+    assert _is_loopback_address("10.0.0.1") is False
+    assert _is_loopback_address("8.8.8.8") is False
+    assert _is_loopback_address("0.0.0.0") is False
+    assert _is_loopback_address("192.168.1.1") is False
+    assert _is_loopback_address("::2") is False
+    assert _is_loopback_address("2001:db8::1") is False
+    assert _is_loopback_address("::ffff:8.8.8.8") is False
+
+
+@pytest.mark.plumbing
+def test_is_loopback_address_rejects_non_canonical_ipv4() -> None:
+    """Parity with TS: leading zeros / oversize octets / wrong octet count.
+
+    Python's stdlib ``ipaddress.ip_address`` already rejects these forms;
+    this test pins the contract so a future refactor cannot relax it.
+    """
+    from relay.replay_mode import _is_loopback_address
+
+    assert _is_loopback_address("127.0.0.001") is False
+    assert _is_loopback_address("127.0.0.01") is False
+    assert _is_loopback_address("127.000.000.001") is False
+    assert _is_loopback_address("127.0.0.256") is False
+    assert _is_loopback_address("127.300.0.1") is False
+    assert _is_loopback_address("127.0.0") is False
+    assert _is_loopback_address("127.0.0.0.1") is False

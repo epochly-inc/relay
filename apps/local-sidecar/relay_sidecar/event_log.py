@@ -82,23 +82,51 @@ def _now_rfc3339_utc() -> str:
     )
 
 
+def _count_nonempty_lines(body: bytes) -> int:
+    """Return the count of non-blank lines in ``body``.
+
+    Used by ``append_event``'s ``body_fn`` closure inside the atomic-write
+    primitive's exclusive lock to compute the next ``ingest_sequence``
+    deterministically from the destination's current bytes.
+    """
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        # A corrupt event log MUST surface, not be masked. The caller
+        # (append_event via local_atomic_file_write) will propagate this
+        # as a structured failure; the sidecar lifespan owns the recovery
+        # path for a damaged log.
+        raise
+    return sum(1 for line in text.splitlines() if line.strip())
+
+
 def _next_ingest_sequence(home: Path) -> int:
     """Return the next ``ingest_sequence`` for the local JSONL log.
 
     Per W1 ``EventLogEntry`` requirement, ``ingest_sequence`` is a
     non-negative epoch-like integer. For the local OSS sidecar we use a
     strictly-monotonic counter derived from the line count of the existing
-    log file. The portalocker exclusive lock around the read-modify-write
-    guarantees this is race-free.
+    log file.
+
+    NOTE: This helper is unsafe to call outside an exclusive lock on the
+    destination file. ``append_event`` uses the ``body_fn`` callback path
+    of ``local_atomic_file_write`` to perform the read-count + append
+    atomically under one lock. This helper is retained only for narrow
+    diagnostic / test paths where the caller has externally serialized
+    access.
+
+    Error policy:
+      - ``FileNotFoundError``: log absent, valid start, returns 0.
+      - ``PermissionError`` / other ``OSError``: re-raise. A silent 0
+        would compute a duplicate sequence on a real I/O failure and
+        violate strict monotonicity (VAL-W2-006 and related).
     """
     path = event_log_path(home)
-    if not path.exists():
-        return 0
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+        body = path.read_bytes()
+    except FileNotFoundError:
         return 0
-    return sum(1 for line in text.splitlines() if line.strip())
+    return _count_nonempty_lines(body)
 
 
 def append_event(

@@ -587,7 +587,14 @@ class HarnessSession:
         self._driver: _ProxyDriver | None = None
         self._cassette_server: CassetteServer | None = None
         self._stopped = False
-        self._lock = threading.Lock()
+        # RLock (not Lock): the SIGINT/SIGTERM cleanup handler runs on the
+        # main thread BETWEEN bytecodes; if a signal arrives while
+        # ``start()`` already holds ``self._lock``, the handler invokes
+        # ``stop()`` which re-acquires the same lock and a non-reentrant
+        # Lock would deadlock the interpreter. Re-entrant lock keeps the
+        # mutual-exclusion contract for other threads (driver shutdown,
+        # ``assert_alive`` probes) while allowing the same thread to nest.
+        self._lock = threading.RLock()
         self._signal_handlers_installed = False
         self._previous_handlers: dict[int, Any] = {}
 

@@ -51,11 +51,34 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
 RELAY_SCHEMA_MATCH_NAME: str = "relay.schema_match"
 RELAY_SCHEMA_MATCH_ARITY: int = 2
+
+
+def _is_finite_number(payload: Any) -> bool:
+    """Return True iff ``payload`` is a JSON-Schema "number" value.
+
+    Mirrors the TypeScript ``matchesType`` check at
+    ``packages/contracts-typescript/src/udfs/schema_match.ts`` for
+    ``typeName === "number"``:
+
+      - booleans are NOT numbers (Python bool subclasses int; route out)
+      - non-int / non-float are NOT numbers
+      - float NaN / +Inf / -Inf are NOT finite -> rejected
+
+    Cross-runtime parity: ``Number.isFinite`` in TS rejects NaN/Inf, so
+    Python must too. Same input MUST yield the same boolean across both
+    runtimes per the JCS byte-identity guarantee.
+    """
+    if isinstance(payload, bool):
+        return False
+    if not isinstance(payload, int | float):
+        return False
+    return not (isinstance(payload, float) and not math.isfinite(payload))
 
 # Defense-in-depth cap on recursive descent into nested schemas. The
 # evaluator's wall-clock timeout (DEFAULT_TIMEOUT_MS = 50 ms) is the
@@ -83,11 +106,11 @@ def _matches_type(payload: Any, type_name: str) -> bool:
     if type_name == "integer":
         return isinstance(payload, int) and not isinstance(payload, bool)
     if type_name == "number":
-        # JSON Schema "number" matches any numeric (int or float). Booleans
-        # are excluded (they are not numbers in JSON Schema parlance).
-        if isinstance(payload, bool):
-            return False
-        return isinstance(payload, int | float)
+        # JSON Schema "number" matches any FINITE numeric (int or float).
+        # Booleans are excluded (they are not numbers in JSON Schema
+        # parlance); NaN / +Inf / -Inf are excluded for cross-runtime
+        # parity with the TS mirror's ``Number.isFinite`` gate.
+        return _is_finite_number(payload)
     if type_name == "object":
         return isinstance(payload, Mapping)
     if type_name == "array":
