@@ -1,0 +1,17 @@
+# Python build / cache artifacts produced by local invocations of
+# the example. Cassette JSONL files and source code are tracked; build
+# artifacts and bytecode are not.
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+dist/
+build/
+*.egg-info/
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/

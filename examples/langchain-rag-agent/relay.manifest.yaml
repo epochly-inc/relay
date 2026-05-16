@@ -1,0 +1,121 @@
+# Relay v0.1 OSS - Example Manifest
+# Example: langchain-rag-agent
+#
+# Per spec section F and CLAUDE.md keystone invariant #3 the manifest is the
+# source of truth for how this example runs. Workers and the smoke harness
+# invoke the example through the manifest-declared commands (VAL-W16-018);
+# direct "python main.py" invocations are forbidden.
+#
+# This example exercises a retrieval-augmented generation (RAG) loop using
+# manual instrumentation (W3 Python SDK primitives + W3.5 Anthropic adapter)
+# because the full LangChain adapter is P1-deferred in v0.1 (see the
+# "Adapter status" section of README.md per VAL-W16-007). The example
+# backs onto Anthropic Claude per VAL-W16-024.
+
+schema: relay.example_manifest.v1
+adapter: langchain
+name: langchain-rag-agent
+description: |
+  End-to-end Relay example exercising a retrieval-augmented generation
+  (RAG) loop. Retrieves documents from a deterministic in-memory corpus,
+  emits a retrieval span carrying spec section B.1 retrieval-diagnostics
+  fields, and dispatches a Claude completion grounded on the retrieved
+  context. Uses manual SDK instrumentation; the full LangChain adapter
+  is P1-deferred.
+
+languages:
+  - python
+
+redaction_policy_version: "v1"
+
+# -----------------------------------------------------------------------------
+# Runnable commands - dispatched via rly run / uv run rly (VAL-W16-018)
+# -----------------------------------------------------------------------------
+commands:
+
+  run-python-live:
+    description: |
+      Run the Python example against the real Anthropic API. Requires
+      ANTHROPIC_API_KEY in the environment (declared in requires_env).
+      Produces a canonical run_results row in the local sidecar.
+    cmd: "uv run rly run --manifest examples/langchain-rag-agent/relay.manifest.yaml --language python --mode live"
+    cwd: "."
+    timeout_ms: 300000
+    side_effect_class: "mutating"
+    requires_env:
+      ANTHROPIC_API_KEY: "Anthropic API key for tier-2 smoke. Set in CI from secrets; locally from .env."
+
+  run-python-cassette:
+    description: |
+      Replay the Python example from the recorded cassette under
+      python/cassettes/. Deterministic, offline, no network egress
+      (VAL-W16-008).
+    cmd: "uv run rly replay run --manifest examples/langchain-rag-agent/relay.manifest.yaml --language python --cassette python/cassettes/langchain-rag-agent.jsonl"
+    cwd: "."
+    timeout_ms: 120000
+    side_effect_class: "read_only"
+    requires_env: {}
+
+# -----------------------------------------------------------------------------
+# Tools the example registers
+# Every tool declares side_effect_class per VAL-W16-005. The RAG example
+# registers the retriever as a read-only tool.
+# -----------------------------------------------------------------------------
+tools:
+
+  - name: retrieve_top_k
+    description: |
+      Read-only deterministic BM25-flavoured retriever over a static
+      in-memory corpus. Returns top-k documents with document IDs,
+      scores, ranks, and duplicate signatures populated per spec
+      section B.1 retrieval-diagnostics. Read-only side_effect_class:
+      safe to replay from cassette without an audited policy override.
+    side_effect_class: read_only
+    input_schema:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          description: "Natural-language retrieval query."
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+
+# -----------------------------------------------------------------------------
+# Test entries (VAL-W16-019 annotation distribution)
+# -----------------------------------------------------------------------------
+tests:
+
+  live_smoke:
+    tier: smoke
+    glob: "tests/examples/test_w16_2_lifecycle_e2e.py"
+    annotations:
+      - "@requires-anthropic"
+    description: |
+      Tier-2 smoke covering VAL-W16-006 / VAL-W16-024. Requires
+      ANTHROPIC_API_KEY; gated by @requires-anthropic on forks where
+      the secret is absent, falling back to cassette_replay.
+
+  cassette_replay:
+    tier: plumbing
+    glob: "tests/examples/test_w16_2_cassettes.py"
+    annotations: []
+    description: |
+      Tier-1 plumbing covering VAL-W16-008 / VAL-W16-020. Offline; no
+      provider key required; runs on forks.
+
+# -----------------------------------------------------------------------------
+# Cassette locations (per-language glob). Python-only example.
+# -----------------------------------------------------------------------------
+cassettes:
+  python: "python/cassettes/*.jsonl"
+
+# -----------------------------------------------------------------------------
+# Ports - the example does not bind any network ports (it makes outbound
+# HTTPS calls only in live mode). Empty ports array exercises the schema's
+# optional ports field explicitly.
+# -----------------------------------------------------------------------------
+ports: []
