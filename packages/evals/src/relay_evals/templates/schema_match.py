@@ -71,6 +71,20 @@ KNOWN_SCHEMA_IDS: Final[frozenset[str]] = frozenset({
     "relay.event_log_entry.v1",
     "relay.redaction.v1",
     "relay.error.v1",
+    # v0.2 OSS completeness, M01 w1-1 (added 2026-05-16): 12 canonical
+    # envelopes backing packages/schemas/sql/0004_v2_canonical_tables.sql.
+    "relay.gate_policy.v1",
+    "relay.contract_result.v1",
+    "relay.assertion_definition.v1",
+    "relay.replay_result.v1",
+    "relay.manifest_parent.v1",
+    "relay.incident.v1",
+    "relay.root_cause_hypothesis.v1",
+    "relay.span.v1",
+    "relay.model_call_span.v1",
+    "relay.tool_call_span.v1",
+    "relay.retrieval_span.v1",
+    "relay.embedding_span.v1",
 })
 
 _REQUIRED_INPUT_FIELDS: Final[frozenset[str]] = frozenset({

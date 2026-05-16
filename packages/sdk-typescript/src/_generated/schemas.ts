@@ -488,6 +488,317 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** @description Per-gate policy version. Spec A.5 lines 3063-3076 (VAL-V2M01-001). */
+        GatePolicy: {
+            /** @constant */
+            schema_version: "relay.gate_policy.v1";
+            /** Format: uuid */
+            gate_policy_id: string;
+            /** Format: uuid */
+            gate_id: string;
+            policy_version: string;
+            conditions: {
+                [key: string]: unknown;
+            };
+            baseline_selector?: {
+                [key: string]: unknown;
+            } | null;
+            flaky_quarantine_policy?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * @default p0_only
+             * @enum {string}
+             */
+            blocking_severity: "p0_only" | "p0_p1" | "any_failure";
+            /** Format: date-time */
+            effective_at: string;
+            effective_until?: string | null;
+        };
+        /**
+         * @description Per-run contract evaluation result. Spec A.6 lines 3082-3102
+         *     (VAL-V2M01-002).
+         */
+        ContractResult: {
+            /** @constant */
+            schema_version: "relay.contract_result.v1";
+            /** Format: uuid */
+            contract_result_id: string;
+            /** Format: uuid */
+            run_id: string;
+            /** Format: uuid */
+            contract_id: string;
+            contract_version: string;
+            assertion_id?: string | null;
+            span_id?: string | null;
+            /** @enum {string} */
+            outcome: "pass" | "fail" | "repaired" | "skipped" | "error";
+            severity?: ("p0" | "p1" | "p2" | "info") | null;
+            raw_signature_hash?: string | null;
+            /** @default 0 */
+            repair_attempt: number;
+            evaluation_engine_version: string;
+            /** Format: date-time */
+            evaluated_at: string;
+            /** @default {} */
+            metadata: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * @description Atomic assertion definition. Spec A.7 lines 3108-3125
+         *     (VAL-V2M01-003).
+         */
+        AssertionDefinition: {
+            /** @constant */
+            schema_version: "relay.assertion_definition.v1";
+            assertion_id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** @enum {string} */
+            kind: "schema_contract" | "behavioral" | "tool_arg" | "eval" | "coverage";
+            /** @enum {string} */
+            severity: "p0" | "p1" | "p2" | "info";
+            title: string;
+            description?: string | null;
+            owner_email: string;
+            expression: {
+                [key: string]: unknown;
+            };
+            /** @default {} */
+            applies_to: {
+                [key: string]: unknown;
+            };
+            /**
+             * @default draft
+             * @enum {string}
+             */
+            lifecycle_state: "draft" | "active" | "deprecated" | "retired";
+            /** @default 1 */
+            current_version: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description Per-replay outcome row. Spec A.8 lines 3172-3187 (VAL-V2M01-004). */
+        ReplayResult: {
+            /** @constant */
+            schema_version: "relay.replay_result.v1";
+            /** Format: uuid */
+            replay_result_id: string;
+            /** Format: uuid */
+            replay_case_id: string;
+            /** Format: uuid */
+            replay_run_id: string;
+            /** @enum {string} */
+            outcome: "reproduced" | "diverged" | "blocked" | "sandbox_error";
+            failure_signature_match?: boolean | null;
+            /** @default 0 */
+            fixture_hits: number;
+            /** @default 0 */
+            fixture_misses: number;
+            sandbox_driver: string;
+            sandbox_id?: string | null;
+            /** @default 0 */
+            network_egress_denied: number;
+            /** @default 0 */
+            side_effect_attempts: number;
+            /** @default 0 */
+            side_effect_approved: number;
+            evidence_bundle_id?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /**
+         * @description Manifest parent identity row. Spec A.9 lines 3193-3199 (VAL-V2M01-005).
+         *     Uses schema_version literal `relay.manifest_parent.v1` to avoid
+         *     colliding with the existing ManifestVersion `relay.manifest.v1`.
+         */
+        Manifest: {
+            /** @constant */
+            schema_version: "relay.manifest_parent.v1";
+            /** Format: uuid */
+            manifest_id: string;
+            /** Format: uuid */
+            project_id: string;
+            name: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description Incident cluster row. Spec A.13 lines 3274-3290 (VAL-V2M01-007). */
+        Incident: {
+            /** @constant */
+            schema_version: "relay.incident.v1";
+            /** Format: uuid */
+            incident_id: string;
+            /** Format: uuid */
+            project_id: string;
+            cluster_signature_hash: string;
+            /** @enum {string} */
+            severity: "sev1" | "sev2" | "sev3" | "sev4";
+            /**
+             * @default open
+             * @enum {string}
+             */
+            state: "open" | "mitigated" | "closed" | "suppressed";
+            /** @default [] */
+            affected_run_ids: string[];
+            /** Format: date-time */
+            first_seen_at: string;
+            /** Format: date-time */
+            last_seen_at: string;
+            owner_email?: string | null;
+            postmortem_ref?: string | null;
+            /** @default false */
+            promoted_to_regression: boolean;
+            created_at?: string | null;
+        };
+        /**
+         * @description Explain root-cause hypothesis. Spec A.15 lines 3316-3328; sectionT
+         *     (VAL-V2M01-008).
+         */
+        RootCauseHypothesis: {
+            /** @constant */
+            schema_version: "relay.root_cause_hypothesis.v1";
+            /** Format: uuid */
+            hypothesis_id: string;
+            /** Format: uuid */
+            run_id: string;
+            span_id?: string | null;
+            hypothesis_class: string;
+            confidence: number;
+            /** @default [] */
+            evidence_refs: unknown[];
+            generator: string;
+            reviewer_email?: string | null;
+            reviewer_decision?: ("accept" | "reject" | "modify" | "pending") | null;
+            promoted_to_replay_case_id?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /**
+         * @description Parent span row. Spec Z lines 1825-1836 (VAL-V2M01-009). span_type
+         *     is the polymorphic discriminator that drives the typed-detail
+         *     invariant: span_type in {model_call, tool_call, retrieval,
+         *     embedding} MUST have a matching typed-detail row in the same
+         *     INSERT transaction. span_type='custom' requires no typed-detail
+         *     row. Canonical missing-detail error code:
+         *     RELAY-INGEST-SPAN-DETAIL-MISSING.
+         */
+        Span: {
+            /** @constant */
+            schema_version: "relay.span.v1";
+            /** Format: uuid */
+            span_id: string;
+            run_id?: string | null;
+            parent_span_id?: string | null;
+            /** @enum {string} */
+            span_type: "model_call" | "tool_call" | "retrieval" | "embedding" | "custom";
+            name: string;
+            status: string;
+            /** Format: date-time */
+            started_at: string;
+            ended_at?: string | null;
+            error_class?: string | null;
+            /** @default {} */
+            metadata: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * @description Typed-detail row for span_type='model_call'. Spec Z lines 5226-5249
+         *     (VAL-V2M01-010).
+         */
+        ModelCallSpan: {
+            /** @constant */
+            schema_version: "relay.model_call_span.v1";
+            /** Format: uuid */
+            span_id: string;
+            provider: string;
+            model: string;
+            model_signature?: string | null;
+            request_message_count?: number | null;
+            request_token_count?: number | null;
+            response_token_count?: number | null;
+            cached_token_count?: number | null;
+            reasoning_token_count?: number | null;
+            cost_usd?: number | null;
+            latency_ms?: number | null;
+            finish_reason?: string | null;
+            structured_output_mode?: string | null;
+            schema_contract_id?: string | null;
+            tool_choice_mode?: string | null;
+            /** @default false */
+            streaming: boolean;
+            input_redaction_policy_version: string;
+            input_digest?: string | null;
+            output_digest?: string | null;
+            http_status?: number | null;
+            provider_error_code?: string | null;
+            provider_error_class?: string | null;
+        };
+        /**
+         * @description Typed-detail row for span_type='tool_call'. Spec Z lines 5251-5264
+         *     (VAL-V2M01-011).
+         */
+        ToolCallSpan: {
+            /** @constant */
+            schema_version: "relay.tool_call_span.v1";
+            /** Format: uuid */
+            span_id: string;
+            tool_name: string;
+            side_effect_class: string;
+            args_digest?: string | null;
+            args_redaction_policy_version: string;
+            args_schema_contract_id?: string | null;
+            args_validation_outcome?: ("pass" | "fail" | "repaired" | "skipped" | "error") | null;
+            result_digest?: string | null;
+            status: string;
+            latency_ms?: number | null;
+            marker_id?: string | null;
+            parallel_index?: number | null;
+        };
+        /**
+         * @description Typed-detail row for span_type='retrieval'. Spec Z lines 5266-5279
+         *     (VAL-V2M01-012).
+         */
+        RetrievalSpan: {
+            /** @constant */
+            schema_version: "relay.retrieval_span.v1";
+            /** Format: uuid */
+            span_id: string;
+            retriever_name: string;
+            query_digest?: string | null;
+            query_redaction_policy_version: string;
+            document_count?: number | null;
+            duplicate_document_count?: number | null;
+            /** @default false */
+            empty_retrieval: boolean;
+            relevance_proxy_score?: number | null;
+            citation_coverage?: number | null;
+            context_token_count?: number | null;
+            context_waste_tokens?: number | null;
+            latency_ms?: number | null;
+        };
+        /**
+         * @description Typed-detail row for span_type='embedding'. Spec Z lines 5281-5290
+         *     (VAL-V2M01-013).
+         */
+        EmbeddingSpan: {
+            /** @constant */
+            schema_version: "relay.embedding_span.v1";
+            /** Format: uuid */
+            span_id: string;
+            provider: string;
+            model: string;
+            input_token_count?: number | null;
+            embedding_dim?: number | null;
+            /** @default false */
+            cached: boolean;
+            cost_usd?: number | null;
+            latency_ms?: number | null;
+        };
     };
     responses: never;
     parameters: never;

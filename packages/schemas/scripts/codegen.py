@@ -70,6 +70,23 @@ CANONICAL_ENVELOPES: tuple[str, ...] = (
     "ReplayFixture",
     "RedactionPolicy",
     "ErrorEnvelope",
+    # v0.2 OSS completeness, M01 w1-1 (added 2026-05-16): 12 new canonical
+    # envelopes for the 13 SQL tables in
+    # packages/schemas/sql/0004_v2_canonical_tables.sql. The
+    # redaction_policies SQL table is wire-mirrored by the existing
+    # RedactionPolicy envelope above; no new envelope is added for it.
+    "GatePolicy",
+    "ContractResult",
+    "AssertionDefinition",
+    "ReplayResult",
+    "Manifest",
+    "Incident",
+    "RootCauseHypothesis",
+    "Span",
+    "ModelCallSpan",
+    "ToolCallSpan",
+    "RetrievalSpan",
+    "EmbeddingSpan",
 )
 
 # Additional generated symbols that the SDK re-export module surfaces. These

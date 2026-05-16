@@ -1163,8 +1163,337 @@ class ErrorEnvelope(_RelayEnvelope):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+# =============================================================================
+# v0.2 OSS completeness, M01 w1-1: canonical envelopes added 2026-05-16
+# =============================================================================
+#
+# These 12 envelopes back the 13 new SQL tables in
+# packages/schemas/sql/0004_v2_canonical_tables.sql (the redaction_policies
+# table is mirrored at the wire-format layer by the existing RedactionPolicy
+# envelope from W1.4, so it does NOT introduce a new class). Every envelope
+# pins schema_version via Literal[...] per CLAUDE.md keystone invariant #10.
+#
+# Spec anchors:
+#   GatePolicy            spec A.5  lines 3063-3076
+#   ContractResult        spec A.6  lines 3082-3102
+#   AssertionDefinition   spec A.7  lines 3108-3125
+#   ReplayResult          spec A.8  lines 3172-3187
+#   Manifest              spec A.9  lines 3193-3199 (parent of ManifestVersion)
+#   Incident              spec A.13 lines 3274-3290
+#   RootCauseHypothesis   spec A.15 lines 3316-3328
+#   Span                  spec Z    lines 1825-1836 (parent table)
+#   ModelCallSpan         spec Z    lines 5226-5249
+#   ToolCallSpan          spec Z    lines 5251-5264
+#   RetrievalSpan         spec Z    lines 5266-5279
+#   EmbeddingSpan         spec Z    lines 5281-5290
+#
+# The Manifest envelope's schema_version literal is "relay.manifest_parent.v1"
+# to avoid colliding with the existing ManifestVersion literal
+# "relay.manifest.v1". ManifestVersion remains the canonical Manifest commit
+# envelope; Manifest is the parent identity row.
+
+
+class GatePolicy(_RelayEnvelope):
+    """Per-gate policy version (spec A.5; VAL-V2M01-001).
+
+    Conditions are GatePolicy v1 (spec sectionD.3). blocking_severity is the
+    closed three-member enum locked at SQL + wire layers per the v2 audit.
+    """
+
+    schema_version: Literal["relay.gate_policy.v1"]
+    gate_policy_id: UUID
+    gate_id: UUID
+    policy_version: str
+    conditions: dict[str, Any]
+    baseline_selector: dict[str, Any] | None = None
+    flaky_quarantine_policy: dict[str, Any] | None = None
+    blocking_severity: Literal["p0_only", "p0_p1", "any_failure"] = "p0_only"
+    effective_at: datetime
+    effective_until: datetime | None = None
+
+
+class ContractResult(_RelayEnvelope):
+    """Per-run contract evaluation result (spec A.6; VAL-V2M01-002).
+
+    outcome is the closed five-member set; severity is the standard p0-info
+    ladder. metadata is a free-form jsonb bag for the evaluator's
+    diagnostic detail.
+    """
+
+    schema_version: Literal["relay.contract_result.v1"]
+    contract_result_id: UUID
+    run_id: UUID
+    contract_id: UUID
+    contract_version: str
+    assertion_id: str | None = None
+    span_id: UUID | None = None
+    outcome: Literal["pass", "fail", "repaired", "skipped", "error"]
+    severity: Literal["p0", "p1", "p2", "info"] | None = None
+    raw_signature_hash: str | None = None
+    repair_attempt: int = 0
+    evaluation_engine_version: str
+    evaluated_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssertionDefinition(_RelayEnvelope):
+    """Atomic assertion definition (spec A.7; VAL-V2M01-003).
+
+    Primary identifier is the human-meaningful assertion_id (a text PK on
+    the SQL side, e.g. ``"VAL-STRUCTURED-001"``). kind, severity, and
+    lifecycle_state are closed enums.
+    """
+
+    schema_version: Literal["relay.assertion_definition.v1"]
+    assertion_id: str
+    project_id: UUID
+    kind: Literal[
+        "schema_contract",
+        "behavioral",
+        "tool_arg",
+        "eval",
+        "coverage",
+    ]
+    severity: Literal["p0", "p1", "p2", "info"]
+    title: str
+    description: str | None = None
+    owner_email: str
+    expression: dict[str, Any]
+    applies_to: dict[str, Any] = Field(default_factory=dict)
+    lifecycle_state: Literal[
+        "draft",
+        "active",
+        "deprecated",
+        "retired",
+    ] = "draft"
+    current_version: int = 1
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReplayResult(_RelayEnvelope):
+    """Per-replay outcome row (spec A.8; VAL-V2M01-004).
+
+    outcome is the closed four-member set
+    {reproduced, diverged, blocked, sandbox_error}. sandbox_driver is a
+    text identifier (e.g. ``"local-docker"``, ``"e2b"``,
+    ``"local-firecracker"``, ``"modal"``).
+    """
+
+    schema_version: Literal["relay.replay_result.v1"]
+    replay_result_id: UUID
+    replay_case_id: UUID
+    replay_run_id: UUID
+    outcome: Literal["reproduced", "diverged", "blocked", "sandbox_error"]
+    failure_signature_match: bool | None = None
+    fixture_hits: int = 0
+    fixture_misses: int = 0
+    sandbox_driver: str
+    sandbox_id: str | None = None
+    network_egress_denied: int = 0
+    side_effect_attempts: int = 0
+    side_effect_approved: int = 0
+    evidence_bundle_id: UUID | None = None
+    created_at: datetime
+
+
+class Manifest(_RelayEnvelope):
+    """Manifest parent identity row (spec A.9; VAL-V2M01-005).
+
+    Parent of ManifestVersion. The pair forms the spec A.9 manifest-version
+    chain: a Manifest carries the identity (project_id, name); a
+    ManifestVersion carries each commit_hash + body. ``schema_version``
+    uses the ``relay.manifest_parent.v1`` literal so the parent envelope
+    does not collide with the ManifestVersion ``relay.manifest.v1`` literal.
+    """
+
+    schema_version: Literal["relay.manifest_parent.v1"]
+    manifest_id: UUID
+    project_id: UUID
+    name: str
+    created_at: datetime
+
+
+class Incident(_RelayEnvelope):
+    """Incident cluster row (spec A.13; VAL-V2M01-007).
+
+    Severity follows the standard sev1-sev4 ladder. State is the closed
+    four-member workflow {open, mitigated, closed, suppressed}.
+    cluster_signature_hash groups recurring failures into one incident
+    record. ``affected_run_ids`` accepts a list of UUIDs (Postgres uuid[];
+    SQLite stores as JSON-encoded text).
+    """
+
+    schema_version: Literal["relay.incident.v1"]
+    incident_id: UUID
+    project_id: UUID
+    cluster_signature_hash: str
+    severity: Literal["sev1", "sev2", "sev3", "sev4"]
+    state: Literal["open", "mitigated", "closed", "suppressed"] = "open"
+    affected_run_ids: list[UUID] = Field(default_factory=list)
+    first_seen_at: datetime
+    last_seen_at: datetime
+    owner_email: str | None = None
+    postmortem_ref: str | None = None
+    promoted_to_regression: bool = False
+    created_at: datetime | None = None
+
+
+class RootCauseHypothesis(_RelayEnvelope):
+    """Explain root-cause hypothesis (spec A.15, sectionT; VAL-V2M01-008).
+
+    confidence is a float in [0, 1] inclusive (CHECK constraint mirrored
+    here). generator follows the spec T taxonomy: ``heuristic.<v>``,
+    ``llm.<model>:vN``, or ``user``. reviewer_decision is the closed
+    four-member set.
+    """
+
+    schema_version: Literal["relay.root_cause_hypothesis.v1"]
+    hypothesis_id: UUID
+    run_id: UUID
+    span_id: UUID | None = None
+    hypothesis_class: str
+    confidence: Annotated[float, Field(ge=0.0, le=1.0)]
+    evidence_refs: list[Any] = Field(default_factory=list)
+    generator: str
+    reviewer_email: str | None = None
+    reviewer_decision: (
+        Literal["accept", "reject", "modify", "pending"] | None
+    ) = None
+    promoted_to_replay_case_id: UUID | None = None
+    created_at: datetime
+
+
+class Span(_RelayEnvelope):
+    """Parent span row (spec Z; VAL-V2M01-009).
+
+    span_type is the polymorphic discriminator that drives the typed-detail
+    invariant. A Span with span_type in
+    ``{model_call, tool_call, retrieval, embedding}`` MUST be accompanied
+    by a matching typed-detail row (ModelCallSpan / ToolCallSpan /
+    RetrievalSpan / EmbeddingSpan) in the same INSERT transaction. A Span
+    with span_type=='custom' requires no typed-detail row. The ingest
+    worker enforces this atomically; the canonical missing-detail error
+    code is ``RELAY-INGEST-SPAN-DETAIL-MISSING``.
+    """
+
+    schema_version: Literal["relay.span.v1"]
+    span_id: UUID
+    run_id: UUID | None = None
+    parent_span_id: UUID | None = None
+    span_type: Literal[
+        "model_call",
+        "tool_call",
+        "retrieval",
+        "embedding",
+        "custom",
+    ]
+    name: str
+    status: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    error_class: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelCallSpan(_RelayEnvelope):
+    """Typed-detail row for span_type='model_call' (spec Z lines 5226-5249;
+    VAL-V2M01-010).
+    """
+
+    schema_version: Literal["relay.model_call_span.v1"]
+    span_id: UUID
+    provider: str
+    model: str
+    model_signature: str | None = None
+    request_message_count: int | None = None
+    request_token_count: int | None = None
+    response_token_count: int | None = None
+    cached_token_count: int | None = None
+    reasoning_token_count: int | None = None
+    cost_usd: float | None = None
+    latency_ms: int | None = None
+    finish_reason: str | None = None
+    structured_output_mode: str | None = None
+    schema_contract_id: str | None = None
+    tool_choice_mode: str | None = None
+    streaming: bool = False
+    input_redaction_policy_version: str
+    input_digest: str | None = None
+    output_digest: str | None = None
+    http_status: int | None = None
+    provider_error_code: str | None = None
+    provider_error_class: str | None = None
+
+
+class ToolCallSpan(_RelayEnvelope):
+    """Typed-detail row for span_type='tool_call' (spec Z lines 5251-5264;
+    VAL-V2M01-011).
+
+    side_effect_class is the canonical four-class label (spec E.3); the
+    closed enum lock-in happens in the SideEffectMarker / SideEffectProof
+    envelopes that land with M04. args_validation_outcome is the closed
+    five-member contract result enum.
+    """
+
+    schema_version: Literal["relay.tool_call_span.v1"]
+    span_id: UUID
+    tool_name: str
+    side_effect_class: str
+    args_digest: str | None = None
+    args_redaction_policy_version: str
+    args_schema_contract_id: str | None = None
+    args_validation_outcome: (
+        Literal["pass", "fail", "repaired", "skipped", "error"] | None
+    ) = None
+    result_digest: str | None = None
+    status: str
+    latency_ms: int | None = None
+    marker_id: UUID | None = None
+    parallel_index: int | None = None
+
+
+class RetrievalSpan(_RelayEnvelope):
+    """Typed-detail row for span_type='retrieval' (spec Z lines 5266-5279;
+    VAL-V2M01-012).
+    """
+
+    schema_version: Literal["relay.retrieval_span.v1"]
+    span_id: UUID
+    retriever_name: str
+    query_digest: str | None = None
+    query_redaction_policy_version: str
+    document_count: int | None = None
+    duplicate_document_count: int | None = None
+    empty_retrieval: bool = False
+    relevance_proxy_score: float | None = None
+    citation_coverage: float | None = None
+    context_token_count: int | None = None
+    context_waste_tokens: int | None = None
+    latency_ms: int | None = None
+
+
+class EmbeddingSpan(_RelayEnvelope):
+    """Typed-detail row for span_type='embedding' (spec Z lines 5281-5290;
+    VAL-V2M01-013).
+    """
+
+    schema_version: Literal["relay.embedding_span.v1"]
+    span_id: UUID
+    provider: str
+    model: str
+    input_token_count: int | None = None
+    embedding_dim: int | None = None
+    cached: bool = False
+    cost_usd: float | None = None
+    latency_ms: int | None = None
+
+
 __all__ = [
     "Actor",
+    "AssertionDefinition",
+    "ContractResult",
+    "EmbeddingSpan",
     "ErrorEnvelope",
     "EventLogEntry",
     "EvidenceBundle",
@@ -1172,11 +1501,15 @@ __all__ = [
     "EvidenceClaim",
     "GateDecision",
     "GateDecisionDraft",
+    "GatePolicy",
     "GateRound",
     "GateRoundScopeState",
     "HttpStatus4xx5xx",
     "IdempotencyRecord",
+    "Incident",
+    "Manifest",
     "ManifestVersion",
+    "ModelCallSpan",
     "NonEmptyStr",
     "RedactionPolicy",
     "RedactionPolicyMatcherJsonPointer",
@@ -1187,11 +1520,16 @@ __all__ = [
     "ReplayCase",
     "ReplayCaseScopeState",
     "ReplayFixture",
+    "ReplayResult",
+    "RetrievalSpan",
+    "RootCauseHypothesis",
     "RunResult",
     "RunScopeState",
     "ScopeState",
     "Sha256Hash",
     "SHA256_HASH_PATTERN",
+    "Span",
+    "ToolCallSpan",
     "ULID_PATTERN",
     "Ulid",
     "canonical_bytes",

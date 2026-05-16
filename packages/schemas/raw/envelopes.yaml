@@ -684,6 +684,370 @@ schemas:
       message:               { type: string, required: false, nullable: true }
       details:               { type: any_object, required: false, default: {} }
 
+  # ---------------------------------------------------------------------------
+  # v0.2 OSS completeness, M01 w1-1 (added 2026-05-16): canonical envelopes for
+  # the 13 SQL tables in packages/schemas/sql/0004_v2_canonical_tables.sql.
+  # ---------------------------------------------------------------------------
+  #
+  # Spec anchors:
+  #   GatePolicy            spec A.5  lines 3063-3076  (VAL-V2M01-001)
+  #   ContractResult        spec A.6  lines 3082-3102  (VAL-V2M01-002)
+  #   AssertionDefinition   spec A.7  lines 3108-3125  (VAL-V2M01-003)
+  #   ReplayResult          spec A.8  lines 3172-3187  (VAL-V2M01-004)
+  #   Manifest              spec A.9  lines 3193-3199  (VAL-V2M01-005; parent of ManifestVersion)
+  #   Incident              spec A.13 lines 3274-3290  (VAL-V2M01-007)
+  #   RootCauseHypothesis   spec A.15 lines 3316-3328  (VAL-V2M01-008)
+  #   Span                  spec Z    lines 1825-1836  (VAL-V2M01-009; parent table)
+  #   ModelCallSpan         spec Z    lines 5226-5249  (VAL-V2M01-010)
+  #   ToolCallSpan          spec Z    lines 5251-5264  (VAL-V2M01-011)
+  #   RetrievalSpan         spec Z    lines 5266-5279  (VAL-V2M01-012)
+  #   EmbeddingSpan         spec Z    lines 5281-5290  (VAL-V2M01-013)
+  #
+  # Note on Manifest schema_version: the parent envelope uses
+  # ``relay.manifest_parent.v1`` so it does not collide with ManifestVersion's
+  # existing ``relay.manifest.v1`` literal.
+
+  GatePolicy:
+    schema_version: relay.gate_policy.v1
+    spec: A.5
+    description: |
+      Per-gate policy version (spec A.5 lines 3063-3076). blocking_severity
+      is a closed three-member enum {p0_only, p0_p1, any_failure}. Mirrors
+      the SQL DDL at packages/schemas/sql/0004_v2_canonical_tables.sql.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.gate_policy.v1
+        required: true
+      gate_policy_id:           { type: uuid, required: true }
+      gate_id:                  { type: uuid, required: true }
+      policy_version:           { type: string, required: true }
+      conditions:               { type: any_object, required: true }
+      baseline_selector:        { type: any_object, required: false, nullable: true }
+      flaky_quarantine_policy:  { type: any_object, required: false, nullable: true }
+      blocking_severity:
+        type: enum
+        values: [p0_only, p0_p1, any_failure]
+        required: false
+        default: p0_only
+      effective_at:             { type: timestamptz, required: true }
+      effective_until:          { type: timestamptz, required: false, nullable: true }
+
+  ContractResult:
+    schema_version: relay.contract_result.v1
+    spec: A.6
+    description: |
+      Per-run contract evaluation result (spec A.6 lines 3082-3102). outcome
+      is a closed five-member enum; severity is the standard p0..info
+      ladder. metadata is a free-form jsonb bag.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.contract_result.v1
+        required: true
+      contract_result_id:       { type: uuid, required: true }
+      run_id:                   { type: uuid, required: true }
+      contract_id:              { type: uuid, required: true }
+      contract_version:         { type: string, required: true }
+      assertion_id:             { type: string, required: false, nullable: true }
+      span_id:                  { type: uuid, required: false, nullable: true }
+      outcome:
+        type: enum
+        values: [pass, fail, repaired, skipped, error]
+        required: true
+      severity:
+        type: enum
+        values: [p0, p1, p2, info]
+        required: false
+        nullable: true
+      raw_signature_hash:       { type: string, required: false, nullable: true }
+      repair_attempt:           { type: int_ge_zero, required: false, default: 0 }
+      evaluation_engine_version: { type: string, required: true }
+      evaluated_at:             { type: timestamptz, required: true }
+      metadata:                 { type: any_object, required: false, default: {} }
+
+  AssertionDefinition:
+    schema_version: relay.assertion_definition.v1
+    spec: A.7
+    description: |
+      Atomic assertion definition (spec A.7 lines 3108-3125). assertion_id
+      is the canonical human-meaningful identifier (text PK on the SQL
+      side). kind, severity, and lifecycle_state are closed enums.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.assertion_definition.v1
+        required: true
+      assertion_id:             { type: string, required: true }
+      project_id:               { type: uuid, required: true }
+      kind:
+        type: enum
+        values: [schema_contract, behavioral, tool_arg, eval, coverage]
+        required: true
+      severity:
+        type: enum
+        values: [p0, p1, p2, info]
+        required: true
+      title:                    { type: string, required: true }
+      description:              { type: string, required: false, nullable: true }
+      owner_email:              { type: string, required: true }
+      expression:               { type: any_object, required: true }
+      applies_to:               { type: any_object, required: false, default: {} }
+      lifecycle_state:
+        type: enum
+        values: [draft, active, deprecated, retired]
+        required: false
+        default: draft
+      current_version:          { type: int_ge_one, required: false, default: 1 }
+      created_at:               { type: timestamptz, required: true }
+      updated_at:               { type: timestamptz, required: true }
+
+  ReplayResult:
+    schema_version: relay.replay_result.v1
+    spec: A.8
+    description: |
+      Per-replay outcome row (spec A.8 lines 3172-3187). outcome is a
+      closed four-member enum {reproduced, diverged, blocked,
+      sandbox_error}. sandbox_driver is a text identifier
+      (local-docker / e2b / local-firecracker / modal).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.replay_result.v1
+        required: true
+      replay_result_id:         { type: uuid, required: true }
+      replay_case_id:           { type: uuid, required: true }
+      replay_run_id:            { type: uuid, required: true }
+      outcome:
+        type: enum
+        values: [reproduced, diverged, blocked, sandbox_error]
+        required: true
+      failure_signature_match:  { type: bool, required: false, nullable: true }
+      fixture_hits:             { type: int_ge_zero, required: false, default: 0 }
+      fixture_misses:           { type: int_ge_zero, required: false, default: 0 }
+      sandbox_driver:           { type: string, required: true }
+      sandbox_id:               { type: string, required: false, nullable: true }
+      network_egress_denied:    { type: int_ge_zero, required: false, default: 0 }
+      side_effect_attempts:     { type: int_ge_zero, required: false, default: 0 }
+      side_effect_approved:     { type: int_ge_zero, required: false, default: 0 }
+      evidence_bundle_id:       { type: uuid, required: false, nullable: true }
+      created_at:               { type: timestamptz, required: true }
+
+  Manifest:
+    schema_version: relay.manifest_parent.v1
+    spec: A.9
+    description: |
+      Manifest parent identity row (spec A.9 lines 3193-3199). Parent of
+      ManifestVersion. schema_version uses ``relay.manifest_parent.v1`` to
+      avoid colliding with ManifestVersion's ``relay.manifest.v1`` literal.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.manifest_parent.v1
+        required: true
+      manifest_id:              { type: uuid, required: true }
+      project_id:               { type: uuid, required: true }
+      name:                     { type: string, required: true }
+      created_at:               { type: timestamptz, required: true }
+
+  Incident:
+    schema_version: relay.incident.v1
+    spec: A.13
+    description: |
+      Incident cluster row (spec A.13 lines 3274-3290). severity is the
+      standard sev1..sev4 ladder; state is the closed four-member workflow
+      {open, mitigated, closed, suppressed}. affected_run_ids is a list of
+      UUIDs (Postgres uuid[]; SQLite stores as JSON-encoded text).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.incident.v1
+        required: true
+      incident_id:              { type: uuid, required: true }
+      project_id:               { type: uuid, required: true }
+      cluster_signature_hash:   { type: string, required: true }
+      severity:
+        type: enum
+        values: [sev1, sev2, sev3, sev4]
+        required: true
+      state:
+        type: enum
+        values: [open, mitigated, closed, suppressed]
+        required: false
+        default: open
+      affected_run_ids:         { type: list_uuid, required: false, default: [] }
+      first_seen_at:            { type: timestamptz, required: true }
+      last_seen_at:             { type: timestamptz, required: true }
+      owner_email:              { type: string, required: false, nullable: true }
+      postmortem_ref:           { type: string, required: false, nullable: true }
+      promoted_to_regression:   { type: bool, required: false, default: false }
+      created_at:               { type: timestamptz, required: false, nullable: true }
+
+  RootCauseHypothesis:
+    schema_version: relay.root_cause_hypothesis.v1
+    spec: A.15
+    description: |
+      Explain root-cause hypothesis (spec A.15 lines 3316-3328; sectionT).
+      confidence is a float in [0, 1] inclusive (CHECK enforced at SQL +
+      wire layers). generator follows the spec T taxonomy
+      (heuristic.<v> / llm.<model>:vN / user).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.root_cause_hypothesis.v1
+        required: true
+      hypothesis_id:            { type: uuid, required: true }
+      run_id:                   { type: uuid, required: true }
+      span_id:                  { type: uuid, required: false, nullable: true }
+      hypothesis_class:         { type: string, required: true }
+      confidence:               { type: number_unit_interval, required: true }
+      evidence_refs:            { type: list_any, required: false, default: [] }
+      generator:                { type: string, required: true }
+      reviewer_email:           { type: string, required: false, nullable: true }
+      reviewer_decision:
+        type: enum
+        values: [accept, reject, modify, pending]
+        required: false
+        nullable: true
+      promoted_to_replay_case_id: { type: uuid, required: false, nullable: true }
+      created_at:               { type: timestamptz, required: true }
+
+  Span:
+    schema_version: relay.span.v1
+    spec: Z
+    description: |
+      Parent span row (spec Z lines 1825-1836). span_type is the
+      polymorphic discriminator that drives the typed-detail invariant
+      (spec Z line 5293). A Span with span_type in
+      {model_call, tool_call, retrieval, embedding} MUST be accompanied
+      by a matching typed-detail row in the same INSERT transaction.
+      span_type='custom' requires no typed-detail row. Canonical
+      missing-detail error code: RELAY-INGEST-SPAN-DETAIL-MISSING.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.span.v1
+        required: true
+      span_id:                  { type: uuid, required: true }
+      run_id:                   { type: uuid, required: false, nullable: true }
+      parent_span_id:           { type: uuid, required: false, nullable: true }
+      span_type:
+        type: enum
+        values: [model_call, tool_call, retrieval, embedding, custom]
+        required: true
+      name:                     { type: string, required: true }
+      status:                   { type: string, required: true }
+      started_at:               { type: timestamptz, required: true }
+      ended_at:                 { type: timestamptz, required: false, nullable: true }
+      error_class:              { type: string, required: false, nullable: true }
+      metadata:                 { type: any_object, required: false, default: {} }
+
+  ModelCallSpan:
+    schema_version: relay.model_call_span.v1
+    spec: Z
+    description: |
+      Typed-detail row for span_type='model_call' (spec Z lines 5226-5249).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.model_call_span.v1
+        required: true
+      span_id:                          { type: uuid, required: true }
+      provider:                         { type: string, required: true }
+      model:                            { type: string, required: true }
+      model_signature:                  { type: string, required: false, nullable: true }
+      request_message_count:            { type: int_ge_zero, required: false, nullable: true }
+      request_token_count:              { type: int_ge_zero, required: false, nullable: true }
+      response_token_count:             { type: int_ge_zero, required: false, nullable: true }
+      cached_token_count:               { type: int_ge_zero, required: false, nullable: true }
+      reasoning_token_count:            { type: int_ge_zero, required: false, nullable: true }
+      cost_usd:                         { type: number, required: false, nullable: true }
+      latency_ms:                       { type: int_ge_zero, required: false, nullable: true }
+      finish_reason:                    { type: string, required: false, nullable: true }
+      structured_output_mode:           { type: string, required: false, nullable: true }
+      schema_contract_id:               { type: string, required: false, nullable: true }
+      tool_choice_mode:                 { type: string, required: false, nullable: true }
+      streaming:                        { type: bool, required: false, default: false }
+      input_redaction_policy_version:   { type: string, required: true }
+      input_digest:                     { type: string, required: false, nullable: true }
+      output_digest:                    { type: string, required: false, nullable: true }
+      http_status:                      { type: int_ge_zero, required: false, nullable: true }
+      provider_error_code:              { type: string, required: false, nullable: true }
+      provider_error_class:             { type: string, required: false, nullable: true }
+
+  ToolCallSpan:
+    schema_version: relay.tool_call_span.v1
+    spec: Z
+    description: |
+      Typed-detail row for span_type='tool_call' (spec Z lines 5251-5264).
+      side_effect_class is the canonical four-class label (spec E.3); the
+      closed enum lock-in lands with the SideEffectMarker / SideEffectProof
+      envelopes in M04. args_validation_outcome is the closed five-member
+      contract result enum.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.tool_call_span.v1
+        required: true
+      span_id:                          { type: uuid, required: true }
+      tool_name:                        { type: string, required: true }
+      side_effect_class:                { type: string, required: true }
+      args_digest:                      { type: string, required: false, nullable: true }
+      args_redaction_policy_version:    { type: string, required: true }
+      args_schema_contract_id:          { type: string, required: false, nullable: true }
+      args_validation_outcome:
+        type: enum
+        values: [pass, fail, repaired, skipped, error]
+        required: false
+        nullable: true
+      result_digest:                    { type: string, required: false, nullable: true }
+      status:                           { type: string, required: true }
+      latency_ms:                       { type: int_ge_zero, required: false, nullable: true }
+      marker_id:                        { type: uuid, required: false, nullable: true }
+      parallel_index:                   { type: int_ge_zero, required: false, nullable: true }
+
+  RetrievalSpan:
+    schema_version: relay.retrieval_span.v1
+    spec: Z
+    description: |
+      Typed-detail row for span_type='retrieval' (spec Z lines 5266-5279).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.retrieval_span.v1
+        required: true
+      span_id:                          { type: uuid, required: true }
+      retriever_name:                   { type: string, required: true }
+      query_digest:                     { type: string, required: false, nullable: true }
+      query_redaction_policy_version:   { type: string, required: true }
+      document_count:                   { type: int_ge_zero, required: false, nullable: true }
+      duplicate_document_count:         { type: int_ge_zero, required: false, nullable: true }
+      empty_retrieval:                  { type: bool, required: false, default: false }
+      relevance_proxy_score:            { type: number, required: false, nullable: true }
+      citation_coverage:                { type: number, required: false, nullable: true }
+      context_token_count:              { type: int_ge_zero, required: false, nullable: true }
+      context_waste_tokens:             { type: int_ge_zero, required: false, nullable: true }
+      latency_ms:                       { type: int_ge_zero, required: false, nullable: true }
+
+  EmbeddingSpan:
+    schema_version: relay.embedding_span.v1
+    spec: Z
+    description: |
+      Typed-detail row for span_type='embedding' (spec Z lines 5281-5290).
+    fields:
+      schema_version:
+        type: literal
+        value: relay.embedding_span.v1
+        required: true
+      span_id:                          { type: uuid, required: true }
+      provider:                         { type: string, required: true }
+      model:                            { type: string, required: true }
+      input_token_count:                { type: int_ge_zero, required: false, nullable: true }
+      embedding_dim:                    { type: int_ge_zero, required: false, nullable: true }
+      cached:                           { type: bool, required: false, default: false }
+      cost_usd:                         { type: number, required: false, nullable: true }
+      latency_ms:                       { type: int_ge_zero, required: false, nullable: true }
+
 # -----------------------------------------------------------------------------
 # Type definitions
 # -----------------------------------------------------------------------------
@@ -738,3 +1102,10 @@ types:
     python: 'bool'
     typescript: "boolean"
     constraint: "strict boolean; string forms 'true'/'false' rejected (VAL-W1-023 allowed_in_replay)"
+  number:
+    python: "float"
+    typescript: "number"
+  number_unit_interval:
+    python: 'Annotated[float, Field(ge=0.0, le=1.0)]'
+    typescript: "number"
+    constraint: "float in [0, 1] inclusive (VAL-V2M01-008 RootCauseHypothesis.confidence)"

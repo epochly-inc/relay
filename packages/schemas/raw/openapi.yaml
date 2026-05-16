@@ -1095,3 +1095,649 @@ components:
           type: object
           additionalProperties: true
           default: {}
+
+    # =========================================================================
+    # v0.2 OSS completeness, M01 w1-1 (added 2026-05-16): canonical envelopes
+    # for the 13 SQL tables in packages/schemas/sql/0004_v2_canonical_tables.sql.
+    # =========================================================================
+
+    GatePolicy:
+      type: object
+      additionalProperties: false
+      description: |
+        Per-gate policy version. Spec A.5 lines 3063-3076 (VAL-V2M01-001).
+      required:
+        - schema_version
+        - gate_policy_id
+        - gate_id
+        - policy_version
+        - conditions
+        - effective_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.gate_policy.v1
+        gate_policy_id:
+          type: string
+          format: uuid
+        gate_id:
+          type: string
+          format: uuid
+        policy_version:
+          type: string
+        conditions:
+          type: object
+          additionalProperties: true
+        baseline_selector:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+        flaky_quarantine_policy:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+        blocking_severity:
+          type: string
+          enum: [p0_only, p0_p1, any_failure]
+          default: p0_only
+        effective_at:
+          type: string
+          format: date-time
+        effective_until:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+
+    ContractResult:
+      type: object
+      additionalProperties: false
+      description: |
+        Per-run contract evaluation result. Spec A.6 lines 3082-3102
+        (VAL-V2M01-002).
+      required:
+        - schema_version
+        - contract_result_id
+        - run_id
+        - contract_id
+        - contract_version
+        - outcome
+        - evaluation_engine_version
+        - evaluated_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.contract_result.v1
+        contract_result_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        contract_id:
+          type: string
+          format: uuid
+        contract_version:
+          type: string
+        assertion_id:
+          type: [string, "null"]
+        span_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        outcome:
+          type: string
+          enum: [pass, fail, repaired, skipped, error]
+        severity:
+          oneOf:
+            - type: string
+              enum: [p0, p1, p2, info]
+            - type: "null"
+        raw_signature_hash:
+          type: [string, "null"]
+        repair_attempt:
+          type: integer
+          minimum: 0
+          default: 0
+        evaluation_engine_version:
+          type: string
+        evaluated_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+          default: {}
+
+    AssertionDefinition:
+      type: object
+      additionalProperties: false
+      description: |
+        Atomic assertion definition. Spec A.7 lines 3108-3125
+        (VAL-V2M01-003).
+      required:
+        - schema_version
+        - assertion_id
+        - project_id
+        - kind
+        - severity
+        - title
+        - owner_email
+        - expression
+        - current_version
+        - created_at
+        - updated_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.assertion_definition.v1
+        assertion_id:
+          type: string
+        project_id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [schema_contract, behavioral, tool_arg, eval, coverage]
+        severity:
+          type: string
+          enum: [p0, p1, p2, info]
+        title:
+          type: string
+        description:
+          type: [string, "null"]
+        owner_email:
+          type: string
+        expression:
+          type: object
+          additionalProperties: true
+        applies_to:
+          type: object
+          additionalProperties: true
+          default: {}
+        lifecycle_state:
+          type: string
+          enum: [draft, active, deprecated, retired]
+          default: draft
+        current_version:
+          type: integer
+          minimum: 1
+          default: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ReplayResult:
+      type: object
+      additionalProperties: false
+      description: |
+        Per-replay outcome row. Spec A.8 lines 3172-3187 (VAL-V2M01-004).
+      required:
+        - schema_version
+        - replay_result_id
+        - replay_case_id
+        - replay_run_id
+        - outcome
+        - sandbox_driver
+        - created_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.replay_result.v1
+        replay_result_id:
+          type: string
+          format: uuid
+        replay_case_id:
+          type: string
+          format: uuid
+        replay_run_id:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum: [reproduced, diverged, blocked, sandbox_error]
+        failure_signature_match:
+          type: [boolean, "null"]
+        fixture_hits:
+          type: integer
+          minimum: 0
+          default: 0
+        fixture_misses:
+          type: integer
+          minimum: 0
+          default: 0
+        sandbox_driver:
+          type: string
+        sandbox_id:
+          type: [string, "null"]
+        network_egress_denied:
+          type: integer
+          minimum: 0
+          default: 0
+        side_effect_attempts:
+          type: integer
+          minimum: 0
+          default: 0
+        side_effect_approved:
+          type: integer
+          minimum: 0
+          default: 0
+        evidence_bundle_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        created_at:
+          type: string
+          format: date-time
+
+    Manifest:
+      type: object
+      additionalProperties: false
+      description: |
+        Manifest parent identity row. Spec A.9 lines 3193-3199 (VAL-V2M01-005).
+        Uses schema_version literal `relay.manifest_parent.v1` to avoid
+        colliding with the existing ManifestVersion `relay.manifest.v1`.
+      required:
+        - schema_version
+        - manifest_id
+        - project_id
+        - name
+        - created_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.manifest_parent.v1
+        manifest_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    Incident:
+      type: object
+      additionalProperties: false
+      description: |
+        Incident cluster row. Spec A.13 lines 3274-3290 (VAL-V2M01-007).
+      required:
+        - schema_version
+        - incident_id
+        - project_id
+        - cluster_signature_hash
+        - severity
+        - first_seen_at
+        - last_seen_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.incident.v1
+        incident_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        cluster_signature_hash:
+          type: string
+        severity:
+          type: string
+          enum: [sev1, sev2, sev3, sev4]
+        state:
+          type: string
+          enum: [open, mitigated, closed, suppressed]
+          default: open
+        affected_run_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          default: []
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        owner_email:
+          type: [string, "null"]
+        postmortem_ref:
+          type: [string, "null"]
+        promoted_to_regression:
+          type: boolean
+          default: false
+        created_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+
+    RootCauseHypothesis:
+      type: object
+      additionalProperties: false
+      description: |
+        Explain root-cause hypothesis. Spec A.15 lines 3316-3328; sectionT
+        (VAL-V2M01-008).
+      required:
+        - schema_version
+        - hypothesis_id
+        - run_id
+        - hypothesis_class
+        - confidence
+        - generator
+        - created_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.root_cause_hypothesis.v1
+        hypothesis_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        span_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        hypothesis_class:
+          type: string
+        confidence:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+        evidence_refs:
+          type: array
+          items: {}
+          default: []
+        generator:
+          type: string
+        reviewer_email:
+          type: [string, "null"]
+        reviewer_decision:
+          oneOf:
+            - type: string
+              enum: [accept, reject, modify, pending]
+            - type: "null"
+        promoted_to_replay_case_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        created_at:
+          type: string
+          format: date-time
+
+    Span:
+      type: object
+      additionalProperties: false
+      description: |
+        Parent span row. Spec Z lines 1825-1836 (VAL-V2M01-009). span_type
+        is the polymorphic discriminator that drives the typed-detail
+        invariant: span_type in {model_call, tool_call, retrieval,
+        embedding} MUST have a matching typed-detail row in the same
+        INSERT transaction. span_type='custom' requires no typed-detail
+        row. Canonical missing-detail error code:
+        RELAY-INGEST-SPAN-DETAIL-MISSING.
+      required:
+        - schema_version
+        - span_id
+        - span_type
+        - name
+        - status
+        - started_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.span.v1
+        span_id:
+          type: string
+          format: uuid
+        run_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        parent_span_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        span_type:
+          type: string
+          enum: [model_call, tool_call, retrieval, embedding, custom]
+        name:
+          type: string
+        status:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        error_class:
+          type: [string, "null"]
+        metadata:
+          type: object
+          additionalProperties: true
+          default: {}
+
+    ModelCallSpan:
+      type: object
+      additionalProperties: false
+      description: |
+        Typed-detail row for span_type='model_call'. Spec Z lines 5226-5249
+        (VAL-V2M01-010).
+      required:
+        - schema_version
+        - span_id
+        - provider
+        - model
+        - input_redaction_policy_version
+      properties:
+        schema_version:
+          type: string
+          const: relay.model_call_span.v1
+        span_id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+        model:
+          type: string
+        model_signature:
+          type: [string, "null"]
+        request_message_count:
+          type: [integer, "null"]
+          minimum: 0
+        request_token_count:
+          type: [integer, "null"]
+          minimum: 0
+        response_token_count:
+          type: [integer, "null"]
+          minimum: 0
+        cached_token_count:
+          type: [integer, "null"]
+          minimum: 0
+        reasoning_token_count:
+          type: [integer, "null"]
+          minimum: 0
+        cost_usd:
+          type: [number, "null"]
+        latency_ms:
+          type: [integer, "null"]
+          minimum: 0
+        finish_reason:
+          type: [string, "null"]
+        structured_output_mode:
+          type: [string, "null"]
+        schema_contract_id:
+          type: [string, "null"]
+        tool_choice_mode:
+          type: [string, "null"]
+        streaming:
+          type: boolean
+          default: false
+        input_redaction_policy_version:
+          type: string
+        input_digest:
+          type: [string, "null"]
+        output_digest:
+          type: [string, "null"]
+        http_status:
+          type: [integer, "null"]
+          minimum: 0
+        provider_error_code:
+          type: [string, "null"]
+        provider_error_class:
+          type: [string, "null"]
+
+    ToolCallSpan:
+      type: object
+      additionalProperties: false
+      description: |
+        Typed-detail row for span_type='tool_call'. Spec Z lines 5251-5264
+        (VAL-V2M01-011).
+      required:
+        - schema_version
+        - span_id
+        - tool_name
+        - side_effect_class
+        - args_redaction_policy_version
+        - status
+      properties:
+        schema_version:
+          type: string
+          const: relay.tool_call_span.v1
+        span_id:
+          type: string
+          format: uuid
+        tool_name:
+          type: string
+        side_effect_class:
+          type: string
+        args_digest:
+          type: [string, "null"]
+        args_redaction_policy_version:
+          type: string
+        args_schema_contract_id:
+          type: [string, "null"]
+        args_validation_outcome:
+          oneOf:
+            - type: string
+              enum: [pass, fail, repaired, skipped, error]
+            - type: "null"
+        result_digest:
+          type: [string, "null"]
+        status:
+          type: string
+        latency_ms:
+          type: [integer, "null"]
+          minimum: 0
+        marker_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        parallel_index:
+          type: [integer, "null"]
+          minimum: 0
+
+    RetrievalSpan:
+      type: object
+      additionalProperties: false
+      description: |
+        Typed-detail row for span_type='retrieval'. Spec Z lines 5266-5279
+        (VAL-V2M01-012).
+      required:
+        - schema_version
+        - span_id
+        - retriever_name
+        - query_redaction_policy_version
+      properties:
+        schema_version:
+          type: string
+          const: relay.retrieval_span.v1
+        span_id:
+          type: string
+          format: uuid
+        retriever_name:
+          type: string
+        query_digest:
+          type: [string, "null"]
+        query_redaction_policy_version:
+          type: string
+        document_count:
+          type: [integer, "null"]
+          minimum: 0
+        duplicate_document_count:
+          type: [integer, "null"]
+          minimum: 0
+        empty_retrieval:
+          type: boolean
+          default: false
+        relevance_proxy_score:
+          type: [number, "null"]
+        citation_coverage:
+          type: [number, "null"]
+        context_token_count:
+          type: [integer, "null"]
+          minimum: 0
+        context_waste_tokens:
+          type: [integer, "null"]
+          minimum: 0
+        latency_ms:
+          type: [integer, "null"]
+          minimum: 0
+
+    EmbeddingSpan:
+      type: object
+      additionalProperties: false
+      description: |
+        Typed-detail row for span_type='embedding'. Spec Z lines 5281-5290
+        (VAL-V2M01-013).
+      required:
+        - schema_version
+        - span_id
+        - provider
+        - model
+      properties:
+        schema_version:
+          type: string
+          const: relay.embedding_span.v1
+        span_id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+        model:
+          type: string
+        input_token_count:
+          type: [integer, "null"]
+          minimum: 0
+        embedding_dim:
+          type: [integer, "null"]
+          minimum: 0
+        cached:
+          type: boolean
+          default: false
+        cost_usd:
+          type: [number, "null"]
+        latency_ms:
+          type: [integer, "null"]
+          minimum: 0

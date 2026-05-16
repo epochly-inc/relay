@@ -55,6 +55,21 @@ _SHARED_ENVELOPES: frozenset[str] = frozenset(
         "EventLogEntry",
         "RedactionPolicy",
         "ErrorEnvelope",
+        # v0.2 OSS completeness, M01 w1-1 (added 2026-05-16): canonical
+        # envelopes backing the 13 SQL tables in
+        # packages/schemas/sql/0004_v2_canonical_tables.sql.
+        "GatePolicy",
+        "ContractResult",
+        "AssertionDefinition",
+        "ReplayResult",
+        "Manifest",
+        "Incident",
+        "RootCauseHypothesis",
+        "Span",
+        "ModelCallSpan",
+        "ToolCallSpan",
+        "RetrievalSpan",
+        "EmbeddingSpan",
     }
 )
 
@@ -103,10 +118,20 @@ def _openapi_enum_members(envelope: dict, field_name: str) -> frozenset[str] | N
     field = _openapi_field(envelope, field_name)
     if not field:
         return None
+    # Direct enum: {type: string, enum: [...]}
     enum = field.get("enum")
-    if enum is None:
-        return None
-    return frozenset(enum)
+    if enum is not None:
+        return frozenset(enum)
+    # Nullable enum: {oneOf: [{type: string, enum: [...]}, {type: "null"}]}
+    # or any other oneOf/anyOf variant carrying the canonical enum list.
+    for combinator in ("oneOf", "anyOf"):
+        variants = field.get(combinator)
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if isinstance(variant, dict) and "enum" in variant:
+                return frozenset(variant["enum"])
+    return None
 
 
 @pytest.mark.plumbing

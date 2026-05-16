@@ -58,7 +58,19 @@ export const CANONICAL_ENVELOPES = [
   "ReplayCase",
   "ReplayFixture",
   "RedactionPolicy",
-  "ErrorEnvelope"
+  "ErrorEnvelope",
+  "GatePolicy",
+  "ContractResult",
+  "AssertionDefinition",
+  "ReplayResult",
+  "Manifest",
+  "Incident",
+  "RootCauseHypothesis",
+  "Span",
+  "ModelCallSpan",
+  "ToolCallSpan",
+  "RetrievalSpan",
+  "EmbeddingSpan"
 ] as const;
 
 export type CanonicalEnvelopeName = (typeof CANONICAL_ENVELOPES)[number];
