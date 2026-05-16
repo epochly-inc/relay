@@ -1,0 +1,12 @@
+{
+  "_doc": "W17.1 upstream pin for RFC 8785. The transcript_sha256 is the SHA-256 of the inline RFC_TRANSCRIPT_TEXT used as the provenance basis for the conformance corpus. Updating either the RFC text or the transcript constants in scripts/generate-jcs-rfc8785-ietf-corpus.py changes this pin and triggers a corpus regeneration review. The pin scheme matches tests/conformance/cel/vendor/.upstream-pins.json for cross-corpus consistency.",
+  "_schema_version": 1,
+  "last_refreshed_at": "2026-05-16",
+  "published": "2020-06",
+  "rfc": "RFC 8785",
+  "rfc_editor_url": "https://www.rfc-editor.org/rfc/rfc8785.html",
+  "source_url": "https://datatracker.ietf.org/doc/html/rfc8785",
+  "title": "JSON Canonicalization Scheme (JCS)",
+  "transcript_byte_length": 1354,
+  "transcript_sha256": "33a07906b37148f569224e3214ed65c2181988155df682284118d2c4f0179c66"
+}

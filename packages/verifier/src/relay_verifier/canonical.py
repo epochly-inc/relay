@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-import re
+import unicodedata
 from typing import Any
 
 # RFC 8785 section 3.2.2.1: control characters U+0000..U+001F MUST be
@@ -81,6 +81,12 @@ class JCSEncodeError(ValueError):
 
 
 def _encode_string(s: str) -> str:
+    # RFC 8785 + spec line 5696: All canonicalized JSON for digest uses
+    # UTF-8 NFC. NFC is idempotent and ASCII-identity, so this is a
+    # no-op on the existing W6/W10 corpora (verified) and enforces the
+    # invariant on any future input that contains compatibility
+    # codepoints or decomposed sequences (VAL-W17-003).
+    s = unicodedata.normalize("NFC", s)
     out = ['"']
     for ch in s:
         cp = ord(ch)
@@ -96,9 +102,63 @@ def _encode_string(s: str) -> str:
     return "".join(out)
 
 
-# Match a Python repr that has trailing ``.0`` so we can strip it for
-# whole-valued floats (ECMA-262 ToString form).
-_TRAILING_DOT_ZERO = re.compile(r"^(-?\d+)\.0$")
+def _es6_to_string_positive(n: float) -> str:
+    """ECMA-262 7.1.12.1 Number.toString for a strictly positive finite
+    double. Mirrors JS ``String(n)`` byte-for-byte. Caller has handled
+    NaN/Inf/zero/negative dispatch.
+
+    Algorithm summary (see ECMA-262 7.1.12.1 + ECMA-402 Note):
+
+      1. Derive the shortest decimal digit sequence ``s`` of length
+         ``k`` that round-trips to the input double under IEEE-754
+         double-precision (Grisu3/Dragon4). Let ``n_dec`` be the
+         decimal-point position from the left of ``s`` (i.e., value
+         equals ``int(s) * 10**(n_dec - k)``).
+      2. Choose decimal vs exponential form by ``(k, n_dec)``:
+           * ``k <= n_dec <= 21``  -> integer form, pad with zeros.
+           * ``0 < n_dec <= 21``   -> decimal with fraction.
+           * ``-6 < n_dec <= 0``   -> ``0.`` + leading zeros + digits.
+           * otherwise             -> exponential ``d.ddde+NN``.
+
+    Why this is necessary for VAL-W17-004: Python's ``repr(float)``
+    yields a shortest round-trip form, but its formatter chooses
+    different exponent thresholds than ECMA-262 (e.g., repr(1e-6) is
+    ``'1e-06'`` while ``String(1e-6)`` is ``'0.000001'``), and prints
+    exponents with zero-padding (``e-07`` vs ``e-7``) and trailing
+    ``.0`` on whole-valued floats. This helper produces the exact
+    bytes JS String(n) does, restoring cross-runtime byte parity for
+    the W17.1 corpus.
+    """
+    # Shortest round-trip digits via Python repr.
+    s = repr(n)
+    if "e" in s:
+        mantissa, exp_str = s.split("e")
+        exp = int(exp_str)
+    else:
+        mantissa, exp = s, 0
+    if "." in mantissa:
+        int_part, frac_part = mantissa.split(".")
+    else:
+        int_part, frac_part = mantissa, ""
+    raw_digits = int_part + frac_part
+    stripped_lead = raw_digits.lstrip("0")
+    leading_zero_count = len(raw_digits) - len(stripped_lead)
+    if not stripped_lead:
+        return "0"
+    stripped = stripped_lead.rstrip("0")
+    n_dec = len(int_part) - leading_zero_count + exp
+    k = len(stripped)
+    if k <= n_dec <= 21:
+        return stripped + ("0" * (n_dec - k))
+    if 0 < n_dec <= 21:
+        return stripped[:n_dec] + "." + stripped[n_dec:]
+    if -6 < n_dec <= 0:
+        return "0." + ("0" * (-n_dec)) + stripped
+    sign = "+" if n_dec - 1 >= 0 else "-"
+    abs_exp = str(abs(n_dec - 1))
+    if k == 1:
+        return stripped + "e" + sign + abs_exp
+    return stripped[0] + "." + stripped[1:] + "e" + sign + abs_exp
 
 
 def _encode_number(n: int | float) -> str:
@@ -124,17 +184,9 @@ def _encode_number(n: int | float) -> str:
     # Negative zero collapses to "0" per ECMA-262 ToString.
     if n == 0.0:
         return "0"
-    # Whole-valued floats (e.g., 1.0) emit WITHOUT the trailing ".0"
-    # per ECMA-262 ToString, which JCS pins. Use the integer form.
-    # The ``-1e21 < n < 1e21`` guard prevents Python's repr from
-    # switching to exponential form behind our back.
-    if n.is_integer() and -1e21 < n < 1e21:
-        return str(int(n))
-    text = repr(n)
-    m = _TRAILING_DOT_ZERO.match(text)
-    if m is not None:
-        return m.group(1)
-    return text
+    if n < 0:
+        return "-" + _es6_to_string_positive(-n)
+    return _es6_to_string_positive(n)
 
 
 def _encode(value: Any) -> str:

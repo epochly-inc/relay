@@ -40,6 +40,12 @@ const ESCAPE_MAP: Record<number, string> = {
 };
 
 function encodeString(s: string): string {
+  // RFC 8785 + spec line 5696 + VAL-W17-003: all canonicalized JSON
+  // for digest uses UTF-8 NFC. JS String.prototype.normalize("NFC") is
+  // ECMAScript-standard (ES6 / ECMA-402) and idempotent; ASCII strings
+  // are fixed points. Mirrors the Python encoders'
+  // unicodedata.normalize("NFC", s) call.
+  s = s.normalize("NFC");
   // Iterate by code units (UTF-16). Code units 0x00-0x1F, 0x22, 0x5C
   // get escaped; everything else (including high surrogate pairs and
   // non-ASCII BMP code points) is emitted literally. The final UTF-8

@@ -1,0 +1,646 @@
+{
+  "case_counts": {
+    "appendix_b": 15,
+    "nfc": 13,
+    "num_edge": 15,
+    "sort_utf16": 8
+  },
+  "cases": [
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "e30=",
+      "expected_canonical_utf8": "{}",
+      "expected_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "input": {},
+      "kind": "value",
+      "name": "appendix-b-empty-object",
+      "notes": "RFC 8785 section 3.2 worked example: empty object collapses to {}."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "W10=",
+      "expected_canonical_utf8": "[]",
+      "expected_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "input": [],
+      "kind": "value",
+      "name": "appendix-b-empty-array",
+      "notes": "RFC 8785 section 3.2 worked example: empty array collapses to []."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "MA==",
+      "expected_canonical_utf8": "0",
+      "expected_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "input": 0,
+      "kind": "value",
+      "name": "appendix-b-rfc-numbers-zero",
+      "notes": "RFC 8785 section 3.2.2.3 -- integer 0 emits as '0'."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "MA==",
+      "expected_canonical_utf8": "0",
+      "expected_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "input": -0.0,
+      "kind": "value",
+      "name": "appendix-b-rfc-numbers-negative-zero",
+      "notes": "RFC 8785 section 3.2.2.3 IEEE-754 -0 collapses to '0' per ECMA-262 ToString."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "My4xNDE1OTI2NTM1ODk3OTM=",
+      "expected_canonical_utf8": "3.141592653589793",
+      "expected_sha256": "f0a1b7875844c3ae0d28f3cc44e9a6241da33e2623a69f0a71263158dffb4e87",
+      "input": 3.141592653589793,
+      "kind": "value",
+      "name": "appendix-b-rfc-numbers-pi",
+      "notes": "RFC 8785 section 3.2.2 -- pi to double precision; ECMA-262 ToString shortest round-trip."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "MQ==",
+      "expected_canonical_utf8": "1",
+      "expected_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "input": 1,
+      "kind": "value",
+      "name": "appendix-b-rfc-numbers-one",
+      "notes": "RFC 8785 section 3.2.2.3 -- integer 1 emits as '1'."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "MQ==",
+      "expected_canonical_utf8": "1",
+      "expected_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "input": 1.0,
+      "kind": "value",
+      "name": "appendix-b-rfc-numbers-whole-float-one",
+      "notes": "RFC 8785 section 3.2.2.3 -- whole-valued float 1.0 emits as '1' (ECMA-262 ToString)."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "MWUrMjE=",
+      "expected_canonical_utf8": "1e+21",
+      "expected_sha256": "241c4643fa70b1dcde1205b71be4e3bebb17e9f880c8e1a33d0ead6c27271d3c",
+      "input": 1e+21,
+      "kind": "value",
+      "name": "appendix-b-rfc-numbers-large-decimal",
+      "notes": "RFC 8785 section 3.2.2.3 -- at the 1e21 exponent boundary the ECMA-262 form switches to exponential."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "MTAwMDAwMDAwMDAwMDAwMDAwMDAw",
+      "expected_canonical_utf8": "100000000000000000000",
+      "expected_sha256": "c344e9487bfbd5c4e03c9fb90d62a5dde5e00b54d55c46e9f4a803aea162b80c",
+      "input": 1e+20,
+      "kind": "value",
+      "name": "appendix-b-rfc-numbers-just-below-1e21",
+      "notes": "RFC 8785 section 3.2.2.3 -- just below the 1e21 exponent boundary emits decimal form."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "MC4wMDAwMDE=",
+      "expected_canonical_utf8": "0.000001",
+      "expected_sha256": "159fb29a827ad04b260aa6c8ab6d8637f8f2b38af5c4f3cb49d6a21205e040f8",
+      "input": 1e-06,
+      "kind": "value",
+      "name": "appendix-b-rfc-numbers-tiny",
+      "notes": "RFC 8785 section 3.2.2.3 -- at the 1e-6 lower exponent boundary; below this ECMA-262 emits exponential."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "eyJhIjoyLCJiIjoxLCJjIjozfQ==",
+      "expected_canonical_utf8": "{\"a\":2,\"b\":1,\"c\":3}",
+      "expected_sha256": "e145110e712e3ed0a6b233551b27a90aa39b4c93ed67e111ba2002d16e5ed1fa",
+      "input": {
+        "a": 2,
+        "b": 1,
+        "c": 3
+      },
+      "kind": "value",
+      "name": "appendix-b-rfc-objects-sorted",
+      "notes": "RFC 8785 section 3.2.3 -- object keys sorted lex by UTF-16 code unit."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "InRhYlx0aGVyZVxubmV3bGluZVxyYmFja1xic3BhY2VcZmZvcm1mZWVkIg==",
+      "expected_canonical_utf8": "\"tab\\there\\nnewline\\rback\\bspace\\fformfeed\"",
+      "expected_sha256": "3ebfd89d9a4ecf2acf2d0d297e3be8e5da023ef5da13e7231a95e7b61db8cc04",
+      "input": "tab\there\nnewline\rback\bspace\fformfeed",
+      "kind": "value",
+      "name": "appendix-b-rfc-strings-escapes",
+      "notes": "RFC 8785 section 3.2.2.1 -- control character short forms."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "eyJlbXB0eV9hcnJheSI6W10sImVtcHR5X29iaiI6e30sImxpdGVyYWxzIjpbbnVsbCx0cnVlLGZhbHNlLCJzdHJpbmciLDAsMS41LC0yXSwibmVzdGVkIjp7ImEiOnsiYiI6ImMifSwieiI6WzMsMiwxXX19",
+      "expected_canonical_utf8": "{\"empty_array\":[],\"empty_obj\":{},\"literals\":[null,true,false,\"string\",0,1.5,-2],\"nested\":{\"a\":{\"b\":\"c\"},\"z\":[3,2,1]}}",
+      "expected_sha256": "c6d018c85f4f164ca35d77408889d6b537244a17f8a47e48a0504a3baaf63d4c",
+      "input": {
+        "empty_array": [],
+        "empty_obj": {},
+        "literals": [
+          null,
+          true,
+          false,
+          "string",
+          0,
+          1.5,
+          -2
+        ],
+        "nested": {
+          "a": {
+            "b": "c"
+          },
+          "z": [
+            3,
+            2,
+            1
+          ]
+        }
+      },
+      "kind": "value",
+      "name": "appendix-b-rfc-mixed-structure",
+      "notes": "RFC 8785 section 4 worked example: nested object + array + literals."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "ImFcImJcXGMi",
+      "expected_canonical_utf8": "\"a\\\"b\\\\c\"",
+      "expected_sha256": "29e409e74462be098277d1428e52e22cd782e73a9f50b4f4f26e6527ab583eca",
+      "input": "a\"b\\c",
+      "kind": "value",
+      "name": "appendix-b-quote-and-backslash",
+      "notes": "RFC 8785 section 3.2.2.1 -- only quote and backslash escape outside the C0 range."
+    },
+    {
+      "category": "appendix_b",
+      "expected_canonical_b64": "W1tbW1tbW1tbWzFdXV1dXV1dXV1d",
+      "expected_canonical_utf8": "[[[[[[[[[[1]]]]]]]]]]",
+      "expected_sha256": "dd95cd92bc4a76ac3ef290dfb31136ca7cd66ad57278787bb9ebcf6906e3d379",
+      "input": [
+        [
+          [
+            [
+              [
+                [
+                  [
+                    [
+                      [
+                        [
+                          1
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ],
+      "kind": "value",
+      "name": "appendix-b-deeply-nested-array",
+      "notes": "RFC 8785 section 3.2.1 -- nested arrays with single-element interior."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "ImNhZsOpIg==",
+      "expected_canonical_utf8": "\"caf\u00e9\"",
+      "expected_sha256": "28380feb8724d669bc8d4cf5b5a5bb1adbdc61b81ebd06f3fabc567b4f3b0fc5",
+      "input": "caf\u00e9",
+      "kind": "value",
+      "name": "nfc-latin-e-acute-precomposed",
+      "notes": "Precomposed e-acute already in NFC form -- baseline case."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "ImNhZsOpIg==",
+      "expected_canonical_utf8": "\"caf\u00e9\"",
+      "expected_sha256": "28380feb8724d669bc8d4cf5b5a5bb1adbdc61b81ebd06f3fabc567b4f3b0fc5",
+      "input": "cafe\u0301",
+      "kind": "value",
+      "name": "nfc-latin-e-acute-decomposed",
+      "notes": "Decomposed 'e' + COMBINING ACUTE ACCENT -- normalizes to U+00E9 under NFC."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "Im7DsSI=",
+      "expected_canonical_utf8": "\"n\u00f1\"",
+      "expected_sha256": "720af6b23f030d858955e4d07e2c9c06bdaabfffde3528b593275d866911f28c",
+      "input": "nn\u0303",
+      "kind": "value",
+      "name": "nfc-latin-a-tilde-decomposed",
+      "notes": "Decomposed 'n' + COMBINING TILDE -- normalizes to U+00F1 under NFC."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "Is6sIg==",
+      "expected_canonical_utf8": "\"\u03ac\"",
+      "expected_sha256": "416e19fae8fd5ca4a9a07d6ca5124e2b028e88c851b8496e10bb7b3700525721",
+      "input": "\u03b1\u0301",
+      "kind": "value",
+      "name": "nfc-greek-alpha-with-tonos-decomposed",
+      "notes": "Greek alpha + COMBINING ACUTE -- normalizes to U+03AC."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "IuG7hyI=",
+      "expected_canonical_utf8": "\"\u1ec7\"",
+      "expected_sha256": "e22fe4d47105c482143835dde6ce8b96202b729d421ca1551639a7f105436aac",
+      "input": "\u1ec7",
+      "kind": "value",
+      "name": "nfc-vietnamese-multi-mark",
+      "notes": "Vietnamese e-circumflex-and-dot-below -- precomposed NFC form."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "IuG7hyI=",
+      "expected_canonical_utf8": "\"\u1ec7\"",
+      "expected_sha256": "e22fe4d47105c482143835dde6ce8b96202b729d421ca1551639a7f105436aac",
+      "input": "e\u0302\u0323",
+      "kind": "value",
+      "name": "nfc-vietnamese-multi-mark-decomposed",
+      "notes": "Vietnamese e + COMBINING CIRCUMFLEX + COMBINING DOT BELOW -- normalizes to U+1EC7."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "IuqwgCI=",
+      "expected_canonical_utf8": "\"\uac00\"",
+      "expected_sha256": "c04fdbc8c7a508c92af13e168e01bcdb441dd488a6e3aabe2aa9a4df5546ce50",
+      "input": "\uac00",
+      "kind": "value",
+      "name": "nfc-hangul-syllable-composed",
+      "notes": "Hangul syllable U+AC00 (precomposed) -- NFC identity."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "IuqwgCI=",
+      "expected_canonical_utf8": "\"\uac00\"",
+      "expected_sha256": "c04fdbc8c7a508c92af13e168e01bcdb441dd488a6e3aabe2aa9a4df5546ce50",
+      "input": "\u1100\u1161",
+      "kind": "value",
+      "name": "nfc-hangul-syllable-decomposed",
+      "notes": "Hangul jamo L + V -- normalizes to U+AC00 under NFC composition rules."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "IuixiCI=",
+      "expected_canonical_utf8": "\"\u8c48\"",
+      "expected_sha256": "8874ee87d7695a678ec0d5e57ff604599564083e5a1c870d2229abd3d9b4bfc5",
+      "input": "\uf900",
+      "kind": "value",
+      "name": "nfc-cjk-compat-not-changed-by-nfc",
+      "notes": "CJK compatibility ideograph U+F900 -- NFC keeps as-is (NFC != NFKC)."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "eyJjYWbDqSI6InZhbHVlIn0=",
+      "expected_canonical_utf8": "{\"caf\u00e9\":\"value\"}",
+      "expected_sha256": "06c43bf6fe226980ec0cc31dfca72f4850b412daeb307182b987c7b2e8eb17f9",
+      "input": {
+        "cafe\u0301": "value"
+      },
+      "kind": "value",
+      "name": "nfc-object-key-decomposed-normalizes",
+      "notes": "Object key in decomposed form -- key encodes as 'caf\\u00e9' after NFC."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "eyJrIjoiZXhwcsOpc3NvIn0=",
+      "expected_canonical_utf8": "{\"k\":\"expr\u00e9sso\"}",
+      "expected_sha256": "4122d178511911f7eaf5e418c84c263c20464be5ea95e16f266f1b6c836e28db",
+      "input": {
+        "k": "expre\u0301sso"
+      },
+      "kind": "value",
+      "name": "nfc-object-value-decomposed-normalizes",
+      "notes": "Object value in decomposed form -- value normalizes to 'expr\\u00e9sso'."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "WyLDqSIsIsOpIiwiw7EiLCLDsSJd",
+      "expected_canonical_utf8": "[\"\u00e9\",\"\u00e9\",\"\u00f1\",\"\u00f1\"]",
+      "expected_sha256": "933264027096dd85628eb2284696e1087bec562a7fa6e5e587820b38235d8b04",
+      "input": [
+        "\u00e9",
+        "e\u0301",
+        "\u00f1",
+        "n\u0303"
+      ],
+      "kind": "value",
+      "name": "nfc-mixed-precomposed-and-decomposed-in-array",
+      "notes": "Array mixing precomposed and decomposed forms -- post-NFC both pairs collapse to identical bytes."
+    },
+    {
+      "category": "nfc",
+      "expected_canonical_b64": "InBsYWluIGFzY2lpIHN0cmluZyB3aXRoIG5vIE5GQyBlZmZlY3Qi",
+      "expected_canonical_utf8": "\"plain ascii string with no NFC effect\"",
+      "expected_sha256": "9de3274ecf38f4eb614339e35fd3e90fca9dbaf1cf3c2e2735eaa9d093db9838",
+      "input": "plain ascii string with no NFC effect",
+      "kind": "value",
+      "name": "nfc-ascii-identity",
+      "notes": "Pure ASCII -- NFC is identity. Baseline that bytes are unchanged."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "NWUtMzI0",
+      "expected_canonical_utf8": "5e-324",
+      "expected_sha256": "c46e7ca1be4c8734f373a56530787288fa2058d73d07855e9247e949f811a42a",
+      "input": 5e-324,
+      "kind": "value",
+      "name": "num-edge-min-positive-double",
+      "notes": "Smallest positive subnormal double -- ECMA-262 ToString form '5e-324'."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "MS43OTc2OTMxMzQ4NjIzMTU3ZSszMDg=",
+      "expected_canonical_utf8": "1.7976931348623157e+308",
+      "expected_sha256": "c2784e1abd6317452708f3fbf9641c16b959561bc621a1d408c23a20aa2cb585",
+      "input": 1.7976931348623157e+308,
+      "kind": "value",
+      "name": "num-edge-max-finite-double",
+      "notes": "Largest finite double -- exponential form."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "OTAwNzE5OTI1NDc0MDk5MQ==",
+      "expected_canonical_utf8": "9007199254740991",
+      "expected_sha256": "f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26",
+      "input": 9007199254740991,
+      "kind": "value",
+      "name": "num-edge-max-safe-integer",
+      "notes": "Number.MAX_SAFE_INTEGER (2^53 - 1) -- decimal form."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "LTkwMDcxOTkyNTQ3NDA5OTE=",
+      "expected_canonical_utf8": "-9007199254740991",
+      "expected_sha256": "4c933a456bb8f2e9894b2d0b26480439cd72d52fb8a27cbf8fd7f323f22c7815",
+      "input": -9007199254740991,
+      "kind": "value",
+      "name": "num-edge-min-safe-integer",
+      "notes": "-Number.MAX_SAFE_INTEGER (-(2^53 - 1)) -- decimal form."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "OTAwNzE5OTI1NDc0MDk5Mg==",
+      "expected_canonical_utf8": "9007199254740992",
+      "expected_sha256": "c681da39d7273a6a24c15c9cac3a75526ff2ecf8ba4ee60346a0c70c8163bdb2",
+      "input": 9007199254740992.0,
+      "kind": "value",
+      "name": "num-edge-one-above-max-safe-as-float",
+      "notes": "2^53 as float -- whole-valued so emitted as '9007199254740992'."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "MC4wMDAwMDEwMDAwMDAx",
+      "expected_canonical_utf8": "0.0000010000001",
+      "expected_sha256": "39a9c96e4db9f5408226082e83f49e3e05ecaa90cc20006b3d62ee70e9f103c0",
+      "input": 1.0000001e-06,
+      "kind": "value",
+      "name": "num-edge-just-above-1e-6",
+      "notes": "Just above the 1e-6 lower-exponent boundary -- decimal form."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "OS45OTk5OTllLTc=",
+      "expected_canonical_utf8": "9.999999e-7",
+      "expected_sha256": "f691daff2f202b4abb11e5dff0a37c56871ff155eeb52576b5b74e512f7661cd",
+      "input": 9.999999e-07,
+      "kind": "value",
+      "name": "num-edge-just-below-1e-6",
+      "notes": "Just below the 1e-6 lower-exponent boundary -- exponential form per ECMA-262."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "OTk5OTk5OTk5OTk5OTk5NzAwMDAw",
+      "expected_canonical_utf8": "999999999999999700000",
+      "expected_sha256": "dcabf7269f6bb6ec5ba8b9530825cd7ffe215d4dd26e0a237f9d753513792c07",
+      "input": 9.999999999999997e+20,
+      "kind": "value",
+      "name": "num-edge-just-below-1e21",
+      "notes": "Just below the 1e21 upper-exponent boundary -- decimal form."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "MS4wMDAwMDAwMDAwMDAwMDAxZSsyMQ==",
+      "expected_canonical_utf8": "1.0000000000000001e+21",
+      "expected_sha256": "35ae94098aa48040d7d4f7464d61ebdc3420ad78a99f0fecf910db0209e53495",
+      "input": 1.0000000000000001e+21,
+      "kind": "value",
+      "name": "num-edge-just-above-1e21",
+      "notes": "Just above the 1e21 upper-exponent boundary -- exponential form per ECMA-262."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "MC41",
+      "expected_canonical_utf8": "0.5",
+      "expected_sha256": "d2cbad71ff333de67d07ec676e352ab7f38248eb69c942950157220607c55e84",
+      "input": 0.5,
+      "kind": "value",
+      "name": "num-edge-half",
+      "notes": "Exact double 0.5 -- decimal form '0.5'."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "LTAuNQ==",
+      "expected_canonical_utf8": "-0.5",
+      "expected_sha256": "1b07b0cffa0b3f596b5e048b0115168886cc5183dd518655b5515ee5dddac6d1",
+      "input": -0.5,
+      "kind": "value",
+      "name": "num-edge-negative-half",
+      "notes": "Exact double -0.5 -- decimal form '-0.5'."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "MC4zMzMzMzMzMzMzMzMzMzMz",
+      "expected_canonical_utf8": "0.3333333333333333",
+      "expected_sha256": "e965f1b975608cb0d1dad8c30d17e0fe1bdea42df938c0bdc29d75c97b45c44b",
+      "input": 0.3333333333333333,
+      "kind": "value",
+      "name": "num-edge-one-third",
+      "notes": "1/3 as double -- shortest round-trip decimal '0.3333333333333333'."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "MWUtNw==",
+      "expected_canonical_utf8": "1e-7",
+      "expected_sha256": "5b33e02f2c5103a05d32f6ba9cb058294452bfbf393967f68bb30c1bdcbbab22",
+      "input": 1e-07,
+      "kind": "value",
+      "name": "num-edge-small-fraction-near-zero",
+      "notes": "1e-7 -- below the 1e-6 boundary, ECMA-262 emits exponential."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "WzAsMCwxLDEsLTEsLTFd",
+      "expected_canonical_utf8": "[0,0,1,1,-1,-1]",
+      "expected_sha256": "5f1348c828f6171c6b815e5b45378c632574649c469cca6bcfed6427cb18e619",
+      "input": [
+        0,
+        -0.0,
+        1,
+        1.0,
+        -1,
+        -1.0
+      ],
+      "kind": "value",
+      "name": "num-edge-mixed-int-and-float-in-array",
+      "notes": "Mixed int/float pairs that all canonicalize to integer-string form."
+    },
+    {
+      "category": "num_edge",
+      "expected_canonical_b64": "LTEwMDAwMDAwMDAwMDAwMDAwMDAwMA==",
+      "expected_canonical_utf8": "-100000000000000000000",
+      "expected_sha256": "5f3725f6fc4fe716df8b9645fc2deb96a0d4e3bef082c131e231fa8785dfb498",
+      "input": -1e+20,
+      "kind": "value",
+      "name": "num-edge-large-negative-decimal",
+      "notes": "-1e20 just below the negative 1e21 boundary -- decimal form."
+    },
+    {
+      "category": "sort_utf16",
+      "expected_canonical_b64": "eyJBIjo0LCJCIjoyLCJhIjozLCJiIjoxfQ==",
+      "expected_canonical_utf8": "{\"A\":4,\"B\":2,\"a\":3,\"b\":1}",
+      "expected_sha256": "07ef08f01b496e1c02f78ac6ff33df9938cec88da07c3c15b317776325597d79",
+      "input": {
+        "A": 4,
+        "B": 2,
+        "a": 3,
+        "b": 1
+      },
+      "kind": "value",
+      "name": "sort-utf16-case-only-differing",
+      "notes": "Uppercase precedes lowercase by UTF-16 code unit: A(0x41) < B(0x42) < a(0x61) < b(0x62)."
+    },
+    {
+      "category": "sort_utf16",
+      "expected_canonical_b64": "eyJBIjoiYXNjaWkiLCLOkSI6ImdyZWVrLUEiLCLQkCI6ImN5cmlsbGljLUEifQ==",
+      "expected_canonical_utf8": "{\"A\":\"ascii\",\"\u0391\":\"greek-A\",\"\u0410\":\"cyrillic-A\"}",
+      "expected_sha256": "55e09e3c7b39e8d48d675f9fe015fde67ded706f88ff1877995785d84145a4f0",
+      "input": {
+        "A": "ascii",
+        "\u0391": "greek-A",
+        "\u0410": "cyrillic-A"
+      },
+      "kind": "value",
+      "name": "sort-utf16-cross-script-bmp",
+      "notes": "Cross-script BMP sort: U+0041 < U+0391 (Greek) < U+0410 (Cyrillic)."
+    },
+    {
+      "category": "sort_utf16",
+      "expected_canonical_b64": "eyIwIjoiemVybyIsIjEiOiJvbmUiLCJBIjoiYWxwaGEiLCJhIjoiYXNjaWktYSJ9",
+      "expected_canonical_utf8": "{\"0\":\"zero\",\"1\":\"one\",\"A\":\"alpha\",\"a\":\"ascii-a\"}",
+      "expected_sha256": "d94503c2ee1687864583b51c7409bce40546471fc99a3de9588d914c7aaea3d5",
+      "input": {
+        "0": "zero",
+        "1": "one",
+        "A": "alpha",
+        "a": "ascii-a"
+      },
+      "kind": "value",
+      "name": "sort-utf16-digit-vs-letter",
+      "notes": "Digits 0-9 (0x30-0x39) sort before A (0x41) and a (0x61)."
+    },
+    {
+      "category": "sort_utf16",
+      "expected_canonical_b64": "eyLDqSI6ImUtYWN1dGUtcHJlY29tcCIsIsOqIjoiZS1jaXJjdW1mbGV4LXByZWNvbXAifQ==",
+      "expected_canonical_utf8": "{\"\u00e9\":\"e-acute-precomp\",\"\u00ea\":\"e-circumflex-precomp\"}",
+      "expected_sha256": "c1294984e52cbab16788465e312d301aae0a2ff1a092bf2a989d07cbd5295449",
+      "input": {
+        "\u00e9": "e-acute-precomp",
+        "\u00ea": "e-circumflex-precomp"
+      },
+      "kind": "value",
+      "name": "sort-utf16-codepoint-adjacent-bmp",
+      "notes": "Adjacent BMP code points U+00E9 / U+00EA sort by code unit."
+    },
+    {
+      "category": "sort_utf16",
+      "expected_canonical_b64": "eyJ6IjoiYXNjaWkteiIsIuGEgCI6ImphbW8tTCIsIuqwgCI6InN5bGxhYmxlIn0=",
+      "expected_canonical_utf8": "{\"z\":\"ascii-z\",\"\u1100\":\"jamo-L\",\"\uac00\":\"syllable\"}",
+      "expected_sha256": "36ae61fa811cf25ecf748e5491b6c044ede8797abb6d90aa3dd30e41e421d531",
+      "input": {
+        "z": "ascii-z",
+        "\u1100": "jamo-L",
+        "\uac00": "syllable"
+      },
+      "kind": "value",
+      "name": "sort-utf16-hangul-cross-block",
+      "notes": "Cross-block BMP sort: z(0x7A) < jamo-L(0x1100) < Hangul syllable(0xAC00)."
+    },
+    {
+      "category": "sort_utf16",
+      "expected_canonical_b64": "eyIiOiJlbXB0eSIsImEiOiJvbmUiLCJiIjoidHdvIn0=",
+      "expected_canonical_utf8": "{\"\":\"empty\",\"a\":\"one\",\"b\":\"two\"}",
+      "expected_sha256": "d7b66c59073d19d66feaa577e59e1294aa3198119df2b7eb1fe67f16b00d23f6",
+      "input": {
+        "": "empty",
+        "a": "one",
+        "b": "two"
+      },
+      "kind": "value",
+      "name": "sort-utf16-empty-key-sorts-first",
+      "notes": "Empty string key sorts before all non-empty keys."
+    },
+    {
+      "category": "sort_utf16",
+      "expected_canonical_b64": "eyIxIjoib25lIiwiMTAiOiJ0ZW4iLCIyIjoidHdvIn0=",
+      "expected_canonical_utf8": "{\"1\":\"one\",\"10\":\"ten\",\"2\":\"two\"}",
+      "expected_sha256": "88f1d5d864d29ee7e34bed097931cc725766463ad2b97c08685f0c20dbc66b21",
+      "input": {
+        "1": "one",
+        "10": "ten",
+        "2": "two"
+      },
+      "kind": "value",
+      "name": "sort-utf16-numeric-strings-as-keys",
+      "notes": "Numeric-looking keys sort lexicographically (not numerically) -- '1' < '10' < '2'."
+    },
+    {
+      "category": "sort_utf16",
+      "expected_canonical_b64": "eyJhIjp7ImMiOjQsImQiOjN9LCJ6Ijp7ImEiOjIsImIiOjF9fQ==",
+      "expected_canonical_utf8": "{\"a\":{\"c\":4,\"d\":3},\"z\":{\"a\":2,\"b\":1}}",
+      "expected_sha256": "9064591e55912ef60aed6597e5b9110d6c3b5cd9990fd28831dc58d9f48d487e",
+      "input": {
+        "a": {
+          "c": 4,
+          "d": 3
+        },
+        "z": {
+          "a": 2,
+          "b": 1
+        }
+      },
+      "kind": "value",
+      "name": "sort-utf16-nested-object-keys-sorted-recursively",
+      "notes": "Recursive key sort -- both top-level and nested keys sorted."
+    }
+  ],
+  "notes": "W17.1 conformance corpus: RFC 8785 Appendix B vectors plus NFC, numeric edge case, and UTF-16 sort vectors. Loaded by both packages/verifier (Python) and packages/verifier-typescript via the test runners under tests/conformance/jcs/test_w17_1_*.py and packages/verifier-typescript/test/w17_1_*.test.ts. Regenerate via scripts/generate-jcs-rfc8785-ietf-corpus.py.",
+  "reject_cases": [
+    {
+      "kind": "reject",
+      "name": "reject-nan",
+      "reason": "RFC 8785 forbids NaN; encoder raises JCSEncodeError."
+    },
+    {
+      "kind": "reject",
+      "name": "reject-positive-infinity",
+      "reason": "RFC 8785 forbids +Inf; encoder raises JCSEncodeError."
+    },
+    {
+      "kind": "reject",
+      "name": "reject-negative-infinity",
+      "reason": "RFC 8785 forbids -Inf; encoder raises JCSEncodeError."
+    }
+  ],
+  "schema": "relay.conformance.jcs.ietf.v1",
+  "schema_version": 1,
+  "source": {
+    "published": "2020-06",
+    "rfc": "RFC 8785",
+    "title": "JSON Canonicalization Scheme (JCS)",
+    "url": "https://datatracker.ietf.org/doc/html/rfc8785"
+  }
+}

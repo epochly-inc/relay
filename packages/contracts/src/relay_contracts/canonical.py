@@ -26,7 +26,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import math
-import re
+import unicodedata
 from typing import Any
 
 from .errors import RelayCelNumericOutOfBoundsError
@@ -48,6 +48,12 @@ _ESCAPE_MAP = {
 
 
 def _encode_string(s: str) -> str:
+    # RFC 8785 + spec line 5696 + VAL-W17-003: all canonicalized JSON for
+    # digest uses UTF-8 NFC. NFC is idempotent and ASCII-identity, so
+    # this is a no-op on existing W6/W10 corpora (verified) and enforces
+    # the invariant when inputs contain compatibility codepoints or
+    # decomposed sequences.
+    s = unicodedata.normalize("NFC", s)
     out = ['"']
     for ch in s:
         cp = ord(ch)
@@ -62,10 +68,44 @@ def _encode_string(s: str) -> str:
     return "".join(out)
 
 
-# Match optional leading "-", digits, optional fraction, optional exponent.
-# Used only to detect when ``repr(float)`` returns a value Python prefers
-# over the JCS canonical form (e.g., trailing ``.0``).
-_TRAILING_DOT_ZERO = re.compile(r"^(-?\d+)\.0$")
+def _es6_to_string_positive(n: float) -> str:
+    """ECMA-262 7.1.12.1 Number.toString for a strictly positive finite
+    double; mirrors JS ``String(n)`` byte-for-byte. See the verifier's
+    ``relay_verifier.canonical._es6_to_string_positive`` for the algorithm
+    derivation -- this is an intentional duplicate to keep the contracts
+    package self-contained and to allow the cross-package parity test in
+    ``test_w10_3_jcs_corpus.py`` to detect drift between the two
+    implementations.
+    """
+    s = repr(n)
+    if "e" in s:
+        mantissa, exp_str = s.split("e")
+        exp = int(exp_str)
+    else:
+        mantissa, exp = s, 0
+    if "." in mantissa:
+        int_part, frac_part = mantissa.split(".")
+    else:
+        int_part, frac_part = mantissa, ""
+    raw_digits = int_part + frac_part
+    stripped_lead = raw_digits.lstrip("0")
+    leading_zero_count = len(raw_digits) - len(stripped_lead)
+    if not stripped_lead:
+        return "0"
+    stripped = stripped_lead.rstrip("0")
+    n_dec = len(int_part) - leading_zero_count + exp
+    k = len(stripped)
+    if k <= n_dec <= 21:
+        return stripped + ("0" * (n_dec - k))
+    if 0 < n_dec <= 21:
+        return stripped[:n_dec] + "." + stripped[n_dec:]
+    if -6 < n_dec <= 0:
+        return "0." + ("0" * (-n_dec)) + stripped
+    sign = "+" if n_dec - 1 >= 0 else "-"
+    abs_exp = str(abs(n_dec - 1))
+    if k == 1:
+        return stripped + "e" + sign + abs_exp
+    return stripped[0] + "." + stripped[1:] + "e" + sign + abs_exp
 
 
 def _encode_number(n: int | float) -> str:
@@ -87,19 +127,9 @@ def _encode_number(n: int | float) -> str:
     # Negative zero collapses to "0" per ECMA-262 ToString.
     if n == 0.0:
         return "0"
-    # Whole-valued floats (e.g., 1.0) are emitted without the trailing
-    # ".0" per ECMA-262 ToString rules used by JCS.
-    if n.is_integer() and -1e21 < n < 1e21:
-        return str(int(n))
-    # General path: Python's repr() for float yields the shortest
-    # decimal that round-trips to the same double, which matches the
-    # ECMA-262 ToString spec for the JCS-relevant magnitudes used by
-    # Relay contract evaluation. Strip a trailing ".0" if it appears.
-    text = repr(n)
-    m = _TRAILING_DOT_ZERO.match(text)
-    if m is not None:
-        return m.group(1)
-    return text
+    if n < 0:
+        return "-" + _es6_to_string_positive(-n)
+    return _es6_to_string_positive(n)
 
 
 def _encode(value: Any) -> str:
