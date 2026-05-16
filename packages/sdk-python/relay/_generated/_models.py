@@ -822,6 +822,59 @@ class EmbeddingSpan(BaseModel):
     latency_ms: conint(ge=0) | None = None
 
 
+class EvidenceLegalHold(BaseModel):
+    """
+    Legal hold row. Spec Y lines 5184-5200 (VAL-V2M01-026). scope_kind
+    is the closed four-member set {org, project, run, evidence_bundle}.
+    state is the closed two-member workflow {active, released}.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_version: Literal["relay.evidence_legal_hold.v1"]
+    hold_id: UUID
+    org_id: UUID
+    scope_kind: Literal["org", "project", "run", "evidence_bundle"]
+    scope_id: UUID
+    reason: str
+    legal_matter_ref: str | None = None
+    imposed_by_user_id: UUID
+    counsel_signoff_at: AwareDatetime | None = None
+    counsel_signoff_by: str | None = None
+    state: Literal["active", "released"] | None = "active"
+    imposed_at: AwareDatetime
+    released_at: AwareDatetime | None = None
+    released_by_user_id: UUID | None = None
+
+
+class EvidenceBundleRegistry(BaseModel):
+    """
+    Mutable sibling row to the immutable signed evidence_bundles
+    table. Spec Y lines 5202-5213 (VAL-V2M01-027). state is the closed
+    four-member machine {active, superseded, tombstoned, legal_hold}.
+    Tombstoned is terminal and records the subject_redaction_tombstone
+    claim that enables compliant deletion without mutating signed
+    content (spec Y line 5219). State-machine transition rules beyond
+    the closed enum live in
+    relay_schemas.bundle_registry.validate_registry_transition.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_version: Literal["relay.evidence_bundle_registry.v1"]
+    evidence_bundle_id: UUID
+    state: Literal["active", "superseded", "tombstoned", "legal_hold"] | None = "active"
+    superseded_by: UUID | None = None
+    subject_redacted_after_signing: bool | None = False
+    redaction_event_ref: str | None = None
+    legal_hold_id: UUID | None = None
+    last_state_change_at: AwareDatetime
+
+
 class ScopeState(
     RootModel[
         RunScopeState

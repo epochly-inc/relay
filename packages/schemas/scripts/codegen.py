@@ -87,6 +87,12 @@ CANONICAL_ENVELOPES: tuple[str, ...] = (
     "ToolCallSpan",
     "RetrievalSpan",
     "EmbeddingSpan",
+    # v0.2 OSS completeness, M01 w1-4 (added 2026-05-16): legal holds +
+    # evidence_bundle_registry. Closes spec section Y gap. DDL at
+    # packages/schemas/sql/0005_legal_holds.sql; sidecar mirror at
+    # apps/local-sidecar/migrations/0013_legal_holds.sql.
+    "EvidenceLegalHold",
+    "EvidenceBundleRegistry",
 )
 
 # Additional generated symbols that the SDK re-export module surfaces. These

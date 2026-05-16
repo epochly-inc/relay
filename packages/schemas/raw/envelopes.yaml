@@ -1048,6 +1048,79 @@ schemas:
       cost_usd:                         { type: number, required: false, nullable: true }
       latency_ms:                       { type: int_ge_zero, required: false, nullable: true }
 
+  # ---------------------------------------------------------------------------
+  # v0.2 OSS completeness, M01 w1-4 (added 2026-05-16): canonical envelopes
+  # for the two SQL tables in packages/schemas/sql/0005_legal_holds.sql.
+  # ---------------------------------------------------------------------------
+  #
+  # Spec anchors (all sectionY):
+  #   EvidenceLegalHold        spec Y lines 5184-5200 (VAL-V2M01-026)
+  #   EvidenceBundleRegistry   spec Y lines 5202-5213 (VAL-V2M01-027)
+
+  EvidenceLegalHold:
+    schema_version: relay.evidence_legal_hold.v1
+    spec: Y
+    description: |
+      Legal hold row (spec Y lines 5184-5200; VAL-V2M01-026). scope_kind is
+      the closed four-member set {org, project, run, evidence_bundle}.
+      state is the closed two-member workflow {active, released}. The
+      retention sweep references rows here via the partial index on
+      (scope_kind, scope_id) WHERE state = 'active'.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.evidence_legal_hold.v1
+        required: true
+      hold_id:                  { type: uuid, required: true }
+      org_id:                   { type: uuid, required: true }
+      scope_kind:
+        type: enum
+        values: [org, project, run, evidence_bundle]
+        required: true
+      scope_id:                 { type: uuid, required: true }
+      reason:                   { type: string, required: true }
+      legal_matter_ref:         { type: string, required: false, nullable: true }
+      imposed_by_user_id:       { type: uuid, required: true }
+      counsel_signoff_at:       { type: timestamptz, required: false, nullable: true }
+      counsel_signoff_by:       { type: string, required: false, nullable: true }
+      state:
+        type: enum
+        values: [active, released]
+        required: false
+        default: active
+      imposed_at:               { type: timestamptz, required: true }
+      released_at:              { type: timestamptz, required: false, nullable: true }
+      released_by_user_id:      { type: uuid, required: false, nullable: true }
+
+  EvidenceBundleRegistry:
+    schema_version: relay.evidence_bundle_registry.v1
+    spec: Y
+    description: |
+      Mutable sibling row to the immutable signed evidence_bundles table
+      (spec Y lines 5202-5213; VAL-V2M01-027). state is the closed four-
+      member machine {active, superseded, tombstoned, legal_hold}. The
+      tombstoned state is terminal: it records the subject_redaction_
+      tombstone claim that enables compliant deletion without mutating
+      signed content (spec Y line 5219). State-machine transitions beyond
+      the SQL CHECK enum are enforced by
+      relay_schemas.bundle_registry.validate_registry_transition.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.evidence_bundle_registry.v1
+        required: true
+      evidence_bundle_id:               { type: uuid, required: true }
+      state:
+        type: enum
+        values: [active, superseded, tombstoned, legal_hold]
+        required: false
+        default: active
+      superseded_by:                    { type: uuid, required: false, nullable: true }
+      subject_redacted_after_signing:   { type: bool, required: false, default: false }
+      redaction_event_ref:              { type: string, required: false, nullable: true }
+      legal_hold_id:                    { type: uuid, required: false, nullable: true }
+      last_state_change_at:             { type: timestamptz, required: true }
+
 # -----------------------------------------------------------------------------
 # Type definitions
 # -----------------------------------------------------------------------------

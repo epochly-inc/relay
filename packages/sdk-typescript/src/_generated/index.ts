@@ -70,7 +70,9 @@ export const CANONICAL_ENVELOPES = [
   "ModelCallSpan",
   "ToolCallSpan",
   "RetrievalSpan",
-  "EmbeddingSpan"
+  "EmbeddingSpan",
+  "EvidenceLegalHold",
+  "EvidenceBundleRegistry"
 ] as const;
 
 export type CanonicalEnvelopeName = (typeof CANONICAL_ENVELOPES)[number];

@@ -70,6 +70,12 @@ _SHARED_ENVELOPES: frozenset[str] = frozenset(
         "ToolCallSpan",
         "RetrievalSpan",
         "EmbeddingSpan",
+        # v0.2 OSS completeness, M01 w1-4 (added 2026-05-16): legal holds +
+        # mutable evidence_bundle_registry sibling to immutable signed
+        # evidence_bundles. Backed by
+        # packages/schemas/sql/0005_legal_holds.sql.
+        "EvidenceLegalHold",
+        "EvidenceBundleRegistry",
     }
 )
 

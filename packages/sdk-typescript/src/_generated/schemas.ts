@@ -799,6 +799,66 @@ export interface components {
             cost_usd?: number | null;
             latency_ms?: number | null;
         };
+        /**
+         * @description Legal hold row. Spec Y lines 5184-5200 (VAL-V2M01-026). scope_kind
+         *     is the closed four-member set {org, project, run, evidence_bundle}.
+         *     state is the closed two-member workflow {active, released}.
+         */
+        EvidenceLegalHold: {
+            /** @constant */
+            schema_version: "relay.evidence_legal_hold.v1";
+            /** Format: uuid */
+            hold_id: string;
+            /** Format: uuid */
+            org_id: string;
+            /** @enum {string} */
+            scope_kind: "org" | "project" | "run" | "evidence_bundle";
+            /** Format: uuid */
+            scope_id: string;
+            reason: string;
+            legal_matter_ref?: string | null;
+            /** Format: uuid */
+            imposed_by_user_id: string;
+            counsel_signoff_at?: string | null;
+            counsel_signoff_by?: string | null;
+            /**
+             * @default active
+             * @enum {string}
+             */
+            state: "active" | "released";
+            /** Format: date-time */
+            imposed_at: string;
+            released_at?: string | null;
+            released_by_user_id?: string | null;
+        };
+        /**
+         * @description Mutable sibling row to the immutable signed evidence_bundles
+         *     table. Spec Y lines 5202-5213 (VAL-V2M01-027). state is the closed
+         *     four-member machine {active, superseded, tombstoned, legal_hold}.
+         *     Tombstoned is terminal and records the subject_redaction_tombstone
+         *     claim that enables compliant deletion without mutating signed
+         *     content (spec Y line 5219). State-machine transition rules beyond
+         *     the closed enum live in
+         *     relay_schemas.bundle_registry.validate_registry_transition.
+         */
+        EvidenceBundleRegistry: {
+            /** @constant */
+            schema_version: "relay.evidence_bundle_registry.v1";
+            /** Format: uuid */
+            evidence_bundle_id: string;
+            /**
+             * @default active
+             * @enum {string}
+             */
+            state: "active" | "superseded" | "tombstoned" | "legal_hold";
+            superseded_by?: string | null;
+            /** @default false */
+            subject_redacted_after_signing: boolean;
+            redaction_event_ref?: string | null;
+            legal_hold_id?: string | null;
+            /** Format: date-time */
+            last_state_change_at: string;
+        };
     };
     responses: never;
     parameters: never;

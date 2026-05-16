@@ -1489,6 +1489,58 @@ class EmbeddingSpan(_RelayEnvelope):
     latency_ms: int | None = None
 
 
+class EvidenceLegalHold(_RelayEnvelope):
+    """Legal hold row (spec Y lines 5184-5200; VAL-V2M01-026).
+
+    scope_kind is the closed four-member set
+    ``{org, project, run, evidence_bundle}``. state is the closed two-member
+    workflow ``{active, released}``. The retention sweep references rows
+    here via the partial index on (scope_kind, scope_id) WHERE state =
+    'active' (see packages/schemas/sql/0005_legal_holds.sql).
+    """
+
+    schema_version: Literal["relay.evidence_legal_hold.v1"]
+    hold_id: UUID
+    org_id: UUID
+    scope_kind: Literal["org", "project", "run", "evidence_bundle"]
+    scope_id: UUID
+    reason: str
+    legal_matter_ref: str | None = None
+    imposed_by_user_id: UUID
+    counsel_signoff_at: datetime | None = None
+    counsel_signoff_by: str | None = None
+    state: Literal["active", "released"] = "active"
+    imposed_at: datetime
+    released_at: datetime | None = None
+    released_by_user_id: UUID | None = None
+
+
+class EvidenceBundleRegistry(_RelayEnvelope):
+    """Mutable sibling to immutable signed evidence_bundles
+    (spec Y lines 5202-5213; VAL-V2M01-027).
+
+    state is the closed four-member machine
+    ``{active, superseded, tombstoned, legal_hold}``. The signed bundle
+    bytes never change; this row mutates as the bundle is superseded,
+    redacted via tombstone, or placed under legal hold.
+
+    State-machine transitions beyond the closed enum (e.g. requiring
+    ``superseded_by`` non-null when ``state == 'superseded'``, the
+    terminal nature of ``tombstoned``, requiring ``legal_hold_id``
+    non-null when ``state == 'legal_hold'``) are enforced by
+    :func:`relay_schemas.bundle_registry.validate_registry_transition`.
+    """
+
+    schema_version: Literal["relay.evidence_bundle_registry.v1"]
+    evidence_bundle_id: UUID
+    state: Literal["active", "superseded", "tombstoned", "legal_hold"] = "active"
+    superseded_by: UUID | None = None
+    subject_redacted_after_signing: bool = False
+    redaction_event_ref: str | None = None
+    legal_hold_id: UUID | None = None
+    last_state_change_at: datetime
+
+
 __all__ = [
     "Actor",
     "AssertionDefinition",
@@ -1497,8 +1549,10 @@ __all__ = [
     "ErrorEnvelope",
     "EventLogEntry",
     "EvidenceBundle",
+    "EvidenceBundleRegistry",
     "EvidenceBundleScopeState",
     "EvidenceClaim",
+    "EvidenceLegalHold",
     "GateDecision",
     "GateDecisionDraft",
     "GatePolicy",

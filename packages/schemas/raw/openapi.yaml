@@ -1741,3 +1741,113 @@ components:
         latency_ms:
           type: [integer, "null"]
           minimum: 0
+
+    EvidenceLegalHold:
+      type: object
+      additionalProperties: false
+      description: |
+        Legal hold row. Spec Y lines 5184-5200 (VAL-V2M01-026). scope_kind
+        is the closed four-member set {org, project, run, evidence_bundle}.
+        state is the closed two-member workflow {active, released}.
+      required:
+        - schema_version
+        - hold_id
+        - org_id
+        - scope_kind
+        - scope_id
+        - reason
+        - imposed_by_user_id
+        - imposed_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.evidence_legal_hold.v1
+        hold_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        scope_kind:
+          type: string
+          enum: [org, project, run, evidence_bundle]
+        scope_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        legal_matter_ref:
+          type: [string, "null"]
+        imposed_by_user_id:
+          type: string
+          format: uuid
+        counsel_signoff_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        counsel_signoff_by:
+          type: [string, "null"]
+        state:
+          type: string
+          enum: [active, released]
+          default: active
+        imposed_at:
+          type: string
+          format: date-time
+        released_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        released_by_user_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+
+    EvidenceBundleRegistry:
+      type: object
+      additionalProperties: false
+      description: |
+        Mutable sibling row to the immutable signed evidence_bundles
+        table. Spec Y lines 5202-5213 (VAL-V2M01-027). state is the closed
+        four-member machine {active, superseded, tombstoned, legal_hold}.
+        Tombstoned is terminal and records the subject_redaction_tombstone
+        claim that enables compliant deletion without mutating signed
+        content (spec Y line 5219). State-machine transition rules beyond
+        the closed enum live in
+        relay_schemas.bundle_registry.validate_registry_transition.
+      required:
+        - schema_version
+        - evidence_bundle_id
+        - last_state_change_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.evidence_bundle_registry.v1
+        evidence_bundle_id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum: [active, superseded, tombstoned, legal_hold]
+          default: active
+        superseded_by:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        subject_redacted_after_signing:
+          type: boolean
+          default: false
+        redaction_event_ref:
+          type: [string, "null"]
+        legal_hold_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        last_state_change_at:
+          type: string
+          format: date-time
