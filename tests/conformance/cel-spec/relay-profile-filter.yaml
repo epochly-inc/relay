@@ -1,0 +1,164 @@
+# W17.3 Relay CEL profile filter (VAL-W17-011).
+#
+# Partitions every vector in celspec_vectors.json into one of two
+# disjoint sets:
+#   - included: vectors inside Relay's CEL profile. cel-python AND
+#     cel-js MUST both pass. Per-vector parity is enforced by
+#     tests/conformance/cel-spec/test_w17_3_celspec_corpus.py.
+#   - excluded: vectors outside Relay's CEL profile. Each MUST carry
+#     a `reason` from the closed enum below AND a `citation` pointing
+#     to the spec/eng-plan clause that justifies the exclusion. An
+#     unjustified exclusion fails the suite.
+#
+# Closed enum for `reason` (kept in sync with the validator at
+# test_w17_3_celspec_corpus.py::test_profile_filter_excluded_entries_carry_reason_and_citation):
+#   - profile-rejects-dyn
+#   - profile-rejects-timestamp
+#   - profile-rejects-duration
+#   - profile-rejects-protobuf-message
+#   - profile-rejects-regex-backreference
+#   - profile-rejects-bytes-literal
+#   - profile-rejects-double-precision-edge
+#   - profile-rejects-uint-arithmetic
+#   - upstream-vector-uses-untyped-bindings
+#   - profile-rejects-macro-with-side-effect-shadow
+#
+# Schema:
+#   included:
+#     - vector_id: <namespaced id matching celspec_vectors.json>
+#       note: <free-text justification why this vector is in profile>
+#   excluded:
+#     - vector_id: <namespaced id>
+#       reason: <enum value>
+#       citation: <spec/eng-plan section reference>
+
+included:
+  - vector_id: arith/add/int_one_plus_two
+    note: integer addition is core CEL surface; in profile
+  - vector_id: arith/sub/int_five_minus_three
+    note: integer subtraction is core CEL surface
+  - vector_id: arith/mul/int_four_times_five
+    note: integer multiplication is core CEL surface
+  - vector_id: arith/div/int_ten_by_two
+    note: integer division (exact result) is core CEL surface
+  - vector_id: arith/mod/int_ten_mod_three
+    note: integer modulo is core CEL surface
+  - vector_id: arith/neg/int_neg_five
+    note: unary negation is core CEL surface
+  - vector_id: arith/zero_add
+    note: zero-edge arithmetic is core CEL surface
+  - vector_id: arith/zero_self_eval
+    note: zero literal evaluation is core CEL surface
+  - vector_id: arith/large_add
+    note: 1M + 1M is well below JS Number MAX_SAFE_INTEGER (2^53)
+  - vector_id: arith/precedence_mul_first
+    note: operator precedence is core CEL surface
+  - vector_id: arith/paren_override
+    note: explicit grouping is core CEL surface
+  - vector_id: cmp/eq_int_true
+    note: integer equality is core CEL surface
+  - vector_id: cmp/eq_int_false
+    note: integer inequality via == is core CEL surface
+  - vector_id: cmp/ne_int_true
+    note: integer != is core CEL surface
+  - vector_id: cmp/lt_int
+    note: integer < is core CEL surface
+  - vector_id: cmp/le_int_equal
+    note: integer <= edge equality is core CEL surface
+  - vector_id: cmp/gt_int
+    note: integer > is core CEL surface
+  - vector_id: cmp/ge_int_equal
+    note: integer >= edge equality is core CEL surface
+  - vector_id: cmp/eq_str_true
+    note: string equality is core CEL surface
+  - vector_id: cmp/eq_str_false
+    note: string inequality via == is core CEL surface
+  - vector_id: logic/and_tt
+    note: boolean AND is core CEL surface
+  - vector_id: logic/and_tf
+    note: boolean AND mixed-truth is core CEL surface
+  - vector_id: logic/or_tf
+    note: boolean OR mixed-truth is core CEL surface
+  - vector_id: logic/or_ff
+    note: boolean OR both-false is core CEL surface
+  - vector_id: logic/not_t
+    note: boolean NOT is core CEL surface
+  - vector_id: logic/not_f
+    note: boolean NOT inversion is core CEL surface
+  - vector_id: logic/short_circuit_and_false
+    note: short-circuit AND is core CEL surface
+  - vector_id: logic/short_circuit_or_true
+    note: short-circuit OR is core CEL surface
+  - vector_id: logic/de_morgan
+    note: parenthesised compound logic is core CEL surface
+  - vector_id: cond/true_branch
+    note: ternary true-branch is core CEL surface
+  - vector_id: cond/false_branch
+    note: ternary false-branch is core CEL surface
+  - vector_id: cond/nested
+    note: nested ternary is core CEL surface
+  - vector_id: str/concat_two
+    note: string + concatenation is core CEL surface
+  - vector_id: str/concat_three
+    note: chained string concatenation is core CEL surface
+  - vector_id: str/concat_empty
+    note: empty-string concatenation edge case is core CEL surface
+  - vector_id: str/eq_empty
+    note: empty-string equality is core CEL surface
+  - vector_id: str/eq_unicode_nfc
+    note: NFC-normalised unicode equality is core CEL surface (per W17.1 VAL-W17-003 NFC enforcement)
+  - vector_id: str/size
+    note: size() on string is core CEL surface
+  - vector_id: str/size_empty
+    note: size() on empty string is core CEL surface
+  - vector_id: list/literal_empty
+    note: empty list literal is core CEL surface
+  - vector_id: list/literal_three
+    note: three-element list literal is core CEL surface
+  - vector_id: list/index_zero
+    note: list index 0 is core CEL surface
+  - vector_id: list/index_two
+    note: list index N is core CEL surface
+  - vector_id: list/in_present
+    note: in operator (present) is core CEL surface
+  - vector_id: list/in_absent
+    note: in operator (absent) is core CEL surface
+  - vector_id: list/concat
+    note: list + concatenation is core CEL surface
+  - vector_id: list/size_one
+    note: size() on list is core CEL surface
+  - vector_id: list/size_empty
+    note: size() on empty list is core CEL surface
+  - vector_id: map/literal_empty
+    note: empty map literal is core CEL surface
+  - vector_id: map/literal_one
+    note: one-pair map literal is core CEL surface
+  - vector_id: map/field_string
+    note: dot field access on map is core CEL surface
+  - vector_id: map/index_string
+    note: bracket-index string key on map is core CEL surface
+  - vector_id: vars/bound_int
+    note: bound int variable lookup is core CEL surface
+  - vector_id: vars/bound_str
+    note: bound string variable lookup is core CEL surface
+  - vector_id: vars/bound_arith
+    note: arithmetic on bound variables is core CEL surface
+  - vector_id: vars/bound_list
+    note: bound list variable identity is core CEL surface
+  - vector_id: vars/bound_map
+    note: bound map variable identity is core CEL surface
+  - vector_id: nested/list_of_maps
+    note: nested list-of-maps is core CEL surface
+  - vector_id: nested/map_of_lists
+    note: nested map-of-lists is core CEL surface
+
+excluded:
+  - vector_id: profile/dyn_rejected
+    reason: profile-rejects-dyn
+    citation: "eng-plan CQ1 lines 155-157 (Relay CEL profile excludes dyn type)"
+  - vector_id: profile/timestamp_rejected
+    reason: profile-rejects-timestamp
+    citation: "eng-plan CQ1 lines 155-157 (Relay CEL profile excludes native timestamp())"
+  - vector_id: profile/duration_rejected
+    reason: profile-rejects-duration
+    citation: "eng-plan CQ1 lines 155-157 (Relay CEL profile excludes native duration())"

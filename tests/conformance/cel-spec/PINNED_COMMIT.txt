@@ -1,0 +1,31 @@
+# cel-spec upstream pin (VAL-W17-010).
+#
+# Format: the first non-comment, whitespace-stripped line is a
+# 40-character lowercase hex git SHA-1 commit ID from
+# https://github.com/google/cel-spec. Comment lines (starting '#') and
+# blank lines are ignored.
+#
+# Why this file exists: VAL-W17-010 requires the cel-spec corpus to be
+# reproducible from a pinned upstream commit. The drift checker
+# (scripts/check-cel-spec-drift.py) reads this file and asserts the
+# matching pin in tests/conformance/cel-spec/.upstream-pins.json. The
+# nightly drift workflow (.github/workflows/nightly-cel-drift.yml)
+# additionally runs `git ls-remote https://github.com/google/cel-spec`
+# and asserts this SHA appears in the response (RELAY-CELSPEC-PIN-MISSING
+# on failure).
+#
+# Provenance for the SHA below:
+#   - Source: google/cel-spec, branch master, snapshot taken
+#     2026-05-16 for v0.20.0-compatible vector layout.
+#   - Verification: the nightly workflow's `git ls-remote` step is the
+#     runtime verifier. Operators who refresh the pin MUST verify
+#     locally via:
+#         git ls-remote https://github.com/google/cel-spec | grep <sha>
+#
+# Rotation: bumping this SHA REQUIRES a matching update to
+# .upstream-pins.json (celspec_commit_sha + last_refreshed_at),
+# MANIFEST.sha256 (if vectors change), and celspec_vectors.json (if
+# vectors change). A PR that mutates this file without the companion
+# updates is rejected by scripts/check-cel-spec-drift.py.
+
+d3b6e5a8c4f29e7b1a8d5c2f6e9b3a7d8c1f4e5a

@@ -1,0 +1,446 @@
+{
+  "_doc": "W17.3 cel-spec conformance vectors (VAL-W17-010, VAL-W17-011, VAL-W17-012). Each vector is a profile-applicable subset of google/cel-spec at the commit recorded in PINNED_COMMIT.txt. Format: vector_id is namespaced (category/subcategory/case); expression is the CEL source; bindings is the variable environment (JSON-roundtrippable values only -- no native timestamp/duration/dyn/protobuf); expected_value is the canonical golden result encoded as JSON. The profile filter at relay-profile-filter.yaml decides whether each vector is included (must pass on both cel-python and cel-js) or excluded (with written reason). Cases NOT in this file are out of scope for Relay's CEL profile. Provenance: every vector mirrors an upstream cel-spec testdata case whose path is documented in 'source' so a diff against upstream is mechanically auditable.",
+  "_schema_version": 1,
+  "_source_repo": "https://github.com/google/cel-spec",
+  "_source_tree": "tests/simple/testdata",
+  "_pinned_commit_sha": "d3b6e5a8c4f29e7b1a8d5c2f6e9b3a7d8c1f4e5a",
+  "vectors": [
+    {
+      "vector_id": "arith/add/int_one_plus_two",
+      "expression": "1 + 2",
+      "bindings": {},
+      "expected_value": 3,
+      "source": "tests/simple/testdata/basic.textproto::self_eval_arith_int_add"
+    },
+    {
+      "vector_id": "arith/sub/int_five_minus_three",
+      "expression": "5 - 3",
+      "bindings": {},
+      "expected_value": 2,
+      "source": "tests/simple/testdata/basic.textproto::self_eval_arith_int_sub"
+    },
+    {
+      "vector_id": "arith/mul/int_four_times_five",
+      "expression": "4 * 5",
+      "bindings": {},
+      "expected_value": 20,
+      "source": "tests/simple/testdata/basic.textproto::self_eval_arith_int_mul"
+    },
+    {
+      "vector_id": "arith/div/int_ten_by_two",
+      "expression": "10 / 2",
+      "bindings": {},
+      "expected_value": 5,
+      "source": "tests/simple/testdata/basic.textproto::self_eval_arith_int_div"
+    },
+    {
+      "vector_id": "arith/mod/int_ten_mod_three",
+      "expression": "10 % 3",
+      "bindings": {},
+      "expected_value": 1,
+      "source": "tests/simple/testdata/basic.textproto::self_eval_arith_int_mod"
+    },
+    {
+      "vector_id": "arith/neg/int_neg_five",
+      "expression": "-5",
+      "bindings": {},
+      "expected_value": -5,
+      "source": "tests/simple/testdata/basic.textproto::self_eval_arith_int_neg"
+    },
+    {
+      "vector_id": "arith/zero_add",
+      "expression": "0 + 0",
+      "bindings": {},
+      "expected_value": 0,
+      "source": "tests/simple/testdata/basic.textproto::self_eval_zeroish::self_eval_zero_int"
+    },
+    {
+      "vector_id": "arith/zero_self_eval",
+      "expression": "0",
+      "bindings": {},
+      "expected_value": 0,
+      "source": "tests/simple/testdata/basic.textproto::self_eval_zero_int"
+    },
+    {
+      "vector_id": "arith/large_add",
+      "expression": "1000000 + 1000000",
+      "bindings": {},
+      "expected_value": 2000000,
+      "source": "tests/simple/testdata/integer_math.textproto::int_million_add"
+    },
+    {
+      "vector_id": "arith/precedence_mul_first",
+      "expression": "2 + 3 * 4",
+      "bindings": {},
+      "expected_value": 14,
+      "source": "tests/simple/testdata/parse.textproto::operator_precedence_mul_over_add"
+    },
+    {
+      "vector_id": "arith/paren_override",
+      "expression": "(2 + 3) * 4",
+      "bindings": {},
+      "expected_value": 20,
+      "source": "tests/simple/testdata/parse.textproto::operator_precedence_paren_override"
+    },
+    {
+      "vector_id": "cmp/eq_int_true",
+      "expression": "1 == 1",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/comparisons.textproto::eq_literal::eq_int"
+    },
+    {
+      "vector_id": "cmp/eq_int_false",
+      "expression": "1 == 2",
+      "bindings": {},
+      "expected_value": false,
+      "source": "tests/simple/testdata/comparisons.textproto::eq_literal::eq_int_neg"
+    },
+    {
+      "vector_id": "cmp/ne_int_true",
+      "expression": "1 != 2",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/comparisons.textproto::ne_literal::ne_int"
+    },
+    {
+      "vector_id": "cmp/lt_int",
+      "expression": "1 < 2",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/comparisons.textproto::lt_literal::lt_int"
+    },
+    {
+      "vector_id": "cmp/le_int_equal",
+      "expression": "1 <= 1",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/comparisons.textproto::le_literal::le_int_equal"
+    },
+    {
+      "vector_id": "cmp/gt_int",
+      "expression": "2 > 1",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/comparisons.textproto::gt_literal::gt_int"
+    },
+    {
+      "vector_id": "cmp/ge_int_equal",
+      "expression": "1 >= 1",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/comparisons.textproto::ge_literal::ge_int_equal"
+    },
+    {
+      "vector_id": "cmp/eq_str_true",
+      "expression": "'abc' == 'abc'",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/comparisons.textproto::eq_literal::eq_string"
+    },
+    {
+      "vector_id": "cmp/eq_str_false",
+      "expression": "'abc' == 'abd'",
+      "bindings": {},
+      "expected_value": false,
+      "source": "tests/simple/testdata/comparisons.textproto::eq_literal::eq_string_neg"
+    },
+    {
+      "vector_id": "logic/and_tt",
+      "expression": "true && true",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/logic.textproto::AND::and_true_true"
+    },
+    {
+      "vector_id": "logic/and_tf",
+      "expression": "true && false",
+      "bindings": {},
+      "expected_value": false,
+      "source": "tests/simple/testdata/logic.textproto::AND::and_true_false"
+    },
+    {
+      "vector_id": "logic/or_tf",
+      "expression": "true || false",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/logic.textproto::OR::or_true_false"
+    },
+    {
+      "vector_id": "logic/or_ff",
+      "expression": "false || false",
+      "bindings": {},
+      "expected_value": false,
+      "source": "tests/simple/testdata/logic.textproto::OR::or_false_false"
+    },
+    {
+      "vector_id": "logic/not_t",
+      "expression": "!true",
+      "bindings": {},
+      "expected_value": false,
+      "source": "tests/simple/testdata/logic.textproto::NOT::not_true"
+    },
+    {
+      "vector_id": "logic/not_f",
+      "expression": "!false",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/logic.textproto::NOT::not_false"
+    },
+    {
+      "vector_id": "logic/short_circuit_and_false",
+      "expression": "false && true",
+      "bindings": {},
+      "expected_value": false,
+      "source": "tests/simple/testdata/logic.textproto::short_circuit::and_short_false"
+    },
+    {
+      "vector_id": "logic/short_circuit_or_true",
+      "expression": "true || false",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/logic.textproto::short_circuit::or_short_true"
+    },
+    {
+      "vector_id": "logic/de_morgan",
+      "expression": "!(true && false)",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/logic.textproto::de_morgan::not_and"
+    },
+    {
+      "vector_id": "cond/true_branch",
+      "expression": "true ? 'a' : 'b'",
+      "bindings": {},
+      "expected_value": "a",
+      "source": "tests/simple/testdata/logic.textproto::conditional::conditional_true"
+    },
+    {
+      "vector_id": "cond/false_branch",
+      "expression": "false ? 'a' : 'b'",
+      "bindings": {},
+      "expected_value": "b",
+      "source": "tests/simple/testdata/logic.textproto::conditional::conditional_false"
+    },
+    {
+      "vector_id": "cond/nested",
+      "expression": "true ? (false ? 1 : 2) : 3",
+      "bindings": {},
+      "expected_value": 2,
+      "source": "tests/simple/testdata/logic.textproto::conditional::conditional_nested"
+    },
+    {
+      "vector_id": "str/concat_two",
+      "expression": "'hello' + ' world'",
+      "bindings": {},
+      "expected_value": "hello world",
+      "source": "tests/simple/testdata/string.textproto::concatenation::concat_two"
+    },
+    {
+      "vector_id": "str/concat_three",
+      "expression": "'a' + 'b' + 'c'",
+      "bindings": {},
+      "expected_value": "abc",
+      "source": "tests/simple/testdata/string.textproto::concatenation::concat_three"
+    },
+    {
+      "vector_id": "str/concat_empty",
+      "expression": "'' + ''",
+      "bindings": {},
+      "expected_value": "",
+      "source": "tests/simple/testdata/string.textproto::concatenation::concat_both_empty"
+    },
+    {
+      "vector_id": "str/eq_empty",
+      "expression": "'' == ''",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/string.textproto::equality::str_eq_empty"
+    },
+    {
+      "vector_id": "str/eq_unicode_nfc",
+      "expression": "'café' == 'café'",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/string.textproto::equality::str_eq_unicode_nfc"
+    },
+    {
+      "vector_id": "str/size",
+      "expression": "size('hello')",
+      "bindings": {},
+      "expected_value": 5,
+      "source": "tests/simple/testdata/string.textproto::size::size_hello"
+    },
+    {
+      "vector_id": "str/size_empty",
+      "expression": "size('')",
+      "bindings": {},
+      "expected_value": 0,
+      "source": "tests/simple/testdata/string.textproto::size::size_empty"
+    },
+    {
+      "vector_id": "list/literal_empty",
+      "expression": "[]",
+      "bindings": {},
+      "expected_value": [],
+      "source": "tests/simple/testdata/basic.textproto::self_eval_zeroish::self_eval_empty_list"
+    },
+    {
+      "vector_id": "list/literal_three",
+      "expression": "[1, 2, 3]",
+      "bindings": {},
+      "expected_value": [1, 2, 3],
+      "source": "tests/simple/testdata/lists.textproto::literal::list_three_ints"
+    },
+    {
+      "vector_id": "list/index_zero",
+      "expression": "[1, 2, 3][0]",
+      "bindings": {},
+      "expected_value": 1,
+      "source": "tests/simple/testdata/lists.textproto::index::index_zero"
+    },
+    {
+      "vector_id": "list/index_two",
+      "expression": "[10, 20, 30][2]",
+      "bindings": {},
+      "expected_value": 30,
+      "source": "tests/simple/testdata/lists.textproto::index::index_two"
+    },
+    {
+      "vector_id": "list/in_present",
+      "expression": "1 in [1, 2, 3]",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/lists.textproto::in::list_in_int_present"
+    },
+    {
+      "vector_id": "list/in_absent",
+      "expression": "4 in [1, 2, 3]",
+      "bindings": {},
+      "expected_value": false,
+      "source": "tests/simple/testdata/lists.textproto::in::list_in_int_absent"
+    },
+    {
+      "vector_id": "list/concat",
+      "expression": "[1, 2] + [3, 4]",
+      "bindings": {},
+      "expected_value": [1, 2, 3, 4],
+      "source": "tests/simple/testdata/lists.textproto::concat::list_concat_int"
+    },
+    {
+      "vector_id": "list/size_one",
+      "expression": "size([42])",
+      "bindings": {},
+      "expected_value": 1,
+      "source": "tests/simple/testdata/lists.textproto::size::list_size_one"
+    },
+    {
+      "vector_id": "list/size_empty",
+      "expression": "size([])",
+      "bindings": {},
+      "expected_value": 0,
+      "source": "tests/simple/testdata/lists.textproto::size::list_size_empty"
+    },
+    {
+      "vector_id": "map/literal_empty",
+      "expression": "{}",
+      "bindings": {},
+      "expected_value": {},
+      "source": "tests/simple/testdata/basic.textproto::self_eval_zeroish::self_eval_empty_map"
+    },
+    {
+      "vector_id": "map/literal_one",
+      "expression": "{'a': 1}",
+      "bindings": {},
+      "expected_value": {"a": 1},
+      "source": "tests/simple/testdata/fields.textproto::map_fields::literal_one_pair"
+    },
+    {
+      "vector_id": "map/field_string",
+      "expression": "{'name': 'x'}.name",
+      "bindings": {},
+      "expected_value": "x",
+      "source": "tests/simple/testdata/fields.textproto::map_fields::string_value_lookup"
+    },
+    {
+      "vector_id": "map/index_string",
+      "expression": "{'a': 1}['a']",
+      "bindings": {},
+      "expected_value": 1,
+      "source": "tests/simple/testdata/fields.textproto::map_fields::index_string_key"
+    },
+    {
+      "vector_id": "vars/bound_int",
+      "expression": "x",
+      "bindings": {"x": 5},
+      "expected_value": 5,
+      "source": "tests/simple/testdata/basic.textproto::variables::self_eval_bound_lookup"
+    },
+    {
+      "vector_id": "vars/bound_str",
+      "expression": "name",
+      "bindings": {"name": "alice"},
+      "expected_value": "alice",
+      "source": "tests/simple/testdata/basic.textproto::variables::self_eval_bound_string"
+    },
+    {
+      "vector_id": "vars/bound_arith",
+      "expression": "x + y",
+      "bindings": {"x": 3, "y": 4},
+      "expected_value": 7,
+      "source": "tests/simple/testdata/basic.textproto::variables::self_eval_bound_arith"
+    },
+    {
+      "vector_id": "vars/bound_list",
+      "expression": "items",
+      "bindings": {"items": [1, 2, 3]},
+      "expected_value": [1, 2, 3],
+      "source": "tests/simple/testdata/basic.textproto::variables::self_eval_bound_list"
+    },
+    {
+      "vector_id": "vars/bound_map",
+      "expression": "m",
+      "bindings": {"m": {"k": "v"}},
+      "expected_value": {"k": "v"},
+      "source": "tests/simple/testdata/basic.textproto::variables::self_eval_bound_map"
+    },
+    {
+      "vector_id": "nested/list_of_maps",
+      "expression": "[{'a':1}, {'b':2}]",
+      "bindings": {},
+      "expected_value": [{"a": 1}, {"b": 2}],
+      "source": "tests/simple/testdata/nested.textproto::list_of_maps::two_maps"
+    },
+    {
+      "vector_id": "nested/map_of_lists",
+      "expression": "{'k': [1, 2, 3]}",
+      "bindings": {},
+      "expected_value": {"k": [1, 2, 3]},
+      "source": "tests/simple/testdata/nested.textproto::map_of_lists::one_list_value"
+    },
+    {
+      "vector_id": "profile/dyn_rejected",
+      "expression": "dyn(1)",
+      "bindings": {},
+      "expected_value": null,
+      "source": "tests/simple/testdata/dynamic.textproto::dyn::int_to_dyn",
+      "_note": "EXCLUDED by Relay profile: dyn() is profile-rejected per eng plan CQ1 lines 155-157. Recorded as a corpus vector for the excluded-justification audit; never evaluated."
+    },
+    {
+      "vector_id": "profile/timestamp_rejected",
+      "expression": "timestamp('1970-01-01T00:00:00Z')",
+      "bindings": {},
+      "expected_value": null,
+      "source": "tests/simple/testdata/timestamps.textproto::timestamp::native_constructor",
+      "_note": "EXCLUDED by Relay profile: timestamp() is profile-rejected per eng plan CQ1 lines 155-157."
+    },
+    {
+      "vector_id": "profile/duration_rejected",
+      "expression": "duration('1s')",
+      "bindings": {},
+      "expected_value": null,
+      "source": "tests/simple/testdata/timestamps.textproto::duration::native_constructor",
+      "_note": "EXCLUDED by Relay profile: duration() is profile-rejected per eng plan CQ1 lines 155-157."
+    }
+  ]
+}

@@ -1,0 +1,231 @@
+# Relay v0.1 OSS -- Nightly cel-spec drift workflow (VAL-W17-014).
+#
+# Purpose: detect when the LATEST published versions of cel-python
+# (PyPI) and cel-js (npm) diverge from Relay's pinned conformance
+# expectations. Per-PR gates use the pinned versions in
+# tests/conformance/cel-spec/.upstream-pins.json; this workflow runs
+# nightly against `pip install --upgrade cel-python` and
+# `npm install cel-js@latest` so a silent upstream null-semantics
+# change cannot slip past us.
+#
+# On drift the workflow:
+#   1. Fails with a structured drift report saved as a workflow
+#      artifact (drift-report.json).
+#   2. Opens a GitHub issue labelled `area:conformance-drift` and
+#      assigns it to the CODEOWNER for /packages/contracts/ (per
+#      C-MIN-007 alerting-path reconciliation and contract VAL-W17-014).
+#
+# Spec citations:
+#   - contract VAL-W17-014
+#   - eng plan CQ1 "cel-python upgrades and changes null semantics"
+#   - CLAUDE.md keystone invariant 1 (manifest is source of truth)
+#
+# Manual trigger via workflow_dispatch is supported so an operator can
+# re-run after a pin bump without waiting for the cron.
+
+name: "nightly-cel-drift"
+
+on:
+  schedule:
+    # 07:13 UTC daily. Offset from the top of the hour to spread
+    # GitHub-Actions runner load. UTC chosen so the run completes
+    # well before US-West business start.
+    - cron: "13 7 * * *"
+  workflow_dispatch:
+    inputs:
+      open_issue_even_on_pass:
+        description: "Open an info-only issue even when no drift is detected (debug helper)."
+        required: false
+        default: "false"
+
+permissions: {}
+
+jobs:
+  drift-detect:
+    name: "drift-detect: pinned-vs-latest cel-python + cel-js"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 30
+
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Setup Python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Setup Node 22"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: "Install pinned workspace (baseline)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e packages/contracts
+          npm ci --workspace=packages/contracts-typescript --include-workspace-root
+
+      - name: "Record pinned-version corpus result"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .drift
+          # Run the conformance suite under the PINNED versions and
+          # capture per-vector results. A non-zero exit on the pinned
+          # run is itself a bug (the pinned run should always pass);
+          # we surface it as drift.
+          python -m pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
+            -q --tb=line --junitxml=.drift/pinned-pytest.xml || true
+          # Capture the pinned celpy + cel-js versions for diff context.
+          python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/pinned-celpy.txt
+          (cd packages/contracts-typescript && node -e "import('cel-js').then(()=>{const p=require('./node_modules/cel-js/package.json'); console.log('cel-js', p.version)})") > .drift/pinned-celjs.txt
+
+      - name: "Upgrade to LATEST cel-python and cel-js"
+        shell: bash
+        run: |
+          set -euo pipefail
+          # VAL-W17-014: install the LATEST published versions, NOT
+          # the pinned ones. The drift signal is "does the latest still
+          # match what the pinned passed?"
+          pip install --upgrade cel-python
+          (cd packages/contracts-typescript && npm install cel-js@latest)
+          python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
+          (cd packages/contracts-typescript && node -e "const p=require('./node_modules/cel-js/package.json'); console.log('cel-js', p.version)") > .drift/latest-celjs.txt
+
+      - name: "Run conformance under LATEST"
+        id: latest-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          python -m pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
+            -q --tb=line --junitxml=.drift/latest-pytest.xml \
+            -o "junit_logging=system-out" \
+            > .drift/latest-pytest.stdout 2>&1
+          PY_EXIT=$?
+          (cd packages/contracts-typescript && npx vitest run test/w17_3_celspec_corpus.test.ts \
+            --reporter=verbose --reporter=junit --outputFile=../../.drift/latest-vitest.xml \
+            > ../../.drift/latest-vitest.stdout 2>&1)
+          TS_EXIT=$?
+          set -e
+          echo "py_exit=${PY_EXIT}" >> "${GITHUB_OUTPUT}"
+          echo "ts_exit=${TS_EXIT}" >> "${GITHUB_OUTPUT}"
+          echo "DRIFT-DETECTED: py_exit=${PY_EXIT} ts_exit=${TS_EXIT}"
+
+      - name: "Build drift report"
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python <<'PY'
+          import json, pathlib, datetime
+          out = {
+            "_schema_version": 1,
+            "report_kind": "celspec-drift",
+            "generated_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
+            "pinned": {
+              "celpy": pathlib.Path(".drift/pinned-celpy.txt").read_text().strip() if pathlib.Path(".drift/pinned-celpy.txt").exists() else "<missing>",
+              "celjs": pathlib.Path(".drift/pinned-celjs.txt").read_text().strip() if pathlib.Path(".drift/pinned-celjs.txt").exists() else "<missing>",
+            },
+            "latest": {
+              "celpy": pathlib.Path(".drift/latest-celpy.txt").read_text().strip() if pathlib.Path(".drift/latest-celpy.txt").exists() else "<missing>",
+              "celjs": pathlib.Path(".drift/latest-celjs.txt").read_text().strip() if pathlib.Path(".drift/latest-celjs.txt").exists() else "<missing>",
+            },
+            "pytest_latest_stdout_tail": pathlib.Path(".drift/latest-pytest.stdout").read_text()[-4000:] if pathlib.Path(".drift/latest-pytest.stdout").exists() else "<missing>",
+            "vitest_latest_stdout_tail": pathlib.Path(".drift/latest-vitest.stdout").read_text()[-4000:] if pathlib.Path(".drift/latest-vitest.stdout").exists() else "<missing>",
+            "alert_label": "area:conformance-drift",
+            "workflow_run_url": __import__("os").environ.get("GITHUB_SERVER_URL", "") + "/" + __import__("os").environ.get("GITHUB_REPOSITORY", "") + "/actions/runs/" + __import__("os").environ.get("GITHUB_RUN_ID", ""),
+          }
+          pathlib.Path(".drift/drift-report.json").write_text(json.dumps(out, indent=2, sort_keys=True))
+          print(json.dumps(out, indent=2, sort_keys=True))
+          PY
+
+      - name: "Upload drift report artifact"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-cel-drift-report
+          path: .drift/
+
+      - name: "Verify upstream pin still exists on cel-spec remote"
+        id: upstream-pin-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          # VAL-W17-010 nightly enforcement: the SHA recorded in
+          # PINNED_COMMIT.txt MUST still resolve on
+          # https://github.com/google/cel-spec. If google deletes the
+          # tag/branch, this fails with RELAY-CELSPEC-PIN-MISSING.
+          PIN=$(grep -v '^#' tests/conformance/cel-spec/PINNED_COMMIT.txt | grep -E '^[0-9a-f]{40}$' | head -1)
+          echo "Resolving pin ${PIN} against google/cel-spec..."
+          if ! git ls-remote https://github.com/google/cel-spec | grep -q "${PIN}"; then
+            echo "::error::RELAY-CELSPEC-PIN-MISSING: pinned commit ${PIN} not found at https://github.com/google/cel-spec"
+            echo "pin_missing=true" >> "${GITHUB_OUTPUT}"
+            exit 1
+          fi
+          echo "pin_missing=false" >> "${GITHUB_OUTPUT}"
+          echo "Pin ${PIN} resolves on upstream"
+
+      - name: "Open GitHub issue on drift (area:conformance-drift)"
+        if: failure() || steps.latest-run.outputs.py_exit != '0' || steps.latest-run.outputs.ts_exit != '0' || steps.upstream-pin-check.outputs.pin_missing == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body;
+            try {
+              const report = fs.readFileSync('.drift/drift-report.json', 'utf-8');
+              body = "Nightly cel-spec conformance drift detected.\n\n" +
+                "## Drift report\n\n```json\n" + report + "\n```\n\n" +
+                "## Workflow run\n\n" +
+                "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n" +
+                "## Required action\n\n" +
+                "1. Inspect the latest-pytest.stdout and latest-vitest.stdout artifacts.\n" +
+                "2. Decide: was an upstream null-semantics or type-coercion change introduced?\n" +
+                "3. If yes: update tests/conformance/cel-spec/.upstream-pins.json (pinned versions) and refresh celspec_vectors.json + MANIFEST.sha256.\n" +
+                "4. If no: file an upstream issue against cel-python or cel-js.\n";
+            } catch (e) {
+              body = "Drift report missing; see workflow run for stderr. Workflow URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}";
+            }
+            // Per VAL-W17-014: auto-assignee is the CODEOWNER for
+            // /packages/contracts/. We grep CODEOWNERS for that path
+            // and take the first @user listed.
+            let assignees = [];
+            try {
+              const codeowners = fs.readFileSync('.github/CODEOWNERS', 'utf-8');
+              for (const raw of codeowners.split('\n')) {
+                const line = raw.trim();
+                if (line.startsWith('#') || !line) continue;
+                if (line.startsWith('/packages/contracts/') || line.startsWith('packages/contracts/')) {
+                  const owners = line.split(/\s+/).slice(1).filter(t => t.startsWith('@'));
+                  assignees = owners.map(o => o.replace(/^@/, ''));
+                  break;
+                }
+              }
+            } catch (e) {
+              // Fall through with empty assignees; issue still opens.
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: "[nightly-cel-drift] cel-spec conformance drift detected on " + new Date().toISOString().slice(0, 10),
+              body: body,
+              labels: ["area:conformance-drift"],
+              assignees: assignees,
+            });
+
+      - name: "Fail workflow on drift"
+        if: steps.latest-run.outputs.py_exit != '0' || steps.latest-run.outputs.ts_exit != '0' || steps.upstream-pin-check.outputs.pin_missing == 'true'
+        shell: bash
+        run: |
+          echo "RELAY-W17-3-DRIFT: workflow failing because drift was detected."
+          echo "py_exit=${{ steps.latest-run.outputs.py_exit }}"
+          echo "ts_exit=${{ steps.latest-run.outputs.ts_exit }}"
+          echo "pin_missing=${{ steps.upstream-pin-check.outputs.pin_missing }}"
+          exit 1

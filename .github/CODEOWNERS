@@ -24,3 +24,14 @@
 
 # Release docs: runbook + announcements.
 /docs/release/                               @chandlervaughn
+
+# W17.3 conformance: contract DSL + cel-spec corpus. The nightly
+# drift workflow (.github/workflows/nightly-cel-drift.yml) auto-assigns
+# the GitHub issue opened on conformance drift to the first owner
+# listed here (per VAL-W17-014 and C-MIN-007 alerting-path
+# reconciliation).
+/packages/contracts/                         @chandlervaughn
+/packages/contracts-typescript/              @chandlervaughn
+/tests/conformance/cel-spec/                 @chandlervaughn
+/.github/workflows/nightly-cel-drift.yml     @chandlervaughn
+/scripts/check-cel-spec-drift.py             @chandlervaughn
