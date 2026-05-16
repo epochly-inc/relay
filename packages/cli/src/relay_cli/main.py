@@ -563,6 +563,18 @@ from .commands.verify_self import (  # noqa: E402 - late import keeps load order
 app.command("verify-self", cls=_RelayTyperCommand)(cmd_verify_self)
 
 
+# --- verify-install standalone command (W12.6 wired) ------------------------
+# Per VAL-W12-028..034 verify-install verifies Python + npm + sidecar install
+# signatures with composite exit code semantics. Implementation lives in
+# ``relay_cli.commands.verify_install``.
+
+from .commands.verify_install import (  # noqa: E402 - late import keeps load order stable
+    cmd_verify_install,
+)
+
+app.command("verify-install", cls=_RelayTyperCommand)(cmd_verify_install)
+
+
 # -----------------------------------------------------------------------------
 # Signal handlers (VAL-W5-007).
 # -----------------------------------------------------------------------------
