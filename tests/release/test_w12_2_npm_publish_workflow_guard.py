@@ -546,6 +546,105 @@ def test_real_workflow_runs_on_tagged_pushes_only() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# VAL-W12-012 SHA-pin enforcement (Bug 3 strengthening).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_real_npm_workflow_passes_sha_pinning_check() -> None:
+    """Every supply-chain critical ``uses:`` ref in release-npm.yml is
+    40-char SHA-pinned."""
+    proc = _run_guard(REPO_ROOT)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert check["passed"], (
+        f"VAL-W12-012 SHA-pin check rejected real npm workflow: "
+        f"{check['message']!r}"
+    )
+    assert check["error_code"] == "RELAY-RELEASE-012"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_npm_guard_rejects_slsa_generator_tag_pin_in_sdk_job(
+    tmp_path: Path,
+) -> None:
+    """A workflow pinning the SDK provenance SLSA generator to a tag FAILS."""
+
+    def transform(data: dict[str, Any]) -> None:
+        data["jobs"]["provenance-sdk"]["uses"] = (
+            "slsa-framework/slsa-github-generator/"
+            ".github/workflows/generator_generic_slsa3.yml@v2.0.0"
+        )
+
+    repo = _materialize_repo(
+        tmp_path,
+        _mutate_workflow(transform),
+        _real_pypi_workflow_text(),
+        _real_runbook_text(),
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert not check["passed"]
+    assert check["error_code"] == "RELAY-RELEASE-012"
+    assert "'v2.0.0'" in check["message"]
+    assert "provenance-sdk" in check["message"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_npm_guard_rejects_slsa_generator_branch_pin_in_sidecar_job(
+    tmp_path: Path,
+) -> None:
+    """A workflow pinning the sidecar-bundle provenance SLSA generator to
+    a branch FAILS."""
+
+    def transform(data: dict[str, Any]) -> None:
+        data["jobs"]["provenance-sidecar-bundle"]["uses"] = (
+            "slsa-framework/slsa-github-generator/"
+            ".github/workflows/generator_generic_slsa3.yml@main"
+        )
+
+    repo = _materialize_repo(
+        tmp_path,
+        _mutate_workflow(transform),
+        _real_pypi_workflow_text(),
+        _real_runbook_text(),
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert not check["passed"]
+    assert "'main'" in check["message"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_npm_guard_failure_message_is_structured(tmp_path: Path) -> None:
+    """Failure messages include workflow path, lineno, action ref, bad ref."""
+
+    def transform(data: dict[str, Any]) -> None:
+        data["jobs"]["provenance-sdk"]["uses"] = (
+            "slsa-framework/slsa-github-generator/"
+            ".github/workflows/generator_generic_slsa3.yml@v2.0.0"
+        )
+
+    repo = _materialize_repo(
+        tmp_path,
+        _mutate_workflow(transform),
+        _real_pypi_workflow_text(),
+        _real_runbook_text(),
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert ".github/workflows/release-npm.yml" in check["message"]
+    assert "must be pinned to 40-char SHA" in check["message"]
+
+
 @pytest.mark.plumbing
 def test_real_workflow_uses_release_environment_for_publish_jobs() -> None:
     """Both publish jobs MUST bind to the protected ``release`` environment

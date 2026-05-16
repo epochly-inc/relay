@@ -59,6 +59,17 @@ RELAY_CLI_VERIFY_SELF_INTERNAL: Final[str] = "RELAY-CLI-VERIFY-SELF-INTERNAL"
 RELAY_CLI_VERIFY_SELF_BUNDLE_WRITE_FAILED: Final[str] = (
     "RELAY-CLI-VERIFY-SELF-BUNDLE-WRITE-FAILED"
 )
+RELAY_CLI_VERIFY_SELF_NO_TREE: Final[str] = (
+    "RELAY-CLI-VERIFY-SELF-NO-RELAY-TREE"
+)
+
+# Exit code used when the verifier cannot locate a relay working tree
+# from the resolved repo root. POSIX-2 ("misuse of shell builtins" /
+# "incorrect invocation") matches the user-facing intent: "you ran this
+# in the wrong directory" -- distinct from EXIT_SUCCESS (0) which would
+# falsely claim every invariant passed, and from EXIT_4XX_BLOCK (1)
+# which would falsely claim an invariant violation was found.
+EXIT_NO_RELAY_TREE: Final[int] = 2
 
 
 # -----------------------------------------------------------------------------
@@ -77,27 +88,51 @@ RELAY_CLI_VERIFY_SELF_BUNDLE_WRITE_FAILED: Final[str] = (
 
 ENV_REPO_ROOT: Final[str] = "RELAY_VERIFY_SELF_REPO_ROOT"
 
+# Directories the verifier scans (see ``relay_cli.invariants.util.SCAN_ROOTS``).
+# Duplicated here only for the "no relay tree detected" check because the
+# CLI command must report exit 2 BEFORE the invariant runner imports
+# happen to walk into a nonexistent tree.
+RELAY_TREE_MARKERS: Final[tuple[str, ...]] = ("packages", "apps")
+
 
 def _looks_like_relay_root(p: Path) -> bool:
-    return (p / "packages").is_dir() and (p / "apps").is_dir()
+    return all((p / name).is_dir() for name in RELAY_TREE_MARKERS)
 
 
-def _resolve_repo_root(explicit: Path | None) -> Path:
-    """Resolve the relay/ working-tree root."""
+def _resolve_repo_root(
+    explicit: Path | None,
+) -> tuple[Path, bool]:
+    """Resolve the relay/ working-tree root.
+
+    Returns ``(resolved_path, detected)`` where ``detected`` is True iff
+    the resolution found a directory that actually looks like a relay
+    working tree (contains every entry in :data:`RELAY_TREE_MARKERS`).
+
+    An explicit ``--repo-root`` flag or the ``RELAY_VERIFY_SELF_REPO_ROOT``
+    environment variable is honored verbatim and reported as ``detected``
+    when the markers are present. If the caller passes an explicit path
+    that does NOT contain the markers, ``detected`` is False so the
+    command surface can emit the structured ``no_relay_tree_detected``
+    envelope rather than silently scanning zero files and exiting 0.
+    """
     if explicit is not None:
-        return explicit.resolve()
+        resolved = explicit.resolve()
+        return (resolved, _looks_like_relay_root(resolved))
     env_value = os.environ.get(ENV_REPO_ROOT, "").strip()
     if env_value:
-        return Path(env_value).expanduser().resolve()
+        resolved = Path(env_value).expanduser().resolve()
+        return (resolved, _looks_like_relay_root(resolved))
     here = Path.cwd().resolve()
     candidate = here
     for _ in range(8):  # walk up at most 8 levels
         if _looks_like_relay_root(candidate):
-            return candidate
+            return (candidate, True)
         if candidate.parent == candidate:
             break
         candidate = candidate.parent
-    return here
+    # Fell through: no relay tree found. Return CWD so callers can
+    # report the path they were standing in, with ``detected=False``.
+    return (here, False)
 
 
 # -----------------------------------------------------------------------------
@@ -191,7 +226,50 @@ def cmd_verify_self(
     repo_root_path = Path(repo_root).expanduser() if repo_root else None
     home_path = Path(home).expanduser() if home else None
 
-    resolved_root = _resolve_repo_root(repo_root_path)
+    resolved_root, tree_detected = _resolve_repo_root(repo_root_path)
+
+    # ----- Step 0: short-circuit if no relay working tree is detected -----
+    # Without this, the runner walks an empty directory, every checker
+    # produces zero findings, ``overall == "pass"``, and the command
+    # exits 0 -- silently claiming every invariant is green when in
+    # fact no invariant was meaningfully checked. Emit a structured
+    # ``no_relay_tree_detected`` envelope on stdout, document the paths
+    # we tried, and exit 2 ("misuse / wrong invocation directory").
+    if not tree_detected:
+        checked_paths = [
+            str(resolved_root / marker) for marker in RELAY_TREE_MARKERS
+        ]
+        envelope = {
+            "schema_version": VERIFY_SELF_RESULT_SCHEMA,
+            "overall": "unknown",
+            "reason": "no_relay_tree_detected",
+            "checked_paths": checked_paths,
+            "resolved_root": str(resolved_root),
+            "code": RELAY_CLI_VERIFY_SELF_NO_TREE,
+        }
+        stdout_bytes = (
+            json.dumps(envelope, separators=(",", ":"), ensure_ascii=True) + "\n"
+        ).encode("utf-8")
+        sys.stdout.buffer.write(stdout_bytes)
+        sys.stdout.flush()
+        stderr_envelope = build_envelope(
+            code=RELAY_CLI_VERIFY_SELF_NO_TREE,
+            http_status=400,
+            message=(
+                "verify-self could not locate a relay working tree at "
+                f"{resolved_root!s}; expected directories: "
+                + ", ".join(RELAY_TREE_MARKERS)
+                + ". Run from inside the relay/ repo or pass --repo-root."
+            ),
+            blocked_surface="rly verify-self",
+            retry_advice="after_fix",
+            details={
+                "resolved_root": str(resolved_root),
+                "checked_paths": checked_paths,
+            },
+        )
+        emit_envelope(stderr_envelope)
+        raise typer.Exit(code=EXIT_NO_RELAY_TREE)
 
     # ----- Step 1: run the invariant suite -----
     runner_dict: dict[str, Any]
@@ -283,8 +361,10 @@ def cmd_verify_self(
 
 
 __all__ = [
+    "EXIT_NO_RELAY_TREE",
     "RELAY_CLI_VERIFY_SELF_BUNDLE_WRITE_FAILED",
     "RELAY_CLI_VERIFY_SELF_FAIL",
     "RELAY_CLI_VERIFY_SELF_INTERNAL",
+    "RELAY_CLI_VERIFY_SELF_NO_TREE",
     "cmd_verify_self",
 ]

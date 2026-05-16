@@ -618,6 +618,72 @@ def test_evidence_bundle_signed_when_key_present(tmp_path: Path) -> None:
 
 
 # -----------------------------------------------------------------------------
+# Bug fix: verify-self exits 2 (not 0) when invoked outside a relay tree.
+#
+# Previously, ``rly verify-self`` walked up from CWD looking for the
+# relay/ working tree; when it could not find one it silently fell back
+# to CWD, every checker produced zero findings, ``overall == "pass"``,
+# and the command exited 0 -- falsely claiming every invariant was
+# green. The fix detects the "no relay tree" condition and exits 2 with
+# a structured JSON envelope ``{overall: "unknown", reason:
+# "no_relay_tree_detected", checked_paths: [...]}``.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+def test_verify_self_outside_tree_exits_nonzero(tmp_path: Path) -> None:
+    """Invoking rly verify-self from a directory with no relay/ markers
+    (no ``packages/`` AND no ``apps/`` subdirectories along the walk-up)
+    MUST exit 2 and emit a structured ``no_relay_tree_detected``
+    envelope on stdout."""
+    # tmp_path is empty (pytest provides a fresh dir). Walking up from
+    # it eventually hits the filesystem root with no relay markers --
+    # the resolver returns (cwd, False).
+    empty_dir = tmp_path / "no_relay_here"
+    empty_dir.mkdir()
+    result = _run_rly(
+        ["verify-self"],
+        extra_env={
+            "RELAY_HOME": str(tmp_path / "rhome"),
+            # Explicitly clear the env override so the walk-up fallback fires.
+            "RELAY_VERIFY_SELF_REPO_ROOT": "",
+        },
+        cwd=empty_dir,
+    )
+    assert result.returncode == 2, (
+        f"expected exit code 2 (no_relay_tree_detected); got "
+        f"{result.returncode}; stdout={result.stdout!r} "
+        f"stderr={result.stderr!r}"
+    )
+    payload = json.loads(result.stdout.strip())
+    assert payload["overall"] == "unknown", payload
+    assert payload["reason"] == "no_relay_tree_detected", payload
+    assert "checked_paths" in payload
+    assert isinstance(payload["checked_paths"], list)
+    assert len(payload["checked_paths"]) >= 1
+    # The structured stderr envelope MUST carry the canonical wire code.
+    assert "RELAY-CLI-VERIFY-SELF-NO-RELAY-TREE" in result.stderr
+
+
+@pytest.mark.plumbing
+def test_verify_self_explicit_repo_root_without_markers_exits_2(
+    tmp_path: Path,
+) -> None:
+    """Passing ``--repo-root /some/empty/dir`` MUST also surface exit 2,
+    not silently succeed with an empty scan."""
+    empty_dir = tmp_path / "explicit_empty"
+    empty_dir.mkdir()
+    result = _run_rly(
+        ["verify-self", "--repo-root", str(empty_dir)],
+        extra_env={"RELAY_HOME": str(tmp_path / "rhome")},
+    )
+    assert result.returncode == 2
+    payload = json.loads(result.stdout.strip())
+    assert payload["overall"] == "unknown"
+    assert payload["reason"] == "no_relay_tree_detected"
+
+
+# -----------------------------------------------------------------------------
 # Live full-repo invocation MUST exit 0 (clean tree assertion)
 # -----------------------------------------------------------------------------
 

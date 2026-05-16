@@ -73,6 +73,21 @@ TRUST_ANCHOR_GOV_RELPATHS = (
 BUILD_DRIVER_RELPATH = "scripts/build-sidecar-bundle.py"
 SIDECAR_BUNDLE_PKG_RELDIR = "packages/sdk-typescript-sidecar-bundle"
 
+# ---------------------------------------------------------------------------
+# SHA-pin enforcement (VAL-W12-012 strengthening per spec keystone #11).
+# See scripts/check-pypi-publish-workflow.py for the rationale narrative.
+# ---------------------------------------------------------------------------
+
+SHA40_RE: re.Pattern[str] = re.compile(r"^[a-f0-9]{40}$")
+
+# The sidecar-bundle workflow consumes the SLSA reusable workflow for
+# provenance. Future additions of supply-chain critical third-party
+# actions (e.g., a non-Apple-tool macOS notarizer wrapper) should be
+# appended here so they too are SHA-pin enforced.
+SHA_PIN_REQUIRED_ACTIONS: tuple[str, ...] = (
+    "slsa-framework/slsa-github-generator",
+)
+
 # Canonical five-arch matrix per VAL-W12-020. Adding to this requires a
 # board-level decision; removing is never allowed.
 CANONICAL_MATRIX: tuple[str, ...] = (
@@ -198,6 +213,74 @@ def _read_text(path: Path) -> str | None:
 # ---------------------------------------------------------------------------
 # Individual assertion checks.
 # ---------------------------------------------------------------------------
+
+
+def _iter_uses_refs(
+    workflow: dict[str, Any],
+) -> list[tuple[str, int, str]]:
+    """Yield every ``(job_name, step_index_or_-1, uses_value)`` triple."""
+    out: list[tuple[str, int, str]] = []
+    for name, job in _iter_jobs(workflow):
+        job_uses = job.get("uses")
+        if isinstance(job_uses, str):
+            out.append((name, -1, job_uses))
+        for idx, step in enumerate(_iter_steps(job)):
+            uses = step.get("uses")
+            if isinstance(uses, str):
+                out.append((name, idx, uses))
+    return out
+
+
+def _split_uses_ref(uses: str) -> tuple[str, str]:
+    if "@" not in uses:
+        return ("", uses)
+    action_path, _, ref = uses.partition("@")
+    return (action_path, ref)
+
+
+def _locate_uses_line(raw_text: str, uses_value: str) -> int:
+    needle = uses_value.strip()
+    for idx, line in enumerate(raw_text.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("uses:"):
+            value = stripped[len("uses:") :].strip().strip("'\"")
+            if value == needle:
+                return idx
+    return 0
+
+
+def check_sha_pinning(
+    workflow: dict[str, Any], raw_text: str, workflow_relpath: str
+) -> CheckResult:
+    """Every reference to a supply-chain critical action MUST pin to a
+    40-character lowercase-hex commit SHA. See pypi guard for narrative.
+    """
+    violations: list[str] = []
+    for job_name, _step_idx, uses in _iter_uses_refs(workflow):
+        action_path, ref = _split_uses_ref(uses)
+        if not action_path:
+            continue
+        for required in SHA_PIN_REQUIRED_ACTIONS:
+            if not action_path.startswith(required):
+                continue
+            if SHA40_RE.match(ref) is None:
+                lineno = _locate_uses_line(raw_text, uses)
+                msg = (
+                    f"FAIL: {workflow_relpath}:{lineno}: action {uses!r} "
+                    f"must be pinned to 40-char SHA, got {ref!r} "
+                    f"(job={job_name!r})"
+                )
+                violations.append(msg)
+                print(msg, file=sys.stderr)
+            break
+    if violations:
+        return CheckResult(
+            "VAL-W12-012",
+            "RELAY-RELEASE-012",
+            False,
+            "; ".join(violations),
+        )
+    return CheckResult("VAL-W12-012", "RELAY-RELEASE-012", True)
 
 
 def check_val_w12_020(workflow: dict[str, Any], raw_text: str) -> CheckResult:
@@ -616,6 +699,9 @@ def build_report(repo_root: Path) -> GuardReport:
     workflow, raw_text = _load_yaml(workflow_path)
     report = GuardReport(workflow_path=str(workflow_path))
 
+    # VAL-W12-012 strengthening: SHA-pin enforcement for supply-chain
+    # critical actions. See pypi guard for narrative.
+    report.checks.append(check_sha_pinning(workflow, raw_text, WORKFLOW_RELPATH))
     report.checks.append(check_val_w12_020(workflow, raw_text))
     report.checks.append(check_val_w12_021(workflow, raw_text))
     report.checks.append(check_val_w12_022(raw_text))

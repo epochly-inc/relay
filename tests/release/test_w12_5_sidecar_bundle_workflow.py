@@ -424,6 +424,57 @@ def test_sectigo_tsa_fallback_documented_and_inactive_by_default() -> None:
 
 
 # ---------------------------------------------------------------------------
+# VAL-W12-012 SHA-pin enforcement (Bug 3 strengthening + Bug 1 fix).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_sidecar_workflow_passes_sha_pinning_check() -> None:
+    """The real release-sidecar-bundle.yml has every supply-chain critical
+    ``uses:`` ref 40-char SHA-pinned (Bug 1 fix)."""
+    report = _run_guard_json()
+    check = _assertion(report, "VAL-W12-012")
+    assert check["passed"], (
+        f"VAL-W12-012 SHA-pin check rejected sidecar workflow: "
+        f"{check['message']!r}"
+    )
+    assert check["error_code"] == "RELAY-RELEASE-012"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_sidecar_workflow_pins_slsa_generator_to_40_char_sha() -> None:
+    """The SLSA generator ``uses:`` ref MUST be 40-char lowercase hex.
+
+    Direct file-level assertion (does not depend on the guard) so a
+    regression that bypasses the guard still trips this test.
+    """
+    workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Find the SLSA generator uses: line.
+    found_ref: str | None = None
+    for line in workflow_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("uses:") and (
+            "slsa-framework/slsa-github-generator" in stripped
+        ):
+            value = stripped[len("uses:") :].strip().strip("'\"")
+            _, _, ref = value.partition("@")
+            found_ref = ref
+            break
+    assert found_ref is not None, (
+        "no SLSA generator uses: line found in sidecar workflow"
+    )
+    import re as _re
+
+    sha40 = _re.compile(r"^[a-f0-9]{40}$")
+    assert sha40.match(found_ref), (
+        f"SLSA generator ref {found_ref!r} is not a 40-char SHA "
+        "(must be SHA-pinned per spec keystone #11)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Composite guard exit code -- if every assertion passes the guard
 # exits 0 (suitable for CI use).
 # ---------------------------------------------------------------------------

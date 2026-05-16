@@ -592,6 +592,150 @@ def test_guard_module_unit_check_accepts_dict_environment_form(tmp_path: Path) -
     )
 
 
+# ---------------------------------------------------------------------------
+# VAL-W12-012 SHA-pin enforcement (Bug 3 strengthening).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_real_workflow_passes_sha_pinning_check() -> None:
+    """Every ``uses:`` reference to a supply-chain critical action in
+    the real release-pypi.yml is 40-char SHA-pinned."""
+    proc = _run_guard(REPO_ROOT)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert check["passed"], (
+        f"VAL-W12-012 SHA-pin check rejected real workflow: "
+        f"{check['message']!r}"
+    )
+    assert check["error_code"] == "RELAY-RELEASE-012"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_guard_rejects_pypa_publish_pinned_to_branch(tmp_path: Path) -> None:
+    """A workflow pinning ``pypa/gh-action-pypi-publish`` to a branch FAILS."""
+
+    def transform(data: dict[str, Any]) -> None:
+        for step in data["jobs"]["publish"]["steps"]:
+            uses = step.get("uses", "")
+            if isinstance(uses, str) and uses.startswith(
+                "pypa/gh-action-pypi-publish"
+            ):
+                step["uses"] = "pypa/gh-action-pypi-publish@release/v1"
+
+    repo = _materialize_repo(
+        tmp_path, _mutate_workflow(transform), _real_runbook_text()
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert not check["passed"], (
+        "guard failed to reject pypa/gh-action-pypi-publish pinned "
+        "to release/v1 branch"
+    )
+    assert check["error_code"] == "RELAY-RELEASE-012"
+    assert "must be pinned to 40-char SHA" in check["message"]
+    assert "'release/v1'" in check["message"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_guard_rejects_pypa_publish_pinned_to_tag(tmp_path: Path) -> None:
+    """A workflow pinning ``pypa/gh-action-pypi-publish`` to a tag FAILS."""
+
+    def transform(data: dict[str, Any]) -> None:
+        for step in data["jobs"]["publish"]["steps"]:
+            uses = step.get("uses", "")
+            if isinstance(uses, str) and uses.startswith(
+                "pypa/gh-action-pypi-publish"
+            ):
+                step["uses"] = "pypa/gh-action-pypi-publish@v1.10.0"
+
+    repo = _materialize_repo(
+        tmp_path, _mutate_workflow(transform), _real_runbook_text()
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert not check["passed"]
+    assert "'v1.10.0'" in check["message"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_guard_rejects_slsa_generator_pinned_to_tag(tmp_path: Path) -> None:
+    """A workflow pinning the SLSA generator to a tag (e.g. v2.0.0) FAILS."""
+
+    def transform(data: dict[str, Any]) -> None:
+        # SLSA generator is referenced via job-level `uses:` (reusable workflow).
+        data["jobs"]["provenance"]["uses"] = (
+            "slsa-framework/slsa-github-generator/"
+            ".github/workflows/generator_generic_slsa3.yml@v2.0.0"
+        )
+
+    repo = _materialize_repo(
+        tmp_path, _mutate_workflow(transform), _real_runbook_text()
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert not check["passed"]
+    assert "slsa-framework/slsa-github-generator" in check["message"]
+    assert "'v2.0.0'" in check["message"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_guard_accepts_sha_pinned_supply_chain_actions(tmp_path: Path) -> None:
+    """The real workflow (after the Bug-2 fix) MUST pass VAL-W12-012."""
+    repo = _materialize_repo(
+        tmp_path, _real_workflow_text(), _real_runbook_text()
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert check["passed"], (
+        f"real workflow rejected by SHA-pin check: {check['message']!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-012")
+def test_guard_failure_message_is_structured(tmp_path: Path) -> None:
+    """The failure message MUST include path, lineno, action ref, and the
+    bad ref so CI logs are actionable."""
+
+    def transform(data: dict[str, Any]) -> None:
+        for step in data["jobs"]["publish"]["steps"]:
+            uses = step.get("uses", "")
+            if isinstance(uses, str) and uses.startswith(
+                "pypa/gh-action-pypi-publish"
+            ):
+                step["uses"] = "pypa/gh-action-pypi-publish@release/v1"
+
+    repo = _materialize_repo(
+        tmp_path, _mutate_workflow(transform), _real_runbook_text()
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-012")
+    assert ".github/workflows/release-pypi.yml" in check["message"]
+    assert "must be pinned to 40-char SHA" in check["message"]
+    # Structured FAIL line must also appear on stderr for human/CI consumers
+    # who run the guard without --json.
+    proc_human = subprocess.run(  # noqa: S603
+        [sys.executable, str(GUARD_SCRIPT), "--repo-root", str(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert "FAIL:" in proc_human.stderr
+    assert "must be pinned to 40-char SHA" in proc_human.stderr
+
+
 @pytest.mark.plumbing
 def test_guard_script_is_invocable_without_unicode_output() -> None:
     """The guard's human-mode output is ASCII-only (CLAUDE.md ASCII-Safe Source)."""

@@ -214,9 +214,11 @@ jobs:
 
       - name: "Publish to PyPI (OIDC trusted publisher, Sigstore attestations, idempotent)"
         if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
-        # Pinned by SHA. Renovate/Dependabot bumps go through the
-        # release-pipeline review (sub-feature w12.3).
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # Pinned to SHA cef2210 (release/v1 branch tip, resolved
+        # 2026-05-16 via https://api.github.com/repos/pypa/gh-action-pypi-publish/branches/release/v1);
+        # rotate manually when upstream releases v1.x. Renovate/Dependabot
+        # bumps go through the release-pipeline review (sub-feature w12.3).
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
         with:
           # Sigstore-backed PEP 740 PyPI distribution attestations.
           # The action signs every dist/* file with the GitHub OIDC

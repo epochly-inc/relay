@@ -21,7 +21,14 @@ jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
     steps:
-      - uses: contributor-assistant/github-action@v2.6.1
+      # SHA-pinned per spec keystone #11. This action runs on
+      # pull_request_target with write permissions to contents,
+      # pull-requests, and statuses -- a force-moved v2.6.1 tag would
+      # let an attacker execute arbitrary code against the repository.
+      # SHA ca4a40a == v2.6.1 (resolved 2026-05-16 via
+      # https://api.github.com/repos/contributor-assistant/github-action/git/refs/tags/v2.6.1);
+      # rotate via a deliberate PR.
+      - uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
