@@ -1,0 +1,26 @@
+# Relay v0.1 OSS - CODEOWNERS
+#
+# Per sub-feature w12.1 (release-pypi-trusted-publish), the release
+# pipeline files require Chandler (release engineering owner) review
+# before merge. This file plus the GitHub `release` environment's
+# required_reviewers rule together enforce VAL-W12-003 (manual
+# approval before publish): the environment gate runs at deploy time;
+# CODEOWNERS gates the PR-time approval that lets the workflow file
+# itself change.
+#
+# Format: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+#
+# When sub-features w12.2..w12.6 land, they will add additional
+# owners for their respective paths (TS release, SLSA workflow,
+# in-toto layout, sidecar bundle, verify-install). Until then,
+# Chandler is the sole owner of the release surface.
+
+# Release pipeline: PyPI publish workflow + supporting guard scripts.
+/.github/workflows/release-pypi.yml          @chandlervaughn
+/.github/CODEOWNERS                          @chandlervaughn
+/scripts/check-pypi-publish-workflow.py      @chandlervaughn
+/scripts/check-semver-monotonic.py           @chandlervaughn
+/scripts/check-pre-announcement.py           @chandlervaughn
+
+# Release docs: runbook + announcements.
+/docs/release/                               @chandlervaughn
