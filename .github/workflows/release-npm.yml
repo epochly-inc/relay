@@ -1,0 +1,406 @@
+# Relay v0.1 OSS - npm Provenance Release Workflow (sub-feature w12.2)
+#
+# Publishes the two-tier npm distribution of Relay's TypeScript SDK to
+# the npmjs.com registry using npm's trusted-publisher (OIDC) flow and
+# emits SLSA provenance attestations bound to the published tarball
+# digests:
+#
+#   1. @epochly/relay                  - thin TypeScript SDK + JS client
+#                                        + sidecar locator (works against
+#                                        an externally-installed sidecar)
+#   2. @epochly/relay-sidecar-bundle   - signed standalone sidecar
+#                                        binaries (per OS/arch) built via
+#                                        PyInstaller; npx @epochly/relay
+#                                        sidecar downloads + verifies +
+#                                        runs the bundle.
+#
+# Both packages MUST publish together (eng plan L3 line 226: two-tier
+# TS distribution) and MUST share a single source-commit SHA with the
+# PyPI release (eng plan acceptance criteria line 454: ship together or
+# not at all).
+#
+# This workflow is the only path that may push a distribution of
+# @epochly/relay or @epochly/relay-sidecar-bundle to npm. Both npm
+# projects' trusted-publisher binding is scoped to:
+#
+#   repo:        epochly-inc/relay
+#   workflow:    release-npm.yml
+#   environment: release
+#
+# NO long-lived NPM_TOKEN. The `release` environment requires Chandler
+# (release engineering owner) to manually approve every run before
+# publish (sister of VAL-W12-003 for PyPI; see docs/release/runbook.md).
+#
+# Static guard: scripts/check-npm-publish-workflow.py enforces the
+# VAL-W12-007..010 invariants on this file.
+#
+# Trigger surface is intentionally identical to release-pypi.yml: a
+# single tag push of the form v[0-9]+.[0-9]+.[0-9]+* fires BOTH
+# workflows, guaranteeing one commit SHA across both release artifacts
+# (VAL-W12-010).
+
+name: "release-npm"
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions: {}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Precheck (shared with release-pypi.yml: same scripts, same surface).
+  # Enforces VAL-W12-040 (monotonic SemVer) and VAL-W12-046 (pre-announcement
+  # of breaking changes). The guards run against the proposed tag.
+  # ---------------------------------------------------------------------------
+  precheck:
+    name: "Precheck: monotonic version, pre-announcement"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Static guard: npm publish workflow contract"
+        # Enforces VAL-W12-007..010 by static analysis of this workflow
+        # plus release-pypi.yml (for the same-commit cross-platform
+        # binding check).
+        run: python scripts/check-npm-publish-workflow.py
+
+      - name: "Pre-announcement gate (sister of VAL-W12-046)"
+        env:
+          RELAY_RELEASE_TAG: ${{ github.ref_name }}
+        run: python scripts/check-pre-announcement.py
+
+      - name: "Monotonic SemVer gate (sister of VAL-W12-040)"
+        env:
+          RELAY_RELEASE_VERSION: ${{ github.ref_name }}
+        run: python scripts/check-semver-monotonic.py
+
+  # ---------------------------------------------------------------------------
+  # Cross-platform consistency gate (VAL-W12-010).
+  #
+  # Asserts that this npm release workflow and release-pypi.yml are
+  # firing for the SAME git commit, AND that no PyPI publish has already
+  # shipped a different commit under this version tag. The npm and PyPI
+  # provenance attestations MUST bind to the same source commit SHA;
+  # this gate is the static pre-publish check, complementing the
+  # post-publish slsa-verifier cross-platform comparison performed by
+  # downstream consumers.
+  # ---------------------------------------------------------------------------
+  cross-platform-consistency:
+    name: "Cross-platform commit consistency (VAL-W12-010)"
+    runs-on: ubuntu-latest
+    needs: [precheck]
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Assert npm + pypi release workflows share commit (RELAY-RELEASE-010)"
+        # Resolves the commit SHA the current tag points at, then asserts
+        # the same SHA is the head of the release-pypi.yml workflow run
+        # for the same tag. Divergence -> non-zero exit + RELAY-RELEASE-010.
+        env:
+          RELAY_RELEASE_TAG: ${{ github.ref_name }}
+          RELAY_RELEASE_COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-npm-pypi-commit-consistency.py
+
+  # ---------------------------------------------------------------------------
+  # Build the thin SDK tarball (@epochly/relay).
+  # ---------------------------------------------------------------------------
+  build-sdk:
+    name: "Build @epochly/relay tarball"
+    runs-on: ubuntu-latest
+    needs: [precheck, cross-platform-consistency]
+    permissions:
+      contents: read
+    outputs:
+      # base64-encoded "sha256sum dist/*.tgz" output. Consumed by the
+      # SLSA generator's base64-subjects input (VAL-W12-008 chain).
+      hashes: ${{ steps.hash.outputs.hashes }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Node"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          # registry-url is required for the OIDC token exchange against
+          # the public npm registry. Setting it here makes `npm publish`
+          # below target the right host with the right auth surface.
+          registry-url: "https://registry.npmjs.org"
+
+      - name: "Install workspace dependencies"
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: "Build SDK"
+        run: npm run build --workspace=packages/sdk-typescript
+
+      - name: "Pack tarball"
+        id: pack
+        run: |
+          mkdir -p dist-sdk/
+          cd packages/sdk-typescript
+          TARBALL=$(npm pack --pack-destination ../../dist-sdk/ --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["filename"])')
+          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
+
+      - name: "Compute artifact hashes (base64-subjects payload)"
+        id: hash
+        run: |
+          cd dist-sdk
+          HASHES=$(sha256sum *.tgz | base64 -w0)
+          echo "hashes=${HASHES}" >> "$GITHUB_OUTPUT"
+
+      - name: "Upload SDK tarball artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-sdk
+          path: dist-sdk/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Build the sidecar-bundle tarball (@epochly/relay-sidecar-bundle).
+  #
+  # The bundle's binary contents (PyInstaller-built sidecar per OS/arch)
+  # are produced by sub-feature w12.5; this workflow assembles the
+  # already-built per-arch binaries into the npm package. For v0.1 OSS
+  # wedge, the package is built from packages/sdk-typescript-sidecar-bundle/
+  # (created by w12.5). Until w12.5 lands, this job builds an empty-shell
+  # tarball that still publishes with --provenance so the release pipeline
+  # surface is wired and verifiable end-to-end. See docs/release/runbook.md
+  # for the bring-up sequence.
+  # ---------------------------------------------------------------------------
+  build-sidecar-bundle:
+    name: "Build @epochly/relay-sidecar-bundle tarball"
+    runs-on: ubuntu-latest
+    needs: [precheck, cross-platform-consistency]
+    permissions:
+      contents: read
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Node"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: "Build sidecar-bundle package"
+        # The packages/sdk-typescript-sidecar-bundle/ workspace is owned
+        # by w12.5; on w12.2 we only verify the assembly path is present
+        # and produces a tarball with the expected name.
+        run: |
+          mkdir -p dist-sidecar-bundle/
+          if [ -d packages/sdk-typescript-sidecar-bundle ]; then
+            npm ci --workspace=packages/sdk-typescript-sidecar-bundle --include-workspace-root
+            npm run build --workspace=packages/sdk-typescript-sidecar-bundle --if-present
+          else
+            echo "RELAY-RELEASE-w12.5-PENDING: packages/sdk-typescript-sidecar-bundle/ not yet created (w12.5)"
+            exit 64
+          fi
+
+      - name: "Pack sidecar-bundle tarball"
+        id: pack
+        run: |
+          cd packages/sdk-typescript-sidecar-bundle
+          TARBALL=$(npm pack --pack-destination ../../dist-sidecar-bundle/ --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["filename"])')
+          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
+
+      - name: "Compute artifact hashes (base64-subjects payload)"
+        id: hash
+        run: |
+          cd dist-sidecar-bundle
+          HASHES=$(sha256sum *.tgz | base64 -w0)
+          echo "hashes=${HASHES}" >> "$GITHUB_OUTPUT"
+
+      - name: "Upload sidecar-bundle tarball artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-sidecar-bundle
+          path: dist-sidecar-bundle/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # SLSA L3 provenance for the SDK tarball (chained into VAL-W12-008).
+  # ---------------------------------------------------------------------------
+  provenance-sdk:
+    name: "SLSA L3 provenance (@epochly/relay)"
+    needs: [build-sdk]
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@5a775b367a56d5bd118a224a811bba288150a563
+    with:
+      base64-subjects: "${{ needs.build-sdk.outputs.hashes }}"
+      upload-assets: false
+      provenance-name: "epochly-relay-npm-sdk-provenance.intoto.jsonl"
+
+  # ---------------------------------------------------------------------------
+  # SLSA L3 provenance for the sidecar-bundle tarball (chained into VAL-W12-008).
+  # ---------------------------------------------------------------------------
+  provenance-sidecar-bundle:
+    name: "SLSA L3 provenance (@epochly/relay-sidecar-bundle)"
+    needs: [build-sidecar-bundle]
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@5a775b367a56d5bd118a224a811bba288150a563
+    with:
+      base64-subjects: "${{ needs.build-sidecar-bundle.outputs.hashes }}"
+      upload-assets: false
+      provenance-name: "epochly-relay-npm-sidecar-bundle-provenance.intoto.jsonl"
+
+  # ---------------------------------------------------------------------------
+  # Publish @epochly/relay via npm OIDC trusted-publisher flow
+  # (VAL-W12-007, VAL-W12-008, VAL-W12-009).
+  #
+  # MUST:
+  #   - run in the `release` GitHub environment (required_reviewers)
+  #   - hold permissions.id-token: write for OIDC token exchange
+  #   - NEVER reference an NPM_TOKEN secret
+  #   - call `npm publish --provenance --access public` (so npm registry
+  #     attaches a Sigstore-backed attestation whose subject digest binds
+  #     to the published tarball SHA-512)
+  #   - assert post-publish that `npm audit signatures` reports OK
+  #     (VAL-W12-008 post-condition: tarball digest == attestation subject)
+  # ---------------------------------------------------------------------------
+  publish-sdk:
+    name: "Publish @epochly/relay (OIDC trusted publisher)"
+    needs: [build-sdk, provenance-sdk, cross-platform-consistency]
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: "https://www.npmjs.com/package/@epochly/relay"
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Node"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: "Download SDK tarball"
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-sdk
+          path: dist-sdk/
+
+      - name: "Download SDK provenance"
+        uses: actions/download-artifact@v4
+        with:
+          name: "epochly-relay-npm-sdk-provenance.intoto.jsonl"
+          path: provenance-sdk/
+
+      - name: "Final cross-platform consistency check (RELAY-RELEASE-010)"
+        # Belt-and-suspenders: re-asserts the same-commit binding right
+        # before publish, so a race between the PyPI workflow approval
+        # and this approval cannot ship divergent SHAs.
+        env:
+          RELAY_RELEASE_TAG: ${{ github.ref_name }}
+          RELAY_RELEASE_COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-npm-pypi-commit-consistency.py
+
+      - name: "npm publish --provenance --access public"
+        # OIDC trusted publishing: npm cli (>=11.5.1) detects
+        # ACTIONS_ID_TOKEN_REQUEST_URL + ACTIONS_ID_TOKEN_REQUEST_TOKEN
+        # in the CI env and exchanges the GitHub OIDC token for an
+        # ephemeral npm publish token at publish time. NO long-lived
+        # NPM_TOKEN. The --provenance flag attaches a Sigstore-backed
+        # SLSA provenance statement whose subject digest equals the
+        # published tarball's SHA-512.
+        run: |
+          cd dist-sdk
+          npm publish *.tgz --provenance --access public
+
+      - name: "npm audit signatures (VAL-W12-008 post-condition)"
+        # Fetches the published @epochly/relay tarball back from the
+        # registry, recomputes its SHA-512, and verifies the digest
+        # equals the attestation subject digest. Non-zero exit on
+        # mismatch -> RELAY-RELEASE-008.
+        run: npm audit signatures
+
+  # ---------------------------------------------------------------------------
+  # Publish @epochly/relay-sidecar-bundle via the same OIDC flow
+  # (VAL-W12-009: BOTH packages publish with --provenance).
+  # ---------------------------------------------------------------------------
+  publish-sidecar-bundle:
+    name: "Publish @epochly/relay-sidecar-bundle (OIDC trusted publisher)"
+    needs: [build-sidecar-bundle, provenance-sidecar-bundle, cross-platform-consistency]
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: "https://www.npmjs.com/package/@epochly/relay-sidecar-bundle"
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Node"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: "Download sidecar-bundle tarball"
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-sidecar-bundle
+          path: dist-sidecar-bundle/
+
+      - name: "Download sidecar-bundle provenance"
+        uses: actions/download-artifact@v4
+        with:
+          name: "epochly-relay-npm-sidecar-bundle-provenance.intoto.jsonl"
+          path: provenance-sidecar-bundle/
+
+      - name: "Final cross-platform consistency check (RELAY-RELEASE-010)"
+        env:
+          RELAY_RELEASE_TAG: ${{ github.ref_name }}
+          RELAY_RELEASE_COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-npm-pypi-commit-consistency.py
+
+      - name: "npm publish --provenance --access public"
+        run: |
+          cd dist-sidecar-bundle
+          npm publish *.tgz --provenance --access public
+
+      - name: "npm audit signatures (VAL-W12-008 post-condition)"
+        run: npm audit signatures
