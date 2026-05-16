@@ -1,0 +1,29 @@
+{
+  "args": [
+    {
+      "steps": [
+        {
+          "name": "caf\u00e9"
+        }
+      ]
+    },
+    "caf\u00e9"
+  ],
+  "edge_category": "unicode",
+  "expected_output": true,
+  "idiom": "udf",
+  "input_bindings": {
+    "step_name": "caf\u00e9",
+    "trace": {
+      "steps": [
+        {
+          "name": "caf\u00e9"
+        }
+      ]
+    }
+  },
+  "input_expression": "relay.coverage(trace, step_name)",
+  "label": "udf_cov_unicode_match",
+  "py_jcs_b64": "dHJ1ZQ==",
+  "udf": "relay.coverage"
+}

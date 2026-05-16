@@ -1,0 +1,21 @@
+{
+  "args": [
+    {
+      "steps": []
+    },
+    "x"
+  ],
+  "edge_category": "empty",
+  "expected_output": false,
+  "idiom": "udf",
+  "input_bindings": {
+    "step_name": "x",
+    "trace": {
+      "steps": []
+    }
+  },
+  "input_expression": "relay.coverage(trace, step_name)",
+  "label": "udf_cov_empty_steps",
+  "py_jcs_b64": "ZmFsc2U=",
+  "udf": "relay.coverage"
+}

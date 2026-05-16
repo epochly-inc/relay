@@ -1,0 +1,79 @@
+{
+  "args": [
+    {
+      "args": {
+        "obj": {
+          "inner": {
+            "inner": {
+              "inner": {
+                "inner": {
+                  "inner": {
+                    "inner": {
+                      "inner": {
+                        "inner": {
+                          "value": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "obj"
+  ],
+  "edge_category": "nested",
+  "expected_output": {
+    "inner": {
+      "inner": {
+        "inner": {
+          "inner": {
+            "inner": {
+              "inner": {
+                "inner": {
+                  "inner": {
+                    "value": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "idiom": "udf",
+  "input_bindings": {
+    "call": {
+      "args": {
+        "obj": {
+          "inner": {
+            "inner": {
+              "inner": {
+                "inner": {
+                  "inner": {
+                    "inner": {
+                      "inner": {
+                        "inner": {
+                          "value": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "key": "obj"
+  },
+  "input_expression": "relay.tool_arg(call, key)",
+  "label": "udf_arg_nested_object",
+  "py_jcs_b64": "eyJpbm5lciI6eyJpbm5lciI6eyJpbm5lciI6eyJpbm5lciI6eyJpbm5lciI6eyJpbm5lciI6eyJpbm5lciI6eyJpbm5lciI6eyJ2YWx1ZSI6MX19fX19fX19fQ==",
+  "udf": "relay.tool_arg"
+}

@@ -1,0 +1,25 @@
+{
+  "args": [
+    {
+      "args": {
+        "k": "caf\u00e9"
+      }
+    },
+    "k"
+  ],
+  "edge_category": "unicode",
+  "expected_output": "caf\u00e9",
+  "idiom": "udf",
+  "input_bindings": {
+    "call": {
+      "args": {
+        "k": "caf\u00e9"
+      }
+    },
+    "key": "k"
+  },
+  "input_expression": "relay.tool_arg(call, key)",
+  "label": "udf_arg_unicode_value",
+  "py_jcs_b64": "ImNhZsOpIg==",
+  "udf": "relay.tool_arg"
+}

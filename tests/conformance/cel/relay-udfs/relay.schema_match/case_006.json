@@ -1,0 +1,34 @@
+{
+  "args": [
+    {
+      "a": 1,
+      "b": 2
+    },
+    {
+      "required": [
+        "a",
+        "b"
+      ],
+      "type": "object"
+    }
+  ],
+  "expected_output": true,
+  "idiom": "udf",
+  "input_bindings": {
+    "payload": {
+      "a": 1,
+      "b": 2
+    },
+    "schema": {
+      "required": [
+        "a",
+        "b"
+      ],
+      "type": "object"
+    }
+  },
+  "input_expression": "relay.schema_match(payload, schema)",
+  "label": "udf_sm_object_required",
+  "py_jcs_b64": "dHJ1ZQ==",
+  "udf": "relay.schema_match"
+}

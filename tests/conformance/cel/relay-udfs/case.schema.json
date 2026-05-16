@@ -1,0 +1,66 @@
+{
+  "$id": "https://relay.epochly.com/schemas/w17.4/udf-case.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "args": {
+      "description": "Positional args passed to the Python UDF callable.",
+      "minItems": 1,
+      "type": "array"
+    },
+    "edge_category": {
+      "enum": [
+        "null",
+        "empty",
+        "unicode",
+        "large",
+        "nested"
+      ],
+      "type": "string"
+    },
+    "expected_output": {
+      "description": "JSON-decoded result of the UDF (any JSON type)."
+    },
+    "idiom": {
+      "type": "string"
+    },
+    "input_bindings": {
+      "description": "Bindings referenced by input_expression.",
+      "type": "object"
+    },
+    "input_expression": {
+      "description": "Equivalent CEL expression in named-binding form.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "label": {
+      "description": "Stable case ID; matches W6.5 corpus case id.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "py_jcs_b64": {
+      "description": "base64(JCS bytes) of expected_output (W6.5 golden).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "udf": {
+      "enum": [
+        "relay.coverage",
+        "relay.tool_arg",
+        "relay.schema_match"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "label",
+    "udf",
+    "args",
+    "input_expression",
+    "input_bindings",
+    "expected_output",
+    "py_jcs_b64"
+  ],
+  "title": "Relay-CEL Conformance Corpus -- per-UDF case (W17.4)",
+  "type": "object"
+}

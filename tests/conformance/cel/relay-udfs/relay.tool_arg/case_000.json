@@ -1,0 +1,24 @@
+{
+  "args": [
+    {
+      "args": {
+        "b": false
+      }
+    },
+    "b"
+  ],
+  "expected_output": false,
+  "idiom": "udf",
+  "input_bindings": {
+    "call": {
+      "args": {
+        "b": false
+      }
+    },
+    "key": "b"
+  },
+  "input_expression": "relay.tool_arg(call, key)",
+  "label": "udf_arg_bool_false",
+  "py_jcs_b64": "ZmFsc2U=",
+  "udf": "relay.tool_arg"
+}

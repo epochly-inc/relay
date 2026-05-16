@@ -1,0 +1,24 @@
+{
+  "args": [
+    {
+      "args": {
+        "k": "v"
+      }
+    },
+    "k"
+  ],
+  "expected_output": "v",
+  "idiom": "udf",
+  "input_bindings": {
+    "call": {
+      "args": {
+        "k": "v"
+      }
+    },
+    "key": "k"
+  },
+  "input_expression": "relay.tool_arg(call, key)",
+  "label": "udf_arg_string",
+  "py_jcs_b64": "InYi",
+  "udf": "relay.tool_arg"
+}

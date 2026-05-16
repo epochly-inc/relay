@@ -1,0 +1,191 @@
+{
+  "args": [
+    {
+      "inner": {
+        "inner": {
+          "inner": {
+            "inner": {
+              "inner": {
+                "inner": {
+                  "inner": {
+                    "inner": {
+                      "value": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "inner": {
+          "properties": {
+            "inner": {
+              "properties": {
+                "inner": {
+                  "properties": {
+                    "inner": {
+                      "properties": {
+                        "inner": {
+                          "properties": {
+                            "inner": {
+                              "properties": {
+                                "inner": {
+                                  "properties": {
+                                    "inner": {
+                                      "required": [
+                                        "value"
+                                      ],
+                                      "type": "object"
+                                    }
+                                  },
+                                  "required": [
+                                    "inner"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "inner"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "inner"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "inner"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "inner"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "inner"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "inner"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inner"
+      ],
+      "type": "object"
+    }
+  ],
+  "edge_category": "nested",
+  "expected_output": true,
+  "idiom": "udf",
+  "input_bindings": {
+    "payload": {
+      "inner": {
+        "inner": {
+          "inner": {
+            "inner": {
+              "inner": {
+                "inner": {
+                  "inner": {
+                    "inner": {
+                      "value": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "schema": {
+      "properties": {
+        "inner": {
+          "properties": {
+            "inner": {
+              "properties": {
+                "inner": {
+                  "properties": {
+                    "inner": {
+                      "properties": {
+                        "inner": {
+                          "properties": {
+                            "inner": {
+                              "properties": {
+                                "inner": {
+                                  "properties": {
+                                    "inner": {
+                                      "required": [
+                                        "value"
+                                      ],
+                                      "type": "object"
+                                    }
+                                  },
+                                  "required": [
+                                    "inner"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "inner"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "inner"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "inner"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "inner"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "inner"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "inner"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inner"
+      ],
+      "type": "object"
+    }
+  },
+  "input_expression": "relay.schema_match(payload, schema)",
+  "label": "udf_sm_nested_schema",
+  "py_jcs_b64": "dHJ1ZQ==",
+  "udf": "relay.schema_match"
+}

@@ -1,0 +1,20 @@
+{
+  "args": [
+    123,
+    {
+      "type": "string"
+    }
+  ],
+  "expected_output": false,
+  "idiom": "udf",
+  "input_bindings": {
+    "payload": 123,
+    "schema": {
+      "type": "string"
+    }
+  },
+  "input_expression": "relay.schema_match(payload, schema)",
+  "label": "udf_sm_string_mismatch",
+  "py_jcs_b64": "ZmFsc2U=",
+  "udf": "relay.schema_match"
+}

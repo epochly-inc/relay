@@ -1,0 +1,34 @@
+{
+  "args": [
+    {
+      "steps": [
+        {
+          "name": "alpha"
+        },
+        {
+          "name": "beta"
+        }
+      ]
+    },
+    "alpha"
+  ],
+  "expected_output": true,
+  "idiom": "udf",
+  "input_bindings": {
+    "step_name": "alpha",
+    "trace": {
+      "steps": [
+        {
+          "name": "alpha"
+        },
+        {
+          "name": "beta"
+        }
+      ]
+    }
+  },
+  "input_expression": "relay.coverage(trace, step_name)",
+  "label": "udf_cov_first_match",
+  "py_jcs_b64": "dHJ1ZQ==",
+  "udf": "relay.coverage"
+}

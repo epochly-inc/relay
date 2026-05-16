@@ -1,0 +1,21 @@
+{
+  "args": [
+    null,
+    {
+      "type": "null"
+    }
+  ],
+  "edge_category": "null",
+  "expected_output": true,
+  "idiom": "udf",
+  "input_bindings": {
+    "payload": null,
+    "schema": {
+      "type": "null"
+    }
+  },
+  "input_expression": "relay.schema_match(payload, schema)",
+  "label": "udf_sm_null_payload",
+  "py_jcs_b64": "dHJ1ZQ==",
+  "udf": "relay.schema_match"
+}

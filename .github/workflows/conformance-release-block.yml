@@ -1,0 +1,106 @@
+# Relay v0.1 OSS -- Conformance release-block workflow (VAL-W17-020).
+#
+# Purpose: enforce that ALL FOUR conformance suites pass on every
+# pull_request and push to main. This workflow is a required check
+# on protected branches -- a release tag cannot be cut while any
+# suite is red.
+#
+# Suites (in deliberate matrix order so a failure in any one is
+# immediately addressable):
+#   - w17.1: RFC 8785 JSON Canonicalization Scheme
+#   - w17.2: RFC 7515 JSON Web Signature
+#   - w17.3: cel-spec (google/cel-spec) profile-filtered corpus
+#   - w17.4: Relay-CEL conformance corpus (per-UDF + idiom)
+#
+# Spec citations:
+#   - contract VAL-W17-020 (release-block gate)
+#   - contract VAL-W17-021 (tier-2 timing budget)
+#   - eng plan CQ1 line 152 ("Release blocked on corpus parity")
+#   - eng plan CQ1 line 451 ("RFC 8785 JCS + JWS RFC 7515 + CEL
+#     conformance + Relay-CEL conformance corpus all pass")
+#
+# Negative test: setting RELAY_CONFORMANCE_FAULT_INJECT=<suite_name>
+# in a matrix entry causes the named suite's first test to fail
+# (implemented in tests/conformance/cel/conftest.py). The
+# release-block job MUST report non-zero for that matrix entry.
+
+name: "conformance-release-block"
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: "conformance: ${{ matrix.suite_name }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite_name: "w17.1-jcs"
+            suite_paths: "tests/conformance/jcs/"
+          - suite_name: "w17.2-jws"
+            suite_paths: "tests/conformance/jws/"
+          - suite_name: "w17.3-cel-spec"
+            suite_paths: "tests/conformance/cel-spec/"
+          - suite_name: "w17.4-relay-cel"
+            suite_paths: "tests/conformance/cel/test_w17_4_udf_coverage.py tests/conformance/cel/test_w17_4_corpus_size.py tests/conformance/cel/test_w17_4_cross_runtime.py tests/conformance/cel/test_w17_4_purity.py tests/conformance/cel/test_w17_4_idiom_coverage.py tests/conformance/cel/test_w17_4_release_block.py packages/contracts/tests/test_w6_5_corpus.py"
+    env:
+      RELAY_TIER3_RUNNER: "ci-tier2-conformance"
+    steps:
+      - name: "checkout"
+        uses: actions/checkout@v4
+
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "setup node 22"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: "install uv"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: "install python deps"
+        run: uv sync --all-packages
+
+      - name: "install node deps"
+        run: npm ci --workspaces --include-workspace-root || npm install --workspaces --include-workspace-root
+
+      - name: "build typescript contracts package"
+        run: npm run build --workspace @epochly/relay-contracts
+
+      - name: "run conformance suite ${{ matrix.suite_name }}"
+        run: uv run pytest ${{ matrix.suite_paths }} -m plumbing --timeout=600 -q
+
+  conformance-aggregate:
+    # Single required-check job that all four suites must pass before
+    # a release can proceed. Branch-protection rules point at this job
+    # name -- not the matrix children -- because GitHub's required-check
+    # surface doesn't natively gate on matrix-name expansion.
+    name: "conformance-aggregate"
+    runs-on: ubuntu-latest
+    needs: conformance
+    if: always()
+    steps:
+      - name: "aggregate"
+        run: |
+          if [ "${{ needs.conformance.result }}" != "success" ]; then
+            echo "VAL-W17-020: conformance matrix did not succeed (got ${{ needs.conformance.result }})"
+            exit 1
+          fi
+          echo "VAL-W17-020: all four conformance suites passed"

@@ -1,0 +1,17 @@
+{
+  "args": [
+    null,
+    "k"
+  ],
+  "edge_category": "null",
+  "expected_output": null,
+  "idiom": "udf",
+  "input_bindings": {
+    "call": null,
+    "key": "k"
+  },
+  "input_expression": "relay.tool_arg(call, key)",
+  "label": "udf_arg_null_call",
+  "py_jcs_b64": "bnVsbA==",
+  "udf": "relay.tool_arg"
+}

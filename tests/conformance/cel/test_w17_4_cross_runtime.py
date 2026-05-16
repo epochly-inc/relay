@@ -1,0 +1,428 @@
+"""W17.4 VAL-W17-017: cross-runtime byte-identical parity.
+
+For every per-UDF case under
+``tests/conformance/cel/relay-udfs/<udf>/case_NNN.json``, this test:
+
+  (a) Invokes the Python UDF callable directly (relay_coverage,
+      relay_tool_arg, or relay_schema_match) with the case's ``args``
+      list.
+  (b) Spawns a Node subprocess that imports the TypeScript mirror
+      (``packages/contracts-typescript/dist/index.js``) and invokes the
+      corresponding TS UDF (relayCoverage / relayToolArg /
+      relaySchemaMatch) with the same args.
+  (c) Canonicalises both outputs via RFC 8785 JCS using the validated
+      Python and TypeScript JCS implementations (W17.1 / VAL-W17-002).
+  (d) Asserts SHA-256(python_canonical) == SHA-256(typescript_canonical)
+      AND that both digests equal SHA-256 of the recorded
+      ``py_jcs_b64`` golden bytes.
+
+Practical scope (per gap #2 below + the contract's spirit): the Relay
+UDFs are direct-callable from both runtimes. cel-js does NOT natively
+know Relay UDFs as functions (the UDFs are registered on the
+RelayCelEvaluator wrapper, not into cel-js's evaluator). Parity is
+therefore enforced at the UDF-callable level + JCS-canonical-bytes
+level, which is the byte-identical claim the contract names:
+"byte-identical output across cel-python and cel-js after JCS
+canonicalization". The cross-runtime UDF semantics are also exercised
+end-to-end in the W6.5 vitest mirror at
+``packages/contracts-typescript/test/w6_5_corpus.test.ts``.
+
+ANY divergence fails the suite with a structured diff containing:
+  {vector_input, expected, py_output, ts_output, py_canonical_bytes_b64,
+   ts_canonical_bytes_b64, py_digest, ts_digest, diff_payload_sha256}
+
+Tool: cross-runtime-fixture (pytest plumbing tier).
+ASCII-only per CLAUDE.md.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+RELAY_UDFS_DIR = REPO_ROOT / "tests" / "conformance" / "cel" / "relay-udfs"
+TS_DIST_INDEX = (
+    REPO_ROOT / "packages" / "contracts-typescript" / "dist" / "index.js"
+)
+
+REQUIRED_UDFS: tuple[str, ...] = (
+    "relay.coverage",
+    "relay.tool_arg",
+    "relay.schema_match",
+)
+
+# Node subprocess script: takes a JSON payload on stdin of shape
+# {"cases": [{"label": str, "udf": str, "args": [...]} , ...]} and
+# emits {"results": [{"label": str, "ok": bool, "jcs_b64": str|null,
+# "error": str|null}, ...]} on stdout. Errors during evaluation are
+# captured per-case; runner-level failures (bad import, etc.) cause
+# non-zero exit.
+_TS_RUNNER = r"""
+import { readFileSync } from "node:fs";
+import {
+  jcsCanonicalize,
+  RELAY_COVERAGE_NAME,
+  RELAY_TOOL_ARG_NAME,
+  RELAY_SCHEMA_MATCH_NAME,
+  relayCoverage,
+  relayToolArg,
+  relaySchemaMatch,
+} from "RELAY_TS_INDEX";
+import { Buffer } from "node:buffer";
+
+const raw = readFileSync(0, "utf-8");
+const payload = JSON.parse(raw);
+const results = [];
+for (const c of payload.cases) {
+  let value;
+  let ok = true;
+  let err = null;
+  try {
+    if (c.udf === RELAY_COVERAGE_NAME) {
+      value = relayCoverage(c.args[0], c.args[1]);
+    } else if (c.udf === RELAY_TOOL_ARG_NAME) {
+      value = relayToolArg(c.args[0], c.args[1]);
+    } else if (c.udf === RELAY_SCHEMA_MATCH_NAME) {
+      value = relaySchemaMatch(c.args[0], c.args[1]);
+    } else {
+      ok = false;
+      err = `unknown UDF: ${c.udf}`;
+    }
+  } catch (e) {
+    ok = false;
+    err = (e && e.message) ? e.message : String(e);
+  }
+  let jcs_b64 = null;
+  if (ok) {
+    try {
+      const bytes = jcsCanonicalize(value);
+      jcs_b64 = Buffer.from(bytes).toString("base64");
+    } catch (e) {
+      ok = false;
+      err = `jcs: ${(e && e.message) ? e.message : String(e)}`;
+    }
+  }
+  results.push({ label: c.label, ok, jcs_b64, error: err });
+}
+process.stdout.write(JSON.stringify({ results }));
+"""
+
+
+def _node_available() -> bool:
+    return shutil.which("node") is not None
+
+
+def _ts_dist_available() -> bool:
+    return TS_DIST_INDEX.exists()
+
+
+def _load_cases() -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    for udf in REQUIRED_UDFS:
+        udf_dir = RELAY_UDFS_DIR / udf
+        if not udf_dir.is_dir():
+            continue
+        for path in sorted(udf_dir.glob("case_*.json")):
+            cases.append(json.loads(path.read_text(encoding="utf-8")))
+    return cases
+
+
+def _python_jcs(value: Any) -> bytes:
+    from relay_contracts import jcs_canonicalize
+
+    return jcs_canonicalize(value)
+
+
+def _python_invoke_udf(udf: str, args: list[Any]) -> Any:
+    from relay_contracts import (
+        relay_coverage,
+        relay_schema_match,
+        relay_tool_arg,
+    )
+
+    if udf == "relay.coverage":
+        return relay_coverage(args[0], args[1])
+    if udf == "relay.tool_arg":
+        return relay_tool_arg(args[0], args[1])
+    if udf == "relay.schema_match":
+        return relay_schema_match(args[0], args[1])
+    raise ValueError(f"unknown UDF: {udf}")
+
+
+def _run_ts_batch(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Spawn a Node subprocess that evaluates every UDF case via the
+    TypeScript mirror, returning one result record per case."""
+
+    if not _node_available():
+        pytest.fail(
+            "VAL-W17-017: `node` binary not on PATH; cross-runtime parity "
+            "requires Node 22+ to run the TypeScript mirror."
+        )
+    if not _ts_dist_available():
+        pytest.fail(
+            f"VAL-W17-017: TypeScript dist missing at {TS_DIST_INDEX}; "
+            "run `npm run build --workspace @epochly/relay-contracts`."
+        )
+    script = _TS_RUNNER.replace("RELAY_TS_INDEX", TS_DIST_INDEX.as_uri())
+    payload = json.dumps(
+        {
+            "cases": [
+                {"label": c["label"], "udf": c["udf"], "args": c["args"]}
+                for c in cases
+            ]
+        }
+    ).encode("utf-8")
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        input=payload,
+        capture_output=True,
+        timeout=120,
+        check=False,
+        env={**os.environ, "NODE_NO_WARNINGS": "1"},
+    )
+    if proc.returncode != 0:
+        pytest.fail(
+            f"VAL-W17-017: TS runner exited {proc.returncode}\n"
+            f"  stderr: {proc.stderr.decode('utf-8', errors='replace')}\n"
+            f"  stdout: {proc.stdout.decode('utf-8', errors='replace')[:2000]}"
+        )
+    try:
+        return json.loads(proc.stdout.decode("utf-8"))["results"]
+    except (json.JSONDecodeError, KeyError) as exc:
+        pytest.fail(
+            f"VAL-W17-017: TS runner produced unparseable output: {exc}\n"
+            f"  stdout: {proc.stdout.decode('utf-8', errors='replace')[:2000]}"
+        )
+
+
+def _format_divergence(
+    case: dict[str, Any],
+    py_output: Any,
+    ts_output: Any,
+    py_jcs: bytes | None,
+    ts_jcs: bytes | None,
+    py_digest: str | None,
+    ts_digest: str | None,
+    ts_error: str | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "expected_b64": case.get("py_jcs_b64"),
+        "py_output": py_output,
+        "ts_output": ts_output,
+    }
+    payload_bytes = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return {
+        "label": case.get("label"),
+        "udf": case.get("udf"),
+        "vector_input": {
+            "expression": case.get("input_expression"),
+            "args": case.get("args"),
+            "bindings": case.get("input_bindings"),
+        },
+        "expected": case.get("expected_output"),
+        "py_output": py_output,
+        "ts_output": ts_output,
+        "py_canonical_bytes_b64": (
+            base64.b64encode(py_jcs).decode("ascii") if py_jcs is not None else None
+        ),
+        "ts_canonical_bytes_b64": (
+            base64.b64encode(ts_jcs).decode("ascii") if ts_jcs is not None else None
+        ),
+        "py_digest": py_digest,
+        "ts_digest": ts_digest,
+        "expected_digest": (
+            hashlib.sha256(
+                base64.b64decode(case["py_jcs_b64"].encode("ascii"))
+            ).hexdigest()
+            if case.get("py_jcs_b64")
+            else None
+        ),
+        "ts_error": ts_error,
+        "diff_payload_sha256": hashlib.sha256(payload_bytes).hexdigest(),
+    }
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W17-017")
+def test_node_runtime_available_for_cross_runtime_parity() -> None:
+    """The cross-runtime suite requires Node 22+ on PATH; the TS mirror
+    must be built. Surface the prerequisite as its own test so the
+    parity failure (if any) is unambiguous about cause."""
+
+    assert _node_available(), (
+        "VAL-W17-017: `node` binary not on PATH; cross-runtime parity "
+        "requires Node 22+ (see CLAUDE.md > Project Structure)."
+    )
+    assert _ts_dist_available(), (
+        f"VAL-W17-017: TypeScript dist missing at {TS_DIST_INDEX}; "
+        "build via `npm run build --workspace @epochly/relay-contracts`."
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W17-017")
+def test_cross_runtime_byte_identical_parity_for_every_udf_case() -> None:
+    """For every per-UDF case: cel-python invocation + JCS bytes MUST
+    equal cel-js invocation + JCS bytes, AND both MUST equal the
+    recorded ``py_jcs_b64`` golden. ANY divergence produces the
+    structured diff."""
+
+    cases = _load_cases()
+    if not cases:
+        pytest.fail(
+            "VAL-W17-017: no per-UDF cases found at "
+            f"{RELAY_UDFS_DIR}; regenerate via "
+            "`uv run python scripts/generate-w17-4-udf-cases.py`."
+        )
+
+    # Python side: invoke UDFs and canonicalise.
+    py_outputs: dict[str, Any] = {}
+    py_jcs_bytes: dict[str, bytes] = {}
+    py_digests: dict[str, str] = {}
+    for c in cases:
+        label = c["label"]
+        value = _python_invoke_udf(c["udf"], c["args"])
+        py_outputs[label] = value
+        bytes_ = _python_jcs(value)
+        py_jcs_bytes[label] = bytes_
+        py_digests[label] = hashlib.sha256(bytes_).hexdigest()
+
+    # TypeScript side: one batched Node subprocess invocation.
+    ts_records = _run_ts_batch(cases)
+    ts_outputs: dict[str, Any] = {}
+    ts_jcs_bytes: dict[str, bytes] = {}
+    ts_digests: dict[str, str] = {}
+    ts_errors: dict[str, str] = {}
+    for rec in ts_records:
+        label = rec["label"]
+        if rec["ok"] and rec["jcs_b64"] is not None:
+            b = base64.b64decode(rec["jcs_b64"].encode("ascii"))
+            ts_jcs_bytes[label] = b
+            ts_digests[label] = hashlib.sha256(b).hexdigest()
+            # Re-decode the JCS bytes back to a JSON value so the
+            # divergence diff can name ts_output as a structured value
+            # rather than only as a digest.
+            try:
+                ts_outputs[label] = json.loads(b.decode("utf-8"))
+            except json.JSONDecodeError:
+                ts_outputs[label] = f"<non-json-jcs-bytes:{rec['jcs_b64']}>"
+        else:
+            ts_errors[label] = rec.get("error") or "<unknown>"
+
+    divergences: list[dict[str, Any]] = []
+    for c in cases:
+        label = c["label"]
+        expected_b = base64.b64decode(c["py_jcs_b64"].encode("ascii"))
+        expected_digest = hashlib.sha256(expected_b).hexdigest()
+        if label in ts_errors:
+            divergences.append(
+                _format_divergence(
+                    c,
+                    py_output=py_outputs.get(label),
+                    ts_output=None,
+                    py_jcs=py_jcs_bytes.get(label),
+                    ts_jcs=None,
+                    py_digest=py_digests.get(label),
+                    ts_digest=None,
+                    ts_error=ts_errors[label],
+                )
+            )
+            continue
+        py_d = py_digests[label]
+        ts_d = ts_digests[label]
+        if py_d != ts_d or py_d != expected_digest:
+            divergences.append(
+                _format_divergence(
+                    c,
+                    py_output=py_outputs.get(label),
+                    ts_output=ts_outputs.get(label),
+                    py_jcs=py_jcs_bytes.get(label),
+                    ts_jcs=ts_jcs_bytes.get(label),
+                    py_digest=py_d,
+                    ts_digest=ts_d,
+                )
+            )
+
+    if divergences:
+        rendered = "\n".join(
+            json.dumps(d, sort_keys=True, indent=2) for d in divergences
+        )
+        for d in divergences:
+            print("[w17.4-parity-diff]", json.dumps(d, sort_keys=True))
+        pytest.fail(
+            f"VAL-W17-017: {len(divergences)} cross-runtime parity "
+            f"divergences (full diff follows; no counts):\n{rendered}"
+        )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W17-017")
+def test_divergence_formatter_contains_required_fields() -> None:
+    """Negative-test surface: the structured diff record MUST carry
+    every field the contract names so a real failure surfaces a fully
+    actionable diff (not just a count)."""
+
+    synthetic_case = {
+        "label": "_test_only_synthetic",
+        "udf": "relay.coverage",
+        "args": [{"steps": [{"name": "x"}]}, "x"],
+        "input_expression": "relay.coverage(trace, step_name)",
+        "input_bindings": {
+            "trace": {"steps": [{"name": "x"}]},
+            "step_name": "x",
+        },
+        "expected_output": True,
+        "py_jcs_b64": "dHJ1ZQ==",  # base64("true")
+    }
+    py_jcs = b"true"
+    ts_jcs = b"false"
+    rec = _format_divergence(
+        synthetic_case,
+        py_output=True,
+        ts_output=False,
+        py_jcs=py_jcs,
+        ts_jcs=ts_jcs,
+        py_digest=hashlib.sha256(py_jcs).hexdigest(),
+        ts_digest=hashlib.sha256(ts_jcs).hexdigest(),
+    )
+    required = {
+        "label",
+        "udf",
+        "vector_input",
+        "expected",
+        "py_output",
+        "ts_output",
+        "py_canonical_bytes_b64",
+        "ts_canonical_bytes_b64",
+        "py_digest",
+        "ts_digest",
+        "diff_payload_sha256",
+    }
+    missing = required - set(rec.keys())
+    assert missing == set(), (
+        f"VAL-W17-017: divergence formatter missing required fields: {missing}"
+    )
+    # Determinism: the diff_payload_sha256 must be reproducible.
+    again = _format_divergence(
+        synthetic_case,
+        py_output=True,
+        ts_output=False,
+        py_jcs=py_jcs,
+        ts_jcs=ts_jcs,
+        py_digest=hashlib.sha256(py_jcs).hexdigest(),
+        ts_digest=hashlib.sha256(ts_jcs).hexdigest(),
+    )
+    assert again["diff_payload_sha256"] == rec["diff_payload_sha256"]
+
+

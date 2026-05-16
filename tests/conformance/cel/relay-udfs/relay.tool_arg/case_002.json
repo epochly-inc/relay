@@ -1,0 +1,24 @@
+{
+  "args": [
+    {
+      "args": {
+        "n": 42
+      }
+    },
+    "n"
+  ],
+  "expected_output": 42,
+  "idiom": "udf",
+  "input_bindings": {
+    "call": {
+      "args": {
+        "n": 42
+      }
+    },
+    "key": "n"
+  },
+  "input_expression": "relay.tool_arg(call, key)",
+  "label": "udf_arg_int",
+  "py_jcs_b64": "NDI=",
+  "udf": "relay.tool_arg"
+}

@@ -1,0 +1,28 @@
+{
+  "args": [
+    {
+      "steps": [
+        {
+          "name": "alpha"
+        }
+      ]
+    },
+    "missing"
+  ],
+  "expected_output": false,
+  "idiom": "udf",
+  "input_bindings": {
+    "step_name": "missing",
+    "trace": {
+      "steps": [
+        {
+          "name": "alpha"
+        }
+      ]
+    }
+  },
+  "input_expression": "relay.coverage(trace, step_name)",
+  "label": "udf_cov_no_match_returns_false",
+  "py_jcs_b64": "ZmFsc2U=",
+  "udf": "relay.coverage"
+}

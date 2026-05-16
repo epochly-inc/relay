@@ -1,0 +1,20 @@
+{
+  "args": [
+    42,
+    {
+      "type": "integer"
+    }
+  ],
+  "expected_output": true,
+  "idiom": "udf",
+  "input_bindings": {
+    "payload": 42,
+    "schema": {
+      "type": "integer"
+    }
+  },
+  "input_expression": "relay.schema_match(payload, schema)",
+  "label": "udf_sm_int_ok",
+  "py_jcs_b64": "dHJ1ZQ==",
+  "udf": "relay.schema_match"
+}

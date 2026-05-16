@@ -1,0 +1,53 @@
+{
+  "args": [
+    {
+      "steps": [
+        {
+          "meta": {
+            "deeply": {
+              "nested": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "name": "a"
+        },
+        {
+          "name": "b"
+        }
+      ]
+    },
+    "b"
+  ],
+  "edge_category": "nested",
+  "expected_output": true,
+  "idiom": "udf",
+  "input_bindings": {
+    "step_name": "b",
+    "trace": {
+      "steps": [
+        {
+          "meta": {
+            "deeply": {
+              "nested": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "name": "a"
+        },
+        {
+          "name": "b"
+        }
+      ]
+    }
+  },
+  "input_expression": "relay.coverage(trace, step_name)",
+  "label": "udf_cov_nested_unrelated_keys",
+  "py_jcs_b64": "dHJ1ZQ==",
+  "udf": "relay.coverage"
+}
