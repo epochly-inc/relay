@@ -138,6 +138,16 @@ export const FIELD_ALIASES_BY_ENVELOPE: Readonly<
     scope_id: "scopeId",
     scope_kind: "scopeKind",
   },
+  EvidenceTimestamp: {
+    evidence_bundle_id: "evidenceBundleId",
+    schema_version: "schemaVersion",
+    tsa_genTime: "tsaGentime",
+    tsa_response_digest: "tsaResponseDigest",
+    tsa_response_ref: "tsaResponseRef",
+    tsa_serial_number: "tsaSerialNumber",
+    tsa_url: "tsaUrl",
+    tsa_witness_signature: "tsaWitnessSignature",
+  },
   GateDecision: {
     actor_identity_hash: "actorIdentityHash",
     cascade_on_block: "cascadeOnBlock",
@@ -403,6 +413,16 @@ export const FIELD_ALIASES_BY_ENVELOPE: Readonly<
     side_effect_class: "sideEffectClass",
     span_id: "spanId",
     tool_name: "toolName",
+  },
+  TransparencyLogEntry: {
+    appended_at: "appendedAt",
+    bundle_digest: "bundleDigest",
+    evidence_bundle_id: "evidenceBundleId",
+    inclusion_proof_ref: "inclusionProofRef",
+    log_index: "logIndex",
+    schema_version: "schemaVersion",
+    signer_key_id: "signerKeyId",
+    tree_root_after: "treeRootAfter",
   },
 } as const;
 

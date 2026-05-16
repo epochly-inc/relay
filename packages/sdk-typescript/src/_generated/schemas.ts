@@ -859,6 +859,47 @@ export interface components {
             /** Format: date-time */
             last_state_change_at: string;
         };
+        /**
+         * @description RFC 3161 TSA timestamp row for an evidence bundle. Spec AB lines
+         *     5421-5429 (VAL-V2M01-033). One row per bundle. tsa_genTime is
+         *     parsed from the TimeStampResp CMS SignerInfo; tsa_response_ref
+         *     points at the canonical .tsr blob; tsa_response_digest is the
+         *     sha256 over the .tsr bytes so verifiers detect mutation.
+         */
+        EvidenceTimestamp: {
+            /** @constant */
+            schema_version: "relay.evidence_timestamp.v1";
+            /** Format: uuid */
+            evidence_bundle_id: string;
+            tsa_url: string;
+            tsa_response_digest: string;
+            tsa_response_ref: string;
+            tsa_serial_number?: string | null;
+            /** Format: date-time */
+            tsa_genTime: string;
+            tsa_witness_signature?: string | null;
+        };
+        /**
+         * @description Append-only public transparency log entry. Spec AB lines 5431-5439
+         *     (VAL-V2M01-035). Inspired by Sigstore Rekor. log_index is the
+         *     canonical 1-based serial index; tree_root_after is the Merkle root
+         *     after the append; inclusion_proof_ref points at the served proof
+         *     JSON. Per spec AB line 5445 the log is append-only; application
+         *     role grants are INSERT,SELECT only.
+         */
+        TransparencyLogEntry: {
+            /** @constant */
+            schema_version: "relay.transparency_log_entry.v1";
+            log_index: number;
+            /** Format: uuid */
+            evidence_bundle_id: string;
+            bundle_digest: string;
+            signer_key_id: string;
+            /** Format: date-time */
+            appended_at: string;
+            tree_root_after: string;
+            inclusion_proof_ref?: string | null;
+        };
     };
     responses: never;
     parameters: never;

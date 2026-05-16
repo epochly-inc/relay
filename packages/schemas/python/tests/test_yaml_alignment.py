@@ -76,6 +76,11 @@ _SHARED_ENVELOPES: frozenset[str] = frozenset(
         # packages/schemas/sql/0005_legal_holds.sql.
         "EvidenceLegalHold",
         "EvidenceBundleRegistry",
+        # v0.2 OSS completeness, M01 w1-6 (added 2026-05-16): two
+        # sectionAB trusted-timestamping + transparency-log envelopes
+        # backing packages/schemas/sql/0007_evidence_timestamps_log.sql.
+        "EvidenceTimestamp",
+        "TransparencyLogEntry",
     }
 )
 

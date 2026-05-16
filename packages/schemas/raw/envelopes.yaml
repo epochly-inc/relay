@@ -1121,6 +1121,72 @@ schemas:
       legal_hold_id:                    { type: uuid, required: false, nullable: true }
       last_state_change_at:             { type: timestamptz, required: true }
 
+  # ---------------------------------------------------------------------------
+  # v0.2 OSS completeness, M01 w1-6 (added 2026-05-16): canonical envelopes
+  # for the two section-AB SQL tables in
+  # packages/schemas/sql/0007_evidence_timestamps_log.sql.
+  # ---------------------------------------------------------------------------
+  #
+  # Spec anchors:
+  #   EvidenceTimestamp        spec AB lines 5421-5429 (VAL-V2M01-033)
+  #   TransparencyLogEntry     spec AB lines 5431-5439 (VAL-V2M01-035)
+  #
+  # Per CLAUDE.md keystone invariant #2, evidence_timestamps binds the
+  # trustworthy time anchor that an accepted bundle requires. Per
+  # CLAUDE.md keystone invariant #11, transparency_log_entries is the
+  # append-only public log that the verifier checks for inclusion. Both
+  # envelopes carry schema_version pinned via Literal per keystone #10.
+
+  EvidenceTimestamp:
+    schema_version: relay.evidence_timestamp.v1
+    spec: AB
+    description: |
+      RFC 3161 TSA timestamp row for an evidence bundle (spec AB lines
+      5421-5429). One row per bundle. tsa_genTime is parsed from the
+      TimeStampResp CMS SignerInfo. tsa_response_ref points at the
+      canonical .tsr blob (R2 on hosted; ~/.relay/evidence/<bundle>/
+      timestamp.tsr on local). tsa_response_digest is the sha256 over
+      the .tsr bytes so verifiers detect mutation. tsa_witness_signature
+      is the optional log-witness countersignature per spec AB line 5418.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.evidence_timestamp.v1
+        required: true
+      evidence_bundle_id:               { type: uuid, required: true }
+      tsa_url:                          { type: string, required: true }
+      tsa_response_digest:              { type: string, required: true }
+      tsa_response_ref:                 { type: string, required: true }
+      tsa_serial_number:                { type: string, required: false, nullable: true }
+      tsa_genTime:                      { type: timestamptz, required: true }
+      tsa_witness_signature:            { type: string, required: false, nullable: true }
+
+  TransparencyLogEntry:
+    schema_version: relay.transparency_log_entry.v1
+    spec: AB
+    description: |
+      Append-only public transparency log entry (spec AB lines 5431-5439).
+      Inspired by Sigstore Rekor: every issued evidence bundle's
+      (bundle_id, digest, time, signer_key) tuple is appended. log_index
+      is the canonical 1-based serial index. tree_root_after is the
+      Merkle root after this append; inclusion_proof_ref points at the
+      served proof JSON. The verifier checks inclusion offline via the
+      witness signature carried in the bundle's signature envelope.
+      Per spec AB line 5445 the log is append-only; the application role
+      grants are INSERT,SELECT only.
+    fields:
+      schema_version:
+        type: literal
+        value: relay.transparency_log_entry.v1
+        required: true
+      log_index:                        { type: int_ge_one, required: true }
+      evidence_bundle_id:               { type: uuid, required: true }
+      bundle_digest:                    { type: string, required: true }
+      signer_key_id:                    { type: string, required: true }
+      appended_at:                      { type: timestamptz, required: true }
+      tree_root_after:                  { type: string, required: true }
+      inclusion_proof_ref:              { type: string, required: false, nullable: true }
+
 # -----------------------------------------------------------------------------
 # Type definitions
 # -----------------------------------------------------------------------------

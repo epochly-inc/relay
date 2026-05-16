@@ -875,6 +875,53 @@ class EvidenceBundleRegistry(BaseModel):
     last_state_change_at: AwareDatetime
 
 
+class EvidenceTimestamp(BaseModel):
+    """
+    RFC 3161 TSA timestamp row for an evidence bundle. Spec AB lines
+    5421-5429 (VAL-V2M01-033). One row per bundle. tsa_genTime is
+    parsed from the TimeStampResp CMS SignerInfo; tsa_response_ref
+    points at the canonical .tsr blob; tsa_response_digest is the
+    sha256 over the .tsr bytes so verifiers detect mutation.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_version: Literal["relay.evidence_timestamp.v1"]
+    evidence_bundle_id: UUID
+    tsa_url: str
+    tsa_response_digest: str
+    tsa_response_ref: str
+    tsa_serial_number: str | None = None
+    tsa_genTime: AwareDatetime
+    tsa_witness_signature: str | None = None
+
+
+class TransparencyLogEntry(BaseModel):
+    """
+    Append-only public transparency log entry. Spec AB lines 5431-5439
+    (VAL-V2M01-035). Inspired by Sigstore Rekor. log_index is the
+    canonical 1-based serial index; tree_root_after is the Merkle root
+    after the append; inclusion_proof_ref points at the served proof
+    JSON. Per spec AB line 5445 the log is append-only; application
+    role grants are INSERT,SELECT only.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_version: Literal["relay.transparency_log_entry.v1"]
+    log_index: conint(ge=1)
+    evidence_bundle_id: UUID
+    bundle_digest: str
+    signer_key_id: str
+    appended_at: AwareDatetime
+    tree_root_after: str
+    inclusion_proof_ref: str | None = None
+
+
 class ScopeState(
     RootModel[
         RunScopeState

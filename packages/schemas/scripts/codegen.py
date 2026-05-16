@@ -93,6 +93,12 @@ CANONICAL_ENVELOPES: tuple[str, ...] = (
     # apps/local-sidecar/migrations/0013_legal_holds.sql.
     "EvidenceLegalHold",
     "EvidenceBundleRegistry",
+    # v0.2 OSS completeness, M01 w1-6 (added 2026-05-16): two sectionAB
+    # trusted-timestamping + transparency-log envelopes. DDL at
+    # packages/schemas/sql/0007_evidence_timestamps_log.sql; sidecar mirror
+    # at apps/local-sidecar/migrations/0015_evidence_timestamps_log.sql.
+    "EvidenceTimestamp",
+    "TransparencyLogEntry",
 )
 
 # Additional generated symbols that the SDK re-export module surfaces. These

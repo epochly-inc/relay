@@ -1541,6 +1541,72 @@ class EvidenceBundleRegistry(_RelayEnvelope):
     last_state_change_at: datetime
 
 
+# ---------------------------------------------------------------------------
+# v0.2 OSS completeness, M01 w1-6 (added 2026-05-16): two sectionAB
+# trusted-timestamping + transparency-log envelopes. Mirror the SQL tables
+# in packages/schemas/sql/0007_evidence_timestamps_log.sql.
+#
+# Per CLAUDE.md keystone invariant #2 ("pass without evidence is not a
+# pass"), evidence_timestamps binds the trustworthy time anchor that every
+# accepted bundle requires. Per CLAUDE.md keystone invariant #11
+# ("trust anchor is the commercial moat"), transparency_log_entries is
+# the append-only public log the verifier checks for offline inclusion.
+# ---------------------------------------------------------------------------
+
+
+class EvidenceTimestamp(_RelayEnvelope):
+    """RFC 3161 TSA timestamp row for an evidence bundle
+    (spec AB lines 5421-5429; VAL-V2M01-033).
+
+    One row per evidence bundle. ``tsa_genTime`` is the parsed genTime
+    field from the TimeStampResp CMS SignerInfo (RFC 3161). ``tsa_response_ref``
+    points at the canonical ``.tsr`` blob (R2 on hosted; local file on
+    OSS sidecar). ``tsa_response_digest`` is the sha256 over the .tsr
+    bytes so verifiers can detect mutation. ``tsa_witness_signature``
+    is the optional log-witness countersignature per spec AB line 5418.
+
+    Field-name note: ``tsa_genTime`` preserves the RFC 3161 ASN.1 field
+    name verbatim (camelCase). The Pydantic model accepts the camelCase
+    key on both wire input and Python attribute access.
+    """
+
+    schema_version: Literal["relay.evidence_timestamp.v1"]
+    evidence_bundle_id: UUID
+    tsa_url: str
+    tsa_response_digest: str
+    tsa_response_ref: str
+    tsa_serial_number: str | None = None
+    tsa_genTime: datetime  # noqa: N815 - RFC 3161 ASN.1 field name preserved
+    tsa_witness_signature: str | None = None
+
+
+class TransparencyLogEntry(_RelayEnvelope):
+    """Append-only public transparency log entry
+    (spec AB lines 5431-5439; VAL-V2M01-035).
+
+    Inspired by Sigstore Rekor. ``log_index`` is the canonical 1-based
+    serial index (bigserial on Postgres, INTEGER PRIMARY KEY
+    AUTOINCREMENT on SQLite). ``tree_root_after`` is the Merkle root
+    after this append; ``inclusion_proof_ref`` points at the served proof
+    JSON. The verifier checks inclusion offline via the witness signature
+    carried separately in the bundle's signature envelope.
+
+    Per spec AB line 5445 the log is append-only; the application role
+    grants are INSERT,SELECT only. The OSS sidecar emulates the GRANT
+    model via BEFORE DELETE / BEFORE UPDATE triggers that abort with
+    ``RELAY-EVID-031``.
+    """
+
+    schema_version: Literal["relay.transparency_log_entry.v1"]
+    log_index: Annotated[int, Field(ge=1)]
+    evidence_bundle_id: UUID
+    bundle_digest: str
+    signer_key_id: str
+    appended_at: datetime
+    tree_root_after: str
+    inclusion_proof_ref: str | None = None
+
+
 __all__ = [
     "Actor",
     "AssertionDefinition",
@@ -1553,6 +1619,7 @@ __all__ = [
     "EvidenceBundleScopeState",
     "EvidenceClaim",
     "EvidenceLegalHold",
+    "EvidenceTimestamp",
     "GateDecision",
     "GateDecisionDraft",
     "GatePolicy",
@@ -1584,6 +1651,7 @@ __all__ = [
     "SHA256_HASH_PATTERN",
     "Span",
     "ToolCallSpan",
+    "TransparencyLogEntry",
     "ULID_PATTERN",
     "Ulid",
     "canonical_bytes",

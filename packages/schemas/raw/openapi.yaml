@@ -1851,3 +1851,80 @@ components:
         last_state_change_at:
           type: string
           format: date-time
+
+    EvidenceTimestamp:
+      type: object
+      additionalProperties: false
+      description: |
+        RFC 3161 TSA timestamp row for an evidence bundle. Spec AB lines
+        5421-5429 (VAL-V2M01-033). One row per bundle. tsa_genTime is
+        parsed from the TimeStampResp CMS SignerInfo; tsa_response_ref
+        points at the canonical .tsr blob; tsa_response_digest is the
+        sha256 over the .tsr bytes so verifiers detect mutation.
+      required:
+        - schema_version
+        - evidence_bundle_id
+        - tsa_url
+        - tsa_response_digest
+        - tsa_response_ref
+        - tsa_genTime
+      properties:
+        schema_version:
+          type: string
+          const: relay.evidence_timestamp.v1
+        evidence_bundle_id:
+          type: string
+          format: uuid
+        tsa_url:
+          type: string
+        tsa_response_digest:
+          type: string
+        tsa_response_ref:
+          type: string
+        tsa_serial_number:
+          type: [string, "null"]
+        tsa_genTime:
+          type: string
+          format: date-time
+        tsa_witness_signature:
+          type: [string, "null"]
+
+    TransparencyLogEntry:
+      type: object
+      additionalProperties: false
+      description: |
+        Append-only public transparency log entry. Spec AB lines 5431-5439
+        (VAL-V2M01-035). Inspired by Sigstore Rekor. log_index is the
+        canonical 1-based serial index; tree_root_after is the Merkle root
+        after the append; inclusion_proof_ref points at the served proof
+        JSON. Per spec AB line 5445 the log is append-only; application
+        role grants are INSERT,SELECT only.
+      required:
+        - schema_version
+        - log_index
+        - evidence_bundle_id
+        - bundle_digest
+        - signer_key_id
+        - appended_at
+        - tree_root_after
+      properties:
+        schema_version:
+          type: string
+          const: relay.transparency_log_entry.v1
+        log_index:
+          type: integer
+          minimum: 1
+        evidence_bundle_id:
+          type: string
+          format: uuid
+        bundle_digest:
+          type: string
+        signer_key_id:
+          type: string
+        appended_at:
+          type: string
+          format: date-time
+        tree_root_after:
+          type: string
+        inclusion_proof_ref:
+          type: [string, "null"]

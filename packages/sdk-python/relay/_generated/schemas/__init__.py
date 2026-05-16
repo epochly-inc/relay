@@ -44,6 +44,7 @@ from .._models import (
     EvidenceBundleScopeState,
     EvidenceClaim,
     EvidenceLegalHold,
+    EvidenceTimestamp,
     GateDecision,
     GateDecisionDraft,
     GatePolicy,
@@ -71,6 +72,7 @@ from .._models import (
     Sha256Hash,
     Span,
     ToolCallSpan,
+    TransparencyLogEntry,
     Ulid,
 )
 
@@ -86,6 +88,7 @@ __all__ = [
     "EvidenceBundleScopeState",
     "EvidenceClaim",
     "EvidenceLegalHold",
+    "EvidenceTimestamp",
     "GateDecision",
     "GateDecisionDraft",
     "GatePolicy",
@@ -113,6 +116,7 @@ __all__ = [
     "Sha256Hash",
     "Span",
     "ToolCallSpan",
+    "TransparencyLogEntry",
     "Ulid",
     "RelayUnknownSchemaVersionError",
     "parse_envelope",
