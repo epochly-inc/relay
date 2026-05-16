@@ -1,0 +1,288 @@
+{
+  "case_counts": {
+    "compact": 14,
+    "constructed": 11,
+    "detached": 2,
+    "hs_math": 2,
+    "rfc_literal": 5
+  },
+  "cases": [
+    {
+      "_rationale": "RFC 7515 Appendix A.1 literal HS256 vector. Production verifier MUST reject because HS256 is not in Relay's allow-list (section L.1).",
+      "_source": "rfc7515-appendix-a.1",
+      "alg": "HS256",
+      "expected_hs_math": {
+        "alg": "HS256",
+        "ok": true
+      },
+      "expected_production": {
+        "code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "hs_shared_key_b64u": "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow",
+      "input": "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+      "kind": "compact",
+      "name": "appendix-a1-hs256"
+    },
+    {
+      "_rationale": "RFC 7515 Appendix A has no literal HS512 vector; this vector is built from the A.1 payload and a fixed key so the test-only HS verifier helper exercises HMAC-SHA-512 math. Production verifier MUST reject.",
+      "_source": "constructed-hs512",
+      "alg": "HS512",
+      "expected_hs_math": {
+        "alg": "HS512",
+        "ok": true
+      },
+      "expected_production": {
+        "code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "hs_shared_key_b64u": "cmVsYXktdzE3LjItY29uc3RydWN0ZWQtaHM1MTIta2V5LTY0LWJ5dGVzLWZvci1jb25mb3JtYW5jZS1jb3JwdQ",
+      "input": "eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.JtMU7OJ1J30DoJtYV446K4T-gVxeVmlv_-86HSF1CvoeUJnmaY0ge3iZAF3HmlPi5w57JpO2vGZj2CWpZYDJoQ",
+      "kind": "compact",
+      "name": "appendix-a2-hs512-constructed"
+    },
+    {
+      "_rationale": "RFC 7515 Appendix A.2 literal RS256 compact JWS. Production verifier rejects with no-JWK-matches-kid because the literal RFC header omits kid (pre-kid-convention). The kid-augmented sibling vector re-signs the same payload with the same RFC private key under a kid-bearing header for the production-verifier-accepts evidence path.",
+      "_source": "rfc7515-appendix-a.2",
+      "alg": "RS256",
+      "expected_production": {
+        "ok": false,
+        "reason_substring": "no JWK in trust anchor matches kid"
+      },
+      "input": "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.cC4hiUPoj9Eetdgtv3hF80EGrhuB__dzERat0XF9g2VtQgr9PJbu3XOiZj5RZmh7AAuHIm4Bh-0Qc_lF5YKt_O8W2Fp5jujGbds9uJdbF9CUAr7t1dnZcAcQjbKBYNX4BAynRFdiuB--f_nZLgrnbyTyWzO75vRK5h6xBArLIARNPvkSjtQBMHlb1L07Qe7K0GarZRmB_eSN9383LcOLn6_dO--xi12jzDwusC-eOkHWEsqtFZESc6BfI7noOPqvhJ1phCnvWh6IeYI2w9QOYEUipUTI8np6LbgGY9Fs98rqVt5AXLIhWkWywlVmtVrBp0igcN_IoypGlUPQGe77Rw",
+      "kind": "compact",
+      "name": "appendix-a2-rs256-literal"
+    },
+    {
+      "_rationale": "RFC 7515 Appendix A.3 literal ES256 compact JWS. Same pre-kid-convention rationale as A.2 literal.",
+      "_source": "rfc7515-appendix-a.3",
+      "alg": "ES256",
+      "expected_production": {
+        "ok": false,
+        "reason_substring": "no JWK in trust anchor matches kid"
+      },
+      "input": "eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.DtEhU3ljbEg8L38VWAfUAqOyKAM6-Xx-F4GawxaepmXFCgfTjDxw5djxLa8ISlSApmWQxfKTUJqPP3-Kg6NU1Q",
+      "kind": "compact",
+      "name": "appendix-a3-es256-literal"
+    },
+    {
+      "_rationale": "RFC 7515 Appendix A.4 literal ES512 compact JWS. Relay's allow-list does NOT include ES512 -- production verifier MUST REJECT with RELAY-VERIFY-UNSUPPORTED-ALG (allow-list check fires before kid lookup).",
+      "_source": "rfc7515-appendix-a.4",
+      "alg": "ES512",
+      "expected_production": {
+        "code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJFUzUxMiJ9.UGF5bG9hZA.AdwMgeerwtHoh-l192l60hp9wAHZFVJbLfD_UxMi70cwnZOYaRI1bKPWROc-mZZqwqT2SI-KGDKB34XO0aw_7XdtAG8GaSwFKdCAPZgoXD2YBJZCPEX3xKpRwcdOO8KpEHwJjyqOgzDO7iKvU8vcnwNrmxYbSW9ERBXukOXolLzeO_Jn",
+      "kind": "compact",
+      "name": "appendix-a4-es512-literal"
+    },
+    {
+      "_rationale": "RFC 7515 Appendix A.5 literal unsecured JWS. Production verifier MUST REJECT (alg=none never enters the primitive-dispatch path).",
+      "_source": "rfc7515-appendix-a.5",
+      "alg": "none",
+      "expected_production": {
+        "code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJub25lIn0.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.",
+      "kind": "compact",
+      "name": "appendix-a5-unsecured-none"
+    },
+    {
+      "_rationale": "Constructed: alg=none JWS with attacker-supplied payload to prove the production allow-list rejects regardless of payload content (VAL-W17-008 attacker test).",
+      "_source": "constructed-forged-alg-none",
+      "alg": "none",
+      "expected_production": {
+        "code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJub25lIn0.eyJpc3MiOiJhdHRhY2tlciIsImFkbWluIjp0cnVlfQ.",
+      "kind": "compact",
+      "name": "appendix-a5-forged-alg-none-attacker-payload"
+    },
+    {
+      "_rationale": "Kid-augmented A.2 RS256 vector signed with RFC A.2 RSA private key (PKCS1v15+SHA256 is deterministic, so this is byte-stable). Production verifier MUST accept.",
+      "_source": "constructed-from-rfc7515-appendix-a.2-private-key",
+      "alg": "RS256",
+      "expected_production": {
+        "alg": "RS256",
+        "kid": "relay-w17-2-rsa-2048-kid-augmented",
+        "ok": true
+      },
+      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.Zmu86hQAwwPHELB_y2ZLbpKV_uelH8G09QhVC0vocuEzpZbIujTkiQ4agAtJCxKdy7x_Gw9fxStDmvyX6QzqJwDGPvP2XBXIIajidkCP-4tl2t29HhqdrnWuILMc8WHc4Gee6xPd-aG401LXq01Vb0430eZ6MdFWr5uER83BqI4WOGLFZEdGYBc3nEv95-eszI_cXxqestRByKrX2ifzGYcF1DFx4JloqjU64irv23it4eN_djmzi0xSHK5h2TZ-EkKxGmAGIzq1LX3b3jVxxL-_apQo-eyJbbvcLTu303pZlTz_XLpnzCmyOoI8dXpknOu6S0pS0Vx64WwUCWAzNQ",
+      "kid": "relay-w17-2-rsa-2048-kid-augmented",
+      "kind": "compact",
+      "name": "appendix-a2-rs256-kid-augmented"
+    },
+    {
+      "_rationale": "Detached form of the kid-augmented A.2 RS256 vector for VAL-W17-009 (RFC 7797 detached payload).",
+      "_source": "constructed-from-rfc7515-appendix-a.2-private-key",
+      "alg": "RS256",
+      "expected_production": {
+        "alg": "RS256",
+        "kid": "relay-w17-2-rsa-2048-kid-augmented",
+        "ok": true
+      },
+      "input": {
+        "payload_b64u": "eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ",
+        "protected_b64u": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ",
+        "signature_b64u": "Zmu86hQAwwPHELB_y2ZLbpKV_uelH8G09QhVC0vocuEzpZbIujTkiQ4agAtJCxKdy7x_Gw9fxStDmvyX6QzqJwDGPvP2XBXIIajidkCP-4tl2t29HhqdrnWuILMc8WHc4Gee6xPd-aG401LXq01Vb0430eZ6MdFWr5uER83BqI4WOGLFZEdGYBc3nEv95-eszI_cXxqestRByKrX2ifzGYcF1DFx4JloqjU64irv23it4eN_djmzi0xSHK5h2TZ-EkKxGmAGIzq1LX3b3jVxxL-_apQo-eyJbbvcLTu303pZlTz_XLpnzCmyOoI8dXpknOu6S0pS0Vx64WwUCWAzNQ"
+      },
+      "kid": "relay-w17-2-rsa-2048-kid-augmented",
+      "kind": "detached",
+      "name": "appendix-a2-rs256-kid-augmented-detached"
+    },
+    {
+      "_rationale": "Kid-augmented A.2 RS256 with one bit of payload flipped (VAL-W17-007b asymmetric-tampered).",
+      "_source": "constructed-tampered-rs256-kid",
+      "alg": "RS256",
+      "expected_production": {
+        "ok": false,
+        "reason_substring": "signature did not verify"
+      },
+      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfA.Zmu86hQAwwPHELB_y2ZLbpKV_uelH8G09QhVC0vocuEzpZbIujTkiQ4agAtJCxKdy7x_Gw9fxStDmvyX6QzqJwDGPvP2XBXIIajidkCP-4tl2t29HhqdrnWuILMc8WHc4Gee6xPd-aG401LXq01Vb0430eZ6MdFWr5uER83BqI4WOGLFZEdGYBc3nEv95-eszI_cXxqestRByKrX2ifzGYcF1DFx4JloqjU64irv23it4eN_djmzi0xSHK5h2TZ-EkKxGmAGIzq1LX3b3jVxxL-_apQo-eyJbbvcLTu303pZlTz_XLpnzCmyOoI8dXpknOu6S0pS0Vx64WwUCWAzNQ",
+      "kid": "relay-w17-2-rsa-2048-kid-augmented",
+      "kind": "compact",
+      "name": "appendix-a2-rs256-kid-augmented-tampered-payload"
+    },
+    {
+      "_rationale": "Kid-augmented A.2 RS256 with one bit of signature flipped.",
+      "_source": "constructed-tampered-rs256-kid",
+      "alg": "RS256",
+      "expected_production": {
+        "ok": false,
+        "reason_substring": "signature did not verify"
+      },
+      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.Zmu86hQAwwPHELB_y2ZLbpKV_uelH8G09QhVC0vocuEzpZbIujTkiQ4agAtJCxKdy7x_Gw9fxStDmvyX6QzqJwDGPvP2XBXIIajidkCP-4tl2t29HhqdrnWuILMc8WHc4Gee6xPd-aG401LXq01Vb0430eZ6MdFWr5uER83BqI4WOGLFZEdGYBc3nEv95-eszI_cXxqestRByKrX2ifzGYcF1DFx4JloqjU64irv23it4eN_djmzi0xSHK5h2TZ-EkKxGmAGIzq1LX3b3jVxxL-_apQo-eyJbbvcLTu303pZlTz_XLpnzCmyOoI8dXpknOu6S0pS0Vx64WwUCWAzNA",
+      "kid": "relay-w17-2-rsa-2048-kid-augmented",
+      "kind": "compact",
+      "name": "appendix-a2-rs256-kid-augmented-tampered-signature"
+    },
+    {
+      "_rationale": "Kid-augmented A.3 ES256 vector signed with RFC A.3 EC private scalar (cryptography uses RFC 6979 deterministic-k, so this is byte-stable). Production verifier MUST accept.",
+      "_source": "constructed-from-rfc7515-appendix-a.3-private-key",
+      "alg": "ES256",
+      "expected_production": {
+        "alg": "ES256",
+        "kid": "rfc7515-appendix-a3-p256",
+        "ok": true
+      },
+      "input": "eyJhbGciOiJFUzI1NiIsImtpZCI6InJmYzc1MTUtYXBwZW5kaXgtYTMtcDI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.4IjYD6q-DfN9D0Rt1Syvr3QQEK0J14PKJhE_3kgnKztH3Z1HKegvJFQJVD_jXYLR5NBVlgP_6xwiYCnufBpUQA",
+      "kid": "rfc7515-appendix-a3-p256",
+      "kind": "compact",
+      "name": "appendix-a3-es256-kid-augmented"
+    },
+    {
+      "_rationale": "Detached form of the kid-augmented A.3 ES256 vector for VAL-W17-009.",
+      "_source": "constructed-from-rfc7515-appendix-a.3-private-key",
+      "alg": "ES256",
+      "expected_production": {
+        "alg": "ES256",
+        "kid": "rfc7515-appendix-a3-p256",
+        "ok": true
+      },
+      "input": {
+        "payload_b64u": "eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ",
+        "protected_b64u": "eyJhbGciOiJFUzI1NiIsImtpZCI6InJmYzc1MTUtYXBwZW5kaXgtYTMtcDI1NiIsInR5cCI6IkpXVCJ9",
+        "signature_b64u": "4IjYD6q-DfN9D0Rt1Syvr3QQEK0J14PKJhE_3kgnKztH3Z1HKegvJFQJVD_jXYLR5NBVlgP_6xwiYCnufBpUQA"
+      },
+      "kid": "rfc7515-appendix-a3-p256",
+      "kind": "detached",
+      "name": "appendix-a3-es256-kid-augmented-detached"
+    },
+    {
+      "_rationale": "Kid-augmented A.3 ES256 with payload bit flipped.",
+      "_source": "constructed-tampered-es256-kid",
+      "alg": "ES256",
+      "expected_production": {
+        "ok": false,
+        "reason_substring": "signature did not verify"
+      },
+      "input": "eyJhbGciOiJFUzI1NiIsImtpZCI6InJmYzc1MTUtYXBwZW5kaXgtYTMtcDI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfA.4IjYD6q-DfN9D0Rt1Syvr3QQEK0J14PKJhE_3kgnKztH3Z1HKegvJFQJVD_jXYLR5NBVlgP_6xwiYCnufBpUQA",
+      "kid": "rfc7515-appendix-a3-p256",
+      "kind": "compact",
+      "name": "appendix-a3-es256-kid-augmented-tampered-payload"
+    },
+    {
+      "_rationale": "Kid-augmented A.3 ES256 with signature bit flipped.",
+      "_source": "constructed-tampered-es256-kid",
+      "alg": "ES256",
+      "expected_production": {
+        "ok": false,
+        "reason_substring": "signature did not verify"
+      },
+      "input": "eyJhbGciOiJFUzI1NiIsImtpZCI6InJmYzc1MTUtYXBwZW5kaXgtYTMtcDI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.4IjYD6q-DfN9D0Rt1Syvr3QQEK0J14PKJhE_3kgnKztH3Z1HKegvJFQJVD_jXYLR5NBVlgP_6xwiYCnufBpUQQ",
+      "kid": "rfc7515-appendix-a3-p256",
+      "kind": "compact",
+      "name": "appendix-a3-es256-kid-augmented-tampered-signature"
+    },
+    {
+      "_rationale": "Kid-augmented A.4 ES512 vector signed with RFC A.4 EC private scalar (RFC 6979 deterministic-k). Production verifier MUST REJECT (ES512 not in Relay's allow-list).",
+      "_source": "constructed-from-rfc7515-appendix-a.4-private-key",
+      "alg": "ES512",
+      "expected_production": {
+        "code": "RELAY-VERIFY-011",
+        "ok": false,
+        "reason_substring": "unsupported alg"
+      },
+      "input": "eyJhbGciOiJFUzUxMiIsImtpZCI6InJmYzc1MTUtYXBwZW5kaXgtYTQtcDUyMSIsInR5cCI6IkpXVCJ9.UGF5bG9hZA.AGmxnaIPl9Sp0mda06bIMJr8o_fWdzYUOdwQzNADQxUJLpso2zFvjya9T6VpTjgh-FH26aEfvv265ArXR7Bwu0BhAXu5hJ9IfUNxv0QeSfyNV9ZqjU5CMJZHxyTi6G_U3FwSzDEv9n7KI1Tiqhyapw7A_MBs_VEKkL7awcqIf7SrkVWO",
+      "kid": "rfc7515-appendix-a4-p521",
+      "kind": "compact",
+      "name": "appendix-a4-es512-kid-augmented"
+    }
+  ],
+  "jwks": {
+    "keys": [
+      {
+        "alg": "RS256",
+        "e": "AQAB",
+        "kid": "rfc7515-appendix-a2-rsa",
+        "kty": "RSA",
+        "n": "ofgWCuLjybRlzo0tZWJjNiuSfb4p4fAkd_wWJcyQoTbji9k0l8W26mPddxHmfHQp-Vaw-4qPCJrcS2mJPMEzP1Pt0Bm4d4QlL-yRT-SFd2lZS-pCgNMsD1W_YpRPEwOWvG6b32690r2jZ47soMZo9wGzjb_7OMg0LOL-bSf63kpaSHSXndS5z5rexMdbBYu_HjeYTPGN6e-Olh68fAbCk5_w3R8aHfA3RyJsuYZbZWeR2KnxBwYRRfQVc-mrWW1lFtKwUntJYr0E4i_4PIVDM1jPjP6btr3hOWX7CCWNX-MoOpcxOzVCmm6T7HEfOgFEpoUqVjbZ6Vw",
+        "use": "sig"
+      },
+      {
+        "alg": "ES256",
+        "crv": "P-256",
+        "kid": "rfc7515-appendix-a3-p256",
+        "kty": "EC",
+        "use": "sig",
+        "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+        "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
+      },
+      {
+        "alg": "ES512",
+        "crv": "P-521",
+        "kid": "rfc7515-appendix-a4-p521",
+        "kty": "EC",
+        "use": "sig",
+        "x": "AekpBQ8ST8a8VcfVOTNl353vSrDCLLJXmPk06wTjxrrjcBpXp5EOnYG_NjFZ6OvLFV1jSfS9tsz4qUxcWceqwQGk",
+        "y": "ADSmRA43Z1DSNx_RvcLI87cdL07l6jQyyBXMoxVg_l2Th-x3S1WDhjDly79ajL4Kkd0AZMaZmh9ubmf63e3kyMj2"
+      },
+      {
+        "alg": "RS256",
+        "e": "AQAB",
+        "kid": "relay-w17-2-rsa-2048-kid-augmented",
+        "kty": "RSA",
+        "n": "urkYcoabBILUWAmhWz7KJxky-vrDlns-wQSw1cGIxUhS1-6huKQyiKbWV48QpVeUka7S-Jz9m0epfEkUQ1PKfWHRRo9zO7dFlO2080av0cpCLVHjNelwr8HMwYu4fLeHLMh16Opcl6lfpDdd9PPGQSeZm68Fur00bgJg5BFtbZ76HI9FsgLoBTyPxGU7ceQ3QEkXEDNW4xoYTv_n4AAzTovsV76GJDQA_iKfEB5C-0aIuYwTDTEluKj1ueUlGJD2Wvr2WPeL9q2G_zxykmRpF7wnVswRzjHf6484Wa6lnFc0xjlvWUy2KMRIcEnGhDnUVq5BvGUe0Widk-uVTfRt6Q",
+        "use": "sig"
+      }
+    ]
+  },
+  "notes": "W17.2 conformance corpus: RFC 7515 Appendix A literal vectors (A.1 HS256, A.2 RS256, A.3 ES256, A.4 ES512, A.5 unsecured) plus constructed tampered + forged variants. The HS256/HS512 vectors carry a shared key so the test-only HS verifier helper can prove signature math (VAL-W17-007a). All non-allow-listed vectors MUST be rejected by the production verifier (VAL-W17-008). Asymmetric vectors with payloads carry a `detached` twin for VAL-W17-009 RFC 7797 coverage. Regenerate via scripts/generate-jws-rfc7515-appendix-a-corpus.py.",
+  "schema": "relay.conformance.jws.rfc7515-appendix-a.v1",
+  "schema_version": 1,
+  "source": {
+    "published": "2015-05",
+    "rfc": "RFC 7515",
+    "rfc_editor_url": "https://www.rfc-editor.org/rfc/rfc7515.html",
+    "title": "JSON Web Signature (JWS)",
+    "url": "https://datatracker.ietf.org/doc/html/rfc7515"
+  }
+}

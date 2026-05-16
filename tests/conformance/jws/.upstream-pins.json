@@ -1,0 +1,19 @@
+{
+  "_doc": "W17.2 upstream pin for RFC 7515. The transcript_sha256 is the SHA-256 of the inline RFC_TRANSCRIPT_TEXT in scripts/generate-jws-rfc7515-appendix-a-corpus.py. The transcript records the normative Appendix A subsections and section 4.1.1 allow-list paragraph the corpus depends on. Updating either the RFC text or the literal vector constants in the generator changes the pin and triggers a corpus regeneration review. The pin scheme matches tests/conformance/jcs/.upstream-pins.json for cross-corpus consistency.",
+  "_schema_version": 1,
+  "appendix_subsections_covered": [
+    "A.1 HS256",
+    "A.2 RS256",
+    "A.3 ES256",
+    "A.4 ES512",
+    "A.5 Unsecured (alg=none)"
+  ],
+  "last_refreshed_at": "2026-05-16",
+  "published": "2015-05",
+  "rfc": "RFC 7515",
+  "rfc_editor_url": "https://www.rfc-editor.org/rfc/rfc7515.html",
+  "source_url": "https://datatracker.ietf.org/doc/html/rfc7515",
+  "title": "JSON Web Signature (JWS)",
+  "transcript_byte_length": 2516,
+  "transcript_sha256": "2a9f19022ea703eb52936dc6389186258c12c5b6f1851d3c232552caa80676a9"
+}
