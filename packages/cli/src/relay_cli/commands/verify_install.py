@@ -115,6 +115,24 @@ RELAY_RELEASE_030: Final[str] = "RELAY-RELEASE-030"  # sidecar check
 RELAY_RELEASE_032: Final[str] = "RELAY-RELEASE-032"  # trust anchor guard
 RELAY_RELEASE_033: Final[str] = "RELAY-RELEASE-033"  # offline-cache absent
 RELAY_RELEASE_034: Final[str] = "RELAY-RELEASE-034"  # rekor absence
+RELAY_VERIFY_JWKS_UNAVAILABLE: Final[str] = "RELAY-VERIFY-JWKS-UNAVAILABLE"
+# Online-mode fail-closed: no JWKS could be resolved. Distinct from the
+# offline-only RELAY-RELEASE-033 because the failure surface is different:
+# offline mode said "no cache", online mode says "no anchor at all (cache
+# empty AND fetch unavailable)". Silent pass on online cache-miss would
+# let an unsigned/unanchored bundle slip through, which is a keystone
+# violation (CLAUDE.md keystone #2: "Pass without evidence is not a pass.").
+
+# Rekor transparency-log cryptographic verification feature flag. MUST
+# remain False until ``_verify_rekor_inclusion`` validates the bundled
+# Merkle inclusion proof against Rekor's public key (e.g. via
+# ``sigstore.transparency.LogEntry.from_bundle_field`` followed by
+# ``log_entry.verify_inclusion_proof``). With the flag at False the
+# function fail-closes on every input; flipping it to True without
+# wiring the real verifier is a P0 keystone-invariant regression
+# guarded by
+# ``test_verifier_crypto_failclosed.py::test_rekor_crypto_flag_is_false``.
+REKOR_CRYPTO_IMPLEMENTED: Final[bool] = False
 
 # -----------------------------------------------------------------------------
 # Output schema-version pin
@@ -275,51 +293,52 @@ class InstallRecordError(Exception):
 
 
 def _verify_rekor_inclusion(sigstore_bytes: bytes) -> tuple[bool, str]:
-    """Return (ok, reason) for Rekor transparency-log presence.
+    """Return ``(ok, reason)`` for Rekor transparency-log inclusion.
 
-    Per spec section AO.1 every Relay-published artifact must have a Rekor
-    inclusion proof in its Sigstore bundle. A locally-signed (fork) bundle
-    will lack either the tlog entries entirely OR the inclusion proof
-    inside an entry; both are transparency-log absences and fail
-    VAL-W12-034.
+    FAIL-CLOSED until ``REKOR_CRYPTO_IMPLEMENTED`` is True.
+
+    Real verification (when wired) MUST:
+
+      - Parse the Sigstore Bundle protobuf and extract every
+        ``tlogEntries[*]`` Rekor log entry.
+      - For each entry, verify the inclusion proof's Merkle path against
+        the entry's leaf hash and the proof's signed root checkpoint.
+      - Verify the checkpoint signature against Rekor's bundled public
+        key (or BYO trust root for forks/self-hosters).
+      - Cross-check that the canonicalised entry body matches the
+        artifact's hashed-rekord leaf so an attacker cannot substitute
+        an unrelated log entry.
+      - Refuse on absence: a bundle without a verified inclusion proof
+        is NOT in the transparency log regardless of how well-formed
+        the surrounding JSON looks.
+
+    The structural-only presence check in the prior implementation is
+    intentionally NOT a fallback. Per CLAUDE.md keystone invariant #2
+    ("Pass without evidence is not a pass.") and spec section AO.1
+    (transparency-log absence is the higher-trust signal), returning
+    ``(True, "")`` because ``tlogEntries[0].inclusionProof`` is a dict
+    of any shape would let a forged bundle pass. We refuse to claim
+    Rekor inclusion rather than lie.
+
+    Args:
+        sigstore_bytes: Raw bytes of the Sigstore bundle JSON.
+
+    Returns:
+        ``(ok, reason)``. ``ok`` is ALWAYS ``False`` until
+        ``REKOR_CRYPTO_IMPLEMENTED`` is True. The ``reason`` is
+        ``"rekor_crypto_not_implemented"`` so auditors can distinguish a
+        refusal-to-claim from a legitimate transparency-log absence.
     """
-    try:
-        parsed = json.loads(sigstore_bytes.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        return False, f"sigstore bundle is not valid JSON: {exc}"
-    if not isinstance(parsed, dict):
-        return False, "sigstore bundle is not a JSON object"
-    vm = parsed.get("verificationMaterial")
-    if isinstance(vm, dict):
-        tlog_entries = vm.get("tlogEntries")
-        if not isinstance(tlog_entries, list) or len(tlog_entries) == 0:
-            return False, (
-                "Artifact not in Rekor transparency log: no tlog entries "
-                "in sigstore bundle"
-            )
-        for entry in tlog_entries:
-            if not isinstance(entry, dict):
-                return False, (
-                    "Artifact not in Rekor transparency log: malformed "
-                    "tlog entry"
-                )
-            if "inclusionProof" not in entry or not isinstance(
-                entry["inclusionProof"], dict
-            ):
-                return False, (
-                    "Artifact not in Rekor transparency log: tlog entry "
-                    "missing inclusion proof"
-                )
-        return True, ""
-    # Legacy cosign-bundle shape: ``rekorBundle.Payload`` carries the
-    # inclusion-proof equivalent. Absence is also transparency-log absence.
-    rekor = parsed.get("rekorBundle")
-    if isinstance(rekor, dict) and isinstance(rekor.get("Payload"), dict):
-        return True, ""
-    return False, (
-        "Artifact not in Rekor transparency log: no verificationMaterial "
-        "or rekorBundle found"
-    )
+    _ = sigstore_bytes  # see fail-closed switch below
+
+    if not REKOR_CRYPTO_IMPLEMENTED:
+        return False, "rekor_crypto_not_implemented"
+
+    # Unreachable while the flag is False. When wired, this branch will
+    # parse the Sigstore Bundle, locate the tlogEntries, and call into
+    # ``sigstore.transparency.LogEntry.verify_inclusion_proof`` (or
+    # equivalent) against Rekor's bundled public key.
+    return False, "rekor_crypto_not_implemented_unreachable"  # pragma: no cover
 
 
 def _verify_one_surface(
@@ -450,48 +469,109 @@ def _verify_one_surface(
 # -----------------------------------------------------------------------------
 
 
+class _JwksUnavailableError(Exception):
+    """Raised by :func:`_resolve_jwks` when no JWKS can be resolved.
+
+    Carries a structured reason + the cache path + the active trust
+    anchor so the caller can emit a wire envelope with full diagnostics.
+    This is a fail-closed signal (CLAUDE.md keystone #2): an online
+    verification with no resolvable trust anchor MUST NOT pass silently.
+    """
+
+    def __init__(
+        self,
+        *,
+        reason: str,
+        message: str,
+        trust_anchor_url: str,
+        cache_path: Path,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.message = message
+        self.trust_anchor_url = trust_anchor_url
+        self.cache_path = cache_path
+
+
+def _jwks_cache_path_for(trust_anchor_url: str, home: Path | None) -> Path:
+    """Return the on-disk cache path for ``trust_anchor_url``.
+
+    Mirrors the layout used by :func:`load_jwks_from_cache`: the cache
+    lives under ``${RELAY_HOME}/jwks-cache/<host>.json``. We compute the
+    path so the error envelope can point auditors at exactly where they
+    must drop a cached JWKS to make verification succeed offline.
+    """
+    from urllib.parse import urlparse
+
+    base = home if home is not None else Path.home() / ".relay"
+    host = urlparse(trust_anchor_url).hostname or "unknown-host"
+    return base / "jwks-cache" / f"{host}.json"
+
+
 def _resolve_jwks(
     *,
     trust_anchor_url: str,
     home: Path | None,
     offline: bool,
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Return (jwks_or_none, error_reason_or_none).
+) -> tuple[dict[str, Any], None]:
+    """Return ``(jwks, None)`` or raise :class:`_JwksUnavailableError`.
 
-    Offline mode: cache hit -> jwks; cache miss -> (None, error reason).
-    Online mode (NOT IMPLEMENTED IN OSS PROFILE today): we accept cache
-    hit as authoritative; cache miss in non-offline mode also surfaces
-    a soft warning but does not block (the structural Sigstore verifier
-    does the heavy lifting, and the JWKS is needed only to anchor
-    future evidence-bundle signatures emitted by the same release
-    pipeline). For VAL-W12-033 the offline path is the load-bearing
-    case; online cache miss is a soft pass with a stderr WARN.
+    Resolution policy (per CLAUDE.md keystone #2 "Pass without evidence
+    is not a pass." -- the JWKS is the trust anchor that binds every
+    bundle signature; an unresolved JWKS is a hard failure regardless
+    of online/offline mode):
+
+      * Cache hit -> return the cached JWKS.
+      * Cache miss + offline -> raise (offline-cache-absent).
+      * Cache miss + online + network blocked -> raise (network-blocked).
+      * Cache miss + online + network NOT blocked -> raise. The OSS
+        profile does NOT silently fetch from the network here. A future
+        maintenance release can wire a one-shot fetch path, but until
+        then the only auditor-supported way to populate the cache is
+        an explicit out-of-band fetch documented in the runbook.
 
     The network is NEVER touched when ``RLY_VERIFY_INSTALL_BLOCK_NETWORK``
     is set in the environment. This is the contract that lets the test
     suite assert "no egress in offline mode."
+
+    The previous implementation returned ``(None, None)`` on the
+    online + cache-miss + unblocked path, which let online verification
+    pass silently with no trust anchor anchored. That is a regression
+    against the keystone invariant; this implementation fails-closed.
     """
     cached = load_jwks_from_cache(trust_anchor_url, home=home)
     if cached is not None:
         return cached, None
+    cache_path = _jwks_cache_path_for(trust_anchor_url, home=home)
     if offline:
-        return None, (
-            f"offline mode requested but JWKS cache miss for "
-            f"{trust_anchor_url!r}; run `rly verify-install` once online "
-            f"to populate the cache at "
-            f"${{RELAY_HOME}}/jwks-cache/"
+        raise _JwksUnavailableError(
+            reason="offline_jwks_cache_miss",
+            message=(
+                f"offline mode requested but JWKS cache miss for "
+                f"{trust_anchor_url!r}; run `rly verify-install` once "
+                f"online to populate the cache at {cache_path!s}"
+            ),
+            trust_anchor_url=trust_anchor_url,
+            cache_path=cache_path,
         )
-    # Online cache miss: in the OSS profile we do NOT fetch silently
-    # here -- offline-only verification is the auditor-supported path
-    # per spec section AO.4. A future maintenance release can wire a
-    # one-shot fetch (gated on RLY_VERIFY_INSTALL_BLOCK_NETWORK=0).
-    if os.environ.get(ENV_BLOCK_NETWORK):
-        return None, (
-            f"network blocked by RLY_VERIFY_INSTALL_BLOCK_NETWORK; "
-            f"JWKS cache miss for {trust_anchor_url!r}"
-        )
-    # Soft: cache miss with no block flag; treat as missing-but-tolerable.
-    return None, None
+    # Online cache miss. The OSS profile does not fetch silently here;
+    # cache miss is a hard fail regardless of whether the network is
+    # explicitly blocked or merely not configured.
+    network_blocked = bool(os.environ.get(ENV_BLOCK_NETWORK))
+    raise _JwksUnavailableError(
+        reason="jwks_unavailable",
+        message=(
+            f"no JWKS could be resolved: no --trust-anchor cache hit "
+            f"for {trust_anchor_url!r} at {cache_path!s} and "
+            f"network fetch is "
+            + ("blocked by RLY_VERIFY_INSTALL_BLOCK_NETWORK" if network_blocked
+               else "not implemented in the OSS verifier")
+            + "; populate the cache by running `rly verify-install` "
+            "while online, or pass --offline once the cache is seeded."
+        ),
+        trust_anchor_url=trust_anchor_url,
+        cache_path=cache_path,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -627,28 +707,43 @@ def cmd_verify_install(
         env_var=ENV_SIDECAR_RECORD,
     )
 
-    # Resolve JWKS once -- shared by every check. Offline cache miss is
-    # a per-check failure (RELAY-RELEASE-033) attributed to the first
-    # check that ran (or all of them if composite).
-    jwks, jwks_error_reason = _resolve_jwks(
-        trust_anchor_url=active_anchor,
-        home=home_path,
-        offline=offline,
-    )
-    offline_cache_miss = bool(offline and jwks is None)
+    # Resolve JWKS once -- shared by every check. Both offline cache
+    # miss (RELAY-RELEASE-033) and online unresolvable trust anchor
+    # (RELAY-VERIFY-JWKS-UNAVAILABLE) surface as fail-closed verdicts
+    # per CLAUDE.md keystone #2 ("Pass without evidence is not a pass.").
+    jwks_failure: dict[str, Any] | None = None
+    try:
+        _jwks, _ = _resolve_jwks(
+            trust_anchor_url=active_anchor,
+            home=home_path,
+            offline=offline,
+        )
+    except _JwksUnavailableError as exc:
+        # Preserve the existing wire-code contract for the offline branch
+        # (VAL-W12-033 -> RELAY-RELEASE-033) and surface the new
+        # fail-closed code for the online branch.
+        error_code = (
+            RELAY_RELEASE_033
+            if exc.reason == "offline_jwks_cache_miss"
+            else RELAY_VERIFY_JWKS_UNAVAILABLE
+        )
+        jwks_failure = {
+            "status": "fail",
+            "error_code": error_code,
+            "detail": {
+                "reason": exc.reason,
+                "trust_anchor": exc.trust_anchor_url,
+                "cache_path": str(exc.cache_path),
+                "message": exc.message,
+            },
+        }
 
     def _maybe_offline_fail(check_result: dict[str, Any]) -> dict[str, Any]:
-        """Promote a pass to a RELAY-RELEASE-033 fail when offline+cache-miss."""
-        if not offline_cache_miss:
+        """Promote a pass to a JWKS-failure verdict when JWKS is unresolved."""
+        if jwks_failure is None:
             return check_result
         return {
-            "status": "fail",
-            "error_code": RELAY_RELEASE_033,
-            "detail": {
-                "reason": "offline_jwks_cache_miss",
-                "trust_anchor": active_anchor,
-                "message": jwks_error_reason or "offline JWKS cache miss",
-            },
+            **jwks_failure,
             **{
                 k: v
                 for k, v in check_result.items()
@@ -811,6 +906,7 @@ __all__ = [
     "RELAY_RELEASE_032",
     "RELAY_RELEASE_033",
     "RELAY_RELEASE_034",
+    "RELAY_VERIFY_JWKS_UNAVAILABLE",
     "VERIFY_INSTALL_SCHEMA",
     "cmd_verify_install",
 ]

@@ -16,14 +16,23 @@ material from landing in OSS.
 
 Implementation note: full ASN.1 RFC 3161 token parsing requires either
 a TSA-specific library (asn1crypto + a hand-rolled TSTInfo decoder) or
-an opinionated dependency (rfc3161-client / pyhanko). For the v0.1 OSS
-verifier we ship a small struct-typed surface that operates on a
-pre-parsed TSA token (the bundle producer is responsible for parsing
-the binary `.tsr` into its structured form before signing). Production
-ingest (relay-platform) parses the binary form via asn1crypto; the OSS
-verifier consumes the parsed structure. This keeps the verifier wheel
-free of the asn1crypto dependency while preserving the validation
-contract the spec requires.
+an opinionated dependency (rfc3161-client / pyhanko). The structured
+pre-parsed token shape below is a stepping-stone toward that wiring.
+
+FAIL-CLOSED: per CLAUDE.md keystone invariant #2 ("Pass without
+evidence is not a pass.") this module's ``validate_tsa_token`` MUST
+NOT report ``outcome="ok"`` based on a presence-only check of
+``tsa_signature_b64u``. Until the cryptographic CMS SignerInfo
+signature is verified against the TSA cert chain bundled at
+``packages/verifier/src/relay_verifier/tsa_chain/tsa-chain.pem``,
+the function fail-closes via the module-level
+``TSA_CRYPTO_IMPLEMENTED`` flag (currently ``False``). A token whose
+structural checks pass but whose signature has not been
+cryptographically verified is reported as ``outcome="invalid"`` with
+``reason`` starting ``"TSA cryptographic signature verification"``.
+Flipping the flag to ``True`` without the accompanying verifier is a
+P1 keystone-invariant regression and is guarded by
+``packages/verifier/tests/test_tsa_crypto_failclosed.py``.
 
 The structured token shape (mirrors ASN.1 RFC 3161 sec 2.4.2 TSTInfo):
 
@@ -91,6 +100,16 @@ TSA_CHAIN_FILENAME: Final[str] = "tsa-chain.pem"
 # Minimum key strengths per VAL-W10-042. Mirrors the L.1 algorithm
 # allow-list rejection of weaker primitives.
 MIN_RSA_BITS: Final[int] = 2048
+
+# Cryptographic TSA signature verification feature flag. MUST remain
+# False until ``validate_tsa_token`` verifies the CMS SignerInfo
+# signature in the RFC 3161 TimeStampResp against the bundled TSA
+# cert chain (asn1crypto / rfc3161-client). With the flag at False
+# the function fail-closes when a token is present; flipping it to
+# True without wiring the real verifier is a P1 keystone-invariant
+# regression guarded by
+# ``test_tsa_crypto_failclosed.py::test_tsa_crypto_flag_is_false``.
+TSA_CRYPTO_IMPLEMENTED: Final[bool] = False
 
 
 # -----------------------------------------------------------------------------
@@ -279,15 +298,15 @@ def validate_tsa_token(
         result.code = RELAY_EVID_038
         return result
 
-    # 3. TSA signature presence (structural; full crypto verify is the
-    # bundle producer's responsibility, see module docstring rationale).
+    # 3. TSA signature presence (structural pre-check; full crypto
+    # verify gated on TSA_CRYPTO_IMPLEMENTED below).
     tsa_sig = token.get("tsa_signature_b64u")
     if not isinstance(tsa_sig, str) or not tsa_sig:
         result.outcome = "invalid"
         result.reason = "TSA token missing 'tsa_signature_b64u'"
         return result
 
-    # 4. Subject membership in chain (VAL-W10-026).
+    # 4. Subject membership in chain (VAL-W10-026 structural pre-check).
     if chain_certs is not None and len(chain_certs) > 0:
         signer_subject = token.get("tsa_signer_cert_subject")
         if not isinstance(signer_subject, str) or not signer_subject:
@@ -303,8 +322,36 @@ def validate_tsa_token(
             )
             return result
 
-    result.outcome = "ok"
-    return result
+    # 5. Cryptographic TSA signature verification (FAIL-CLOSED).
+    # Per CLAUDE.md keystone invariant #2 ("Pass without evidence is
+    # not a pass.") we MUST NOT report outcome="ok" until the CMS
+    # SignerInfo signature inside the RFC 3161 TimeStampResp has been
+    # cryptographically verified against the bundled TSA cert chain
+    # (signature MUST verify under one of the chain certs' public keys
+    # over the DER-encoded TSTInfo; chain MUST link to a self-signed
+    # root that is itself trusted; the signer cert MUST be valid at
+    # gen_time). Until asn1crypto (or rfc3161-client) is wired and
+    # called here, the flag stays False and EVERY token whose
+    # cryptographic signature has not been verified is rejected.
+    if not TSA_CRYPTO_IMPLEMENTED:
+        result.outcome = "invalid"
+        result.reason = (
+            "TSA cryptographic signature verification is not implemented "
+            "in this build; refusing to claim outcome='ok'. The structural "
+            "checks (message_imprint match, gen_time within window, "
+            "signer-subject membership) passed, but the CMS SignerInfo "
+            "signature in the RFC 3161 token has not been verified "
+            "against the TSA cert chain. Tracking issue: P1 verifier "
+            "crypto gap."
+        )
+        return result
+
+    # Unreachable while the flag is False. When wired, this block will
+    # call into asn1crypto's tsp.TimeStampResp -> SignedData ->
+    # SignerInfo verification path, validating the signature over the
+    # TSTInfo bytes under the public key of one of chain_certs.
+    result.outcome = "ok"  # pragma: no cover - unreachable today
+    return result  # pragma: no cover - unreachable today
 
 
 # -----------------------------------------------------------------------------
@@ -461,6 +508,7 @@ __all__ = [
     "RELAY_EVID_038",
     "TSA_CHAIN_DIRNAME",
     "TSA_CHAIN_FILENAME",
+    "TSA_CRYPTO_IMPLEMENTED",
     "TSACertSummary",
     "TSAChainCheck",
     "TSAValidationResult",

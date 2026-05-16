@@ -77,8 +77,18 @@ def test_tampered_tsa_imprint_produces_tsa_check_invalid() -> None:
 # ---------------------------------------------------------------------------
 
 
+_TSA_CRYPTO_XFAIL_REASON = (
+    "validate_tsa_token is fail-closed until ASN.1 RFC 3161 cryptographic "
+    "signature verification (asn1crypto / rfc3161-client) is wired against "
+    "the bundled TSA cert chain; see test_tsa_crypto_failclosed.py (P1 "
+    "verifier crypto gap). Re-enable this test once TSA_CRYPTO_IMPLEMENTED "
+    "is True and the fixture builder produces a real RFC 3161 TimeStampResp."
+)
+
+
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-027")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_tsa_gen_time_at_plus_300_accepted() -> None:
     """Exactly +300 s skew is accepted (boundary)."""
     built = build_bundle(tsa_skew_seconds=300)
@@ -88,6 +98,7 @@ def test_tsa_gen_time_at_plus_300_accepted() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-027")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_tsa_gen_time_at_minus_300_accepted() -> None:
     """Exactly -300 s skew is accepted (boundary)."""
     built = build_bundle(tsa_skew_seconds=-300)
@@ -135,6 +146,7 @@ def test_single_source_clock_skew_constant_is_300_seconds() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-028")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_log_inclusion_absent_produces_warn_not_fail() -> None:
     """A bundle without an inclusion proof MUST produce
     log_inclusion='absent' + a WARN; the bundle itself still verifies."""
@@ -156,6 +168,7 @@ def test_log_inclusion_absent_produces_warn_not_fail() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-029")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_log_witness_signature_mismatch_is_warn_not_fail_by_default() -> None:
     """A bundle with a structurally-valid proof but invalid witness
     signature MUST produce log_inclusion='witness_mismatch' + WARN.
@@ -229,6 +242,7 @@ def test_log_witness_signature_mismatch_under_strict_log_is_error() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-030")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_inclusion_proof_verifies_offline_with_no_network() -> None:
     """The inclusion proof MUST verify with zero socket activity. We
     test this by patching socket.socket to fail loudly during the call;

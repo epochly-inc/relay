@@ -46,6 +46,20 @@ DEFAULT_OIDC_IDENTITY = (
     "https://github.com/epochly-inc/relay/.github/workflows/release-pypi.yml@refs/heads/main"
 )
 
+# Shared xfail reason for the verify-install tests that depend on the
+# (now fail-closed) sigstore + Rekor verifiers. See
+# packages/cli/tests/test_verifier_crypto_failclosed.py for the
+# fail-closed invariants. Re-enable each test once the corresponding
+# `*_CRYPTO_IMPLEMENTED` flag is True and the fixture builder produces
+# a real Sigstore bundle (Fulcio-signed) with a verifiable Rekor proof.
+_SIGSTORE_REKOR_XFAIL_REASON = (
+    "verify-install relies on verify_sigstore + _verify_rekor_inclusion, "
+    "both of which are fail-closed until real Sigstore cryptographic "
+    "verification (sigstore-python) and Rekor inclusion proof "
+    "verification are wired. See test_verifier_crypto_failclosed.py "
+    "(P0 verifier crypto gap)."
+)
+
 
 # ---------------------------------------------------------------------------
 # Invocation helpers (no network; pure subprocess).
@@ -201,6 +215,7 @@ def _seed_jwks_cache(
 
 
 @pytest.mark.fulfills("VAL-W12-028")
+@pytest.mark.xfail(strict=True, reason=_SIGSTORE_REKOR_XFAIL_REASON)
 def test_verify_install_python_passes_with_valid_record(tmp_path: Path) -> None:
     record = _write_artifact_and_record(
         tmp_path, artifact_name="epochly_relay-0.1.0.whl", kind="python"
@@ -252,6 +267,7 @@ def test_verify_install_python_tamper_yields_release_028(tmp_path: Path) -> None
 
 
 @pytest.mark.fulfills("VAL-W12-029")
+@pytest.mark.xfail(strict=True, reason=_SIGSTORE_REKOR_XFAIL_REASON)
 def test_verify_install_npm_passes_with_valid_record(tmp_path: Path) -> None:
     record = _write_artifact_and_record(
         tmp_path, artifact_name="epochly-relay-0.1.0.tgz", kind="npm"
@@ -300,6 +316,7 @@ def test_verify_install_npm_tamper_yields_release_029(tmp_path: Path) -> None:
 
 
 @pytest.mark.fulfills("VAL-W12-030")
+@pytest.mark.xfail(strict=True, reason=_SIGSTORE_REKOR_XFAIL_REASON)
 def test_verify_install_sidecar_passes_with_valid_record(tmp_path: Path) -> None:
     record = _write_artifact_and_record(
         tmp_path,
@@ -360,6 +377,7 @@ def test_verify_install_sidecar_tamper_yields_release_030(tmp_path: Path) -> Non
 
 
 @pytest.mark.fulfills("VAL-W12-031")
+@pytest.mark.xfail(strict=True, reason=_SIGSTORE_REKOR_XFAIL_REASON)
 def test_verify_install_no_flags_runs_all_three_checks(tmp_path: Path) -> None:
     py_record = _write_artifact_and_record(
         tmp_path, artifact_name="epochly_relay-0.1.0.whl", kind="python"
@@ -394,6 +412,7 @@ def test_verify_install_no_flags_runs_all_three_checks(tmp_path: Path) -> None:
 
 
 @pytest.mark.fulfills("VAL-W12-031")
+@pytest.mark.xfail(strict=True, reason=_SIGSTORE_REKOR_XFAIL_REASON)
 def test_verify_install_composite_fail_returns_nonzero(tmp_path: Path) -> None:
     py_record = _write_artifact_and_record(
         tmp_path, artifact_name="epochly_relay-0.1.0.whl", kind="python"
@@ -486,6 +505,7 @@ def test_verify_install_default_jwks_constant_grep() -> None:
 
 
 @pytest.mark.fulfills("VAL-W12-033")
+@pytest.mark.xfail(strict=True, reason=_SIGSTORE_REKOR_XFAIL_REASON)
 def test_verify_install_offline_succeeds_with_cache(tmp_path: Path) -> None:
     record = _write_artifact_and_record(
         tmp_path, artifact_name="epochly_relay-0.1.0.whl", kind="python"
@@ -539,12 +559,66 @@ def test_verify_install_help_documents_cache_path() -> None:
     assert "jwks-cache" in result.stdout or "JWKS" in result.stdout
 
 
+@pytest.mark.fulfills("VAL-W12-032")
+def test_verify_install_online_fails_when_no_jwks_resolvable(
+    tmp_path: Path,
+) -> None:
+    """Online mode (no --offline) with no cached JWKS and network blocked
+    MUST fail-closed with RELAY-VERIFY-JWKS-UNAVAILABLE, not silently
+    skip the JWKS check.
+
+    Regression: prior implementation returned (None, None) from
+    _resolve_jwks on online cache miss without ENV_BLOCK_NETWORK set,
+    which let the verify pass with no trust anchor anchored to the
+    bundle signature path.
+    """
+    record = _write_artifact_and_record(
+        tmp_path, artifact_name="epochly_relay-0.1.0.whl", kind="python"
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    # NO _seed_jwks_cache call -- cache is empty.
+    result = _run_rly(
+        ["verify-install", "--python", "--json"],  # NO --offline
+        env={
+            "RLY_VERIFY_INSTALL_PYTHON_RECORD": str(record),
+            "RLY_VERIFY_INSTALL_HOME": str(home),
+            # Force-block the network so the would-be fetch fails; cache
+            # is empty; check MUST fail-closed.
+            "RLY_VERIFY_INSTALL_BLOCK_NETWORK": "1",
+        },
+    )
+    assert result.returncode != 0, (
+        "online verify-install with no cache + blocked network must fail; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    payload = json.loads(result.stdout)
+    assert payload["overall_status"] == "fail"
+    assert payload["python_check"]["status"] == "fail"
+    assert payload["python_check"]["error_code"] == "RELAY-VERIFY-JWKS-UNAVAILABLE"
+    detail = payload["python_check"].get("detail", {})
+    assert "JWKS" in detail.get("message", "") or "jwks" in detail.get(
+        "reason", ""
+    )
+
+
 # ---------------------------------------------------------------------------
 # VAL-W12-034: Rekor reachable but artifact NOT in log -> RELAY-RELEASE-034
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.fulfills("VAL-W12-034")
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "_verify_rekor_inclusion is fail-closed; every input (including "
+        "fork-style bundles with omitted tlog entries) returns reason "
+        "'rekor_crypto_not_implemented' rather than the 'transparency log' "
+        "substring this test asserts. The error_code RELAY-RELEASE-034 is "
+        "still emitted correctly, but the human-readable reason changed. "
+        "See test_verifier_crypto_failclosed.py (P0 verifier crypto gap)."
+    ),
+)
 def test_verify_install_no_rekor_inclusion_proof_yields_release_034(
     tmp_path: Path,
 ) -> None:

@@ -450,6 +450,16 @@ def test_install_help_does_not_expose_url_flag() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W5-015")
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "verify_sigstore is fail-closed until real Sigstore cryptographic "
+        "verification (sigstore-python) is wired; see "
+        "test_verifier_crypto_failclosed.py (P0 verifier crypto gap). "
+        "Re-enable this test once VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED is "
+        "True and the fixture builder produces a real Fulcio-signed bundle."
+    ),
+)
 def test_install_pipeline_uses_pinned_manifest_url(tmp_path: Path) -> None:
     """The install pipeline MUST consult the pinned manifest, not arbitrary input.
 
@@ -744,6 +754,16 @@ def test_install_digest_verified_before_signature(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W5-018")
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "verify_sigstore is fail-closed until real Sigstore cryptographic "
+        "verification (sigstore-python) is wired; see "
+        "test_verifier_crypto_failclosed.py (P0 verifier crypto gap). "
+        "Re-enable this test once VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED is "
+        "True and the fixture builder produces a real Fulcio-signed bundle."
+    ),
+)
 def test_install_writes_bundle_atomically_to_relay_home_bin(tmp_path: Path) -> None:
     """Verified bundle MUST land at ${RELAY_HOME}/bin/relay-sidecar-<version>."""
     from relay_cli.bundle import install_bundle

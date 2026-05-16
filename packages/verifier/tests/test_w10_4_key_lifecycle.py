@@ -32,6 +32,19 @@ def _aware_utc(iso_z: str) -> _dt.datetime:
     return _dt.datetime.fromisoformat(iso_z[:-1] + "+00:00")
 
 
+# Shared xfail reason for tests that depend on `validate_bundle`
+# returning overall="pass" on the canonical happy-path bundle, which
+# requires `validate_tsa_token` to report outcome="ok". That path is
+# fail-closed until TSA_CRYPTO_IMPLEMENTED is True.
+_TSA_CRYPTO_XFAIL_REASON = (
+    "validate_tsa_token is fail-closed until ASN.1 RFC 3161 cryptographic "
+    "signature verification is wired; the canonical happy-path bundle now "
+    "yields overall='fail' on the TSA check. See "
+    "packages/verifier/tests/test_tsa_crypto_failclosed.py (P1 verifier "
+    "crypto gap)."
+)
+
+
 # ---------------------------------------------------------------------------
 # VAL-W10-031: rotation grace + not_before +/-300s boundaries
 # ---------------------------------------------------------------------------
@@ -39,6 +52,7 @@ def _aware_utc(iso_z: str) -> _dt.datetime:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-031")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_rotation_grace_old_key_within_window_verifies() -> None:
     """A bundle signed with a key whose window is current verifies."""
     built = build_bundle(
@@ -58,6 +72,7 @@ def test_rotation_grace_old_key_within_window_verifies() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-031")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_rotation_future_not_before_at_plus_200s_accepted() -> None:
     """key.not_before = auditor_now + 200s -> ACCEPT (within +/-300s tolerance)."""
     auditor_now = "2026-05-15T12:00:00Z"
@@ -77,6 +92,7 @@ def test_rotation_future_not_before_at_plus_200s_accepted() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-031")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_rotation_future_not_before_at_plus_300s_accepted_boundary() -> None:
     """key.not_before = auditor_now + 300s (exact) -> ACCEPT."""
     auditor_now = "2026-05-15T12:00:00Z"
@@ -174,6 +190,7 @@ def test_expired_key_rejected_with_evid_041_signer_key_expired() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-033")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_revoked_key_signed_before_revocation_warns_but_passes() -> None:
     """Bundle signed BEFORE revoked_at -> signer_key_revoked=True + WARN,
     overall=pass (auditor decides)."""
@@ -229,6 +246,7 @@ def test_revoked_key_signed_after_revocation_rejected_with_evid_042() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-034")
+@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_auditor_clock_200s_before_not_before_accepted() -> None:
     """auditor_now = key.not_before - 200s -> ACCEPT."""
     nb = "2026-05-15T12:00:00Z"
