@@ -144,35 +144,54 @@ def append_event(
 ) -> EventLogEntry:
     """Append a single event-log entry and return the persisted model.
 
-    The write goes through ``local_atomic_file_write(append=True)`` so the
-    portalocker exclusive lock serializes concurrent appends.
+    Strict monotonicity of ``ingest_sequence`` (VAL-W2-006 and related)
+    requires that the sequence-number READ and the file APPEND run inside
+    the SAME exclusive lock. We pass a ``body_fn`` closure to
+    ``local_atomic_file_write`` so the primitive computes the next
+    sequence from the destination's current bytes WHILE holding the
+    portalocker exclusive lock; two concurrent appenders cannot observe
+    the same prior state.
     """
     base = home if home is not None else relay_home()
     base.mkdir(parents=True, exist_ok=True)
     path = event_log_path(base)
 
-    entry = EventLogEntry(
-        schema_version="relay.event_log_entry.v1",
-        event_id=uuid.uuid4(),
-        project_id=_LOCAL_OSS_PROJECT_NAMESPACE,
-        scope_type=scope_type,
-        scope_id=scope_id if scope_id is not None else _LOCAL_OSS_PROJECT_NAMESPACE,
-        event_type=event_type,
-        actor_kind=actor_kind,
-        occurred_at=datetime.fromisoformat(_now_rfc3339_utc().replace("Z", "+00:00")),
-        ingest_sequence=_next_ingest_sequence(base),
-        payload=payload or {},
-    )
+    occurred_at = datetime.fromisoformat(_now_rfc3339_utc().replace("Z", "+00:00"))
+    event_id = uuid.uuid4()
+    resolved_scope_id = scope_id if scope_id is not None else _LOCAL_OSS_PROJECT_NAMESPACE
+    payload_dict = payload or {}
 
-    line = json.dumps(
-        entry.model_dump(mode="json"),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ) + "\n"
+    # Captured by the closure so the caller can return the persisted entry.
+    captured: list[EventLogEntry] = []
 
-    local_atomic_file_write(path, line.encode("utf-8"), append=True)
-    return entry
+    def _build_body(existing: bytes) -> bytes:
+        sequence = _count_nonempty_lines(existing)
+        entry = EventLogEntry(
+            schema_version="relay.event_log_entry.v1",
+            event_id=event_id,
+            project_id=_LOCAL_OSS_PROJECT_NAMESPACE,
+            scope_type=scope_type,
+            scope_id=resolved_scope_id,
+            event_type=event_type,
+            actor_kind=actor_kind,
+            occurred_at=occurred_at,
+            ingest_sequence=sequence,
+            payload=payload_dict,
+        )
+        captured.append(entry)
+        line = (
+            json.dumps(
+                entry.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        return existing + line.encode("utf-8")
+
+    local_atomic_file_write(path, body_fn=_build_body)
+    return captured[0]
 
 
 def read_event_log(home: Path | None = None) -> list[EventLogEntry]:
