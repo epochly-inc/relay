@@ -1,0 +1,134 @@
+# Relay v0.1 OSS - Example Manifest
+# Example: vercel-ai-tool-agent
+#
+# Per spec section F and CLAUDE.md keystone invariant #3 the manifest is the
+# source of truth for how this example runs. Workers and the smoke harness
+# invoke the example through the manifest-declared commands (VAL-W16-018);
+# direct "node ..." / "tsx ..." invocations are forbidden in CI.
+#
+# This example is TypeScript-only per VAL-W16-009: the Vercel AI SDK ("ai"
+# package, https://sdk.vercel.ai) is TS-native and has no Python equivalent
+# (W3 surfaced asymmetry; the Python W3.5 adapter set does not include it).
+# The example exercises the W4.5 Vercel AI adapter (wrapVercelAi /
+# wrapGenerateText) around a deterministic tool-calling loop and emits a
+# parent/child span graph (model_call -> tool_call -> model_call) so the
+# OpenTelemetry trace continuity invariant (VAL-W16-011, per spec
+# "Evidenced pain-to-product traceability" line 23 note) is provable from
+# both live and cassette modes.
+#
+# Tools registered with the Vercel AI tool-calling surface declare their
+# side_effect_class per VAL-W16-005 and spec section E.3. Replay refuses
+# to execute mutating or external_irreversible tools without an audited
+# policy override (RELAY-REPLAY-014).
+
+schema: relay.example_manifest.v1
+adapter: vercel_ai
+name: vercel-ai-tool-agent
+description: |
+  End-to-end Relay example exercising the Vercel AI SDK ("ai" package)
+  generateText surface plus a deterministic tool call (get_current_weather).
+  The example uses the W4 Relay TypeScript SDK and the W4.5 Vercel AI
+  adapter (wrapVercelAi); the underlying provider is OpenAI for tier-2
+  smoke (configurable via the model argument). The cassette records a
+  model_call -> tool_call -> model_call sequence with explicit
+  parent_span_id linkage so OpenTelemetry trace continuity is provable
+  offline (VAL-W16-011).
+
+languages:
+  - typescript
+
+redaction_policy_version: "v1"
+
+# -----------------------------------------------------------------------------
+# Runnable commands - dispatched via rly run / uv run rly (VAL-W16-018)
+# -----------------------------------------------------------------------------
+commands:
+
+  run-typescript-live:
+    description: |
+      Run the TypeScript example against the real OpenAI API through the
+      Vercel AI SDK. Requires OPENAI_API_KEY in the environment (declared
+      in requires_env). Produces a canonical run_results row in the local
+      sidecar (VAL-W16-010).
+    cmd: "uv run rly run --manifest examples/vercel-ai-tool-agent/relay.manifest.yaml --language typescript --mode live"
+    cwd: "."
+    timeout_ms: 300000
+    side_effect_class: "mutating"
+    requires_env:
+      OPENAI_API_KEY: "OpenAI API key for tier-2 smoke. Set in CI from secrets; locally from .env."
+
+  run-typescript-cassette:
+    description: |
+      Replay the TypeScript example from the recorded cassette under
+      typescript/cassettes/. Deterministic, offline, no network egress
+      (VAL-W16-012).
+    cmd: "uv run rly replay run --manifest examples/vercel-ai-tool-agent/relay.manifest.yaml --language typescript --cassette typescript/cassettes/vercel-ai-tool-agent.jsonl"
+    cwd: "."
+    timeout_ms: 120000
+    side_effect_class: "read_only"
+    requires_env: {}
+
+# -----------------------------------------------------------------------------
+# Tools the example registers with the Vercel AI tool-calling surface.
+# Every tool declares side_effect_class per VAL-W16-005.
+# -----------------------------------------------------------------------------
+tools:
+
+  - name: get_current_weather
+    description: |
+      Read-only deterministic forecast lookup. Returns a fixed stub
+      forecast so the example is reproducible in cassette mode. The
+      tool's args are subject to redaction per redaction_policy v1;
+      args_hash and result_hash are recorded on the tool_call span
+      per spec section B.1 tool-call flight recorder.
+      Read-only side_effect_class: safe to replay from cassette without
+      an audited policy override.
+    side_effect_class: read_only
+    input_schema:
+      type: object
+      required: [location]
+      properties:
+        location:
+          type: string
+          description: "City and country, e.g. 'Reykjavik, Iceland'."
+        unit:
+          type: string
+          enum: [celsius, fahrenheit]
+          default: celsius
+
+# -----------------------------------------------------------------------------
+# Test entries (VAL-W16-019 annotation distribution)
+# -----------------------------------------------------------------------------
+tests:
+
+  live_smoke:
+    tier: smoke
+    glob: "tests/examples/test_w16_3_lifecycle_e2e.py"
+    annotations:
+      - "@requires-openai"
+    description: |
+      Tier-2 smoke covering VAL-W16-010 / VAL-W16-011. Requires
+      OPENAI_API_KEY (the example's default Vercel AI provider is
+      OpenAI); gated by @requires-openai on forks where the secret is
+      absent, falling back to cassette_replay.
+
+  cassette_replay:
+    tier: plumbing
+    glob: "tests/examples/test_w16_3_cassettes.py"
+    annotations: []
+    description: |
+      Tier-1 plumbing covering VAL-W16-012 / VAL-W16-020. Offline; no
+      provider key required; runs on forks.
+
+# -----------------------------------------------------------------------------
+# Cassette locations (per-language glob). TypeScript-only example.
+# -----------------------------------------------------------------------------
+cassettes:
+  typescript: "typescript/cassettes/*.jsonl"
+
+# -----------------------------------------------------------------------------
+# Ports - the example does not bind any network ports (it makes outbound
+# HTTPS calls only in live mode). Empty ports array exercises the schema's
+# optional ports field explicitly.
+# -----------------------------------------------------------------------------
+ports: []
