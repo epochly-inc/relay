@@ -256,17 +256,21 @@ def _filter_headers(
 ) -> dict[str, str]:
     """Return the subset of ``headers`` that participates in the key.
 
-    Header names are normalized to lower-case. VAL-W7-023: excluded
-    headers (``User-Agent``, ``Authorization``, ``Date``, ...) are
-    dropped regardless of case. Allow-list policy: a header passes only
-    if its lower-case name is in ``KEY_DEFAULT_RELEVANT_HEADERS`` or in
-    ``extra_relevant``.
+    Header names are normalized to lower-case throughout. VAL-W7-023:
+    excluded headers (``User-Agent``, ``Authorization``, ``Date``, ...)
+    are dropped regardless of case. Allow-list policy: a header passes
+    only if its lower-case name is in ``KEY_DEFAULT_RELEVANT_HEADERS``
+    or (after lower-casing) in ``extra_relevant``.
+
+    Header-name matching is CASE-INSENSITIVE on both sides: callers may
+    pass ``extra_relevant={"OpenAI-Beta"}`` or ``{"openai-beta"}`` and
+    either form will match the lower-cased incoming key.
 
     Multiple headers with the same name (rare in HTTP/1.1; legal in
     HTTP/2) are joined by ", " in lexicographic order so the key is
     deterministic.
     """
-    relevant = KEY_DEFAULT_RELEVANT_HEADERS | extra_relevant
+    relevant = KEY_DEFAULT_RELEVANT_HEADERS | {h.lower() for h in extra_relevant}
     by_name: dict[str, list[str]] = {}
     for raw_name, raw_value in headers.items():
         lower = raw_name.lower()
@@ -487,28 +491,112 @@ def _output_body_path(session_dir: Path, fixture_id: str) -> Path:
     return session_dir / "bodies" / f"{fixture_id}.body"
 
 
+# Schemes that are explicitly rejected on ``output_ref``. Anything other
+# than ``file://`` (or a bare-relative path) is a security risk -- the
+# replay loader is read-only on the local filesystem and MUST NOT fetch
+# network resources, evaluate data URIs, or honour javascript: URIs.
+_FORBIDDEN_OUTPUT_REF_SCHEMES: Final[tuple[str, ...]] = (
+    "http://",
+    "https://",
+    "data:",
+    "javascript:",
+    "ftp://",
+    "ftps://",
+    "ws://",
+    "wss://",
+    "gopher://",
+)
+
+
 def _read_output_body(session_dir: Path, fixture: ReplayFixture) -> bytes:
     """Load a fixture's response body from disk.
 
-    Honors ``output_ref`` when it points at a local file (``file://`` or
-    a bare path). Returns ``b""`` for fixtures with no recorded output.
+    Honors ``output_ref`` ONLY when it points at a relative path inside
+    ``session_dir`` (optionally prefixed with ``file://``). Returns
+    ``b""`` for fixtures with no recorded output.
+
+    Security (path-traversal hardening):
+      * Non-``file://`` schemes (``http://``, ``data:``, ``javascript:``,
+        etc.) are rejected with ``RelayCassetteCorruptError``.
+      * Absolute paths -- both ``file:///etc/passwd`` and bare ``/etc/passwd``
+        -- are rejected with reason ``output_ref_absolute_path_rejected``.
+      * Paths that resolve outside ``session_dir`` (``..`` traversal,
+        symlink escape) are rejected with reason
+        ``output_ref_escapes_session_dir``.
     """
     if fixture.output_ref is None:
         # No body recorded; expect output_digest to be the empty SHA-256.
         return b""
     ref = fixture.output_ref
+    ref_lower = ref.lower()
+    for scheme in _FORBIDDEN_OUTPUT_REF_SCHEMES:
+        if ref_lower.startswith(scheme):
+            raise RelayCassetteCorruptError(
+                f"output_ref scheme {scheme!r} is not permitted; only "
+                f"local 'file://' (or bare relative paths) are honored",
+                details={
+                    "fixture_id": str(fixture.fixture_id),
+                    "output_ref": ref,
+                    "reason": "output_ref_scheme_not_permitted",
+                },
+            )
     if ref.startswith(OUTPUT_REF_LOCAL_PREFIX):
         ref = ref[len(OUTPUT_REF_LOCAL_PREFIX):]
     body_path = Path(ref)
-    if not body_path.is_absolute():
-        body_path = session_dir / body_path
-    return body_path.read_bytes()
+    # Reject absolute paths up front. Both POSIX (/etc/passwd) and
+    # Windows (C:\...) absolute forms are caught by Path.is_absolute().
+    if body_path.is_absolute():
+        raise RelayCassetteCorruptError(
+            f"output_ref absolute path is not permitted: {fixture.output_ref!r}",
+            details={
+                "fixture_id": str(fixture.fixture_id),
+                "output_ref": fixture.output_ref,
+                "reason": "output_ref_absolute_path_rejected",
+            },
+        )
+    session_root = session_dir.resolve()
+    resolved = (session_dir / body_path).resolve()
+    try:
+        resolved.relative_to(session_root)
+    except ValueError as exc:
+        raise RelayCassetteCorruptError(
+            f"output_ref escapes session_dir: {fixture.output_ref!r} -> "
+            f"{resolved!s} (session_dir={session_root!s})",
+            details={
+                "fixture_id": str(fixture.fixture_id),
+                "output_ref": fixture.output_ref,
+                "resolved_path": str(resolved),
+                "session_dir": str(session_root),
+                "reason": "output_ref_escapes_session_dir",
+            },
+        ) from exc
+    return resolved.read_bytes()
 
 
 def _verify_output_digest(
     fixture: ReplayFixture, body_bytes: bytes, *, line_number: int
 ) -> None:
-    """VAL-W7-028: assert ``output_digest`` matches the actual body."""
+    """VAL-W7-028: assert ``output_digest`` matches the actual body.
+
+    Security: if ``output_ref`` is present, ``output_digest`` MUST also
+    be present. Previously the early-return on ``output_digest is None``
+    allowed an unsigned body to bypass integrity verification entirely,
+    which (combined with the historic path-traversal bug in
+    ``_read_output_body``) meant an attacker could swap in arbitrary body
+    bytes and have them served. Pairing the two checks closes the loop.
+    """
+    if fixture.output_ref is not None and fixture.output_digest is None:
+        raise RelayCassetteCorruptError(
+            f"cassette line {line_number} fixture {fixture.fixture_id}: "
+            f"output_ref present but output_digest missing; integrity "
+            f"verification cannot be skipped when a body is referenced",
+            details={
+                "line_number": line_number,
+                "fixture_id": str(fixture.fixture_id),
+                "output_ref": fixture.output_ref,
+                "reason": "output_digest_required_when_output_ref_present",
+            },
+        )
     if fixture.output_digest is None:
         return
     actual = "sha256-" + hashlib.sha256(body_bytes).hexdigest()

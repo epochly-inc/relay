@@ -32,6 +32,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import hmac
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,7 @@ from relay_cli.cassette import (
     CassetteEntry,
     CassetteFormatError,
     canonical_request_digest,
+    canonical_response_digest,
     parse_cassette,
 )
 
@@ -100,9 +102,31 @@ class CassetteServer:
 
     Per VAL-W7-008 the server's ``session_dir`` is fixed at construction
     and the server MUST NOT accept a different path at lookup time.
+
+    Integrity (keystone invariant #6, side-effect idempotency, and the
+    replay evidence contract):
+
+      * ``expected_file_digest_sha256`` -- optional anchor value. When
+        supplied, the loader compares the parsed
+        ``cassette.file_digest_sha256`` against this expected value using
+        ``hmac.compare_digest`` and raises ``CassetteFormatError`` with
+        reason ``file_digest_mismatch`` on disagreement. Callers SHOULD
+        supply this whenever the cassette path was obtained from a
+        signed manifest, an evidence bundle reference, or any other
+        trust-anchored source. The pure local-record-then-replay flow can
+        omit it (back-compat) but loses tamper detection in exchange.
+      * Per-entry ``response_digest`` is re-verified on every ``lookup``
+        call. An attacker who modified the in-memory ``entry.response``
+        post-parse (supply-chain, malicious code holding the parsed
+        cassette) is caught before the forged bytes are served.
     """
 
-    def __init__(self, session_dir: Path) -> None:
+    def __init__(
+        self,
+        session_dir: Path,
+        *,
+        expected_file_digest_sha256: str | None = None,
+    ) -> None:
         if not session_dir.is_absolute():
             raise ValueError(
                 f"session_dir must be absolute; got {session_dir!s}"
@@ -112,6 +136,7 @@ class CassetteServer:
         self._cassette: Cassette | None = None
         # Lookup index: request_digest -> entry. Built on first load.
         self._index: dict[str, CassetteEntry] = {}
+        self._expected_file_digest = expected_file_digest_sha256
 
     @property
     def session_dir(self) -> Path:
@@ -146,6 +171,23 @@ class CassetteServer:
             )
         raw = self._cassette_path.read_bytes()
         cassette = parse_cassette(raw, str(self._cassette_path))
+        # Integrity gate: if the caller supplied an anchor
+        # ``expected_file_digest_sha256``, the parsed cassette's
+        # file-level SHA-256 MUST match. Use ``hmac.compare_digest`` so
+        # the comparison is constant-time -- both values are public hex
+        # strings here, but the discipline is the same as for secrets
+        # and the cost is negligible.
+        if self._expected_file_digest is not None:
+            actual = cassette.file_digest_sha256
+            expected = self._expected_file_digest
+            if not hmac.compare_digest(actual, expected):
+                raise CassetteFormatError(
+                    f"file_digest_mismatch on cassette "
+                    f"{self._cassette_path!s}: expected {expected!r}, "
+                    f"actual {actual!r}",
+                    0,
+                    str(self._cassette_path),
+                )
         self._cassette = cassette
         # Build index. If two entries share a digest (shouldn't happen
         # for a well-formed cassette but tier-1 input must be defensive)
@@ -187,6 +229,20 @@ class CassetteServer:
             if entry is None:
                 return None
             digest = wrapped_digest
+        # Per-entry integrity gate: recompute the response digest from the
+        # in-memory entry and compare against the recorded
+        # ``response_digest``. Catches the case where an attacker (or a
+        # buggy caller) mutated ``entry.response`` after parse but before
+        # serve. Constant-time comparison via hmac.compare_digest.
+        recomputed = canonical_response_digest(entry.response)
+        if not hmac.compare_digest(recomputed, entry.response_digest):
+            raise CassetteFormatError(
+                f"response_digest mismatch for entry sequence={entry.sequence} "
+                f"in {self._cassette_path!s}: recorded "
+                f"{entry.response_digest!r}, recomputed {recomputed!r}",
+                entry.sequence + 2,  # +2: line 1 is header, sequence is 0-indexed
+                str(self._cassette_path),
+            )
         return _entry_to_response(entry, digest, self._session_dir.name)
 
 
