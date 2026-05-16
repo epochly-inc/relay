@@ -304,28 +304,60 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # ----------------------------------------------------------------
+      # Fork detection (VAL-W12-044, dry_run_unsigned mode).
+      #
+      # Per spec sections A.3 and AI.6, forks of epochly-inc/relay MUST
+      # be able to run the full release workflow without paid credentials
+      # (no npm trusted-publisher binding, no NPM_TOKEN, no signing
+      # secrets).  When the workflow detects it is running outside the
+      # canonical repository (i.e., from a fork), it MUST:
+      #   - record dry_run_unsigned: true in workflow output
+      #   - skip the actual publish step
+      #   - exit cleanly (the SLSA attestation produced by the upstream
+      #     `provenance-sdk` job is still emitted; only the registry
+      #     upload is skipped)
+      # ----------------------------------------------------------------
+      - name: "Fork detection (dry-run-unsigned mode)"
+        id: dry-run-unsigned
+        env:
+          RELAY_RELEASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "${RELAY_RELEASE_REPO}" != "epochly-inc/relay" ]; then
+            echo "RELAY-RELEASE-DRY-RUN-UNSIGNED: fork detected (${RELAY_RELEASE_REPO}); skipping registry upload for the SDK package."
+            echo "dry_run_unsigned=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Production repository run; SDK package upload will proceed."
+            echo "dry_run_unsigned=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: "Checkout"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/checkout@v4
 
       - name: "Set up Node"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: "Download SDK tarball"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/download-artifact@v4
         with:
           name: dist-sdk
           path: dist-sdk/
 
       - name: "Download SDK provenance"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/download-artifact@v4
         with:
           name: "epochly-relay-npm-sdk-provenance.intoto.jsonl"
           path: provenance-sdk/
 
       - name: "Final cross-platform consistency check (RELAY-RELEASE-010)"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         # Belt-and-suspenders: re-asserts the same-commit binding right
         # before publish, so a race between the PyPI workflow approval
         # and this approval cannot ship divergent SHAs.
@@ -336,6 +368,7 @@ jobs:
         run: python scripts/check-npm-pypi-commit-consistency.py
 
       - name: "npm publish --provenance --access public"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         # OIDC trusted publishing: npm cli (>=11.5.1) detects
         # ACTIONS_ID_TOKEN_REQUEST_URL + ACTIONS_ID_TOKEN_REQUEST_TOKEN
         # in the CI env and exchanges the GitHub OIDC token for an
@@ -348,6 +381,7 @@ jobs:
           npm publish *.tgz --provenance --access public
 
       - name: "npm audit signatures (VAL-W12-008 post-condition)"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         # Fetches the published @epochly/relay tarball back from the
         # registry, recomputes its SHA-512, and verifies the digest
         # equals the attestation subject digest. Non-zero exit on
@@ -369,28 +403,47 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # Fork detection (VAL-W12-044) -- see publish-sdk for rationale.
+      - name: "Fork detection (dry-run-unsigned mode)"
+        id: dry-run-unsigned
+        env:
+          RELAY_RELEASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "${RELAY_RELEASE_REPO}" != "epochly-inc/relay" ]; then
+            echo "RELAY-RELEASE-DRY-RUN-UNSIGNED: fork detected (${RELAY_RELEASE_REPO}); skipping registry upload for the sidecar-bundle package."
+            echo "dry_run_unsigned=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Production repository run; sidecar-bundle package upload will proceed."
+            echo "dry_run_unsigned=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: "Checkout"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/checkout@v4
 
       - name: "Set up Node"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: "Download sidecar-bundle tarball"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/download-artifact@v4
         with:
           name: dist-sidecar-bundle
           path: dist-sidecar-bundle/
 
       - name: "Download sidecar-bundle provenance"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/download-artifact@v4
         with:
           name: "epochly-relay-npm-sidecar-bundle-provenance.intoto.jsonl"
           path: provenance-sidecar-bundle/
 
       - name: "Final cross-platform consistency check (RELAY-RELEASE-010)"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         env:
           RELAY_RELEASE_TAG: ${{ github.ref_name }}
           RELAY_RELEASE_COMMIT: ${{ github.sha }}
@@ -398,9 +451,11 @@ jobs:
         run: python scripts/check-npm-pypi-commit-consistency.py
 
       - name: "npm publish --provenance --access public"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         run: |
           cd dist-sidecar-bundle
           npm publish *.tgz --provenance --access public
 
       - name: "npm audit signatures (VAL-W12-008 post-condition)"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         run: npm audit signatures

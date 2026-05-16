@@ -167,19 +167,53 @@ jobs:
       id-token: write   # OIDC token exchange for PyPI trusted publishing
       contents: read    # download the dist artifact
     steps:
+      # ----------------------------------------------------------------
+      # Fork detection (VAL-W12-044, dry_run_unsigned mode).
+      #
+      # Per spec sections A.3 and AI.6, forks of epochly-inc/relay MUST
+      # be able to run the full release workflow without paid credentials
+      # (no PyPI trusted-publisher binding, no NPM_TOKEN, no signing
+      # secrets).  When the workflow detects it is running outside the
+      # canonical repository (i.e., from a fork), it MUST:
+      #   - record dry_run_unsigned: true in workflow output
+      #   - skip the actual publish step
+      #   - exit cleanly (the SLSA attestation produced by the upstream
+      #     `provenance` job is still emitted; only the registry upload
+      #     is skipped)
+      #
+      # Detection rule: github.repository != epochly-inc/relay implies a
+      # fork PR / fork-tag run.  Pull-request events from forks also
+      # trigger this branch.
+      # ----------------------------------------------------------------
+      - name: "Fork detection (dry-run-unsigned mode)"
+        id: dry-run-unsigned
+        env:
+          RELAY_RELEASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "${RELAY_RELEASE_REPO}" != "epochly-inc/relay" ]; then
+            echo "RELAY-RELEASE-DRY-RUN-UNSIGNED: fork detected (${RELAY_RELEASE_REPO}); skipping publish."
+            echo "dry_run_unsigned=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Production repository run; publish will proceed."
+            echo "dry_run_unsigned=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: "Download dist artifact"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
       - name: "Download SLSA provenance attestation"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/download-artifact@v4
         with:
           name: "epochly-relay-provenance.intoto.jsonl"
           path: provenance/
 
       - name: "Publish to PyPI (OIDC trusted publisher, Sigstore attestations, idempotent)"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         # Pinned by SHA. Renovate/Dependabot bumps go through the
         # release-pipeline review (sub-feature w12.3).
         uses: pypa/gh-action-pypi-publish@release/v1
