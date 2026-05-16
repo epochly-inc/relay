@@ -66,6 +66,9 @@ class RelayErrorCode:
     RELAY_GATE_014: Final[str] = "RELAY-GATE-014"
     RELAY_GATE_021: Final[str] = "RELAY-GATE-021"
     RELAY_GATE_024: Final[str] = "RELAY-GATE-024"
+    RELAY_GATE_031: Final[str] = "RELAY-GATE-031"
+    RELAY_GATE_033: Final[str] = "RELAY-GATE-033"
+    RELAY_GATE_038: Final[str] = "RELAY-GATE-038"
     RELAY_GATE_041: Final[str] = "RELAY-GATE-041"
     RELAY_GATE_051: Final[str] = "RELAY-GATE-051"
     RELAY_GATE_061: Final[str] = "RELAY-GATE-061"
@@ -213,6 +216,9 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-GATE-014",
     "RELAY-GATE-021",
     "RELAY-GATE-024",
+    "RELAY-GATE-031",
+    "RELAY-GATE-033",
+    "RELAY-GATE-038",
     "RELAY-GATE-041",
     "RELAY-GATE-051",
     "RELAY-GATE-061",

@@ -68,6 +68,11 @@ dependencies = [
   # (VAL-W8-019). The CLI already pulls cryptography for the W5.5
   # verify-self bundle signer; we pin a compatible range.
   "cryptography>=42.0,<46",
+  # V2M01-w1.3: load_catalog() validates the GateMetricCatalog v1 JSON
+  # against its JSON Schema 2020-12 document before constructing the
+  # frozen registry. Pinned compatible with the version used elsewhere in
+  # the workspace (packages/acef pins >=4.21).
+  "jsonschema>=4.21",
 ]
 
 [project.optional-dependencies]

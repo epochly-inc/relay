@@ -93,6 +93,20 @@ codes:
   - RELAY-GATE-014
   - RELAY-GATE-021
   - RELAY-GATE-024
+  # V2M01-w1.3 GateMetricCatalog v1 (spec AA lines 5390, 5407, 5408):
+  #   031 - unknown metric: a GatePolicy condition references a metric name
+  #         not defined in gate_metric_catalog.v1.json. Raised at policy
+  #         publish time by metric_compiler.validate_policy. VAL-V2M01-024.
+  #   033 - metric source mismatch: a custom metric's `source` clause names
+  #         a table or join target that is not present in the canonical SQL
+  #         schema registry. Raised by metric_compiler.validate_metric at
+  #         publish time. VAL-V2M01-025.
+  #   038 - insufficient coverage: at evaluation time, the source-table
+  #         data has completeness below the metric's `sampling_eligibility`
+  #         threshold; the gate decision is `invalid` for that round.
+  - RELAY-GATE-031
+  - RELAY-GATE-033
+  - RELAY-GATE-038
   - RELAY-GATE-041
   - RELAY-GATE-051
   - RELAY-GATE-061

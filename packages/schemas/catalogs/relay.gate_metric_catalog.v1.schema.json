@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/relay.gate_metric_catalog.v1.schema.json",
+  "title": "Relay GateMetricCatalog v1",
+  "description": "Canonical schema for the GateMetricCatalog (spec section AA). Conditions in GatePolicy reference metrics by name; this catalog defines them deterministically so two engineers cannot implement diverging aggregations. The compiler validates each metric's `source` SQL FROM/JOIN clause against the active canonical-table registry at publish time. A condition referencing an undefined metric is rejected with RELAY-GATE-031; a metric whose source columns no longer resolve in the active schema is rejected with RELAY-GATE-033; a condition whose source-table completeness falls below the metric's `sampling_eligibility` threshold is rejected at evaluation time with RELAY-GATE-038.",
+  "type": "object",
+  "required": ["schema_version", "metrics", "baselines"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "relay.gate_metric_catalog.v1",
+      "description": "Literal schema version pin (spec AA line 5301)."
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Metric" }
+    },
+    "baselines": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Baseline" }
+    }
+  },
+  "$defs": {
+    "Metric": {
+      "type": "object",
+      "required": [
+        "name",
+        "unit",
+        "source",
+        "filter",
+        "aggregation",
+        "missing_data",
+        "sampling_eligibility"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical metric name (e.g., p0_assertion_failures)."
+        },
+        "unit": {
+          "type": "string",
+          "enum": ["count", "ratio[0..1]", "usd"],
+          "description": "Result unit; ratio[0..1] indicates a fractional value bounded by 0 and 1 inclusive."
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SQL FROM/JOIN clause (or the sentinel 'see aggregation block below' for metrics whose source is a CTE chain inside `aggregation`)."
+        },
+        "filter": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SQL WHERE-clause body or the literal 'TRUE'."
+        },
+        "aggregation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Aggregation expression or CTE chain that produces the metric value."
+        },
+        "missing_data": {
+          "type": "string",
+          "enum": [
+            "treated_as_zero",
+            "undefined_when_total_zero",
+            "undefined_when_population_lt_100"
+          ],
+          "description": "Behavior when the source population is empty or below threshold."
+        },
+        "sampling_eligibility": {
+          "type": "string",
+          "pattern": "^completeness>=0\\.[0-9]+$",
+          "description": "Threshold on source-table completeness below which the metric is rejected at evaluation time with RELAY-GATE-038."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional human-readable rationale or design note."
+        }
+      }
+    },
+    "Baseline": {
+      "type": "object",
+      "required": ["name", "lookup"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": ["previous_release_sha", "rolling_p50_7d"]
+        },
+        "lookup": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Lookup rule for the baseline (SQL or natural-language directive)."
+        }
+      }
+    }
+  }
+}

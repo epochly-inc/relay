@@ -788,6 +788,7 @@ dependencies = [
     { name = "epochly-relay-contracts" },
     { name = "epochly-relay-schemas" },
     { name = "epochly-relay-sidecar" },
+    { name = "jsonschema" },
 ]
 
 [package.optional-dependencies]
@@ -802,6 +803,7 @@ requires-dist = [
     { name = "epochly-relay-contracts", editable = "packages/contracts" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
     { name = "epochly-relay-sidecar", editable = "apps/local-sidecar" },
+    { name = "jsonschema", specifier = ">=4.21" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
 ]

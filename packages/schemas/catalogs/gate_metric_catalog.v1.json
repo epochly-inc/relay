@@ -1,0 +1,88 @@
+{
+  "schema_version": "relay.gate_metric_catalog.v1",
+  "metrics": [
+    {
+      "name": "p0_assertion_failures",
+      "unit": "count",
+      "source": "contract_results c JOIN assertion_definitions a ON c.assertion_id = a.assertion_id",
+      "filter": "a.severity = 'p0' AND c.outcome IN ('fail','error')",
+      "aggregation": "count",
+      "missing_data": "treated_as_zero",
+      "sampling_eligibility": "completeness>=0.9"
+    },
+    {
+      "name": "schema_contract.outcome.pass_rate",
+      "unit": "ratio[0..1]",
+      "source": "contract_results c JOIN assertion_definitions a ON c.assertion_id = a.assertion_id",
+      "filter": "a.kind = 'schema_contract' AND c.outcome IN ('pass','fail','repaired','error')",
+      "aggregation": "count_where(c.outcome IN ('pass','repaired')) / count_total",
+      "missing_data": "undefined_when_total_zero",
+      "sampling_eligibility": "completeness>=0.9"
+    },
+    {
+      "name": "tool_call.side_effect_attempts_blocked",
+      "unit": "count",
+      "source": "side_effect_markers",
+      "filter": "state IN ('blocked_by_approval','failed')",
+      "aggregation": "count",
+      "missing_data": "treated_as_zero",
+      "sampling_eligibility": "completeness>=0.5"
+    },
+    {
+      "name": "replay.reproduction_rate",
+      "unit": "ratio[0..1]",
+      "source": "replay_results",
+      "filter": "TRUE",
+      "aggregation": "count_where(outcome = 'reproduced') / count_total",
+      "missing_data": "undefined_when_total_zero",
+      "sampling_eligibility": "completeness>=0.5"
+    },
+    {
+      "name": "rag.empty_retrieval_rate",
+      "unit": "ratio[0..1]",
+      "source": "retrieval_spans",
+      "filter": "TRUE",
+      "aggregation": "count_where(empty_retrieval) / count_total",
+      "missing_data": "undefined_when_total_zero",
+      "sampling_eligibility": "completeness>=0.7"
+    },
+    {
+      "name": "cost.usd_per_run.p95",
+      "unit": "usd",
+      "source": "see aggregation block below",
+      "filter": "TRUE",
+      "aggregation": "WITH model_cost AS (SELECT s.run_id, SUM(mc.cost_usd) AS usd FROM model_call_spans mc JOIN spans s ON s.span_id = mc.span_id GROUP BY s.run_id), embedding_cost AS (SELECT s.run_id, SUM(es.cost_usd) AS usd FROM embedding_spans es JOIN spans s ON s.span_id = es.span_id GROUP BY s.run_id), per_run AS (SELECT rr.run_id, COALESCE(model_cost.usd,0) + COALESCE(embedding_cost.usd,0) AS run_cost FROM run_results rr LEFT JOIN model_cost ON model_cost.run_id = rr.run_id LEFT JOIN embedding_cost ON embedding_cost.run_id = rr.run_id) SELECT percentile_disc(0.95) WITHIN GROUP (ORDER BY run_cost) FROM per_run",
+      "notes": "Pre-aggregated per-run CTEs prevent row multiplication when joining multiple one-to-many typed span tables. Tool and retrieval costs are not summed here because tool_call_spans and retrieval_spans do not carry a cost_usd column in v1; add those columns + a tool_cost / retrieval_cost CTE before the next major version if customers want them included.",
+      "missing_data": "undefined_when_population_lt_100",
+      "sampling_eligibility": "completeness>=0.9"
+    },
+    {
+      "name": "eval.net_new_failures",
+      "unit": "count",
+      "source": "eval_run_deltas",
+      "filter": "delta_class = 'net_new_failure'",
+      "aggregation": "count",
+      "missing_data": "treated_as_zero",
+      "sampling_eligibility": "completeness>=0.9"
+    },
+    {
+      "name": "eval.flaky_count",
+      "unit": "count",
+      "source": "eval_run_deltas",
+      "filter": "delta_class = 'flaky'",
+      "aggregation": "count",
+      "missing_data": "treated_as_zero",
+      "sampling_eligibility": "completeness>=0.5"
+    }
+  ],
+  "baselines": [
+    {
+      "name": "previous_release_sha",
+      "lookup": "JOIN runs r ON rr.run_id = r.run_id; previous run_results where r.release_sha = COALESCE(:release_sha_prev, ANY)"
+    },
+    {
+      "name": "rolling_p50_7d",
+      "lookup": "median over runs in trailing 7 days excluding flagged-flaky"
+    }
+  ]
+}
