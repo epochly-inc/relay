@@ -1,0 +1,132 @@
+# Relay v0.1 OSS - Example Manifest
+# Example: mcp-tool-agent
+#
+# Per spec section F and CLAUDE.md keystone invariant #3 the manifest is the
+# source of truth for how this example runs. Workers and the smoke harness
+# invoke the example through the manifest-declared commands (VAL-W16-018);
+# direct "python main.py" invocations are forbidden in CI.
+#
+# This example demonstrates the canonical Relay lifecycle around the Model
+# Context Protocol (MCP) client surface. It opens an MCP ClientSession to a
+# pinned MCP server (live mode) or replays the recorded protocol envelope
+# from a cassette (cassette mode). Tool calls dispatched to the MCP server
+# are captured as tool_call spans whose tool_name follows the MCP
+# server.tool form (VAL-W16-013).
+#
+# Per VAL-W16-014 cassette mode runs offline: zero network egress, no MCP
+# server child process spawned, deterministic tool_call -> result replay
+# from the recorded fixtures.
+#
+# Tools registered with the MCP client surface declare their
+# side_effect_class per VAL-W16-005 and spec section E.3. Replay refuses
+# to execute mutating or external_irreversible tools without an audited
+# policy override (RELAY-REPLAY-014).
+
+schema: relay.example_manifest.v1
+adapter: mcp
+name: mcp-tool-agent
+description: |
+  End-to-end Relay example exercising the Model Context Protocol (MCP)
+  client surface plus a deterministic MCP tool call (relay_example.echo).
+  The example opens an MCP ClientSession to a pinned MCP server (live
+  mode) or replays from the recorded cassette (cassette mode). The
+  tool_call spans record the MCP tool name in server.tool form, with
+  redacted args, args_hash, result_hash, status, and duration_ms
+  populated per spec section B.1 tool-call flight recorder.
+
+languages:
+  - python
+
+redaction_policy_version: "v1"
+
+# -----------------------------------------------------------------------------
+# Runnable commands - dispatched via rly run / uv run rly (VAL-W16-018)
+# -----------------------------------------------------------------------------
+commands:
+
+  run-python-live:
+    description: |
+      Run the Python example against a live MCP server. Requires the
+      MCP server binary to be available on PATH (declared in
+      requires_env via MCP_SERVER_COMMAND). Produces a canonical
+      run_results row in the local sidecar (VAL-W16-013).
+    cmd: "uv run rly run --manifest examples/mcp-tool-agent/relay.manifest.yaml --language python --mode live"
+    cwd: "."
+    timeout_ms: 300000
+    side_effect_class: "mutating"
+    requires_env:
+      MCP_SERVER_COMMAND: "Command used to spawn the pinned MCP server (live mode only). Cassette replay does not spawn any MCP server."
+
+  run-python-cassette:
+    description: |
+      Replay the Python example from the recorded cassette under
+      python/cassettes/. Deterministic, offline, no network egress,
+      no MCP server child process spawned (VAL-W16-014).
+    cmd: "uv run rly replay run --manifest examples/mcp-tool-agent/relay.manifest.yaml --language python --cassette python/cassettes/mcp-tool-agent.jsonl"
+    cwd: "."
+    timeout_ms: 120000
+    side_effect_class: "read_only"
+    requires_env: {}
+
+# -----------------------------------------------------------------------------
+# Tools the example registers via the MCP client surface
+# Every tool declares side_effect_class per VAL-W16-005. The MCP example
+# registers the canonical echo tool as a read-only MCP tool.
+# -----------------------------------------------------------------------------
+tools:
+
+  - name: relay_example.echo
+    description: |
+      Read-only deterministic MCP tool. Echoes the supplied payload
+      back to the caller. The tool's MCP-protocol envelope (request /
+      response JSON-RPC) is subject to redaction per redaction_policy
+      v1; args_hash and result_hash are recorded on the tool_call span
+      per spec section B.1 tool-call flight recorder. Read-only
+      side_effect_class: safe to replay from cassette without an
+      audited policy override.
+    side_effect_class: read_only
+    input_schema:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: "Payload to echo back to the caller."
+
+# -----------------------------------------------------------------------------
+# Test entries (VAL-W16-019 annotation distribution)
+# -----------------------------------------------------------------------------
+tests:
+
+  live_smoke:
+    tier: smoke
+    glob: "tests/examples/test_w16_4_lifecycle_e2e.py"
+    annotations:
+      - "@requires-mcp-server"
+    description: |
+      Tier-2 smoke covering VAL-W16-013. Requires a running MCP server
+      (declared via MCP_SERVER_COMMAND); gated by @requires-mcp-server
+      on forks where the server is absent, falling back to
+      cassette_replay.
+
+  cassette_replay:
+    tier: plumbing
+    glob: "tests/examples/test_w16_4_cassettes.py"
+    annotations: []
+    description: |
+      Tier-1 plumbing covering VAL-W16-014 / VAL-W16-020. Offline; no
+      provider key required; no MCP server child process spawned; runs
+      on forks.
+
+# -----------------------------------------------------------------------------
+# Cassette locations (per-language glob). Python-only example.
+# -----------------------------------------------------------------------------
+cassettes:
+  python: "python/cassettes/*.jsonl"
+
+# -----------------------------------------------------------------------------
+# Ports - the example does not bind any network ports (live mode talks to
+# the MCP server over stdio; cassette mode is pure file I/O). Empty ports
+# array exercises the schema's optional ports field explicitly.
+# -----------------------------------------------------------------------------
+ports: []

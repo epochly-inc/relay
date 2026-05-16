@@ -1,0 +1,36 @@
+[project]
+name = "relay-example-mcp-tool-agent"
+version = "0.1.0"
+description = "Relay v0.1 example: MCP tool-agent (Python entry point, Model Context Protocol client)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+
+# Runtime dependencies for the example.
+# - relay: the workspace Python SDK (W3) and adapters (W3.5)
+# - mcp: Model Context Protocol Python SDK; provides the
+#   mcp.ClientSession + mcp.client.stdio.stdio_client primitives the
+#   live-mode entry point uses to talk to the pinned MCP server.
+# - pyyaml: used by main.py companion harnesses to read relay.manifest.yaml
+dependencies = [
+  "relay",
+  "mcp>=1.0.0",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+# The example is invoked through the manifest-declared command surface
+# (VAL-W16-018); this entry point is exposed as a console_script so the
+# example can also be run directly during local development:
+#   uv run relay-example-mcp-tool-agent --cassette
+relay-example-mcp-tool-agent = "main:main"
+
+[build-system]
+requires = ["hatchling>=1.20"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["python"]
