@@ -1,0 +1,26 @@
+{
+  "name": "@epochly/relay-example-openai-tool-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Relay v0.1 example: OpenAI tool-agent (TypeScript entry point)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "typescript/main.ts",
+  "scripts": {
+    "start:cassette": "tsx typescript/main.ts --cassette",
+    "start:live": "tsx typescript/main.ts --live",
+    "typecheck": "tsc --noEmit -p typescript/tsconfig.json"
+  },
+  "dependencies": {
+    "@epochly/relay": "workspace:*",
+    "openai": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

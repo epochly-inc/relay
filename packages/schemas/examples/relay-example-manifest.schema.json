@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/examples/relay-example-manifest.schema.json",
+  "title": "Relay Example Manifest",
+  "description": "JSON Schema for relay.manifest.yaml shipped with W16 example apps. Captures the per-example contract used by VAL-W16-017: adapter declaration, runnable commands, tool side_effect_class enumeration, port mappings, test entries with provider annotations, and language inventory. The canonical full manifest schema lives in spec section F; this schema constrains the example-app subset of that contract.",
+  "type": "object",
+  "required": ["schema", "adapter", "languages", "commands", "tools", "tests"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "relay.example_manifest.v1",
+      "description": "Literal schema version pin."
+    },
+    "adapter": {
+      "type": "string",
+      "enum": ["openai", "anthropic", "vercel_ai", "mcp", "langchain"],
+      "description": "Provider adapter the example exercises (spec section S P0/P1 adapters)."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable example name (optional metadata)."
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line example description (optional metadata)."
+    },
+    "languages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": ["python", "typescript"]
+      },
+      "uniqueItems": true,
+      "description": "Languages the example ships in. OpenAI ships both python AND typescript (VAL-W16-003)."
+    },
+    "commands": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]*$": {
+          "type": "object",
+          "required": ["cmd", "side_effect_class"],
+          "additionalProperties": false,
+          "properties": {
+            "cmd": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Shell command, dispatched via rly/relay/uv run rly (VAL-W16-018)."
+            },
+            "cwd": {
+              "type": "string",
+              "description": "Working directory relative to the example root. Defaults to the example root."
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 1000
+            },
+            "side_effect_class": {
+              "type": "string",
+              "enum": ["read_only", "mutating", "external_irreversible", "approval_required"]
+            },
+            "requires_env": {
+              "type": "object",
+              "additionalProperties": {"type": "string"}
+            },
+            "description": {"type": "string"}
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "side_effect_class"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Tool name as registered with the OpenAI function-calling surface."
+          },
+          "description": {"type": "string"},
+          "side_effect_class": {
+            "type": "string",
+            "enum": ["read_only", "mutating", "external_irreversible", "approval_required"],
+            "description": "Per VAL-W16-005, every tool MUST declare a side_effect_class."
+          },
+          "input_schema": {
+            "type": "object",
+            "description": "JSON Schema for the tool's input arguments."
+          }
+        }
+      }
+    },
+    "ports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "binding"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "binding": {"type": "string"},
+          "range": {"type": "string"},
+          "description": {"type": "string"}
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "required": ["live_smoke", "cassette_replay"],
+      "additionalProperties": false,
+      "properties": {
+        "live_smoke": {
+          "$ref": "#/$defs/testEntry"
+        },
+        "cassette_replay": {
+          "$ref": "#/$defs/testEntry"
+        }
+      }
+    },
+    "redaction_policy_version": {
+      "type": "string",
+      "description": "Redaction policy version applied to the example's lifecycle envelopes."
+    },
+    "cassettes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "python": {
+          "type": "string",
+          "description": "Glob for Python cassettes relative to the example root."
+        },
+        "typescript": {
+          "type": "string",
+          "description": "Glob for TypeScript cassettes relative to the example root."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "testEntry": {
+      "type": "object",
+      "required": ["tier", "glob"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["plumbing", "tier-1", "smoke", "tier-2", "eval", "tier-3"]
+        },
+        "glob": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Glob (per spec section F test_discovery semantics) identifying the test files."
+        },
+        "annotations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^@[a-z][a-z0-9_-]*$"
+          },
+          "uniqueItems": true,
+          "description": "Provider / capability annotations. Live smoke tests carry @requires-openai per VAL-W16-019; cassette tests do NOT."
+        },
+        "description": {"type": "string"}
+      }
+    }
+  }
+}

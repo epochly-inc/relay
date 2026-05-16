@@ -1,0 +1,139 @@
+# Relay v0.1 OSS - Example Manifest
+# Example: openai-tool-agent
+#
+# Per spec section F and CLAUDE.md keystone invariant #3 the manifest is the
+# source of truth for how this example runs. Workers and the smoke harness
+# invoke the example through the manifest-declared commands (VAL-W16-018);
+# direct "python main.py" / "node main.ts" invocations are forbidden.
+#
+# Tools registered with the OpenAI function-calling surface declare their
+# side_effect_class per VAL-W16-005 and spec section E.3. Replay refuses
+# to execute mutating or external_irreversible tools without an audited
+# policy override (RELAY-REPLAY-014).
+
+schema: relay.example_manifest.v1
+adapter: openai
+name: openai-tool-agent
+description: |
+  End-to-end Relay example exercising the OpenAI Chat Completions API plus
+  a deterministic tool call (get_current_weather). Ships in both Python and
+  TypeScript so the W3 / W4 SDK + W3.5 / W4.5 OpenAI adapter parity is
+  exercised at the example surface.
+
+languages:
+  - python
+  - typescript
+
+redaction_policy_version: "v1"
+
+# -----------------------------------------------------------------------------
+# Runnable commands - dispatched via rly run / uv run rly (VAL-W16-018)
+# -----------------------------------------------------------------------------
+commands:
+
+  run-python-live:
+    description: |
+      Run the Python example against the real OpenAI API. Requires
+      OPENAI_API_KEY in the environment (declared in requires_env). Produces
+      a canonical run_results row in the local sidecar (VAL-W16-001).
+    cmd: "uv run rly run --manifest examples/openai-tool-agent/relay.manifest.yaml --language python --mode live"
+    cwd: "."
+    timeout_ms: 300000
+    side_effect_class: "mutating"
+    requires_env:
+      OPENAI_API_KEY: "OpenAI API key for tier-2 smoke. Set in CI from secrets; locally from .env."
+
+  run-python-cassette:
+    description: |
+      Replay the Python example from the recorded cassette under
+      python/cassettes/. Deterministic, offline, no network egress
+      (VAL-W16-004).
+    cmd: "uv run rly replay run --manifest examples/openai-tool-agent/relay.manifest.yaml --language python --cassette python/cassettes/openai-tool-agent.jsonl"
+    cwd: "."
+    timeout_ms: 120000
+    side_effect_class: "read_only"
+    requires_env: {}
+
+  run-typescript-live:
+    description: |
+      Run the TypeScript example against the real OpenAI API. Requires
+      OPENAI_API_KEY in the environment.
+    cmd: "uv run rly run --manifest examples/openai-tool-agent/relay.manifest.yaml --language typescript --mode live"
+    cwd: "."
+    timeout_ms: 300000
+    side_effect_class: "mutating"
+    requires_env:
+      OPENAI_API_KEY: "OpenAI API key for tier-2 smoke."
+
+  run-typescript-cassette:
+    description: |
+      Replay the TypeScript example from the recorded cassette under
+      typescript/cassettes/. Deterministic, offline.
+    cmd: "uv run rly replay run --manifest examples/openai-tool-agent/relay.manifest.yaml --language typescript --cassette typescript/cassettes/openai-tool-agent.jsonl"
+    cwd: "."
+    timeout_ms: 120000
+    side_effect_class: "read_only"
+    requires_env: {}
+
+# -----------------------------------------------------------------------------
+# Tools the example registers with OpenAI's function-calling surface
+# Every tool declares side_effect_class per VAL-W16-005.
+# -----------------------------------------------------------------------------
+tools:
+
+  - name: get_current_weather
+    description: |
+      Read-only forecast lookup. Returns a deterministic stub forecast for
+      replay determinism; the example is about exercising the
+      tool-call -> result flight recorder, not real meteorology. Read-only
+      side_effect_class: safe to replay from cassette without an audited
+      policy override.
+    side_effect_class: read_only
+    input_schema:
+      type: object
+      required: [location]
+      properties:
+        location:
+          type: string
+          description: "City and country, e.g. 'Reykjavik, Iceland'."
+        unit:
+          type: string
+          enum: [celsius, fahrenheit]
+          default: celsius
+
+# -----------------------------------------------------------------------------
+# Test entries (VAL-W16-019 annotation distribution)
+# -----------------------------------------------------------------------------
+tests:
+
+  live_smoke:
+    tier: smoke
+    glob: "tests/examples/test_w16_1_lifecycle_e2e.py"
+    annotations:
+      - "@requires-openai"
+    description: |
+      Tier-2 smoke covering VAL-W16-001 / VAL-W16-002. Requires
+      OPENAI_API_KEY; gated by @requires-openai on forks where the secret
+      is absent, falling back to cassette_replay.
+
+  cassette_replay:
+    tier: plumbing
+    glob: "tests/examples/test_w16_1_cassettes.py"
+    annotations: []
+    description: |
+      Tier-1 plumbing covering VAL-W16-004 / VAL-W16-020. Offline; no
+      provider key required; runs on forks.
+
+# -----------------------------------------------------------------------------
+# Cassette locations (per-language glob)
+# -----------------------------------------------------------------------------
+cassettes:
+  python: "python/cassettes/*.jsonl"
+  typescript: "typescript/cassettes/*.jsonl"
+
+# -----------------------------------------------------------------------------
+# Ports - the example does not bind any network ports (it makes outbound
+# HTTPS calls only). The manifest declares an empty ports array so the
+# schema's optional ports field is exercised explicitly.
+# -----------------------------------------------------------------------------
+ports: []
