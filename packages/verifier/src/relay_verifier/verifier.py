@@ -41,6 +41,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
     encode_dss_signature,
 )
 
+from .canonical import jcs_canonicalize
 from .errors import (
     RELAY_VERIFY_ALG_MISMATCH,
     RELAY_VERIFY_UNSUPPORTED_ALG,
@@ -137,19 +138,32 @@ def _b64u_encode(b: bytes) -> str:
 
 
 def canonical_json_bytes(obj: Any) -> bytes:
-    """Return RFC-8785-style canonical JSON bytes for ``obj``.
+    """Return RFC 8785 (JCS) canonical JSON bytes for ``obj``.
 
-    ``json.dumps(..., sort_keys=True, separators=(",", ":"),
-    ensure_ascii=True)`` is sufficient for the OSS bundle format because
-    every payload field is a JSON-typed value (string, int, bool, list,
-    dict) and the producer controls the input shape at sign time. Full
-    RFC 8785 number canonicalization (Number.toString-style float
-    formatting) lands with the W10.3 JCS conformance corpus; the OSS
-    bundle does not embed floats today.
+    Round-4 P1 structural fix: this function is now a thin delegator to
+    :func:`relay_verifier.canonical.jcs_canonicalize`, eliminating the
+    drift risk between the sign-side encoder used by
+    :func:`_payload_for_signing` and the JCS encoder used elsewhere in
+    the verifier package. The previous implementation
+    (``json.dumps(..., sort_keys=True, separators=(",", ":"),
+    ensure_ascii=True)``) produced spec-incorrect bytes for non-ASCII
+    strings (``\\u00XX`` escapes vs. literal UTF-8), float values
+    (``1.0`` vs. ECMA-262 ``1``), and NFC-decomposed strings -- any of
+    which would silently diverge from the canonical RFC 8785 encoder.
+
+    Today the bundle-signing payload is constrained to ASCII strings
+    plus ints/bools/None, so the byte output is identical for existing
+    fixtures and the cross-language verdict-digest table is unchanged.
+    The unification ensures the next field added to the payload cannot
+    introduce a sign/verify drift.
+
+    .. deprecated::
+        New code SHOULD call :func:`jcs_canonicalize` directly. This
+        wrapper is preserved so existing tests and external callers
+        continue to import the same symbol. It is intentionally NOT
+        removed -- external test fixtures may reference it.
     """
-    return json.dumps(
-        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    return jcs_canonicalize(obj)
 
 
 # -----------------------------------------------------------------------------

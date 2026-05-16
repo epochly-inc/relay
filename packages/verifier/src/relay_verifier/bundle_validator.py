@@ -89,6 +89,16 @@ RELAY_EVID_014: Final[str] = "RELAY-EVID-014"
 RELAY_EVID_040: Final[str] = "RELAY-EVID-040"
 """Merkle root mismatch (VAL-W10-024)."""
 
+RELAY_EVID_DECIDED_AT_MISSING: Final[str] = "RELAY-EVID-DECIDED-AT-MISSING"
+"""Bundle is missing the canonical ``decided_at`` TSA-binding anchor.
+
+Per spec section AB the TSA token's binding skew check compares
+``tsa_token.gen_time`` against ``decided_at``. The validator MUST NOT
+silently fall back to ``generated_at`` or any other timestamp field --
+doing so silently moves the trust boundary. A bundle missing
+``decided_at`` is rejected fail-closed and surfaces this code so
+operators can fix the producer."""
+
 # Trust-anchor "local_dev" sentinel (per spec section AO.4 line 6166).
 TRUST_ANCHOR_LOCAL_DEV: Final[str] = "local_dev"
 WARN_LOCAL_DEV_UNSUPPORTED: Final[str] = "local_dev_unsupported_for_audit"
@@ -409,9 +419,16 @@ def validate_bundle(
     # verifier recomputes the binding digest by stripping the TSA token
     # AND the log_inclusion_proof from the payload before hashing.
     tsa_token = bundle.get("tsa_token")
-    decided_at = bundle.get("decided_at") or bundle.get("generated_at") or ""
+    # decided_at is the canonical TSA-binding anchor (spec section AB).
+    # Bundles missing this field are rejected fail-closed; do NOT silently
+    # fall back to ``generated_at`` (or any sibling timestamp) -- the TSA
+    # gen_time skew check compares against ``decided_at`` specifically,
+    # and a fallback would silently move the trust boundary (round-4 P1
+    # structural fix).
+    raw_decided_at = bundle.get("decided_at")
+    decided_at = raw_decided_at if isinstance(raw_decided_at, str) else ""
     binding_digest_hex = _compute_binding_digest(bundle)
-    if isinstance(decided_at, str) and decided_at:
+    if decided_at:
         tsa_result = validate_tsa_token(
             token=tsa_token if isinstance(tsa_token, dict) else None,
             bundle_digest_hex=binding_digest_hex,
@@ -441,7 +458,23 @@ def validate_bundle(
                 code=RELAY_EVID_031,
             )
     else:
+        # Fail-closed: surface BOTH the structural anchor-missing code
+        # and the canonical tsa_missing reason so consumers branching on
+        # either path catch the rejection.
         output["tsa_check"] = "missing"
+        present_fields = sorted(bundle.keys()) if isinstance(bundle, dict) else []
+        _append_error(
+            output,
+            reason="decided_at_missing",
+            message=(
+                "bundle is missing the canonical 'decided_at' TSA-binding "
+                "anchor (spec section AB); the validator refuses to fall "
+                "back to 'generated_at' or any sibling timestamp because "
+                "the TSA gen_time skew check binds to decided_at "
+                f"specifically. bundle fields present: {present_fields!r}"
+            ),
+            code=RELAY_EVID_DECIDED_AT_MISSING,
+        )
         _append_error(
             output,
             reason="tsa_missing",
@@ -485,8 +518,30 @@ def validate_bundle(
 
     # --- Signer key lifecycle (VAL-W10-031..034) -----------------------------
     if jws_result.signature_checks:
-        # Use the first successfully-keyed signature for lifecycle resolution.
-        primary_sig = jws_result.signature_checks[0]
+        # "Primary signer" selection rule: pick the FIRST entry whose
+        # signature verified (ok=True). Blindly using index 0 would
+        # silently skip lifecycle checks when slot 0 is a malformed
+        # entry (kid not in JWKS, bad base64, etc.) AND a later slot
+        # carries the actually-valid signer -- a revoked second-signer
+        # key would not be detected (round-4 P1 structural fix).
+        primary_sig = next(
+            (sc for sc in jws_result.signature_checks if sc.ok),
+            None,
+        )
+        if primary_sig is None:
+            # All-failed case: fall back to slot 0 to preserve the
+            # prior diagnostic surface (e.g. "revoked key on a failed
+            # signature" still reaches the lifecycle path) and emit a
+            # structured note so the fallback is auditable.
+            primary_sig = jws_result.signature_checks[0]
+            output.setdefault("details", {})["primary_signer_fallback"] = {
+                "reason": "no_signature_verified",
+                "note": (
+                    "no signature in the bundle has ok=True; lifecycle "
+                    "resolution falls back to signature_checks[0]"
+                ),
+                "selected_kid": primary_sig.kid,
+            }
         primary_kid = primary_sig.kid
         signer_jwk = _select_jwk(jwks, primary_kid)
         signed_at = bundle.get("signed_at") or decided_at or ""
