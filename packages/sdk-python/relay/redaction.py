@@ -54,7 +54,21 @@ from .errors import RelayPolicyError
 
 # The schema_version literal the policy MUST carry (spec G.2 + W1.4
 # envelopes RedactionPolicy.schema_version). Anything else is refused.
-_POLICY_SCHEMA_VERSION: Final[str] = "relay.redaction.v1"
+#
+# NOTE: the W4.1 type alias :type:`RedactionPolicyShape` (TS side) uses
+# ``relay.redaction_policy.v1`` (the codegen-friendly form). The canonical
+# wire schema is ``relay.redaction.v1``. Both literals are accepted by
+# both engines so the same policy body loads identically across SDKs;
+# this prevents a parity defect where a policy authored under the alias
+# loads on TS but is rejected on Python.
+_POLICY_SCHEMA_VERSION_PRIMARY: Final[str] = "relay.redaction.v1"
+_POLICY_SCHEMA_VERSION_ALIAS: Final[str] = "relay.redaction_policy.v1"
+_POLICY_SCHEMA_VERSIONS: Final[frozenset[str]] = frozenset(
+    {_POLICY_SCHEMA_VERSION_PRIMARY, _POLICY_SCHEMA_VERSION_ALIAS}
+)
+# Backwards-compatible name retained for any in-tree reference that
+# expected the legacy single-literal constant.
+_POLICY_SCHEMA_VERSION: Final[str] = _POLICY_SCHEMA_VERSION_PRIMARY
 
 # The closed set of matcher kinds the SDK supports. Spec G.2 lists
 # "regex" and "json_pointer"; v0.1 SDK implements "regex" end-to-end
@@ -250,14 +264,24 @@ class RedactionPolicy:
                 "redaction policy body must be a dict",
                 details={"reason": "wrong_type", "received": type(body).__name__},
             )
-        # schema_version literal check.
-        if body.get("schema_version") != _POLICY_SCHEMA_VERSION:
+        # schema_version literal check. Both the canonical wire literal
+        # and the W4.1 codegen-friendly alias are accepted; this matches
+        # TS (redaction.ts:77-78, 282-296). Comparing against a tuple
+        # (not a frozenset) tolerates unhashable received values such as
+        # ``list`` without raising TypeError.
+        received_schema_version = body.get("schema_version")
+        if received_schema_version not in (
+            _POLICY_SCHEMA_VERSION_PRIMARY,
+            _POLICY_SCHEMA_VERSION_ALIAS,
+        ):
             raise RelayPolicyError(
-                f"redaction policy schema_version MUST be {_POLICY_SCHEMA_VERSION!r}",
+                f"redaction policy schema_version MUST be "
+                f"{_POLICY_SCHEMA_VERSION_PRIMARY!r} (or v0.1 alias "
+                f"{_POLICY_SCHEMA_VERSION_ALIAS!r})",
                 details={
                     "reason": "schema_version",
-                    "expected": _POLICY_SCHEMA_VERSION,
-                    "received": body.get("schema_version"),
+                    "expected": _POLICY_SCHEMA_VERSION_PRIMARY,
+                    "received": received_schema_version,
                 },
             )
         # policy_version required + non-empty.
@@ -544,12 +568,27 @@ class RedactionEngine:
     def _apply_matchers_to_string(self, value: str) -> str:
         """Return the redacted form of ``value`` after matcher application.
 
-        Matchers run in declaration order on the normalised form of the
-        string; the original positions are preserved in the output by
-        splicing placeholders into the original (un-normalised) string
-        at the same character offsets. This keeps the output stable for
-        ASCII input (the dominant case) while still catching Unicode
-        homoglyph variants of the secret.
+        Matchers run in declaration order on the NFKC + confusables-
+        folded form of the string. Match spans are spliced back into
+        that SAME normalized form (not the original), so the result is
+        the normalized form with matched substrings replaced.
+
+        Rationale (Bug 4 P1): NFKC is not length-preserving for
+        combining marks (e.g. ``"u" + U+0308`` collapses to U+00FC).
+        Splicing offsets computed against the normalized form into the
+        ORIGINAL string left fragments of the matched plaintext behind
+        when the two strings had different lengths. Matching and
+        splicing MUST operate on the same string to be correct under
+        the full Unicode input space the SDK accepts.
+
+        Trade-off: for leaves that contained NFKC-decomposable code
+        points outside any match, the output now contains the composed
+        form instead of the original decomposed form. Since the leaf
+        was traversed because it is a candidate for redaction, the
+        composed-vs-decomposed distinction has no observable effect on
+        downstream consumers (which compare strings via Unicode
+        canonical equivalence or via raw byte SHA-256 of a downstream
+        canonicalized envelope).
         """
         if not value:
             return value
@@ -567,7 +606,7 @@ class RedactionEngine:
                 replacement = self._build_replacement(matcher, matched_text)
                 spans.append((start, end, replacement))
         if not spans:
-            return value
+            return normalised
         # Sort by start, then by end descending so longer overlapping
         # spans win; collapse overlaps deterministically.
         spans.sort(key=lambda t: (t[0], -t[1]))
@@ -577,19 +616,16 @@ class RedactionEngine:
                 # Overlap: keep the earlier-starting span; skip this.
                 continue
             merged.append((start, end, repl))
-        # The normalised form and the original share length char-for-
-        # char because both NFKC and the confusables map are length-
-        # preserving for the inputs we care about. Splice replacements
-        # into the ORIGINAL string at the same offsets so any
-        # non-matched characters (including the original homoglyphs)
-        # are dropped along with the match.
+        # Splice replacements into the NORMALIZED string at the offsets
+        # we computed against the normalized form. This is correct
+        # under non-length-preserving normalization (Bug 4 fix).
         out_parts: list[str] = []
         cursor = 0
         for start, end, repl in merged:
-            out_parts.append(value[cursor:start])
+            out_parts.append(normalised[cursor:start])
             out_parts.append(repl)
             cursor = end
-        out_parts.append(value[cursor:])
+        out_parts.append(normalised[cursor:])
         return "".join(out_parts)
 
     def _build_replacement(
@@ -610,13 +646,31 @@ class RedactionEngine:
         )
 
     def _walk(self, value: Any) -> Any:
-        """Walk ``value``, redacting strings (and bytes) in place.
+        """Walk ``value``, redacting strings and digesting bytes in place.
 
-        The walker descends every dict / list / tuple. Strings and
-        bytes-likes are normalised and matched. JSON-pointer matchers
-        with declared paths are not yet evaluated at the leaf level in
-        v0.1; their declared paths are walked alongside everything
-        else, and the regex matchers run on every string leaf.
+        Behavior per leaf type (must mirror TS ``walk`` at
+        ``packages/sdk-typescript/src/redaction.ts:784-821``):
+
+          * ``str``: NFKC + confusables-fold, run matchers, return
+            redacted string.
+          * ``bytes`` / ``bytearray``: replace with a digest-only
+            reference ``{"_digest_sha256": "<hex>"}`` (VAL-W4-025 /
+            keystone invariant #7). Plaintext bytes MUST NOT survive
+            into the wire body even when no matcher would fire on a
+            decoded string; routing bytes through the string matcher
+            was the Bug 2 P0 violation.
+          * ``memoryview``: refused. ``memoryview`` is Python's
+            parallel of JS ``Blob`` -- a view that does not guarantee
+            a contiguous underlying buffer the engine can hash
+            atomically. The caller MUST pass resolved ``bytes`` (or a
+            ``bytearray``).
+          * ``dict`` / ``list`` / ``tuple``: descended.
+          * Everything else (int, float, bool, None): passed through.
+
+        JSON-pointer matchers with declared paths are not yet
+        evaluated at the leaf level in v0.1; their declared paths are
+        walked alongside everything else, and the regex matchers run
+        on every string leaf.
         """
         if isinstance(value, dict):
             return {k: self._walk(v) for k, v in value.items()}
@@ -624,8 +678,20 @@ class RedactionEngine:
             return [self._walk(v) for v in value]
         if isinstance(value, tuple):
             return tuple(self._walk(v) for v in value)
-        if isinstance(value, str | bytes | bytearray):
-            return self._apply_matchers_to_string(_to_string(value))
+        if isinstance(value, bytes | bytearray):
+            # Bug 2 (P0) fix: digest-only reference, never route raw
+            # bytes through the string matcher path. Mirrors TS
+            # redaction.ts:789-794.
+            digest = hashlib.sha256(bytes(value)).hexdigest()
+            return {"_digest_sha256": digest}
+        if isinstance(value, memoryview):
+            raise RelayPolicyError(
+                "memoryview payloads MUST be resolved to bytes before "
+                "redaction; refusing to include a raw memoryview",
+                details={"reason": "unresolved_memoryview"},
+            )
+        if isinstance(value, str):
+            return self._apply_matchers_to_string(value)
         return value
 
     def redact(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -666,7 +732,19 @@ def redact_capture_payload(
         determinism.
     """
     redacted = engine.redact(payload)
-    return json.dumps(redacted, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    # JCS-compact separators (no whitespace) match the TS canonicalizer
+    # at packages/sdk-typescript/src/redaction.ts:838-864
+    # (``canonicalJsonStringify``). ``ensure_ascii=False`` matches TS
+    # ``JSON.stringify`` which emits raw UTF-8 for BMP code points
+    # rather than ``\uXXXX`` escapes. Together these guarantee
+    # byte-equality with TS for the cross-language parity corpus
+    # (VAL-W4-020).
+    return json.dumps(
+        redacted,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def iter_known_applies_to_fields() -> Iterable[str]:

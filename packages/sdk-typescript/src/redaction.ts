@@ -729,7 +729,7 @@ export class RedactionEngine {
         if (end === start) re.lastIndex += 1;
       }
     }
-    if (spans.length === 0) return value;
+    if (spans.length === 0) return normalised;
     // Sort by start, then by end DESCENDING so longer overlapping spans
     // win; collapse overlaps deterministically (matches Python sort key
     // ``(start, -end)``).
@@ -743,20 +743,21 @@ export class RedactionEngine {
       }
       merged.push(span);
     }
-    // Splice replacements into the ORIGINAL string at the same offsets.
-    // The normalised form and the original share length char-for-char
-    // because both NFKC and the confusables map are length-preserving for
-    // BMP inputs. Any non-matched characters (including the original
-    // homoglyphs that fell inside the match span) are dropped along with
-    // the match.
+    // Splice replacements into the NORMALIZED string at the same offsets
+    // we computed against it. Pre-fix this used ``value`` (the ORIGINAL)
+    // which is wrong when NFKC is NOT length-preserving (e.g. combining
+    // marks: ``"u" + U+0308`` collapses to U+00FC). With the original as
+    // splice destination, offsets pointed past the intended end and a
+    // fragment of the matched plaintext leaked. Bug 4 (P1) fix; mirrors
+    // Python ``_apply_matchers_to_string``.
     const out: string[] = [];
     let cursor = 0;
     for (const [start, end, repl] of merged) {
-      out.push(value.slice(cursor, start));
+      out.push(normalised.slice(cursor, start));
       out.push(repl);
       cursor = end;
     }
-    out.push(value.slice(cursor));
+    out.push(normalised.slice(cursor));
     return out.join("");
   }
 

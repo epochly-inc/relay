@@ -169,31 +169,46 @@ def test_unicode_homoglyph_variant_is_redacted() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W3-023")
-def test_mixed_encoding_retrieval_document_is_redacted() -> None:
-    """A retrieval document arrives as raw bytes mixing UTF-8 and latin-1
-    sequences (real-world OCR output). The engine decodes with
-    ``errors='replace'``, normalises, and redacts the embedded secret.
+def test_mixed_encoding_retrieval_document_is_digested_not_decoded() -> None:
+    """A retrieval document arrives as raw bytes. Per CLAUDE.md keystone
+    invariant #7 (default-deny raw capture) and parity with TS
+    ``walk`` (``packages/sdk-typescript/src/redaction.ts:789-794``),
+    raw bytes leaves are replaced by a ``{"_digest_sha256": "<hex>"}``
+    reference; the engine MUST NOT decode bytes through a UTF-8
+    ``errors='replace'`` path and then run string matchers, because
+    plaintext survives whenever no matcher fires on the decoded form
+    (Bug 2 P0).
+
+    Test pins the digest expectation so the bytes-handling path is
+    proven byte-stable, and asserts that no fragment of the original
+    bytes (including the seeded secret) survives in the wire body.
     """
     policy = RedactionPolicy.load(_BASE_POLICY)
     engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
-    # Construct mixed-encoding bytes: a UTF-8 paragraph + a latin-1
-    # apostrophe (0xE9 maps to e-acute in latin-1, but is an invalid
-    # UTF-8 continuation byte) + a UTF-8 paragraph containing the
-    # secret. The engine must decode via errors='replace' before the
-    # matcher runs.
+    # Construct mixed-encoding bytes containing a seeded API key.
     bad_bytes = (
         b"first paragraph "
         + b"\xe9"
         + f" second paragraph contains {_SECRET_API_KEY} end.".encode()
     )
+    expected_digest = hashlib.sha256(bad_bytes).hexdigest()
     raw_payload = {
         "retrieval": {
             "documents": [{"bytes": bad_bytes}],
         },
     }
+    redacted = engine.redact(raw_payload)
+    assert redacted["retrieval"]["documents"][0]["bytes"] == {
+        "_digest_sha256": expected_digest
+    }
     body_bytes = redact_capture_payload(engine, raw_payload)
+    # Neither the plaintext secret nor the surrounding decoded form
+    # appears in the wire body.
     assert _SECRET_API_KEY.encode("utf-8") not in body_bytes
-    assert b"<redacted>" in body_bytes
+    assert b"first paragraph" not in body_bytes
+    assert b"second paragraph" not in body_bytes
+    # The digest hex is the only representation that survives.
+    assert expected_digest.encode("ascii") in body_bytes
 
 
 # ---------------------------------------------------------------------------
