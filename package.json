@@ -7,6 +7,7 @@
   "workspaces": [
     "packages/schemas/typescript",
     "packages/sdk-typescript",
+    "packages/sdk-typescript-sidecar-bundle",
     "packages/contracts-typescript",
     "packages/verifier-typescript"
   ],

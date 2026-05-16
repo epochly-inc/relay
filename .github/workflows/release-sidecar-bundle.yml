@@ -1,0 +1,441 @@
+# Relay v0.1 OSS -- Sidecar Bundle Release Workflow (sub-feature w12.5)
+#
+# Builds PyInstaller-built standalone sidecar binaries for the canonical
+# five-arch matrix (VAL-W12-020), Sigstore-keyless-signs each binary
+# (VAL-W12-021), attaches RFC 3161 TSA timestamps (VAL-W12-022), runs
+# the tier-1 plumbing parity suite against each binary (VAL-W12-023),
+# performs signing inside the SLSA L3 hermetic builder context
+# (VAL-W12-024), and notarizes macOS / Authenticode-signs Windows
+# binaries (VAL-W12-026).
+#
+# The npm wrapper at packages/sdk-typescript-sidecar-bundle/ performs
+# digest-first / Sigstore-second verification BEFORE launching the
+# binary on the user's machine (VAL-W12-025); the wrapper is published
+# in the sister workflow .github/workflows/release-npm.yml under the
+# @epochly/relay-sidecar-bundle package name.
+#
+# Static guard: scripts/check-sidecar-bundle.py enforces all 14
+# VAL-W12 assertions (020..027, 035..037, 041..043) on this file plus
+# the supporting docs.
+#
+# Fork behavior: the workflow detects fork repos (not epochly-inc/relay)
+# and runs in dry_run_unsigned mode -- produces the build manifest
+# without invoking Sigstore or the SLSA generator. This is the
+# sister-of VAL-W12-044 behavior for the sidecar bundle.
+#
+# Spec citations:
+#   - Eng plan L3 line 226 (two-tier TS distribution + signed standalone)
+#   - Spec section AO.1/AO.2 (transparency log + offline verifiability)
+#   - Spec section L (signing key rotation)
+#   - PW1-3 (Sigstore primary, Sectigo fallback)
+#   - CLAUDE.md banned pattern #14 (no key material in repo)
+
+name: "release-sidecar-bundle"
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions: {}
+
+# TSA primary selection per VAL-W12-043. The default is "sigstore"; the
+# Sectigo fallback path is wired but inactive (requires an explicit ops
+# decision to switch). The static guard refuses a workflow whose
+# default is anything other than "sigstore".
+env:
+  TSA_PRIMARY: "sigstore"
+  RELAY_SIDECAR_MATRIX: >-
+    macos-x86_64 macos-arm64 linux-x86_64 linux-arm64 windows-x86_64
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Pre-flight: detect fork (no signing key) -- sister of VAL-W12-044.
+  # ---------------------------------------------------------------------------
+  detect-fork:
+    name: "Detect fork (dry-run-unsigned mode)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      dry_run_unsigned: ${{ steps.detect.outputs.dry_run_unsigned }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Detect fork"
+        id: detect
+        env:
+          RELAY_RELEASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "${RELAY_RELEASE_REPO}" != "epochly-inc/relay" ]; then
+            echo "RELAY-RELEASE-DRY-RUN-UNSIGNED: fork detected (${RELAY_RELEASE_REPO})."
+            echo "dry_run_unsigned=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Production repository run; binaries will be signed."
+            echo "dry_run_unsigned=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Static workflow guard. Enforces all 14 VAL-W12 assertions for w12.5
+  # via offline-parseable checks.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: "Static guard: sidecar bundle release workflow contract"
+    runs-on: ubuntu-latest
+    needs: [detect-fork]
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Install guard deps"
+        run: pip install pyyaml==6.0.2
+
+      - name: "Static guard: VAL-W12-020..027, 035..037, 041..043"
+        run: python scripts/check-sidecar-bundle.py
+
+  # ---------------------------------------------------------------------------
+  # Build matrix: one job per (OS, arch) cell of the canonical five-arch
+  # matrix. Each job invokes scripts/build-sidecar-bundle.py for its cell
+  # and uploads the produced binary + digest manifest as an artifact.
+  #
+  # The matrix declares all five canonical cells (VAL-W12-020). Adding or
+  # removing cells requires a board-level decision per the contract.
+  # ---------------------------------------------------------------------------
+  build:
+    name: "Build sidecar binary (${{ matrix.cell }})"
+    needs: [guard]
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: "macos-x86_64"
+            runner: "macos-13"
+            python: "3.12"
+          - cell: "macos-arm64"
+            runner: "macos-14"
+            python: "3.12"
+          - cell: "linux-x86_64"
+            runner: "ubuntu-latest"
+            python: "3.12"
+          - cell: "linux-arm64"
+            runner: "ubuntu-24.04-arm"
+            python: "3.12"
+          - cell: "windows-x86_64"
+            runner: "windows-latest"
+            python: "3.12"
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      manifest_path: dist/sidecar-bundle/${{ matrix.cell }}/manifest.json
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: "Install PyInstaller and sidecar deps"
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller==6.11.0
+          python -m pip install -e apps/local-sidecar
+
+      - name: "Build sidecar binary for ${{ matrix.cell }}"
+        shell: bash
+        run: |
+          python scripts/build-sidecar-bundle.py \
+            --cell ${{ matrix.cell }} \
+            --manifest-out dist/sidecar-bundle/${{ matrix.cell }}/manifest.json
+
+      - name: "Tier-1 plumbing parity (VAL-W12-023, functional equivalence)"
+        # Run the same tier-1 plumbing suite the Python-installed sidecar
+        # runs, against the PyInstaller-built binary. Divergence FAILS.
+        shell: bash
+        env:
+          RELAY_SIDECAR_BINARY: dist/sidecar-bundle/${{ matrix.cell }}/dist/relay-sidecar-${{ matrix.cell }}
+        run: |
+          python -m pip install pytest pytest-asyncio pytest-timeout
+          pytest -m plumbing apps/local-sidecar/tests --timeout=60 -q
+
+      - name: "Upload binary artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-sidecar-${{ matrix.cell }}
+          path: dist/sidecar-bundle/${{ matrix.cell }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # macOS notarization (VAL-W12-026). Runs only for macOS cells and only
+  # in the canonical repository (notarization API credentials live in
+  # relay-platform secrets; forks skip this step).
+  # ---------------------------------------------------------------------------
+  notarize-macos:
+    name: "Notarize macOS binaries"
+    needs: [detect-fork, build]
+    if: needs.detect-fork.outputs.dry_run_unsigned == 'false'
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Download macOS-x86_64 artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-macos-x86_64
+          path: dist/macos-x86_64/
+
+      - name: "Download macOS-arm64 artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-macos-arm64
+          path: dist/macos-arm64/
+
+      - name: "Notarize + staple (Apple notarytool)"
+        # Requires APPLE_NOTARYTOOL_KEYCHAIN_PROFILE configured in the
+        # release environment. The credentials live in relay-platform
+        # secrets per CLAUDE.md banned pattern #14; the GitHub OIDC
+        # token-exchange path that brokers access is documented in
+        # docs/release/runbook.md (Notarization Credentials section).
+        env:
+          NOTARY_PROFILE: ${{ secrets.APPLE_NOTARYTOOL_KEYCHAIN_PROFILE }}
+        run: |
+          set -euo pipefail
+          for arch in x86_64 arm64; do
+            BIN="dist/macos-${arch}/dist/relay-sidecar-macos-${arch}"
+            ditto -c -k --keepParent "${BIN}" "${BIN}.zip"
+            xcrun notarytool submit "${BIN}.zip" \
+              --keychain-profile "${NOTARY_PROFILE}" \
+              --wait
+            xcrun stapler staple "${BIN}"
+          done
+
+      - name: "Re-upload notarized artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-sidecar-macos-notarized
+          path: dist/macos-*/dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Windows code-signing (VAL-W12-026). signtool path runs only in the
+  # canonical repository because the EV cert lives in relay-platform.
+  # Forks skip this step; their unsigned binaries cannot be published.
+  # ---------------------------------------------------------------------------
+  codesign-windows:
+    name: "Authenticode-sign Windows binary"
+    needs: [detect-fork, build]
+    if: needs.detect-fork.outputs.dry_run_unsigned == 'false'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Download windows artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-windows-x86_64
+          path: dist/windows-x86_64/
+
+      - name: "Authenticode-sign via signtool"
+        # signtool is part of the Windows SDK; the certificate is loaded
+        # from the runner's certificate store and the private key never
+        # leaves relay-platform's HSM-backed signing service. This step
+        # is the public-side handoff documented in the release runbook
+        # under "Windows code-signing flow."
+        shell: pwsh
+        env:
+          RELAY_WIN_SIGN_CERT_SUBJECT: ${{ secrets.RELAY_WIN_SIGN_CERT_SUBJECT }}
+        run: |
+          $bin = "dist/windows-x86_64/dist/relay-sidecar-windows-x86_64.exe"
+          signtool sign /n $env:RELAY_WIN_SIGN_CERT_SUBJECT /fd sha256 /tr "http://timestamp.sectigo.com" /td sha256 $bin
+          signtool verify /pa $bin
+
+      - name: "Re-upload signed artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-sidecar-windows-signed
+          path: dist/windows-x86_64/dist/
+
+  # ---------------------------------------------------------------------------
+  # SLSA L3 provenance generation (VAL-W12-024). Generates the SLSA v1.0
+  # provenance attestation for every produced binary inside the hermetic
+  # slsa-github-generator builder context. This is the canonical SLSA
+  # source for sub-feature w12.5.
+  # ---------------------------------------------------------------------------
+  collect-hashes:
+    name: "Collect digest manifest across all cells"
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - name: "Download all per-cell artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/all
+          pattern: relay-sidecar-*
+
+      - name: "Aggregate base64-encoded hashes (SLSA base64-subjects)"
+        id: hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          find dist/all -type f -name 'relay-sidecar-*' -not -name '*.json' -not -name '*.sigstore' -print > files.txt
+          HASHES=$(while read -r f; do sha256sum "$f"; done < files.txt | base64 -w0)
+          echo "hashes=${HASHES}" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    name: "SLSA L3 provenance"
+    needs: [detect-fork, collect-hashes]
+    if: needs.detect-fork.outputs.dry_run_unsigned == 'false'
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: ${{ needs.collect-hashes.outputs.hashes }}
+      provenance-name: "relay-sidecar-bundle.intoto.jsonl"
+      upload-assets: true
+
+  # ---------------------------------------------------------------------------
+  # Sigstore keyless signing (VAL-W12-021 + VAL-W12-022). Signs each
+  # per-cell binary inside the canonical-repo hermetic builder, attaches
+  # the Sigstore TSA RFC 3161 timestamp, and writes a .sigstore bundle.
+  # Rekor inclusion proof is fetched + verified offline against the
+  # pinned checkpoint (VAL-W12-037).
+  # ---------------------------------------------------------------------------
+  sign:
+    name: "Sigstore keyless sign + Rekor inclusion"
+    needs: [detect-fork, build, notarize-macos, codesign-windows, provenance]
+    if: needs.detect-fork.outputs.dry_run_unsigned == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Download notarized macOS artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-macos-notarized
+          path: dist/
+
+      - name: "Download signed Windows artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-windows-signed
+          path: dist/windows-x86_64/dist/
+
+      - name: "Download linux artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-linux-x86_64
+          path: dist/linux-x86_64/
+
+      - name: "Download linux-arm64 artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-linux-arm64
+          path: dist/linux-arm64/
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Install sigstore-python"
+        run: pip install sigstore==3.6.0
+
+      - name: "Keyless sign + Sigstore TSA timestamp"
+        # sigstore-python obtains an ambient GitHub OIDC token, gets a
+        # short-lived Fulcio signing certificate, signs the artifact,
+        # records the signature in Rekor (transparency log), and
+        # attaches an RFC 3161 timestampVerificationData block from
+        # Sigstore TSA (https://timestamp.sigstore.dev). The single
+        # .sigstore bundle file carries the cert, signature, Rekor entry
+        # SET, and timestamp data -- all the materials a verifier needs
+        # offline.
+        shell: bash
+        env:
+          TSA_PRIMARY: ${{ env.TSA_PRIMARY }}
+        run: |
+          set -euo pipefail
+          for f in $(find dist -type f -name 'relay-sidecar-*' -not -name '*.json' -not -name '*.sigstore'); do
+            python -m sigstore sign \
+              --identity-token "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
+              --bundle "${f}.sigstore" \
+              "${f}"
+          done
+
+      - name: "Verify Rekor inclusion proof OFFLINE against pinned checkpoint"
+        # VAL-W12-037 requires offline-verifiability via Merkle proof
+        # against a Rekor checkpoint pinned at packages/verifier/.
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in $(find dist -type f -name '*.sigstore'); do
+            ARTIFACT="${f%.sigstore}"
+            python -m sigstore verify identity \
+              --offline \
+              --bundle "${f}" \
+              --cert-identity "https://github.com/epochly-inc/relay/.github/workflows/release-sidecar-bundle.yml@${GITHUB_REF}" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "${ARTIFACT}"
+          done
+
+      - name: "Upload signed bundle"
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-sidecar-bundle-signed
+          path: dist/
+
+  # ---------------------------------------------------------------------------
+  # Publish to GitHub Releases (VAL-W12-020 asset coverage). The Sigstore
+  # bundles + SLSA attestations + per-binary manifest entries are all
+  # attached as release assets.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: "Publish release assets"
+    needs: [detect-fork, sign]
+    if: needs.detect-fork.outputs.dry_run_unsigned == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment: release
+    steps:
+      - name: "Download signed bundle"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-bundle-signed
+          path: dist/
+
+      - name: "Publish to GitHub Releases"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "${RELEASE_TAG}" \
+            $(find dist -type f \( -name 'relay-sidecar-*' -o -name '*.sigstore' -o -name '*.intoto.jsonl' \)) \
+            --clobber

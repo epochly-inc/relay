@@ -1,0 +1,32 @@
+{
+  "name": "@epochly/relay-sidecar-bundle",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Relay sidecar bundle launcher: detects host OS/arch, downloads the matching PyInstaller-built sidecar binary, verifies the SHA-256 digest against the signed release manifest (STEP A), verifies the Sigstore Rekor inclusion proof (STEP B), and launches the binary. Digest-first / Sigstore-second ordering is load-bearing per VAL-W12-025.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "relay-sidecar-bundle": "./dist/src/bin/launcher.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --reporter=verbose"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

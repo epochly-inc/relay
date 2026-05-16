@@ -212,6 +212,72 @@ decision and an audit trail entry.
 
 ---
 
+## Compromised OIDC response
+
+A compromised GitHub Actions OIDC identity binding used by any release
+workflow (PyPI trusted publisher, npm trusted publisher, Sigstore
+Fulcio keyless signing) is a severity-1 incident. The full procedure
+lives in `docs/release/compromised-oidc-drill.md` -- this runbook
+section is the index entry that points to it.
+
+Per VAL-W12-041 the four-step response is:
+
+1. Revoke the offending OIDC identity binding on PyPI / npm and
+   disable the `release` GitHub environment.
+2. Rotate impacted Sigstore Fulcio root anchors if needed (typically
+   no-op; short-lived Fulcio certs expire within 10 minutes).
+3. Issue a security advisory documenting the affected versions and
+   the suspected unauthorized-publish window.
+4. Publish a new release with a clean OIDC binding; verify
+   end-to-end with `rly verify-install`.
+
+A tabletop drill MUST be rehearsed BEFORE the first signed release
+ships; the drill record lives at
+`docs/release/drills/<YYYY-MM-DD>-compromised-oidc-drill.md`.
+
+---
+
+## Sectigo TSA fallback
+
+Per VAL-W12-043 and PW1-3, the release pipeline uses Sigstore TSA
+(`https://timestamp.sigstore.dev/api/v1/timestamp`) as the primary
+RFC 3161 timestamp authority for every artifact signature. Sectigo
+is the commercial fallback, wired into the release workflow but
+inactive by default.
+
+Full procedure: `docs/release/sectigo-tsa-fallback.md`.
+
+Default selection (load-bearing):
+
+```yaml
+env:
+  TSA_PRIMARY: "sigstore"
+```
+
+The static guard `scripts/check-sidecar-bundle.py` rejects any
+workflow whose `TSA_PRIMARY` env value is anything other than
+`sigstore`. Activation of the Sectigo path is gated on a documented
+incident ticket AND a time-boxed (max 72-hour) window.
+
+---
+
+## Trust-anchor governance cross-reference
+
+Per VAL-W12-042 the trust-anchor governance document at
+`docs/release/trust-anchor-governance.md` (OSS-facing stub) and the
+companion private document at
+`relay-platform/ops/runbooks/trust-anchor-governance.md` reference the
+release pipeline (PyPI trusted publishing + npm provenance + SLSA L3 +
+in-toto + Sigstore + Sectigo fallback) as the operational basis for
+"how Relay-Inc protects signing-identity binding."
+
+The governance document is reviewed by counsel and security counsel;
+updated semi-annually. CI guard `scripts/check-sidecar-bundle.py`
+asserts the governance document exists AND references the release
+pipeline (Sigstore, in-toto, SLSA).
+
+---
+
 ## Cross-references
 
 - Spec sections: A.3, AI.6, K, L.1, Q.2, AO.4
@@ -223,6 +289,10 @@ decision and an audit trail entry.
 - Trust-anchor governance: extended under w12.5; see
   `relay-platform/ops/runbooks/trust-anchor-governance.md` (private)
 - Workflow file: `.github/workflows/release-pypi.yml`
+- Sidecar bundle workflow: `.github/workflows/release-sidecar-bundle.yml`
 - Guard script: `scripts/check-pypi-publish-workflow.py`
+- Sidecar bundle guard: `scripts/check-sidecar-bundle.py`
 - Semver gate: `scripts/check-semver-monotonic.py`
 - Pre-announcement gate: `scripts/check-pre-announcement.py`
+- Compromised-OIDC drill: `docs/release/compromised-oidc-drill.md`
+- Sectigo TSA fallback: `docs/release/sectigo-tsa-fallback.md`
