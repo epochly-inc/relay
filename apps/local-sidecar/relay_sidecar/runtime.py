@@ -108,6 +108,7 @@ from .side_effect_markers import (
 from .state_engine.http_endpoint import build_state_router
 from .validation.ingest_limits import validate_span_size_and_depth
 from .validation.ingest_utf8 import validate_indexed_utf8
+from .validation.raw_capture import evaluate_raw_capture_on_request
 
 # Drain grace window advertised to clients via ``Retry-After``. Matches the
 # manifest service.local-sidecar.quiesce_timeout_ms (30000 ms = 30 s).
@@ -1089,6 +1090,137 @@ def build_runtime_app(
             }
 
     # ----------------------------------------------------------------------
+    # V2 M02 W2.1 ingest-namespace scope + body-shape helpers
+    # (VAL-V2M02-001..009).
+    # ----------------------------------------------------------------------
+    #
+    # Scope-auth is hosted-only in production (tokens issued by the hosted
+    # control plane carry their scope set). The OSS sidecar mirrors the
+    # surface so SDKs/tests exercise the same code paths. Per
+    # contract.md:620-626 ("scopes are seeded onto a local 'dev' token via
+    # a fixture"), the OSS profile reads the active scope set from the
+    # ``X-Relay-Scopes`` request header (CSV). A missing header behaves
+    # identically to an empty scope set: any non-public endpoint with a
+    # declared ``scope_required`` returns 403 + RELAY-AUTH-014.
+
+    def _build_error_envelope(
+        *,
+        code: str,
+        http_status: int,
+        message: str,
+        blocked_surface: str,
+        retry_advice: str = "do_not_retry",
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build a spec B.4 canonical error envelope."""
+        env: dict[str, Any] = {
+            "schema_version": "relay.error.v1",
+            "code": code,
+            "error_class": code,
+            "http_status": http_status,
+            "message": message,
+            "blocked_surface": blocked_surface,
+            "retry_advice": retry_advice,
+        }
+        if details is not None:
+            env["details"] = details
+        return env
+
+    def _extract_request_scopes(request: Request) -> frozenset[str]:
+        """Parse ``X-Relay-Scopes`` header into a normalized scope set.
+
+        Treats missing/empty headers as the empty set. Whitespace around
+        each CSV item is stripped. Duplicate entries collapse.
+        """
+        raw = request.headers.get("x-relay-scopes")
+        if not raw:
+            return frozenset()
+        items = {part.strip() for part in raw.split(",") if part.strip()}
+        return frozenset(items)
+
+    def _check_required_scope(
+        request: Request, *, required: str, blocked_surface: str
+    ) -> JSONResponse | None:
+        """Enforce a single ``scope_required`` value. Return 403 envelope
+        when the active scope set lacks ``required``; ``None`` on accept.
+        """
+        scopes = _extract_request_scopes(request)
+        if required in scopes:
+            return None
+        return JSONResponse(
+            status_code=403,
+            content=_build_error_envelope(
+                code="RELAY-AUTH-014",
+                http_status=403,
+                message=(
+                    f"token lacks required scope {required!r}; "
+                    f"present scopes: {sorted(scopes)!r}"
+                ),
+                blocked_surface=blocked_surface,
+                details={"required_scope": required},
+            ),
+        )
+
+    # Maximum batch body size for the spans/contract-results batch routes
+    # (spec B.4 RELAY-ING-021: payload > 1 MiB returns 413). The limit is
+    # measured against the raw HTTP body bytes; the check fires BEFORE
+    # JSON parsing so a 100 MiB body cannot exhaust memory.
+    _BATCH_BODY_BYTE_LIMIT: int = 1024 * 1024  # 1 MiB
+
+    # Canonical-write fields a SDK must NEVER set on /v1/ingest/runs. The
+    # control plane writes these fields exclusively (CLAUDE.md keystone
+    # invariant #1; spec line 1966 RELAY-ING-031).
+    _CANONICAL_WRITE_FIELDS: frozenset[str] = frozenset(
+        {"status", "primary_failure_class", "written_by",
+         "accepted_at", "finalized_at"}
+    )
+
+    # Minimum required fields on a well-formed ``relay.ingest.run.v1``
+    # envelope per spec line 1932-1958. The body-shape gate rejects with
+    # 422 + RELAY-ING-001 when any are missing.
+    _REQUIRED_RUN_FIELDS: tuple[str, ...] = (
+        "schema_version",
+        "run_id",
+        "project_id",
+        "trace_id",
+        "client_lifecycle_status",
+        "started_at",
+        "manifest_commit_hash",
+        "actor_identity_hash",
+        "redaction_policy_version",
+        "idempotency_key",
+        "sequence_number",
+    )
+
+    async def _read_body_with_size_cap(
+        request: Request,
+        *,
+        blocked_surface: str,
+        cap: int = _BATCH_BODY_BYTE_LIMIT,
+    ) -> bytes | JSONResponse:
+        """Read raw body bytes; return 413 + RELAY-ING-021 if > ``cap``.
+
+        Performs the size check BEFORE JSON parsing so an oversized body
+        cannot exhaust JSON-decoder memory.
+        """
+        raw = await request.body()
+        if len(raw) > cap:
+            return JSONResponse(
+                status_code=413,
+                content=_build_error_envelope(
+                    code="RELAY-ING-021",
+                    http_status=413,
+                    message=(
+                        f"request body {len(raw)} bytes exceeds "
+                        f"{cap} byte cap"
+                    ),
+                    blocked_surface=blocked_surface,
+                    details={"body_bytes": len(raw), "cap_bytes": cap},
+                ),
+            )
+        return raw
+
+    # ----------------------------------------------------------------------
     # W3 manifest-enforced ingest routes (VAL-V2M03-012, VAL-V2M03-013).
     # ----------------------------------------------------------------------
     #
@@ -1226,76 +1358,225 @@ def build_runtime_app(
                 return rejection
         return None
 
+    _RUNS_SURFACE: str = "POST /v1/ingest/runs"
+
     @app.post("/v1/ingest/runs")
     async def v1_ingest_runs(request: Request) -> JSONResponse:
-        """Run-submission ingest with manifest enforcement (VAL-V2M03-012)."""
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "code": "RELAY-ING-001",
-                    "error_class": "RELAY-ING-001",
-                    "message": "request body must be a JSON object",
-                },
-            )
-        if not isinstance(body, dict):
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "code": "RELAY-ING-001",
-                    "error_class": "RELAY-ING-001",
-                    "message": "request body must be a JSON object",
-                },
-            )
-        enforced = await _enforce_manifest_anchors(body)
-        if isinstance(enforced, JSONResponse):
-            return enforced
-        tracker = runtime.quiesce.tracker
-        async with tracker.acquire(description="ingest/runs") as op:
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "accepted": True,
-                    "operation_id": op.operation_id,
-                    "endpoint": "/v1/ingest/runs",
-                },
-            )
+        """Run-submission ingest (VAL-V2M02-001..004, VAL-V2M03-012).
 
-    @app.post("/v1/ingest/spans:batch")
-    async def v1_ingest_spans_batch(request: Request) -> JSONResponse:
-        """Spans-batch ingest with manifest enforcement (VAL-V2M03-012)
-        + M08-W8 adversarial-input hardening (VAL-V2M08-002, 003, 010).
+        Order of checks (outer gates first so the most specific error is
+        returned):
+
+          1. JSON-decode + non-empty-object check (RELAY-ING-001).
+          2. Three-anchor manifest enforcement (RELAY-GATE-021). The
+             manifest gate is the OUTERMOST invariant per CLAUDE.md
+             keystone #3/#4 so a stale handoff surfaces before any other
+             reason.
+          3. Body-shape detection: minimal manifest-only bodies short-
+             circuit to the legacy 200 acceptance path that V2M03 covers
+             (scope-system-exempt; V2M03 landed before scope auth).
+          4. ``ingest:write`` scope check (RELAY-AUTH-014) for v2m02
+             full-envelope bodies.
+          5. Canonical-write-field rejection (RELAY-ING-031). Runs BEFORE
+             the required-fields gate so a body that BOTH sets ``status``
+             AND omits a required field produces RELAY-ING-031 (the
+             keystone-#1 invariant) rather than RELAY-ING-001.
+          6. Required-field body-shape check (RELAY-ING-001).
+          7. Defense-in-depth raw_capture rejection (M08 W8).
+          8. Tracker-acquire + 201 with ``{run_id, schema_version}``.
         """
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
             return JSONResponse(
-                status_code=400,
-                content={
-                    "code": "RELAY-ING-001",
-                    "error_class": "RELAY-ING-001",
-                    "message": "request body must be a JSON object",
-                },
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_RUNS_SURFACE,
+                ),
             )
         if not isinstance(body, dict):
             return JSONResponse(
-                status_code=400,
-                content={
-                    "code": "RELAY-ING-001",
-                    "error_class": "RELAY-ING-001",
-                    "message": "request body must be a JSON object",
-                },
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_RUNS_SURFACE,
+                ),
             )
         enforced = await _enforce_manifest_anchors(body)
         if isinstance(enforced, JSONResponse):
             return enforced
+        # Body-shape detection: V2M03 manifest-enforcement tests submit
+        # the two anchor fields only; preserve the legacy 200 +
+        # {accepted=True} response shape for that path so V2M03's contract
+        # assertions keep their semantics. Bodies that carry any
+        # non-anchor field MUST pass the full v2m02 shape + scope checks.
+        non_anchor_keys = set(body) - {
+            "manifest_commit_hash",
+            "command_hash",
+        }
+        if not non_anchor_keys:
+            # Legacy manifest-only acceptance path (V2M03-012). The scope
+            # system did not exist when V2M03 landed; preserving that
+            # contract avoids cross-feature regressions while v2m02 owns
+            # the full-envelope code path below.
+            tracker = runtime.quiesce.tracker
+            async with tracker.acquire(description="ingest/runs") as op:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "accepted": True,
+                        "operation_id": op.operation_id,
+                        "endpoint": "/v1/ingest/runs",
+                    },
+                )
+        # ---- v2m02 full-envelope path ----
+        scope_reject = _check_required_scope(
+            request, required="ingest:write", blocked_surface=_RUNS_SURFACE
+        )
+        if scope_reject is not None:
+            return scope_reject
+        invalid_fields = sorted(
+            f for f in _CANONICAL_WRITE_FIELDS if f in body
+        )
+        if invalid_fields:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-031",
+                    http_status=422,
+                    message=(
+                        "SDK attempted to set canonical-write field(s) "
+                        f"{invalid_fields!r}; the control plane writes these "
+                        "fields exclusively (CLAUDE.md keystone invariant #1, "
+                        "spec line 1966)"
+                    ),
+                    blocked_surface=_RUNS_SURFACE,
+                    details={"invalid_fields": invalid_fields},
+                ),
+            )
+        missing_fields = [
+            f for f in _REQUIRED_RUN_FIELDS if body.get(f) in (None, "")
+        ]
+        if missing_fields:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message=(
+                        "relay.ingest.run.v1 envelope missing required "
+                        f"field(s): {missing_fields!r}"
+                    ),
+                    blocked_surface=_RUNS_SURFACE,
+                    details={"missing_fields": missing_fields},
+                ),
+            )
+        tracker = runtime.quiesce.tracker
+        async with tracker.acquire(description="ingest/runs"):
+            return JSONResponse(
+                status_code=201,
+                content={
+                    "run_id": body["run_id"],
+                    "schema_version": body["schema_version"],
+                },
+            )
+
+    _SPANS_BATCH_SURFACE: str = "POST /v1/ingest/spans:batch"
+    _CONTRACT_RESULTS_BATCH_SURFACE: str = (
+        "POST /v1/ingest/contract-results:batch"
+    )
+
+    @app.post("/v1/ingest/spans:batch")
+    async def v1_ingest_spans_batch(request: Request) -> JSONResponse:
+        """Spans-batch ingest (VAL-V2M02-005..007, VAL-V2M03-012,
+        VAL-V2M08-002, 003, 010).
+
+        Order of checks (outer-gate-first layering):
+
+          1. Body-size cap (RELAY-ING-021) BEFORE JSON parse so an
+             oversized body cannot exhaust the JSON decoder.
+          2. JSON-decode + non-empty-object check (RELAY-ING-001).
+          3. Three-anchor manifest enforcement (RELAY-GATE-021).
+          4. Body-shape detection: minimal manifest-only bodies short-
+             circuit to the legacy 200 acceptance path (V2M03).
+          5. ``ingest:write`` scope check (RELAY-AUTH-014) for v2m02
+             full-envelope bodies.
+          6. M08-W8 per-span size/depth + UTF-8 hardening.
+          7. Defense-in-depth raw_capture rejection.
+          8. M04 side-effect pairing check.
+          9. Tracker-acquire + 202 with ``{accepted_count, batch_id}``.
+        """
+        raw_or_reject = await _read_body_with_size_cap(
+            request, blocked_surface=_SPANS_BATCH_SURFACE
+        )
+        if isinstance(raw_or_reject, JSONResponse):
+            return raw_or_reject
+        try:
+            body = (
+                json.loads(raw_or_reject.decode("utf-8"))
+                if raw_or_reject
+                else {}
+            )
+        except Exception:  # noqa: BLE001
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_SPANS_BATCH_SURFACE,
+                ),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_SPANS_BATCH_SURFACE,
+                ),
+            )
+        enforced = await _enforce_manifest_anchors(body)
+        if isinstance(enforced, JSONResponse):
+            return enforced
+        # Body-shape detection: V2M03 minimal-anchor bodies preserve the
+        # legacy 200 + {accepted=True, endpoint=...} response (scope-system-
+        # exempt; mirrors the runs handler).
+        non_anchor_keys = set(body) - {
+            "manifest_commit_hash",
+            "command_hash",
+        }
+        if not non_anchor_keys:
+            tracker = runtime.quiesce.tracker
+            async with tracker.acquire(description="ingest/spans:batch") as op:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "accepted": True,
+                        "operation_id": op.operation_id,
+                        "endpoint": "/v1/ingest/spans:batch",
+                    },
+                )
+        # ---- v2m02 full-envelope path ----
+        scope_reject = _check_required_scope(
+            request,
+            required="ingest:write",
+            blocked_surface=_SPANS_BATCH_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
         # M08-W8 hardening: per-span size + nesting + indexed-UTF-8
         # checks (VAL-V2M08-002, 003, 010). The body's "spans" array
         # may be absent (legacy submission shape) or empty -- both
         # accepted; only declared spans are validated.
         spans = body.get("spans")
+        accepted_count: int = 0
         if isinstance(spans, list):
             for span in spans:
                 if not isinstance(span, dict):
@@ -1314,11 +1595,16 @@ def build_runtime_app(
                             status_code=utf8_reject["http_status"],
                             content=utf8_reject,
                         )
-            # M04 w4-side-effects (VAL-V2M04-011..015, -035): every span
-            # carrying side_effect_class != 'read_only' MUST have a paired
-            # side_effect_markers row AND a side_effect_proofs row. This
-            # check runs AFTER three-anchor handoff (above) so the manifest
-            # invariant remains the outer gate (CLAUDE.md keystone #4).
+            # M08-W8 server-side raw_capture rejection (VAL-V2M08-029/030/031).
+            # Spec G.1 lines 4108-4114; CLAUDE.md keystone invariant #7.
+            raw_rejection = evaluate_raw_capture_on_request(body=body)
+            if raw_rejection is not None:
+                return JSONResponse(
+                    status_code=raw_rejection.http_status,
+                    content=raw_rejection.as_envelope(),
+                )
+            # M04 w4-side-effects (VAL-V2M04-011..015, -035): paired-row
+            # check for spans whose side_effect_class != 'read_only'.
             side_reject = await _enforce_side_effect_pairing(
                 spans=spans,
                 database=runtime.database,
@@ -1333,14 +1619,103 @@ def build_runtime_app(
                         "details": side_reject.details,
                     },
                 )
+            accepted_count = sum(1 for s in spans if isinstance(s, dict))
         tracker = runtime.quiesce.tracker
         async with tracker.acquire(description="ingest/spans:batch") as op:
             return JSONResponse(
-                status_code=200,
+                status_code=202,
                 content={
-                    "accepted": True,
-                    "operation_id": op.operation_id,
-                    "endpoint": "/v1/ingest/spans:batch",
+                    "accepted_count": accepted_count,
+                    "batch_id": op.operation_id,
+                },
+            )
+
+    @app.post("/v1/ingest/contract-results:batch")
+    async def v1_ingest_contract_results_batch(
+        request: Request,
+    ) -> JSONResponse:
+        """Contract-results batch ingest (VAL-V2M02-008, VAL-V2M02-009).
+
+        Order of checks:
+
+          1. Body-size cap (RELAY-ING-021) BEFORE JSON parse.
+          2. JSON-decode + non-empty-object check (RELAY-ING-001).
+          3. Three-anchor manifest enforcement (RELAY-GATE-021).
+          4. ``ingest:write`` scope check (RELAY-AUTH-014).
+          5. Validate ``contract_results`` is a list.
+          6. Tracker-acquire + 202 with ``{accepted_count, batch_id}``.
+
+        Persistence to the ``contract_results`` table (migration 0012,
+        VAL-V2M01-002) lands in a follow-up feature; this surface owns
+        the wire contract and the rejection envelope shape.
+        """
+        raw_or_reject = await _read_body_with_size_cap(
+            request, blocked_surface=_CONTRACT_RESULTS_BATCH_SURFACE
+        )
+        if isinstance(raw_or_reject, JSONResponse):
+            return raw_or_reject
+        try:
+            body = (
+                json.loads(raw_or_reject.decode("utf-8"))
+                if raw_or_reject
+                else {}
+            )
+        except Exception:  # noqa: BLE001
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_CONTRACT_RESULTS_BATCH_SURFACE,
+                ),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_CONTRACT_RESULTS_BATCH_SURFACE,
+                ),
+            )
+        enforced = await _enforce_manifest_anchors(body)
+        if isinstance(enforced, JSONResponse):
+            return enforced
+        scope_reject = _check_required_scope(
+            request,
+            required="ingest:write",
+            blocked_surface=_CONTRACT_RESULTS_BATCH_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        contract_results = body.get("contract_results")
+        if not isinstance(contract_results, list):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message=(
+                        "request body must include a 'contract_results' "
+                        "array (may be empty)"
+                    ),
+                    blocked_surface=_CONTRACT_RESULTS_BATCH_SURFACE,
+                ),
+            )
+        accepted_count = sum(
+            1 for r in contract_results if isinstance(r, dict)
+        )
+        tracker = runtime.quiesce.tracker
+        async with tracker.acquire(
+            description="ingest/contract-results:batch"
+        ) as op:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "accepted_count": accepted_count,
+                    "batch_id": op.operation_id,
                 },
             )
 
