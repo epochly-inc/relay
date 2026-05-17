@@ -1,0 +1,23 @@
+{
+  "schema_version": "relay.root_cause_hypothesis.v1",
+  "hypothesis_id": "0193b8f0-4a1c-7c0a-bf2e-1a0c1b2d3e4f",
+  "run_id": "0193b8f0-4a1c-7c0a-bf2e-1a0c1b2d3e50",
+  "span_id": "0193b8f0-4a1c-7c0a-bf2e-1a0c1b2d3e51",
+  "hypothesis_class": "schema_contract_drift",
+  "confidence": 0.82,
+  "evidence_refs": [
+    {
+      "kind": "contract_result",
+      "ref": "contract_results:0193b8f0-4a1c-7c0a-bf2e-1a0c1b2d3e52"
+    },
+    {
+      "kind": "span",
+      "ref": "spans:0193b8f0-4a1c-7c0a-bf2e-1a0c1b2d3e51"
+    }
+  ],
+  "generator": "heuristic.v1",
+  "reviewer_email": null,
+  "reviewer_decision": null,
+  "promoted_to_replay_case_id": null,
+  "created_at": "2026-05-17T12:00:00Z"
+}

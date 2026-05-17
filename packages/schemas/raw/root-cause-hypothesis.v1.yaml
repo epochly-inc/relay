@@ -1,0 +1,116 @@
+# Canonical Relay Explain object schema (VAL-V2M05-001 through VAL-V2M05-006).
+#
+# Source of truth for the relay.root_cause_hypothesis.v1 envelope. Validators
+# (Python jsonschema, Pydantic) consume this YAML directly. The shape is a
+# JSON Schema Draft 2020-12 document expressed in YAML for readability and
+# diff-friendliness.
+#
+# Spec anchors:
+#   T 4856-4896    Explain object + RootCauseHypothesis behavior
+#   A.15 3316-3328 RootCauseHypothesis envelope fields
+#   AJ 5733-5746   Explain pipeline + generator taxonomy
+#   AL.2 5775-5785 pass@N filter (rejects all-pass / all-fail edges)
+#
+# CLAUDE.md keystone invariants:
+#   #2  evidence_refs binds the hypothesis to artifact hashes
+#   #10 schema_version pinned via Literal/const
+#
+# ASCII-only per CLAUDE.md "ASCII-Safe Source".
+
+schema_version: relay.root_cause_hypothesis.v1
+
+# JSON Schema Draft 2020-12 view of the envelope. The validator at
+# packages/schemas/python/relay_schemas/root_cause_hypothesis.py loads this
+# block and feeds it directly to jsonschema.Draft202012Validator.
+json_schema:
+  $schema: "https://json-schema.org/draft/2020-12/schema"
+  $id: "https://relay.epochly.com/schemas/relay.root_cause_hypothesis.v1.json"
+  title: RootCauseHypothesisV1
+  type: object
+  additionalProperties: false
+  required:
+    - schema_version
+    - hypothesis_id
+    - run_id
+    - hypothesis_class
+    - confidence
+    - evidence_refs
+    - generator
+    - created_at
+  properties:
+    schema_version:
+      type: string
+      const: relay.root_cause_hypothesis.v1
+    hypothesis_id:
+      type: string
+      # RFC 4122 UUID; case-insensitive hex grouping.
+      pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    run_id:
+      type: string
+      pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    span_id:
+      type:
+        - string
+        - "null"
+      pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    hypothesis_class:
+      type: string
+      enum:
+        - schema_contract_drift
+        - retrieval_miss
+        - tool_arg_invalid
+        - prompt_regression
+        - provider_drift
+        - rate_limit
+        - cost_overrun
+        - context_overflow
+        - hallucinated_citation
+        - stale_tool_doc
+        - user_misuse
+        - unknown
+    confidence:
+      type: number
+      minimum: 0
+      maximum: 1
+    evidence_refs:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: true
+        required:
+          - kind
+          - ref
+        properties:
+          kind:
+            type: string
+            minLength: 1
+          ref:
+            type: string
+            # "<table>:<uuid>" where table is snake_case ASCII.
+            pattern: "^[a-z_]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    generator:
+      type: string
+      pattern: "^heuristic\\.v\\d+$|^llm\\.[a-z0-9-]+:v\\d+$"
+    reviewer_email:
+      type:
+        - string
+        - "null"
+    reviewer_decision:
+      type:
+        - string
+        - "null"
+      enum:
+        - accept
+        - modify
+        - reject
+        - null
+    promoted_to_replay_case_id:
+      type:
+        - string
+        - "null"
+      pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    created_at:
+      type: string
+      # RFC 3339 timestamp; loose pattern, validators may further check.
+      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"

@@ -52,6 +52,7 @@ class RelayErrorCode:
     RELAY_COVERAGE_002: Final[str] = "RELAY-COVERAGE-002"
     RELAY_COVERAGE_003: Final[str] = "RELAY-COVERAGE-003"
     RELAY_COVERAGE_004: Final[str] = "RELAY-COVERAGE-004"
+    RELAY_EVAL_024: Final[str] = "RELAY-EVAL-024"
     RELAY_EVID_001: Final[str] = "RELAY-EVID-001"
     RELAY_EVID_002: Final[str] = "RELAY-EVID-002"
     RELAY_EVID_014: Final[str] = "RELAY-EVID-014"
@@ -61,6 +62,7 @@ class RelayErrorCode:
     RELAY_EVID_040: Final[str] = "RELAY-EVID-040"
     RELAY_EVID_041: Final[str] = "RELAY-EVID-041"
     RELAY_EVID_042: Final[str] = "RELAY-EVID-042"
+    RELAY_EXPLAIN_001: Final[str] = "RELAY-EXPLAIN-001"
     RELAY_FUTURE_999: Final[str] = "RELAY-FUTURE-999"
     RELAY_GATE_001: Final[str] = "RELAY-GATE-001"
     RELAY_GATE_014: Final[str] = "RELAY-GATE-014"
@@ -202,6 +204,7 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-COVERAGE-002",
     "RELAY-COVERAGE-003",
     "RELAY-COVERAGE-004",
+    "RELAY-EVAL-024",
     "RELAY-EVID-001",
     "RELAY-EVID-002",
     "RELAY-EVID-014",
@@ -211,6 +214,7 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-EVID-040",
     "RELAY-EVID-041",
     "RELAY-EVID-042",
+    "RELAY-EXPLAIN-001",
     "RELAY-FUTURE-999",
     "RELAY-GATE-001",
     "RELAY-GATE-014",

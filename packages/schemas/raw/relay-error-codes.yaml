@@ -65,6 +65,13 @@ codes:
   - RELAY-COVERAGE-002
   - RELAY-COVERAGE-003
   - RELAY-COVERAGE-004
+  # M05 w5-explain: pass@N filter rejection. Returned by
+  # check_pass_at_n (packages/evals/relay_evals/pass_at_n.py) when the
+  # last N runs of an assertion set all passed or all failed; the
+  # assertion is non-informative (spec AL.2 lines 5775-5785). The
+  # publish/CI path surfaces it as HTTP 422 with a failing_edge field
+  # referencing the run set. VAL-V2M05-017, VAL-V2M05-022..025.
+  - RELAY-EVAL-024
   - RELAY-EVID-001
   - RELAY-EVID-002
   - RELAY-EVID-014
@@ -88,6 +95,11 @@ codes:
   - RELAY-EVID-040
   - RELAY-EVID-041
   - RELAY-EVID-042
+  # M05 w5-explain: span_id does not exist on the associated run_id when
+  # an explain ingestion path tries to write a hypothesis. The cross-row
+  # check is performed by the explain engine before INSERT; the response
+  # carries this code with HTTP 422. VAL-V2M05-015, VAL-V2M05-016.
+  - RELAY-EXPLAIN-001
   - RELAY-FUTURE-999
   - RELAY-GATE-001
   - RELAY-GATE-014
@@ -227,3 +239,39 @@ codes:
   - RELAY-VENDOR-002
   - RELAY-VERIFY-001
   - RELAY-VERIFY-050
+
+# -----------------------------------------------------------------------------
+# Per-code structured metadata (M05 w5-explain; VAL-V2M05-016, VAL-V2M05-017).
+# -----------------------------------------------------------------------------
+#
+# The flat `codes:` list above is the source-of-truth registry for the W1.4
+# constant generator (gen_error_codes.py). It treats this YAML as the
+# single-source list of wire-format tokens.
+#
+# `code_details:` below is an additive mapping of structured metadata
+# (description, http_status, spec anchor) for the subset of codes whose
+# wire envelope requires explicit per-code wiring. The generator ignores
+# this key (it only reads `codes:`). The Python registry loader at
+# packages/schemas/python/relay_schemas/error_code_registry.py exposes
+# this mapping for callers that need description + http_status.
+#
+# Only M05 w5-explain codes are populated here today; other workers may
+# add additional entries as needed. Entries are keyed by the canonical
+# wire token (e.g. `RELAY-EXPLAIN-001`) and must have non-empty
+# `description` and an `http_status` integer in the canonical 4xx/5xx range.
+
+code_details:
+  RELAY-EVAL-024:
+    description: >-
+      Pass@N filter rejection: the assertion set produced an uninformative
+      edge across the last N runs (all-pass or all-fail). Spec AL.2
+      (lines 5775-5785).
+    http_status: 422
+    spec_anchor: "AL.2 5775-5785"
+  RELAY-EXPLAIN-001:
+    description: >-
+      Explain ingestion received a hypothesis whose span_id is not present
+      on the associated run; the cross-row check failed before INSERT.
+      Spec T (line 4895).
+    http_status: 422
+    spec_anchor: "T 4895"

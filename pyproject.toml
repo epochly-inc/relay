@@ -17,7 +17,7 @@ description = "Relay v0.1 OSS workspace root (not published)."
 requires-python = ">=3.12"
 
 [tool.uv.workspace]
-members = ["packages/schemas", "packages/sdk-python", "packages/cli", "packages/contracts", "packages/gate", "packages/evals", "packages/verifier", "packages/acef", "apps/local-sidecar", "apps/replay-proxy"]
+members = ["packages/schemas", "packages/sdk-python", "packages/cli", "packages/contracts", "packages/gate", "packages/evals", "packages/explain", "packages/verifier", "packages/acef", "apps/local-sidecar", "apps/replay-proxy"]
 
 [tool.uv]
 package = false
@@ -50,6 +50,7 @@ testpaths = [
   "packages/contracts/tests",
   "packages/gate/tests",
   "packages/evals/tests",
+  "packages/explain/tests",
   "packages/verifier/tests",
   "packages/acef/tests",
   "apps/local-sidecar/tests",

@@ -1,0 +1,66 @@
+# epochly-relay-explain (Python Explain pipeline primitives package; M05 w5).
+#
+# Houses the v0.2 OSS Explain object engine: heuristic.v1 generator, quality
+# harness (precision/recall/FPR), and the promotion + validation helpers used
+# by the local-sidecar promotion API.
+#
+# Per CLAUDE.md keystone invariant #1, the explain engine is the only writer
+# of root_cause_hypotheses; the SDK and CLI never write directly. The engine
+# enforces:
+#
+#   - taxonomy clamp (LLM-returned out-of-enum hypothesis_class -> 'unknown'
+#     + taxonomy_review_required event; VAL-V2M05-014)
+#   - cross-row span_id existence check (VAL-V2M05-015, RELAY-EXPLAIN-001)
+#   - dedupe key (run_id, hypothesis_class, evidence_refs_digest) with
+#     max(confidence) merge (VAL-V2M05-012)
+#   - generator taxonomy regex (VAL-V2M05-009)
+#
+# Spec anchors:
+#   T 4856-4896    Explain object behavior
+#   A.15 3316-3328 RootCauseHypothesis envelope
+#   AJ 5733-5746   generator taxonomy and Explain pipeline
+#   AL.2 5775-5785 pass@N filter (lives in relay_evals, consumed here)
+#
+# Contract assertions: VAL-V2M05-018 (heuristic.v1), VAL-V2M05-019/020/021
+# (promotion API wired through apps/local-sidecar), VAL-V2M05-026 (quality
+# harness), VAL-V2M05-027 (control-plane writer guard).
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-explain"
+version = "0.0.0"
+description = "Relay Explain pipeline (Python; heuristic generator, quality harness, promotion helpers)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = [
+  # Canonical schema constants (RootCauseHypothesis schema_version,
+  # HYPOTHESIS_CLASSES, GENERATOR_REGEX) and error code metadata live in
+  # epochly-relay-schemas. Workspace dependency; uv resolves from the
+  # workspace tree (CLAUDE.md import-boundary rule).
+  "epochly-relay-schemas",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/relay_explain"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/relay_explain",
+  "README.md",
+]
+
+[tool.uv.sources]
+epochly-relay-schemas = { workspace = true }
