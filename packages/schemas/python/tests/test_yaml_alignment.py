@@ -81,6 +81,12 @@ _SHARED_ENVELOPES: frozenset[str] = frozenset(
         # backing packages/schemas/sql/0007_evidence_timestamps_log.sql.
         "EvidenceTimestamp",
         "TransparencyLogEntry",
+        # v0.2 OSS completeness, M01 w1-5 (added 2026-05-16): canonical
+        # Postgres-table envelopes mirroring the ACEF x-relay JSON
+        # payload models. Backed by packages/schemas/sql/0006_human_oversight.sql.
+        "HumanOversightEvent",
+        "DataQualityCheck",
+        "DataProvenanceRecord",
     }
 )
 

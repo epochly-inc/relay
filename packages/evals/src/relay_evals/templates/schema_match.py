@@ -85,6 +85,16 @@ KNOWN_SCHEMA_IDS: Final[frozenset[str]] = frozenset({
     "relay.tool_call_span.v1",
     "relay.retrieval_span.v1",
     "relay.embedding_span.v1",
+    # v0.2 OSS completeness, M01 w1-4 (legal holds + bundle registry):
+    "relay.evidence_legal_hold.v1",
+    "relay.evidence_bundle_registry.v1",
+    # v0.2 OSS completeness, M01 w1-5 (ACEF oversight tables):
+    "relay.human_oversight_event.v1",
+    "relay.data_quality_check.v1",
+    "relay.data_provenance_record.v1",
+    # v0.2 OSS completeness, M01 w1-6 (TSA + transparency log SQL):
+    "relay.evidence_timestamp.v1",
+    "relay.transparency_log_entry.v1",
 })
 
 _REQUIRED_INPUT_FIELDS: Final[frozenset[str]] = frozenset({
