@@ -57,7 +57,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import (
     decode_dss_signature,
@@ -266,65 +267,59 @@ A2_RSA_N_B64U = (
 )
 A2_RSA_E_B64U = "AQAB"
 
-# Deterministic RSA-2048 PEM for kid-augmented RS256 vectors.
+# RSA-2048 key for kid-augmented RS256 vectors.
+#
+# Per VAL-V2M09-020 / CLAUDE.md banned pattern #14, NO PEM-encoded RSA
+# private key may appear in this repo. We instead generate the
+# RSA-2048 key at script runtime via rsa.generate_private_key. The
+# generated key is cached at module level so a single generator run
+# uses ONE key for both the JWKS entry (public half) and the signing
+# operations (private half), keeping the corpus internally consistent.
+#
+# Across runs the RSA-keyed corpus bytes (signatures + JWKS n/e for
+# kid A2_KID) change. The --check mode below uses CRYPTOGRAPHIC
+# verification (not byte equality) for RSA-keyed vectors to detect
+# tampering, since byte-stability is sacrificed by design.
 #
 # We do NOT re-use the literal RFC 7515 A.2 private key, because faithful
 # byte-for-byte transcription of the RFC's d/p/q/dp/dq/qi components from
 # the RFC text is error-prone and the RFC's narrative formatting (line
-# breaks, surrounding whitespace) is ambiguous in places. Instead, the
-# kid-augmented RS256 vectors are signed under a deterministic in-repo
-# RSA-2048 key (same key as the W10.2 generator at scripts/
-# generate-jws-rfc7515-corpus.py:113-141 -- generated once and embedded
-# as a constant for byte-stability). The vector's `_source` is labeled
-# `constructed-deterministic-rsa-2048` so provenance is unambiguous;
-# VAL-W17-006 corpus-pinning still attaches to the literal A.2 vector
-# (which DOES use the RFC-published public key for its no-kid header).
-_STATIC_RSA_PRIVATE_PEM = (
-    "-----BEGIN PRIVATE KEY-----\n"
-    "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC6uRhyhpsEgtRY\n"
-    "CaFbPsonGTL6+sOWez7BBLDVwYjFSFLX7qG4pDKIptZXjxClV5SRrtL4nP2bR6l8\n"
-    "SRRDU8p9YdFGj3M7t0WU7bTzRq/RykItUeM16XCvwczBi7h8t4csyHXo6lyXqV+k\n"
-    "N13088ZBJ5mbrwW6vTRuAmDkEW1tnvocj0WyAugFPI/EZTtx5DdASRcQM1bjGhhO\n"
-    "/+fgADNOi+xXvoYkNAD+Ip8QHkL7Roi5jBMNMSW4qPW55SUYkPZa+vZY94v2rYb/\n"
-    "PHKSZGkXvCdWzBHOMd/rjzhZrqWcVzTGOW9ZTLYoxEhwScaEOdRWrkG8ZR7RaJ2T\n"
-    "65VN9G3pAgMBAAECggEAO3YSKPZgizE2ecqnTa1TJtxJdc9BVbxtoX3i6k81RM3h\n"
-    "Q85ERc5UIVwvybZPcLfRIgtwN6eWw0ow2NlU0JPwWbk6saOg6JVWXTTNeOM7vi0Q\n"
-    "oen/1v0921p13/SkjWLMcyBrG/71+X4AbQUMsKKosbrwmblEs9Doz1eGj1pVZKC+\n"
-    "NjdSMiKabkTQTbC186LfGRJonpIuN10iDz5tr+K+VvUoHOsacIDvolu4QC8Q2kP+\n"
-    "ZTbZZYx9XZJI46fSNaV5MXe3qKm3ct3zqAfRh0gP8UcaQvabudo7N7bIwXDzd3vq\n"
-    "SkyEW2+z75KwVxRHQIZqf/hma7m7jUkj+Vnni0kfGQKBgQDofSFkNIhO7tmB2TsD\n"
-    "avwzl2YRGUPLAK0HCy5HbLIpCLl6JCVt/b0MWCO+PKJ+SfEQYuYOD0EcKIgY2prI\n"
-    "GgvowGAD6OomZqj7sN3G92QbaxRakkpVrk5uTKdE5e+QHFDH958Ws1Rgpfv+KcAa\n"
-    "+/srjfUY1mK+Br8tOBTMDJQ7uwKBgQDNmyRG/TYk/Miv1D0jV2/9oBXofRiOPsaL\n"
-    "tB/G47V+BbMONHEW1I6nFZQtcXu04JLeHD7A3AKY9OOS+ufdmg/M7IJZ7+BBRXhI\n"
-    "mgLM4g2iXq1mJWBQDUTAnflKONJ6coPdNrwes85K31yRTQgI2F9/BkPdEOQKM+x4\n"
-    "vjFNIRUYqwKBgQDh8LGh27fY1iFGIyJJ+RAu52UHGwGaaQa/AKuyOD2QyWzP+g7y\n"
-    "LRUryQC7odvdVejUHvkrEsIZJn7VgKXJ8B5AzazCP/pG5aA2MrXl5olAaDk4qFFb\n"
-    "oXGRmic5OyktaYdMPyc5/X/0CXuzj0mmL9ryghx/TeJagN4MiSMVBuiMfwKBgFci\n"
-    "Tod/O/kE4BAUBCz8G0wDEgXLLiLqW75NAcKKMhpMVAvLEbo5LpOEw51WoLSRD+zt\n"
-    "T3LwSnGEJwXdK3Jwng2clcmDrSg8RrOOAW3OxzRup1HIuT5zwRVYXZOk7R5TdarE\n"
-    "TYk9bkmwy0wQtzz4ZdAxWYVQaTQhuS+aes5THNutAoGAHQttJzFKo9dA3NuTO4Up\n"
-    "XRSISwe9lBcH7codzfZfpi3obqL0oYokG/QIzIJPkKJQRwWx8KQg5zobHaVunyxX\n"
-    "3z7kdnz47OWcehrh3WsUs7EX+vkbprKm/mC+UfZdlMQEq9ADDsIA45y+3H9OgLvm\n"
-    "/aJL/JmGpW+pcBe1eGhTxoU=\n"
-    "-----END PRIVATE KEY-----\n"
-)
+# breaks, surrounding whitespace) is ambiguous in places.
+
+_RSA_2048_PRIVATE_KEY: rsa.RSAPrivateKey | None = None
 
 
 def _load_static_rsa_private() -> rsa.RSAPrivateKey:
-    """Load the deterministic in-repo RSA-2048 private key. Used for
-    kid-augmented RS256 vectors; the corresponding public JWK is built
-    from the same key and added to the corpus JWKS so the production
-    verifier can look it up by kid."""
-    priv = serialization.load_pem_private_key(
-        _STATIC_RSA_PRIVATE_PEM.encode("ascii"), password=None
-    )
-    assert isinstance(priv, rsa.RSAPrivateKey)
-    return priv
+    """Return the runtime-generated RSA-2048 private key, generating it
+    on first call and caching for subsequent calls within the same
+    process. Per CLAUDE.md banned pattern #14 the key MUST be generated
+    at runtime and never persisted to disk in this repo.
+
+    The same key is reused across:
+      * the JWKS entry (public half, kid A2_KID)
+      * every kid-augmented RS256 vector (signed with the private half)
+    so the corpus is internally consistent for one generator run.
+    """
+    global _RSA_2048_PRIVATE_KEY  # noqa: PLW0603 -- intentional module cache
+    if _RSA_2048_PRIVATE_KEY is None:
+        _RSA_2048_PRIVATE_KEY = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048
+        )
+    return _RSA_2048_PRIVATE_KEY
+
+
+def _reset_rsa_private_key_cache_for_testing() -> None:
+    """Reset the module-level RSA key cache. Called by ``--check`` to
+    force a SECOND fresh key generation when comparing on-disk corpus
+    against generator output; the on-disk RSA-keyed bytes are then
+    validated cryptographically rather than byte-compared."""
+    global _RSA_2048_PRIVATE_KEY  # noqa: PLW0603 -- intentional module cache
+    _RSA_2048_PRIVATE_KEY = None
 
 
 def _static_rsa_public_jwk(*, kid: str) -> dict[str, Any]:
-    """Build the public JWK matching ``_STATIC_RSA_PRIVATE_PEM``."""
+    """Build the public JWK matching the runtime-generated RSA-2048
+    private key returned by :func:`_load_static_rsa_private`."""
     pub = _load_static_rsa_private().public_key()
     nums = pub.public_numbers()
     n_bytes = nums.n.to_bytes((nums.n.bit_length() + 7) // 8, "big")
@@ -1095,6 +1090,189 @@ def _serialize(obj: dict[str, Any]) -> bytes:
     return (json.dumps(obj, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+# -----------------------------------------------------------------------------
+# RSA-keyed field normalization for --check (VAL-V2M09-020 remediation)
+# -----------------------------------------------------------------------------
+#
+# Per VAL-V2M09-020 the RSA-2048 key is generated at runtime, so the
+# bytes of the kid-augmented RS256 vectors and the RSA JWK n value
+# differ between regenerations. --check therefore cannot byte-compare
+# the full corpus; instead it:
+#
+#   (1) Strips the RSA-dependent dynamic fields to a sentinel,
+#   (2) Byte-compares the normalized form against a freshly-normalized
+#       regeneration -- proves every non-RSA byte is stable,
+#   (3) Cryptographically verifies the on-disk corpus's RSA-keyed
+#       signatures against the on-disk corpus's RSA JWK -- proves
+#       internal consistency.
+#
+# A diff that mutates an RSA-keyed vector's payload or claim WITHOUT
+# re-signing flips the cryptographic check and fails --check. A diff
+# that mutates a non-RSA byte flips the normalized byte compare and
+# fails --check. Together the two checks cover every byte in the
+# on-disk corpus.
+
+_RSA_DYNAMIC_KID = "relay-w17-2-rsa-2048-kid-augmented"  # A2_KID
+_RSA_DYNAMIC_SENTINEL_N = (
+    "RSA_PUBLIC_MODULUS_DYNAMIC_PLACEHOLDER_NOT_BYTE_STABLE_VAL_V2M09_020"
+)
+_RSA_DYNAMIC_SENTINEL_SIG = (
+    "RSA_SIGNATURE_DYNAMIC_PLACEHOLDER_NOT_BYTE_STABLE_VAL_V2M09_020"
+)
+
+
+def _normalize_rsa_dynamic_fields(corpus: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep-copied corpus with all RSA-dependent dynamic
+    fields replaced by sentinels.
+
+    Specifically:
+      * The JWKS entry where ``kid == A2_KID`` has its ``n`` field
+        replaced with a fixed sentinel string.
+      * Every case whose ``name`` starts with
+        ``appendix-a2-rs256-kid-augmented`` has its signature segment
+        replaced with a fixed sentinel:
+          - compact cases: the third segment of ``input`` is replaced.
+          - detached cases: ``input.signature_b64u`` is replaced.
+        For tampered-payload/tampered-signature variants, the entire
+        ``input`` is replaced wholesale (their bytes depend on the
+        RSA-derived signature even more directly).
+
+    Other vectors (literal A.2/A.3/A.4/A.5, A.1 HS256, constructed
+    HS512, ES256/ES512 kid-augmented) are left untouched because their
+    bytes are byte-stable across regenerations.
+    """
+    out = json.loads(json.dumps(corpus))  # cheap deep copy
+    # Normalize JWKS RSA entry n field.
+    for k in out.get("jwks", {}).get("keys", []):
+        if k.get("kid") == _RSA_DYNAMIC_KID:
+            k["n"] = _RSA_DYNAMIC_SENTINEL_N
+    # Normalize cases.
+    for case in out.get("cases", []):
+        if not case.get("name", "").startswith(
+            "appendix-a2-rs256-kid-augmented"
+        ):
+            continue
+        kind = case.get("kind")
+        if kind == "compact":
+            input_str = case.get("input", "")
+            parts = input_str.split(".")
+            if len(parts) == 3:
+                # Replace signature segment with a sentinel; the
+                # header and payload segments are byte-stable
+                # (header has fixed kid+alg+typ; payload is the A.2
+                # literal or the deterministic A.2 tampered payload).
+                # The tampered-signature variant's payload is the
+                # literal A.2 payload, and its signature is a
+                # corruption of the RSA signature -- still RSA-derived
+                # therefore dynamic. Sentinel both.
+                parts[2] = _RSA_DYNAMIC_SENTINEL_SIG
+                case["input"] = ".".join(parts)
+            else:
+                case["input"] = _RSA_DYNAMIC_SENTINEL_SIG
+        elif kind == "detached":
+            input_obj = case.get("input", {})
+            if isinstance(input_obj, dict):
+                input_obj["signature_b64u"] = _RSA_DYNAMIC_SENTINEL_SIG
+    return out
+
+
+def _crypto_verify_rsa_dynamic_fields(corpus: dict[str, Any]) -> str | None:
+    """Verify the on-disk corpus's RSA-keyed signatures against its
+    own embedded RSA JWK. Return None on success, or a human-readable
+    failure reason string.
+
+    This proves the on-disk corpus is internally consistent: the
+    kid-augmented RS256 signatures verify under the JWKS entry's
+    public-key bytes. A diff that mutates the JWK n field without
+    re-signing, or vice versa, flips this check.
+    """
+    # Locate the RSA JWK entry.
+    rsa_jwk: dict[str, Any] | None = None
+    for k in corpus.get("jwks", {}).get("keys", []):
+        if k.get("kid") == _RSA_DYNAMIC_KID:
+            rsa_jwk = k
+            break
+    if rsa_jwk is None:
+        return (
+            f"on-disk corpus missing RSA JWK entry for kid "
+            f"{_RSA_DYNAMIC_KID!r}; expected one present"
+        )
+    try:
+        n_int = int.from_bytes(b64u_decode(rsa_jwk["n"]), "big")
+        e_int = int.from_bytes(b64u_decode(rsa_jwk["e"]), "big")
+    except (KeyError, ValueError) as exc:
+        return f"on-disk RSA JWK n/e malformed: {exc}"
+    try:
+        pub_nums = rsa.RSAPublicNumbers(e=e_int, n=n_int)
+        rsa_pub = pub_nums.public_key()
+    except ValueError as exc:
+        return f"on-disk RSA JWK cannot reconstruct public key: {exc}"
+
+    # Verify every kid-augmented RS256 case that is expected to PASS.
+    # Tampered cases are expected to FAIL verification by design.
+    expected_to_verify = {
+        "appendix-a2-rs256-kid-augmented",
+        "appendix-a2-rs256-kid-augmented-detached",
+    }
+    expected_to_fail = {
+        "appendix-a2-rs256-kid-augmented-tampered-payload",
+        "appendix-a2-rs256-kid-augmented-tampered-signature",
+    }
+    for case in corpus.get("cases", []):
+        name = case.get("name", "")
+        if name not in expected_to_verify and name not in expected_to_fail:
+            continue
+        should_verify = name in expected_to_verify
+        kind = case.get("kind")
+        try:
+            if kind == "compact":
+                input_str = case["input"]
+                parts = input_str.split(".")
+                if len(parts) != 3:
+                    return (
+                        f"case {name!r}: compact JWS does not have 3 segments"
+                    )
+                header_b64u, payload_b64u, sig_b64u = parts
+                signing_input = (header_b64u + "." + payload_b64u).encode(
+                    "ascii"
+                )
+                signature = b64u_decode(sig_b64u)
+            elif kind == "detached":
+                input_obj = case["input"]
+                header_b64u = input_obj["protected_b64u"]
+                payload_b64u = input_obj["payload_b64u"]
+                signing_input = (header_b64u + "." + payload_b64u).encode(
+                    "ascii"
+                )
+                signature = b64u_decode(input_obj["signature_b64u"])
+            else:
+                return f"case {name!r}: unexpected kind {kind!r}"
+        except (KeyError, ValueError) as exc:
+            return f"case {name!r}: malformed input: {exc}"
+        try:
+            rsa_pub.verify(
+                signature,
+                signing_input,
+                padding.PKCS1v15(),
+                hashes.SHA256(),
+            )
+            verified = True
+        except InvalidSignature:
+            verified = False
+        if should_verify and not verified:
+            return (
+                f"case {name!r}: signature MUST verify under on-disk JWK "
+                "but did not (corpus internally inconsistent -- did "
+                "the corpus and JWKS drift?)"
+            )
+        if not should_verify and verified:
+            return (
+                f"case {name!r}: signature MUST FAIL verification (it is "
+                "a tampered variant) but it verified -- corpus tampered?"
+            )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate or check the W17.2 RFC 7515 Appendix A corpus."
@@ -1109,24 +1287,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    corpus_bytes = _serialize(build_corpus())
-    pins_bytes = _serialize(build_pins())
-
     if args.check:
+        # --check semantics (VAL-V2M09-020 remediation):
+        #   1. Pins file MUST byte-equal generator output (pins have no
+        #      RSA-dependent dynamic fields; byte-stability is preserved).
+        #   2. Corpus file with RSA-dynamic fields normalized MUST
+        #      byte-equal a fresh regeneration also normalized -- proves
+        #      every non-RSA byte is stable.
+        #   3. On-disk corpus's RSA-keyed signatures MUST verify
+        #      cryptographically against the on-disk corpus's RSA JWK
+        #      -- proves internal consistency.
         if not CORPUS_PATH.is_file():
             print(f"FAIL: corpus missing at {CORPUS_PATH}", file=sys.stderr)
             return 1
         if not PINS_PATH.is_file():
             print(f"FAIL: pins missing at {PINS_PATH}", file=sys.stderr)
             return 1
-        if CORPUS_PATH.read_bytes() != corpus_bytes:
-            print(
-                "FAIL: on-disk RFC 7515 Appendix A corpus differs from "
-                "generator output. Re-run "
-                "scripts/generate-jws-rfc7515-appendix-a-corpus.py.",
-                file=sys.stderr,
-            )
-            return 1
+        pins_bytes = _serialize(build_pins())
         if PINS_PATH.read_bytes() != pins_bytes:
             print(
                 "FAIL: on-disk RFC 7515 upstream-pins file differs from "
@@ -1135,11 +1312,55 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+        try:
+            on_disk_corpus = json.loads(
+                CORPUS_PATH.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            print(
+                f"FAIL: cannot parse on-disk corpus at {CORPUS_PATH}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        # Cryptographic check on RSA-keyed signatures.
+        crypto_err = _crypto_verify_rsa_dynamic_fields(on_disk_corpus)
+        if crypto_err is not None:
+            print(
+                "FAIL: RSA-keyed signature verification on on-disk "
+                f"corpus failed: {crypto_err}",
+                file=sys.stderr,
+            )
+            return 1
+        # Normalized byte-compare for everything that is NOT
+        # RSA-derived dynamic. Regenerate fresh and normalize both
+        # sides so the only allowed point of divergence is the RSA-
+        # dynamic field set.
+        _reset_rsa_private_key_cache_for_testing()
+        fresh_corpus = build_corpus()
+        on_disk_normalized = _serialize(
+            _normalize_rsa_dynamic_fields(on_disk_corpus)
+        )
+        fresh_normalized = _serialize(
+            _normalize_rsa_dynamic_fields(fresh_corpus)
+        )
+        if on_disk_normalized != fresh_normalized:
+            print(
+                "FAIL: on-disk RFC 7515 Appendix A corpus differs from "
+                "generator output in non-RSA-dynamic fields. Re-run "
+                "scripts/generate-jws-rfc7515-appendix-a-corpus.py.",
+                file=sys.stderr,
+            )
+            return 1
         print(
-            f"OK: {CORPUS_PATH.name} and {PINS_PATH.name} match generator output."
+            f"OK: {CORPUS_PATH.name} and {PINS_PATH.name} match "
+            "generator output (RSA-dynamic fields verified "
+            "cryptographically; all other bytes match)."
         )
         return 0
 
+    # Generate-and-write path.
+    corpus_bytes = _serialize(build_corpus())
+    pins_bytes = _serialize(build_pins())
     CORPUS_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp_corpus = CORPUS_PATH.with_suffix(CORPUS_PATH.suffix + ".tmp")
     tmp_pins = PINS_PATH.with_suffix(PINS_PATH.suffix + ".tmp")

@@ -115,7 +115,7 @@
         "kid": "relay-w17-2-rsa-2048-kid-augmented",
         "ok": true
       },
-      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.Zmu86hQAwwPHELB_y2ZLbpKV_uelH8G09QhVC0vocuEzpZbIujTkiQ4agAtJCxKdy7x_Gw9fxStDmvyX6QzqJwDGPvP2XBXIIajidkCP-4tl2t29HhqdrnWuILMc8WHc4Gee6xPd-aG401LXq01Vb0430eZ6MdFWr5uER83BqI4WOGLFZEdGYBc3nEv95-eszI_cXxqestRByKrX2ifzGYcF1DFx4JloqjU64irv23it4eN_djmzi0xSHK5h2TZ-EkKxGmAGIzq1LX3b3jVxxL-_apQo-eyJbbvcLTu303pZlTz_XLpnzCmyOoI8dXpknOu6S0pS0Vx64WwUCWAzNQ",
+      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.ZG4DLafVLxBV9hoDKQT_Tb3kkAGpyhzSfEg0RCXT1VSVUGJds6WWXqOoiptZ7KQG45NPk0HO2XRGP4jOVVvvZ6zYeU4OQXYOIEzwEVxEXGGWxVsZBZtVV2qnANRZYeIuAZXU6AC8y_2ujA1F_IG1JwjfRmmPSjXECkhC3rcUKhE4G9HAuolezHjny9sSGgJKgeJs0fpLWH42OyO0eWL4KocIFdJXOfZpUbMBny-VYiHBRaVVWwBBqiw7E4ck5CrAtD-_2MkieB5k5UKxbpuMYjRfSXWEX2QvnJFhD-OXQ03oxOsKcmmJGz5FD5EdVlgM77r7eaC37gk6V4GKwzH_xQ",
       "kid": "relay-w17-2-rsa-2048-kid-augmented",
       "kind": "compact",
       "name": "appendix-a2-rs256-kid-augmented"
@@ -132,7 +132,7 @@
       "input": {
         "payload_b64u": "eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ",
         "protected_b64u": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ",
-        "signature_b64u": "Zmu86hQAwwPHELB_y2ZLbpKV_uelH8G09QhVC0vocuEzpZbIujTkiQ4agAtJCxKdy7x_Gw9fxStDmvyX6QzqJwDGPvP2XBXIIajidkCP-4tl2t29HhqdrnWuILMc8WHc4Gee6xPd-aG401LXq01Vb0430eZ6MdFWr5uER83BqI4WOGLFZEdGYBc3nEv95-eszI_cXxqestRByKrX2ifzGYcF1DFx4JloqjU64irv23it4eN_djmzi0xSHK5h2TZ-EkKxGmAGIzq1LX3b3jVxxL-_apQo-eyJbbvcLTu303pZlTz_XLpnzCmyOoI8dXpknOu6S0pS0Vx64WwUCWAzNQ"
+        "signature_b64u": "ZG4DLafVLxBV9hoDKQT_Tb3kkAGpyhzSfEg0RCXT1VSVUGJds6WWXqOoiptZ7KQG45NPk0HO2XRGP4jOVVvvZ6zYeU4OQXYOIEzwEVxEXGGWxVsZBZtVV2qnANRZYeIuAZXU6AC8y_2ujA1F_IG1JwjfRmmPSjXECkhC3rcUKhE4G9HAuolezHjny9sSGgJKgeJs0fpLWH42OyO0eWL4KocIFdJXOfZpUbMBny-VYiHBRaVVWwBBqiw7E4ck5CrAtD-_2MkieB5k5UKxbpuMYjRfSXWEX2QvnJFhD-OXQ03oxOsKcmmJGz5FD5EdVlgM77r7eaC37gk6V4GKwzH_xQ"
       },
       "kid": "relay-w17-2-rsa-2048-kid-augmented",
       "kind": "detached",
@@ -146,7 +146,7 @@
         "ok": false,
         "reason_substring": "signature did not verify"
       },
-      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfA.Zmu86hQAwwPHELB_y2ZLbpKV_uelH8G09QhVC0vocuEzpZbIujTkiQ4agAtJCxKdy7x_Gw9fxStDmvyX6QzqJwDGPvP2XBXIIajidkCP-4tl2t29HhqdrnWuILMc8WHc4Gee6xPd-aG401LXq01Vb0430eZ6MdFWr5uER83BqI4WOGLFZEdGYBc3nEv95-eszI_cXxqestRByKrX2ifzGYcF1DFx4JloqjU64irv23it4eN_djmzi0xSHK5h2TZ-EkKxGmAGIzq1LX3b3jVxxL-_apQo-eyJbbvcLTu303pZlTz_XLpnzCmyOoI8dXpknOu6S0pS0Vx64WwUCWAzNQ",
+      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfA.ZG4DLafVLxBV9hoDKQT_Tb3kkAGpyhzSfEg0RCXT1VSVUGJds6WWXqOoiptZ7KQG45NPk0HO2XRGP4jOVVvvZ6zYeU4OQXYOIEzwEVxEXGGWxVsZBZtVV2qnANRZYeIuAZXU6AC8y_2ujA1F_IG1JwjfRmmPSjXECkhC3rcUKhE4G9HAuolezHjny9sSGgJKgeJs0fpLWH42OyO0eWL4KocIFdJXOfZpUbMBny-VYiHBRaVVWwBBqiw7E4ck5CrAtD-_2MkieB5k5UKxbpuMYjRfSXWEX2QvnJFhD-OXQ03oxOsKcmmJGz5FD5EdVlgM77r7eaC37gk6V4GKwzH_xQ",
       "kid": "relay-w17-2-rsa-2048-kid-augmented",
       "kind": "compact",
       "name": "appendix-a2-rs256-kid-augmented-tampered-payload"
@@ -159,7 +159,7 @@
         "ok": false,
         "reason_substring": "signature did not verify"
       },
-      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.Zmu86hQAwwPHELB_y2ZLbpKV_uelH8G09QhVC0vocuEzpZbIujTkiQ4agAtJCxKdy7x_Gw9fxStDmvyX6QzqJwDGPvP2XBXIIajidkCP-4tl2t29HhqdrnWuILMc8WHc4Gee6xPd-aG401LXq01Vb0430eZ6MdFWr5uER83BqI4WOGLFZEdGYBc3nEv95-eszI_cXxqestRByKrX2ifzGYcF1DFx4JloqjU64irv23it4eN_djmzi0xSHK5h2TZ-EkKxGmAGIzq1LX3b3jVxxL-_apQo-eyJbbvcLTu303pZlTz_XLpnzCmyOoI8dXpknOu6S0pS0Vx64WwUCWAzNA",
+      "input": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlbGF5LXcxNy0yLXJzYS0yMDQ4LWtpZC1hdWdtZW50ZWQiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.ZG4DLafVLxBV9hoDKQT_Tb3kkAGpyhzSfEg0RCXT1VSVUGJds6WWXqOoiptZ7KQG45NPk0HO2XRGP4jOVVvvZ6zYeU4OQXYOIEzwEVxEXGGWxVsZBZtVV2qnANRZYeIuAZXU6AC8y_2ujA1F_IG1JwjfRmmPSjXECkhC3rcUKhE4G9HAuolezHjny9sSGgJKgeJs0fpLWH42OyO0eWL4KocIFdJXOfZpUbMBny-VYiHBRaVVWwBBqiw7E4ck5CrAtD-_2MkieB5k5UKxbpuMYjRfSXWEX2QvnJFhD-OXQ03oxOsKcmmJGz5FD5EdVlgM77r7eaC37gk6V4GKwzH_xA",
       "kid": "relay-w17-2-rsa-2048-kid-augmented",
       "kind": "compact",
       "name": "appendix-a2-rs256-kid-augmented-tampered-signature"
@@ -270,7 +270,7 @@
         "e": "AQAB",
         "kid": "relay-w17-2-rsa-2048-kid-augmented",
         "kty": "RSA",
-        "n": "urkYcoabBILUWAmhWz7KJxky-vrDlns-wQSw1cGIxUhS1-6huKQyiKbWV48QpVeUka7S-Jz9m0epfEkUQ1PKfWHRRo9zO7dFlO2080av0cpCLVHjNelwr8HMwYu4fLeHLMh16Opcl6lfpDdd9PPGQSeZm68Fur00bgJg5BFtbZ76HI9FsgLoBTyPxGU7ceQ3QEkXEDNW4xoYTv_n4AAzTovsV76GJDQA_iKfEB5C-0aIuYwTDTEluKj1ueUlGJD2Wvr2WPeL9q2G_zxykmRpF7wnVswRzjHf6484Wa6lnFc0xjlvWUy2KMRIcEnGhDnUVq5BvGUe0Widk-uVTfRt6Q",
+        "n": "zXgDcSV5NEQjZY3bZtqd_VBzfk1i74i3SXVNUvA49tHXJz0lMjSdfFW7nZ0qwcbKqi6WtTZ8tvNdCEpAVpfabtNY4MjrZDY1GKrAS-w5Tzomhy4gVhXB8XiGWE27tcSSzNXF4TGh4F0f9JV6ob7sqyWbBWg5oPSIItACoGePhajo3Dk63SOxw0YyvN9N4eiKWbqTdxnyep2BRGG7DUuDMg0hDpCvowYOc1ItXFYcVNoOy7QgqOMdG1T53bBGTFgMARR37SHLyBGx-PIxupzftc3fjNEpod_6Yu7DEw9N839FQEJvr14SjrJmzpROcKyOyABkq11ZqWUTxN_SrwzD-Q",
         "use": "sig"
       }
     ]

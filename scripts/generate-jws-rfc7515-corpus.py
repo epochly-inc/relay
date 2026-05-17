@@ -8,9 +8,17 @@ against it. Cross-language verdict parity is byte-equal because both
 verifiers serialize their per-case verdict via canonical JSON (sort_keys,
 compact separators) and compare the resulting hash.
 
-The corpus is **deterministic**: all keys come from fixed seeds, all
-non-key fields are literal strings, no clock and no PRNG are read. Running
-this script twice produces a byte-identical file.
+The corpus is **partly deterministic**: EdDSA (RFC 8032 seeded) and
+ES256 (label-derived scalar) keys come from fixed seeds, all non-key
+fields are literal strings, no clock is read. The RS256 key is
+generated at script runtime via ``rsa.generate_private_key`` (per
+CLAUDE.md banned pattern #14 / VAL-V2M09-020 no PEM-encoded private
+key may live in the repo), so the RS256 signature bytes and the RSA
+JWK ``n`` value change per run. The corpus remains internally
+consistent: signatures verify against the embedded JWKS regardless of
+which RSA key was used. Cross-runtime (Python vs TypeScript) verdict
+parity is preserved because both verifiers load the same on-disk
+corpus.
 
 Coverage matrix (case_id prefix -> assertion):
 
@@ -66,17 +74,27 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 SCHEMA_VERSION = "relay.conformance.jws.v1"
 
 # -----------------------------------------------------------------------------
-# Deterministic key material
+# Key material (mixed deterministic / runtime-generated)
 # -----------------------------------------------------------------------------
 #
-# The corpus must be byte-stable across runs. cryptography's key generation
-# is non-deterministic; we sidestep that by deriving keys from fixed seeds.
-# For Ed25519 (RFC 8032) a 32-byte seed IS the private scalar -- a 32-byte
-# constant becomes the private key. For ES256 (P-256) we derive the secret
-# integer from a SHA-256 of a fixed label. For RS256 we ship a static PEM-
-# encoded RSA-2048 keypair generated once with seed-equivalent inputs and
-# embedded as a base64 blob (see _STATIC_RSA_PRIVATE_PEM below). All three
-# approaches keep the generator hermetic and reproducible.
+# Per VAL-V2M09-020 / CLAUDE.md banned pattern #14, NO PEM-encoded
+# private key may appear in this repo. We accordingly use two
+# strategies:
+#
+# * Ed25519 + ES256 keys are derived from FIXED seeds (the seed bytes
+#   are corpus-only test material, not production secrets). This keeps
+#   their portions of the corpus byte-stable across regenerations.
+# * RS256 keys are GENERATED AT RUNTIME via rsa.generate_private_key
+#   (see _generate_rsa_2048_private_key below). The RSA-keyed portions
+#   of the corpus (the positive-rs256 signature; the rs256 JWK n/e
+#   bytes) therefore differ between runs. Internal consistency is
+#   preserved: the JWKS we write is the public half of the same key
+#   that signed the corpus's RS256 vector.
+#
+# Cross-runtime parity is preserved because both Python and TypeScript
+# verifiers load the same on-disk corpus + JWKS and verify
+# cryptographically; neither relies on the corpus being byte-stable
+# across regenerations.
 
 # Ed25519: 32-byte seed (NOT a real production secret; corpus-only).
 _ED25519_SEED = b"relay-corpus-eddsa-key-32-byte!"  # noqa: E501 -- exactly 31 chars, padded below
@@ -106,40 +124,35 @@ def _es256_private_int_from_label(label: bytes) -> int:
     return k
 
 
-# RS256: cryptography.generate_private_key is non-deterministic. To keep
-# the corpus byte-stable we ship a static PEM keypair generated once and
-# committed alongside this script. The PEM is embedded as a string literal
-# so the generator has no filesystem dependency at runtime.
-_STATIC_RSA_PRIVATE_PEM = (
-    "-----BEGIN PRIVATE KEY-----\n"
-    "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC6uRhyhpsEgtRY\n"
-    "CaFbPsonGTL6+sOWez7BBLDVwYjFSFLX7qG4pDKIptZXjxClV5SRrtL4nP2bR6l8\n"
-    "SRRDU8p9YdFGj3M7t0WU7bTzRq/RykItUeM16XCvwczBi7h8t4csyHXo6lyXqV+k\n"
-    "N13088ZBJ5mbrwW6vTRuAmDkEW1tnvocj0WyAugFPI/EZTtx5DdASRcQM1bjGhhO\n"
-    "/+fgADNOi+xXvoYkNAD+Ip8QHkL7Roi5jBMNMSW4qPW55SUYkPZa+vZY94v2rYb/\n"
-    "PHKSZGkXvCdWzBHOMd/rjzhZrqWcVzTGOW9ZTLYoxEhwScaEOdRWrkG8ZR7RaJ2T\n"
-    "65VN9G3pAgMBAAECggEAO3YSKPZgizE2ecqnTa1TJtxJdc9BVbxtoX3i6k81RM3h\n"
-    "Q85ERc5UIVwvybZPcLfRIgtwN6eWw0ow2NlU0JPwWbk6saOg6JVWXTTNeOM7vi0Q\n"
-    "oen/1v0921p13/SkjWLMcyBrG/71+X4AbQUMsKKosbrwmblEs9Doz1eGj1pVZKC+\n"
-    "NjdSMiKabkTQTbC186LfGRJonpIuN10iDz5tr+K+VvUoHOsacIDvolu4QC8Q2kP+\n"
-    "ZTbZZYx9XZJI46fSNaV5MXe3qKm3ct3zqAfRh0gP8UcaQvabudo7N7bIwXDzd3vq\n"
-    "SkyEW2+z75KwVxRHQIZqf/hma7m7jUkj+Vnni0kfGQKBgQDofSFkNIhO7tmB2TsD\n"
-    "avwzl2YRGUPLAK0HCy5HbLIpCLl6JCVt/b0MWCO+PKJ+SfEQYuYOD0EcKIgY2prI\n"
-    "GgvowGAD6OomZqj7sN3G92QbaxRakkpVrk5uTKdE5e+QHFDH958Ws1Rgpfv+KcAa\n"
-    "+/srjfUY1mK+Br8tOBTMDJQ7uwKBgQDNmyRG/TYk/Miv1D0jV2/9oBXofRiOPsaL\n"
-    "tB/G47V+BbMONHEW1I6nFZQtcXu04JLeHD7A3AKY9OOS+ufdmg/M7IJZ7+BBRXhI\n"
-    "mgLM4g2iXq1mJWBQDUTAnflKONJ6coPdNrwes85K31yRTQgI2F9/BkPdEOQKM+x4\n"
-    "vjFNIRUYqwKBgQDh8LGh27fY1iFGIyJJ+RAu52UHGwGaaQa/AKuyOD2QyWzP+g7y\n"
-    "LRUryQC7odvdVejUHvkrEsIZJn7VgKXJ8B5AzazCP/pG5aA2MrXl5olAaDk4qFFb\n"
-    "oXGRmic5OyktaYdMPyc5/X/0CXuzj0mmL9ryghx/TeJagN4MiSMVBuiMfwKBgFci\n"
-    "Tod/O/kE4BAUBCz8G0wDEgXLLiLqW75NAcKKMhpMVAvLEbo5LpOEw51WoLSRD+zt\n"
-    "T3LwSnGEJwXdK3Jwng2clcmDrSg8RrOOAW3OxzRup1HIuT5zwRVYXZOk7R5TdarE\n"
-    "TYk9bkmwy0wQtzz4ZdAxWYVQaTQhuS+aes5THNutAoGAHQttJzFKo9dA3NuTO4Up\n"
-    "XRSISwe9lBcH7codzfZfpi3obqL0oYokG/QIzIJPkKJQRwWx8KQg5zobHaVunyxX\n"
-    "3z7kdnz47OWcehrh3WsUs7EX+vkbprKm/mC+UfZdlMQEq9ADDsIA45y+3H9OgLvm\n"
-    "/aJL/JmGpW+pcBe1eGhTxoU=\n"
-    "-----END PRIVATE KEY-----\n"
-)
+# RS256: cryptography.generate_private_key is non-deterministic. To
+# satisfy CLAUDE.md banned pattern #14 / VAL-V2M09-020 (no private-key
+# PEM material committed to the repo) we generate the RSA-2048 keypair
+# at script runtime via cryptography.generate_private_key. The key is
+# held in memory for the duration of the generator run and is never
+# written to disk in any form. Each invocation of this script produces
+# a fresh RSA-2048 keypair; the resulting corpus signatures and JWKS
+# n/e bytes therefore differ between runs.
+#
+# Cross-runtime parity (the Python verifier and the TypeScript verifier
+# read the SAME on-disk corpus and produce byte-equal verdicts) is
+# preserved because both verifiers load the JWKS and the signatures
+# from the corpus itself; the verdict depends only on signature-JWK
+# consistency, not on which specific RSA key produced the corpus.
+#
+# Determinism for non-RSA cases (EdDSA, ES256, HS) is preserved -- those
+# keys are derived from fixed seeds, so their corpus bytes are byte-
+# stable across regenerations.
+
+
+def _generate_rsa_2048_private_key() -> rsa.RSAPrivateKey:
+    """Return a fresh RSA-2048 private key generated at runtime.
+
+    Per CLAUDE.md banned pattern #14 the RSA key MUST be generated at
+    runtime; no PEM-encoded RSA private key may appear in the repo.
+    Caller holds the returned key in memory only for the duration of
+    the generator run.
+    """
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
 # -----------------------------------------------------------------------------
@@ -271,10 +284,7 @@ def build_corpus() -> dict[str, Any]:
     es256_priv = ec.derive_private_key(es256_priv_int, ec.SECP256R1())
     es256_pub = es256_priv.public_key()
 
-    rsa_priv = serialization.load_pem_private_key(
-        _STATIC_RSA_PRIVATE_PEM.encode("ascii"), password=None
-    )
-    assert isinstance(rsa_priv, rsa.RSAPrivateKey)
+    rsa_priv = _generate_rsa_2048_private_key()
     rsa_pub = rsa_priv.public_key()
 
     # Second EdDSA key for "wrong-key" negative cases
