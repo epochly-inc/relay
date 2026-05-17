@@ -39,6 +39,7 @@ import aiosqlite
 from ..anti_bypass import OPERATOR_OVERRIDE_EVENT_KIND, raise_on_reject, screen_payload
 from ..blob_storage import maybe_spillover
 from ..db import SidecarDatabase
+from .guards import get_guard, is_handoff_guard
 from .transitions import TRANSITION_TABLE, TransitionTable
 
 # Structured reason codes returned by compare_and_set_state. These mirror
@@ -49,7 +50,9 @@ EXPECTED_FROM_MISMATCH: str = "EXPECTED_FROM_MISMATCH"
 INVALID_TRANSITION: str = "INVALID_TRANSITION"
 ACTOR_NOT_ALLOWED: str = "ACTOR_NOT_ALLOWED"
 GUARD_FAILED: str = "GUARD_FAILED"
+HANDOFF_INVALID: str = "HANDOFF_INVALID"
 TERMINAL_STATE: str = "TERMINAL_STATE"
+UNKNOWN_GUARD: str = "UNKNOWN_GUARD"
 
 # Event-type string written to event_log_entries on a rejected unknown transition.
 INVALID_TRANSITION_EVENT_TYPE: str = "state.invalid_transition"
@@ -558,6 +561,50 @@ async def compare_and_set_state(
                     epoch=current_epoch,
                 )
 
+            # Step 9b (VAL-V2M03-025/030/031): per-transition guards.
+            # Each guard runs INSIDE the SERIALIZABLE writer transaction
+            # against the writer conn (read-only SELECTs only). The handoff
+            # guard (spec C.5) is evaluated like any other guard but its
+            # failure surfaces as HANDOFF_INVALID so callers map to the
+            # canonical RELAY-GATE-021 envelope (per CLAUDE.md keystone #4
+            # and VAL-V2M03-031). Unknown guard names -> UNKNOWN_GUARD
+            # (defensive fail-closed against YAML drift).
+            for guard_name in transition.guard_names:
+                guard = get_guard(guard_name)
+                if guard is None:
+                    await conn.execute("ROLLBACK")
+                    return StateTransitionResult(
+                        ok=False,
+                        reason=UNKNOWN_GUARD,
+                        observed_state=current_state,
+                        epoch=current_epoch,
+                        extras={"failed_guard": guard_name},
+                    )
+                ok_g, diagnostics = await guard.check(
+                    conn,
+                    scope_kind,
+                    scope_id,
+                    payload_in,
+                    manifest_commit_hash,
+                )
+                if not ok_g:
+                    await conn.execute("ROLLBACK")
+                    reason_code = (
+                        HANDOFF_INVALID
+                        if is_handoff_guard(guard_name)
+                        else GUARD_FAILED
+                    )
+                    return StateTransitionResult(
+                        ok=False,
+                        reason=reason_code,
+                        observed_state=current_state,
+                        epoch=current_epoch,
+                        extras={
+                            "failed_guard": guard_name,
+                            "guard_diagnostics": diagnostics,
+                        },
+                    )
+
             # Step 10: CAS UPDATE on epoch.
             now = _now_rfc3339_utc()
             cursor = await conn.execute(
@@ -674,10 +721,12 @@ __all__ = [
     "ActorRef",
     "EXPECTED_FROM_MISMATCH",
     "GUARD_FAILED",
+    "HANDOFF_INVALID",
     "INVALID_TRANSITION",
     "INVALID_TRANSITION_EVENT_TYPE",
     "StateTransitionResult",
     "TERMINAL_STATE",
+    "UNKNOWN_GUARD",
     "UNKNOWN_SCOPE",
     "compare_and_set_state",
     "init_scope",

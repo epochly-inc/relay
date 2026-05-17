@@ -8,6 +8,14 @@
 # TRANSITION_TABLE, the test fails -- meaning either this YAML drifted from
 # spec or the implementation added/removed transitions silently.
 #
+# Per VAL-V2M03-024 (sub-feature w3-state-guards): every transition row
+# MUST include a non-empty ``guards`` list. Each entry MUST be a name from
+# the canonical guard registry in
+# ``apps/local-sidecar/relay_sidecar/state_engine/guards.py``. The guard
+# names below are drawn directly from the Guard column of spec C.3 (lines
+# 3640-3672); semantic shorthand normalises spec prose into stable
+# identifiers.
+#
 # Schema (relay.state_transition_table.v1):
 #   scope_kinds:
 #     <scope_kind>:
@@ -17,12 +25,14 @@
 #           to: <state>
 #           actor: <actor_kind>            # informational; primary enforcement is in TRANSITION_TABLE
 #           event_log_type: <event_type>   # the canonical event_log_entries.event_type emitted
+#           guards: [<guard_name>, ...]    # registered guards evaluated before the transition fires
 #
 # Spec anchors:
 #   - spec C.1 (states per scope kind)
 #   - spec C.2 (allowed actors)
 #   - spec C.3 (transition table)
 #   - spec C.4 (compare_and_set_state pseudocode)
+#   - spec C.5 (three-anchor handoff identity)
 #   - spec W (scope_state table)
 #
 # ASCII-only per CLAUDE.md "ASCII-Safe Source".
@@ -40,26 +50,31 @@ scope_kinds:
         to: captured
         actor: sdk
         event_log_type: run.captured
+        guards: [valid_idempotency_key, valid_manifest_commit_hash]
       - from: captured
         event: validation.start
         to: validating
         actor: ingest_worker
         event_log_type: run.validation_started
+        guards: [spans_batch_settled_or_client_lifecycle_terminal]
       - from: validating
         event: validation.complete
         to: gated
         actor: validation_worker
         event_log_type: run.validation_complete
+        guards: [all_required_contracts_evaluated, contract_results_written]
       - from: gated
         event: gate.all_decided
         to: result_written
         actor: result_writer
         event_log_type: run.result_written
+        guards: [all_bound_gates_decided]
       - from: result_written
         event: auto.terminal
         to: terminal
         actor: result_writer
         event_log_type: run.terminal
+        guards: [auto_transition_allowed]
 
   replay_case:
     initial_state: proposed
@@ -70,21 +85,25 @@ scope_kinds:
         to: fixtures_ready
         actor: replay_worker
         event_log_type: replay.fixtures_ready
+        guards: [fixtures_have_valid_digests]
       - from: fixtures_ready
         event: replay.run_started
         to: executing
         actor: replay_worker
         event_log_type: replay.run_started
+        guards: [sandbox_provisioned, network_policy_applied]
       - from: executing
         event: replay.run_complete
         to: analyzed
         actor: replay_worker
         event_log_type: replay.run_complete
+        guards: [sandbox_exit_observed]
       - from: analyzed
         event: auto.terminal
         to: terminal
         actor: replay_worker
         event_log_type: replay.terminal
+        guards: [auto_transition_allowed]
 
   gate_round:
     initial_state: open
@@ -95,26 +114,31 @@ scope_kinds:
         to: draft_received
         actor: worker
         event_log_type: gate.draft_received
+        guards: [three_anchor_handoff_valid]
       - from: draft_received
         event: engine.start_evaluation
         to: evaluating
         actor: gate_engine
         event_log_type: gate.evaluation_started
+        guards: [draft_not_expired]
       - from: evaluating
         event: engine.decide
         to: decision_written
         actor: gate_engine
         event_log_type: gate.decision_written
+        guards: [all_conditions_evaluated]
       - from: decision_written
         event: engine.restart_required
         to: restarted
         actor: gate_engine
         event_log_type: gate.restarted
+        guards: [restart_action_applies]
       - from: decision_written
         event: auto.terminal
         to: terminal
         actor: gate_engine
         event_log_type: gate.terminal
+        guards: [terminal_action_applies]
 
   evidence_bundle:
     initial_state: building
@@ -125,13 +149,16 @@ scope_kinds:
         to: signed
         actor: evidence_signer
         event_log_type: evidence.signed
+        guards: [manifest_digest_valid, signing_key_not_revoked]
       - from: signed
         event: bundle.published
         to: published
         actor: evidence_signer
         event_log_type: evidence.published
+        guards: [retention_policy_applied]
       - from: published
         event: retention.expire
         to: superseded
         actor: cron
         event_log_type: evidence.superseded
+        guards: [retention_window_elapsed_and_no_legal_hold]

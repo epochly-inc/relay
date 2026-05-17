@@ -123,6 +123,46 @@ def _seed_scope_at_state(
         conn.close()
 
 
+def _seed_actor_and_manifest(
+    db_path: Path, *, identity_hash: str, commit_hash: str
+) -> None:
+    """Seed actors + manifest_versions rows so the three-anchor handoff
+    guard (VAL-V2M03-024..030) can validate against a real registry.
+
+    Used by `test_every_yaml_transition_executes` for the
+    gate_round.open -> draft.submitted row whose guard is
+    `three_anchor_handoff_valid` (spec C.5).
+    """
+    import sqlite3 as _sqlite3
+
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    conn = _sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute(
+            "INSERT INTO actors "
+            "(identity_hash, kind, registered_at, revoked_at) "
+            "VALUES (?, ?, ?, NULL)",
+            (identity_hash, "worker", now),
+        )
+        conn.execute(
+            "INSERT INTO manifest_versions "
+            "(manifest_version_id, manifest_id, project_id, commit_hash, "
+            " effective_at, effective_until, grace_window_seconds) "
+            "VALUES (?, ?, ?, ?, ?, NULL, 86400)",
+            (
+                str(uuid.uuid4()),
+                str(uuid.uuid4()),
+                str(uuid.uuid4()),
+                commit_hash,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W2-059")
 @pytest.mark.parametrize(
@@ -145,9 +185,32 @@ async def test_every_yaml_transition_executes(tmp_path, transition) -> None:
             transition["from"],
             project_id,
         )
+        identity_hash = "sha256-" + "a" * 64
+        commit_hash = "sha256-" + "b" * 64
+        # The gate_round.open -> draft.submitted transition is guarded by
+        # three_anchor_handoff_valid (spec C.5); seed the actor + manifest
+        # rows so the guard validates against a real registry. The handoff
+        # validator uses the writer connection but only SELECTs, so the
+        # registry rows must be committed before compare_and_set_state is
+        # invoked.
+        if (
+            transition["scope_kind"] == "gate_round"
+            and transition["event"] == "draft.submitted"
+        ):
+            _seed_actor_and_manifest(
+                tmp_path / "sidecar.db",
+                identity_hash=identity_hash,
+                commit_hash=commit_hash,
+            )
+            handoff_payload: dict = {
+                "actor_identity_hash": identity_hash,
+                "manifest_commit_hash": commit_hash,
+            }
+        else:
+            handoff_payload = {}
         actor = ActorRef(
             kind=transition["actor"],
-            identity_hash="sha256-" + "a" * 64,
+            identity_hash=identity_hash,
         )
         result = await compare_and_set_state(
             database=db,
@@ -156,7 +219,9 @@ async def test_every_yaml_transition_executes(tmp_path, transition) -> None:
             expected_from=transition["from"],
             event=transition["event"],
             actor=actor,
+            payload=handoff_payload,
             project_id=project_id,
+            manifest_commit_hash=commit_hash if handoff_payload else None,
         )
         assert result.ok is True, (transition, result)
         assert result.new_state == transition["to"], (transition, result.new_state)

@@ -37,9 +37,17 @@ _REQUIRED_SCHEMA: Final[str] = "relay.state_transition_table.v1"
 class Transition:
     """One row of the state-transition table.
 
-    Fields mirror spec C.3 columns: from, event, to, actor, event_log_type.
-    ``allowed_actor_kinds`` is a tuple to keep the dataclass hashable and
-    allow set membership checks (``actor.kind in t.allowed_actor_kinds``).
+    Fields mirror spec C.3 columns: from, event, to, actor, guard,
+    event_log_type. ``allowed_actor_kinds`` is a tuple to keep the
+    dataclass hashable and allow set membership checks
+    (``actor.kind in t.allowed_actor_kinds``).
+
+    Per VAL-V2M03-024 (sub-feature w3-state-guards): every transition
+    declares one or more named guards drawn from the registry in
+    ``state_engine/guards.py``. ``compare_and_set_state`` evaluates every
+    guard (left-to-right) before applying the CAS UPDATE; one False short-
+    circuits with ``reason="GUARD_FAILED"`` (or ``"HANDOFF_INVALID"`` when
+    the failing guard is the three-anchor handoff guard).
     """
 
     scope_kind: str
@@ -48,6 +56,7 @@ class Transition:
     to_state: str
     allowed_actor_kinds: tuple[str, ...]
     event_log_type: str
+    guard_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -185,6 +194,15 @@ def load_transition_table(yaml_path: Path | None = None) -> TransitionTable:
                 allowed_actor_kinds = tuple(str(x) for x in actor_value)
             else:
                 allowed_actor_kinds = (str(actor_value),)
+            guards_value = row.get("guards", [])
+            if not isinstance(guards_value, list):
+                raise ValueError(
+                    f"scope_kind {scope_kind!r}: 'guards' must be a list of "
+                    f"strings; got {guards_value!r}"
+                )
+            guard_names_tuple: tuple[str, ...] = tuple(
+                str(g) for g in guards_value
+            )
             transitions_built.append(
                 Transition(
                     scope_kind=scope_kind,
@@ -193,6 +211,7 @@ def load_transition_table(yaml_path: Path | None = None) -> TransitionTable:
                     to_state=str(row["to"]),
                     allowed_actor_kinds=allowed_actor_kinds,
                     event_log_type=str(row["event_log_type"]),
+                    guard_names=guard_names_tuple,
                 )
             )
         by_scope_kind[scope_kind] = ScopeKindSpec(
