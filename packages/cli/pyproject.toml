@@ -62,6 +62,14 @@ dependencies = [
   # lands. Pinned conservatively to keep the offline-verifier footprint
   # deterministic across the supported Python matrix (3.12 / 3.13 / 3.14).
   "cryptography>=44,<46",
+  # M09 / VAL-V2M09-001: real Sigstore cryptographic verification for the
+  # OSS verifier. Replaces the fail-closed stub in
+  # ``relay_cli.bundle.verify_sigstore``. Pinned >=3.6.0 so the
+  # ``sigstore.verify`` and ``sigstore.models.Bundle.verify_artifact``
+  # APIs are available (added in 3.6). The verifier defaults to the
+  # Sigstore public-good trust root per CLAUDE.md banned pattern #13;
+  # do NOT change the default trust anchor in this dependency line.
+  "sigstore>=3.6.0",
 ]
 
 [project.optional-dependencies]

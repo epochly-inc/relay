@@ -450,24 +450,32 @@ def test_install_help_does_not_expose_url_flag() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W5-015")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "verify_sigstore is fail-closed until real Sigstore cryptographic "
-        "verification (sigstore-python) is wired; see "
-        "test_verifier_crypto_failclosed.py (P0 verifier crypto gap). "
-        "Re-enable this test once VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED is "
-        "True and the fixture builder produces a real Fulcio-signed bundle."
-    ),
-)
-def test_install_pipeline_uses_pinned_manifest_url(tmp_path: Path) -> None:
+def test_install_pipeline_uses_pinned_manifest_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The install pipeline MUST consult the pinned manifest, not arbitrary input.
 
     Drive the install_bundle function directly with a manifest whose entry
     URL is a sentinel value; assert the recorded download URL matches the
     manifest entry verbatim.
+
+    M09 / VAL-V2M09-003: ``verify_sigstore`` now performs real Sigstore
+    cryptographic verification (Fulcio cert chain + Rekor inclusion +
+    signature against artifact bytes). This test exercises the
+    install-pipeline plumbing (URL pinning, atomic write), NOT the real
+    crypto -- which has its own dedicated tests in
+    ``test_w9_sigstore_verifier.py``. To isolate the plumbing under test
+    we monkeypatch ``verify_sigstore`` with a no-op stub for this test
+    only; the real verifier is still exercised end-to-end by VAL-V2M09-009.
     """
+    from relay_cli import bundle as bundle_mod
     from relay_cli.bundle import install_bundle
+
+    monkeypatch.setattr(
+        bundle_mod,
+        "verify_sigstore",
+        lambda *args, **kwargs: {"trust_anchor": "test", "verified": True},
+    )
 
     bundle_bytes = b"sentinel-bundle-bytes"
     digest = hashlib.sha256(bundle_bytes).hexdigest()
@@ -754,19 +762,26 @@ def test_install_digest_verified_before_signature(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W5-018")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "verify_sigstore is fail-closed until real Sigstore cryptographic "
-        "verification (sigstore-python) is wired; see "
-        "test_verifier_crypto_failclosed.py (P0 verifier crypto gap). "
-        "Re-enable this test once VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED is "
-        "True and the fixture builder produces a real Fulcio-signed bundle."
-    ),
-)
-def test_install_writes_bundle_atomically_to_relay_home_bin(tmp_path: Path) -> None:
-    """Verified bundle MUST land at ${RELAY_HOME}/bin/relay-sidecar-<version>."""
+def test_install_writes_bundle_atomically_to_relay_home_bin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verified bundle MUST land at ${RELAY_HOME}/bin/relay-sidecar-<version>.
+
+    M09 / VAL-V2M09-003: ``verify_sigstore`` now performs real Sigstore
+    cryptographic verification. This test exercises the atomic-write
+    primitive (VAL-W5-018), NOT the real crypto -- which has its own
+    dedicated tests in ``test_w9_sigstore_verifier.py``. To isolate the
+    primitive under test we monkeypatch ``verify_sigstore`` with a
+    no-op stub for this test only.
+    """
+    from relay_cli import bundle as bundle_mod
     from relay_cli.bundle import install_bundle
+
+    monkeypatch.setattr(
+        bundle_mod,
+        "verify_sigstore",
+        lambda *args, **kwargs: {"trust_anchor": "test", "verified": True},
+    )
 
     bundle_bytes = b"atomic-write-test-bytes"
     digest = hashlib.sha256(bundle_bytes).hexdigest()

@@ -97,25 +97,27 @@ def _forged_sigstore_bundle() -> str:
 
 
 @pytest.mark.plumbing
-def test_verifier_sigstore_crypto_flag_is_false() -> None:
-    """Until the real Sigstore verification pipeline is wired, the
-    feature flag MUST be False so every code path treats the verifier as
-    unimplemented. Flipping this to True without an accompanying
-    `sigstore.verify` call is a security regression."""
-    assert VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED is False, (
-        "VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED was flipped True without "
-        "the corresponding cryptographic verification pipeline; this is "
-        "a P0 keystone-invariant violation (CLAUDE.md #2: pass without "
-        "evidence is not a pass)."
+@pytest.mark.fulfills("VAL-V2M09-003")
+def test_verifier_sigstore_crypto_flag_is_true() -> None:
+    """M09 / VAL-V2M09-003: after the real Sigstore verification pipeline
+    is wired, the feature flag MUST be True. Flipping this back to False
+    without removing the corresponding `sigstore.verify` call is a
+    keystone-invariant regression -- the polarity-inverted tripwire."""
+    assert VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED is True, (
+        "VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED was flipped False after the "
+        "real Sigstore verifier landed; this is a P0 keystone-invariant "
+        "regression (CLAUDE.md #2: pass without evidence is not a pass)."
     )
 
 
 @pytest.mark.plumbing
 def test_verify_sigstore_rejects_forged_bundle() -> None:
     """A structurally-correct but cryptographically-forged Sigstore
-    bundle MUST be rejected. Prior to the fail-closed switch, this
-    bundle passed because the verifier only inspected JSON keys and
-    string equality on `trust_root` / `oidc_issuer` / `identity`."""
+    bundle MUST be rejected. With real verification wired (M09), the
+    rejection reason is now ``bundle_parse_failed`` (the forged JSON
+    does not deserialize via ``sigstore.models.Bundle.from_json``)
+    instead of the prior fail-closed ``sigstore_crypto_not_implemented``;
+    either way the bundle is rejected -- which is the invariant."""
     forged = _forged_sigstore_bundle()
     with pytest.raises(BundleSignatureInvalid) as exc_info:
         verify_sigstore(
@@ -123,30 +125,46 @@ def test_verify_sigstore_rejects_forged_bundle() -> None:
             expected_trust_root=DEFAULT_TRUST_ROOT,
             expected_oidc_issuer=DEFAULT_OIDC_ISSUER,
             expected_identity=DEFAULT_IDENTITY,
+            artifact_bytes=b"forged-artifact-bytes",
         )
-    # Distinct reason so auditors can tell apart "wrong issuer" from
-    # "we are refusing to claim verification at all".
     reason = exc_info.value.details.get("reason", "")
-    assert reason == "sigstore_crypto_not_implemented", (
-        f"expected reason 'sigstore_crypto_not_implemented', got {reason!r} "
-        f"(message={exc_info.value.message!r})"
+    # Real verifier rejects via bundle parse (the forged JSON is not a
+    # valid Sigstore protobuf bundle) OR cert-chain failure -- both are
+    # distinct from any successful-pass path. The invariant is: rejection.
+    assert reason in {
+        "bundle_parse_failed",
+        "cert_validation_failed",
+        "verification_failed",
+        "identity_mismatch",
+        "signature_invalid",
+        "trust_metadata_invalid",
+        "trust_root_invalid",
+        "trust_root_unreachable",
+    }, (
+        f"forged bundle MUST be rejected with a structured reason, got "
+        f"{reason!r} (message={exc_info.value.message!r})"
     )
 
 
 @pytest.mark.plumbing
 def test_verify_sigstore_rejects_empty_bundle() -> None:
-    """Even an empty JSON object MUST be rejected with the fail-closed
+    """Even an empty JSON object MUST be rejected with a structured
     reason -- there is no structural shortcut that lets a bundle skip
-    cryptographic verification."""
+    cryptographic verification. With real verification wired the
+    rejection now happens at the bundle-parse step."""
     with pytest.raises(BundleSignatureInvalid) as exc_info:
         verify_sigstore(
             "{}",
             expected_trust_root=DEFAULT_TRUST_ROOT,
             expected_oidc_issuer=DEFAULT_OIDC_ISSUER,
             expected_identity=DEFAULT_IDENTITY,
+            artifact_bytes=b"empty-bundle-artifact",
         )
     reason = exc_info.value.details.get("reason", "")
-    assert reason == "sigstore_crypto_not_implemented", reason
+    assert reason in {
+        "bundle_parse_failed",
+        "verification_failed",
+    }, f"empty bundle rejection reason {reason!r} unexpected"
 
 
 # ---------------------------------------------------------------------------

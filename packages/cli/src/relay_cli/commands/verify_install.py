@@ -439,6 +439,7 @@ def _verify_one_surface(
             expected_trust_root=expected_trust_root,
             expected_oidc_issuer=record.oidc_issuer,
             expected_identity=record.oidc_identity,
+            artifact_bytes=artifact_bytes,
         )
     except BundleSignatureInvalid as exc:
         return {

@@ -17,19 +17,23 @@ download, exit 1 with ``RELAY-CLI-SIDECAR-DIGEST-MISMATCH``.
 VAL-W5-018: install path is written through the atomic primitive; direct
 ``open(install_path, 'wb')`` is banned.
 
-FAIL-CLOSED: per CLAUDE.md keystone invariant #2 ("Pass without evidence
-is not a pass.") this module's ``verify_sigstore`` function MUST NOT
-report a verification claim based on structural JSON-shape checks alone.
-Until the full ``sigstore-python`` cryptographic pipeline (Fulcio cert
-chain validation + Rekor inclusion proof verification + ECDSA/Ed25519
-signature verification against the artifact bytes) is wired, the
-function fail-closes via the module-level
-``VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED`` flag (currently ``False``).
-A structurally-correct-but-forged bundle MUST be rejected with reason
-``sigstore_crypto_not_implemented``. Flipping the flag to ``True``
-without the accompanying call to ``sigstore.verify`` is a P0
-keystone-invariant regression and is guarded by
-``packages/cli/tests/test_verifier_crypto_failclosed.py``.
+REAL CRYPTOGRAPHIC VERIFICATION (M09 / VAL-V2M09-001..010, 022):
+``verify_sigstore`` invokes the upstream ``sigstore-python`` package
+(``sigstore.verify.Verifier`` + ``sigstore.models.Bundle.verify_artifact``)
+against the Sigstore public-good trust root by default. The module-level
+``VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED`` flag is ``True`` to reflect
+that cryptographic verification is wired. Sigstore exception subclasses
+(``sigstore.errors.VerificationError`` and friends) are translated by
+``_translate_sigstore_error`` into ``BundleSignatureInvalid`` with a
+distinct ``details["reason"]`` per subclass so auditors can distinguish
+identity / cert-chain / signature / transparency-log failure modes.
+
+Per CLAUDE.md keystone invariant #2 ("Pass without evidence is not a
+pass.") the function does NOT short-circuit any check on structural
+JSON-shape grounds; every code path either calls the real verifier or
+fail-closes with a structured reason. Per banned pattern #13 the
+default trust anchor remains ``relay.epochly.com``; changing it is a
+board-level decision, not a routine PR.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -73,15 +77,14 @@ ENV_BUNDLE_MANIFEST_PATH: Final[str] = "RELAY_CLI_SIDECAR_BUNDLE_MANIFEST"
 # board-level decision, not a routine code edit.
 DEFAULT_TRUST_ROOT: Final[str] = "relay.epochly.com"
 
-# Cryptographic Sigstore verification feature flag. MUST remain False
-# until ``verify_sigstore`` calls into ``sigstore.verify`` (or an
-# equivalent cryptographic verifier that validates the Fulcio cert
-# chain, the Rekor inclusion proof, and the artifact signature). With
-# the flag at False the function fail-closes regardless of the input's
-# JSON shape; flipping it to True without wiring the real verifier is a
-# P0 keystone-invariant regression guarded by
-# ``test_verifier_crypto_failclosed.py::test_verifier_sigstore_crypto_flag_is_false``.
-VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED: Final[bool] = False
+# Cryptographic Sigstore verification feature flag. ``True`` after
+# M09 / VAL-V2M09-003: ``verify_sigstore`` now invokes
+# ``sigstore.verify.Verifier.verify_artifact`` against the parsed
+# ``sigstore.models.Bundle``. Flipping this flag back to ``False`` is
+# only acceptable if the corresponding real verifier call is removed in
+# the same commit (paired by the polarity-inverted guard test
+# ``test_w9_sigstore_verifier.py::test_sigstore_crypto_flag_is_true``).
+VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED: Final[bool] = True
 
 # Manifest schema version (matches what we ship in
 # packages/cli/src/sidecar_install/bundle_manifest.json).
@@ -492,75 +495,162 @@ def verify_digest(payload: bytes, expected_sha256: str, *, url: str | None = Non
     return observed
 
 
+def _translate_sigstore_error(exc: Exception) -> BundleSignatureInvalid:
+    """Translate a ``sigstore.errors.*`` subclass into ``BundleSignatureInvalid``.
+
+    Per VAL-V2M09-010, every sigstore exception subclass MUST translate
+    to ``BundleSignatureInvalid`` with a distinct ``details["reason"]``
+    so auditors can distinguish identity / cert-chain / transparency-log
+    / signature failures. The wire code is the existing
+    ``RELAY-CLI-SIDECAR-SIGNATURE-INVALID`` so the error envelope shape
+    is preserved across the fail-closed -> real-crypto transition.
+
+    The translation table is deliberately defined by ``isinstance``
+    checks against the live sigstore module rather than by string
+    matching on exception names; this keeps us resilient to sigstore
+    surface changes between minor versions.
+    """
+    # Late-imported to avoid hard-failing module import when sigstore
+    # is missing (e.g. during ``uv build`` without the optional
+    # extra). At runtime, by the time ``_translate_sigstore_error`` is
+    # called the caller has already imported sigstore.
+    try:
+        from sigstore import errors as ss_errors
+    except Exception:  # pragma: no cover - defensive
+        ss_errors = None  # type: ignore[assignment]
+
+    msg = str(exc) or exc.__class__.__name__
+    # Resolve a reason token. Order matters: more-specific subclasses
+    # MUST be matched before their bases.
+    reason = "verification_failed"
+    if ss_errors is not None:
+        # Cert chain validation failure (e.g. SAN identity mismatch,
+        # untrusted Fulcio root, expired cert).
+        cert_err = getattr(ss_errors, "CertValidationError", None)
+        if cert_err is not None and isinstance(exc, cert_err):
+            # Distinguish identity-mismatch from other cert-validation
+            # failures by inspecting the message: sigstore's
+            # CertValidationError carries the identity/SAN mismatch
+            # diagnostic in its message.
+            lower = msg.lower()
+            if "subject" in lower or "san" in lower or "identity" in lower:
+                reason = "identity_mismatch"
+            else:
+                reason = "cert_validation_failed"
+        else:
+            # TUF / trust-root metadata failure.
+            root_err = getattr(ss_errors, "RootError", None)
+            if root_err is not None and isinstance(exc, root_err):
+                reason = "trust_root_invalid"
+            else:
+                metadata_err = getattr(ss_errors, "MetadataError", None)
+                if metadata_err is not None and isinstance(exc, metadata_err):
+                    reason = "trust_metadata_invalid"
+                else:
+                    tuf_err = getattr(ss_errors, "TUFError", None)
+                    if tuf_err is not None and isinstance(exc, tuf_err):
+                        reason = "tuf_metadata_invalid"
+                    else:
+                        net_err = getattr(ss_errors, "NetworkError", None)
+                        if net_err is not None and isinstance(exc, net_err):
+                            reason = "trust_root_unreachable"
+                        else:
+                            verif_err = getattr(
+                                ss_errors, "VerificationError", None
+                            )
+                            if verif_err is not None and isinstance(
+                                exc, verif_err
+                            ):
+                                lower = msg.lower()
+                                if "signature" in lower:
+                                    reason = "signature_invalid"
+                                elif (
+                                    "transparency" in lower
+                                    or "rekor" in lower
+                                    or "inclusion" in lower
+                                ):
+                                    reason = "transparency_log_invalid"
+                                elif "identity" in lower or "san" in lower:
+                                    reason = "identity_mismatch"
+                                else:
+                                    reason = "verification_failed"
+    return BundleSignatureInvalid(
+        f"Sigstore verification failed: {msg}",
+        details={
+            "reason": reason,
+            "exception_type": exc.__class__.__name__,
+            "message": msg,
+        },
+    )
+
+
 def verify_sigstore(
     sigstore_bytes: bytes | str,
     *,
     expected_trust_root: str,
     expected_oidc_issuer: str,
     expected_identity: str,
+    artifact_bytes: bytes | None = None,
 ) -> dict[str, Any]:
-    """Cryptographically verify a Sigstore bundle.
+    """Cryptographically verify a Sigstore bundle (M09 / VAL-V2M09-006).
 
-    FAIL-CLOSED until ``VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED`` is True.
-
-    Real verification (when wired) MUST:
-
-      - Decode the bundle per Sigstore Bundle protobuf wire format.
-      - Validate the Fulcio code-signing certificate chain against the
-        bundle-pinned Fulcio root (or a BYO trust root for forks).
-      - Verify the message signature against the artifact bytes using
-        the public key in the Fulcio cert.
-      - Verify the Rekor transparency-log inclusion proof against
-        Rekor's bundled public key (the proof's signed checkpoint
-        binds the log entry to a Merkle root committed by the log).
-      - Match the certificate's SAN extension against
-        ``expected_identity`` and the OIDC issuer extension against
-        ``expected_oidc_issuer``.
-
-    The structural-only shape checks in the prior implementation are
-    intentionally NOT a fallback. Per CLAUDE.md keystone invariant #2
-    ("Pass without evidence is not a pass.") returning ``parsed`` based
-    on JSON-shape equality would let an attacker who forged a
-    same-shape document pass verification. We refuse to claim
-    verification rather than lie.
+    Invokes ``sigstore.verify.Verifier.verify_artifact`` (via the
+    upstream ``sigstore-python`` package, pinned ``>=3.6.0`` in
+    ``packages/cli/pyproject.toml``) against the parsed
+    ``sigstore.models.Bundle``. On success the Fulcio code-signing
+    certificate chain has been validated against the trust root, the
+    Rekor transparency-log inclusion proof has been verified against
+    Rekor's bundled public key, the message signature has been verified
+    against the artifact bytes using the public key in the Fulcio cert,
+    AND the certificate's SAN extension matches ``expected_identity``
+    minted from ``expected_oidc_issuer``.
 
     Args:
-        sigstore_bytes: Raw bytes or text of the Sigstore bundle JSON.
+        sigstore_bytes: Raw bytes or text of the Sigstore bundle JSON
+            (the cosign-bundle / Sigstore Bundle v0.x wire format).
         expected_trust_root: Trust-root identifier the bundle MUST bind
-            to (e.g. ``relay.epochly.com`` for the default OSS path).
-        expected_oidc_issuer: OIDC issuer claim that the signing
-            certificate MUST have been minted from.
+            to. The OSS default is ``relay.epochly.com``; per CLAUDE.md
+            banned pattern #13 changing the default is a board-level
+            decision. Today this identifier selects which
+            ``sigstore.verify.Verifier`` factory is invoked
+            (``production`` for the Sigstore public-good root,
+            ``staging`` for the Sigstore staging instance). Unknown
+            identifiers fall back to the production root with a
+            ``trust_anchor`` field of the requested value so callers
+            can carry it through to evidence binding.
+        expected_oidc_issuer: OIDC issuer claim the signing
+            certificate MUST have been minted from (e.g.
+            ``https://token.actions.githubusercontent.com``).
         expected_identity: SAN-extension identity the certificate MUST
             attest to (e.g. the GitHub Actions workflow URL).
+        artifact_bytes: The artifact whose signature is being verified.
+            REQUIRED for real verification because Sigstore signatures
+            bind to the artifact digest; an absent value yields a
+            structured ``artifact_bytes_required`` failure rather than
+            a misleading pass.
 
     Returns:
-        The parsed bundle dict on cryptographic-verification success.
+        A dict carrying the verification metadata: ``trust_anchor``,
+        ``oidc_issuer``, ``identity``, ``log_index`` (when available),
+        and ``cert_subject_alt_name``. Downstream call sites record
+        this in evidence per CLAUDE.md keystone invariant #2.
 
     Raises:
-        BundleSignatureInvalid: ALWAYS, until
-            ``VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED`` is flipped True and
-            this function calls a real cryptographic verifier. The
-            ``details["reason"]`` is ``"sigstore_crypto_not_implemented"``
-            so auditors can distinguish a refusal-to-claim from a
-            legitimate verification failure.
+        BundleSignatureInvalid: on any verification failure. The
+            ``details["reason"]`` is one of: ``artifact_bytes_required``,
+            ``bundle_parse_failed``, ``identity_mismatch``,
+            ``cert_validation_failed``, ``signature_invalid``,
+            ``transparency_log_invalid``, ``trust_root_invalid``,
+            ``trust_metadata_invalid``, ``trust_root_unreachable``,
+            ``verification_failed``.
     """
-    # Parameters are accepted to preserve the public signature and to
-    # surface "wrong call site" errors when callers omit them. They are
-    # NOT consulted for the verification verdict; the verdict is
-    # determined entirely by the fail-closed switch below.
-    _ = expected_trust_root
-    _ = expected_oidc_issuer
-    _ = expected_identity
-    _ = sigstore_bytes
-
-    if not VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED:
+    if not VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED:  # pragma: no cover
+        # Defensive guard: if someone flips the flag back to False
+        # without removing this call, fail-close with the historical
+        # reason so the test suite catches the regression.
         raise BundleSignatureInvalid(
-            "Sigstore cryptographic verification is not implemented in this "
-            "build; refusing to make a verification claim. To verify a "
-            "Sigstore bundle today, use the upstream `cosign verify-blob` "
-            "or `sigstore verify` CLI against the same artifact and "
-            "Fulcio/Rekor trust roots. Tracking issue: P0 verifier crypto "
-            "gap.",
+            "Sigstore cryptographic verification flag is False; refusing "
+            "to make a verification claim.",
             details={
                 "reason": "sigstore_crypto_not_implemented",
                 "implemented": False,
@@ -568,17 +658,120 @@ def verify_sigstore(
             },
         )
 
-    # Unreachable while the flag is False. When wired, this branch will
-    # call into ``sigstore.verify`` (or equivalent) and translate any
-    # ``sigstore.errors.VerificationError`` into a structured
-    # BundleSignatureInvalid with details.reason describing the
-    # cryptographic failure mode. The function returns the parsed
-    # bundle dict on success so downstream call sites can record
-    # provenance metadata in evidence.
-    raise BundleSignatureInvalid(  # pragma: no cover - unreachable today
-        "Sigstore cryptographic verification path not yet implemented",
-        details={"reason": "sigstore_crypto_not_implemented_unreachable"},
-    )
+    if artifact_bytes is None:
+        raise BundleSignatureInvalid(
+            "verify_sigstore requires artifact_bytes to verify the message "
+            "signature against the artifact digest; cosign-bundle signatures "
+            "bind to the artifact and cannot be verified without it.",
+            details={
+                "reason": "artifact_bytes_required",
+                "expected_trust_root": expected_trust_root,
+            },
+        )
+
+    # Parse the Sigstore bundle. This is the structural decode step;
+    # the cryptographic verification happens in verify_artifact below.
+    try:
+        from sigstore.models import Bundle  # type: ignore[import-not-found]
+    except Exception as exc:  # pragma: no cover - import failure
+        raise BundleSignatureInvalid(
+            f"sigstore package is not importable: {exc}",
+            details={"reason": "sigstore_unavailable", "cause": str(exc)},
+        ) from exc
+
+    if isinstance(sigstore_bytes, bytes):
+        try:
+            bundle_text = sigstore_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise BundleSignatureInvalid(
+                f"sigstore bundle is not valid UTF-8: {exc}",
+                details={"reason": "bundle_parse_failed", "cause": str(exc)},
+            ) from exc
+    else:
+        bundle_text = sigstore_bytes
+
+    try:
+        bundle = Bundle.from_json(bundle_text)
+    except Exception as exc:
+        raise BundleSignatureInvalid(
+            f"sigstore bundle parse failed: {exc}",
+            details={"reason": "bundle_parse_failed", "cause": str(exc)},
+        ) from exc
+
+    # Build the identity policy. The two-arg form (identity + issuer)
+    # is the standard keyless-cosign verification policy.
+    try:
+        from sigstore.verify import Verifier  # type: ignore[import-not-found]
+        from sigstore.verify.policy import Identity  # type: ignore[import-not-found]
+    except Exception as exc:  # pragma: no cover - import failure
+        raise BundleSignatureInvalid(
+            f"sigstore.verify import failed: {exc}",
+            details={"reason": "sigstore_unavailable", "cause": str(exc)},
+        ) from exc
+
+    policy = Identity(identity=expected_identity, issuer=expected_oidc_issuer)
+
+    # Select the trust root. relay.epochly.com is the OSS default and
+    # is operated by the Relay project (per CLAUDE.md banned pattern
+    # #13); it does NOT (today) operate an independent Fulcio/Rekor
+    # so verification is delegated to the Sigstore public-good roots.
+    # The explicit string ``staging`` selects the Sigstore staging
+    # endpoint, useful for CI without burning production-log entries.
+    trust_root_label = expected_trust_root or DEFAULT_TRUST_ROOT
+    try:
+        verifier = (
+            Verifier.staging()
+            if trust_root_label == "staging"
+            else Verifier.production()
+        )
+    except Exception as exc:
+        # Could not bootstrap trust root (e.g. TUF / network failure).
+        # Translate so callers see the structured reason.
+        raise _translate_sigstore_error(exc) from exc
+
+    # Cryptographic verification. ``verify_artifact`` raises on failure
+    # (sigstore.errors.VerificationError subclass) and returns None on
+    # success.
+    try:
+        from sigstore import errors as ss_errors  # type: ignore[import-not-found]
+    except Exception as exc:  # pragma: no cover - import failure
+        raise BundleSignatureInvalid(
+            f"sigstore.errors import failed: {exc}",
+            details={"reason": "sigstore_unavailable", "cause": str(exc)},
+        ) from exc
+
+    try:
+        verifier.verify_artifact(artifact_bytes, bundle, policy)
+    except ss_errors.Error as exc:
+        raise _translate_sigstore_error(exc) from exc
+    except Exception as exc:
+        # Unexpected non-sigstore exception. Wrap with a structured
+        # reason rather than letting the call site see a raw error.
+        raise BundleSignatureInvalid(
+            f"unexpected sigstore verification error: {exc}",
+            details={
+                "reason": "verification_failed",
+                "exception_type": exc.__class__.__name__,
+                "cause": str(exc),
+            },
+        ) from exc
+
+    # Success: extract structured metadata for evidence binding
+    # (CLAUDE.md keystone invariant #2 + VAL-V2M09-022).
+    log_index: int | None = None
+    try:
+        log_entry = bundle.log_entry
+        log_index = int(getattr(log_entry, "log_index", 0)) or None
+    except Exception:
+        log_index = None
+
+    return {
+        "trust_anchor": trust_root_label,
+        "oidc_issuer": expected_oidc_issuer,
+        "identity": expected_identity,
+        "log_index": log_index,
+        "verified": True,
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -678,12 +871,16 @@ def install_bundle(
     # Step 3: download cosign-bundle JSON.
     sigstore_text = fetcher_text(entry.sigstore_url)
     # Step 4: signature verify (VAL-W5-016) BEFORE moving to install path.
+    # M09 / VAL-V2M09-006: pass the artifact bytes so the cryptographic
+    # signature can be verified against them (the bundle's signature
+    # binds to the artifact digest, not just the bundle itself).
     try:
         verify_sigstore(
             sigstore_text,
             expected_trust_root=manifest.trust_root,
             expected_oidc_issuer=manifest.expected_oidc_issuer,
             expected_identity=manifest.expected_identity,
+            artifact_bytes=bundle_bytes,
         )
     except BundleSignatureInvalid:
         # VAL-W5-016: bundle MUST NOT be moved into its install path until
