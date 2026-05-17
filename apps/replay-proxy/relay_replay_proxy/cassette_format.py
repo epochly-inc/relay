@@ -93,10 +93,15 @@ from relay_contracts.canonical import jcs_canonicalize
 from relay_schemas.envelopes import ReplayFixture
 
 from .errors import (
+    RELAY_REPLAY_CASSETTE_CORRUPT,
     RelayCassetteCorruptError,
     RelayCassetteMissError,
     RelayCassetteWriteRetryExhaustedError,
 )
+
+# Re-export so external modules (and tests) can import the wire code from
+# the same surface that raises it without a second import.
+_ = (RELAY_REPLAY_CASSETTE_CORRUPT,)
 
 LOG = logging.getLogger("relay.replay.cassette")
 
@@ -1121,6 +1126,615 @@ def emit_cassette_miss_stderr(
 
 
 # -----------------------------------------------------------------------------
+# V2M08 / W8 replay-determinism cassette envelope (VAL-V2M08-020..024)
+# -----------------------------------------------------------------------------
+#
+# Spec AC (lines 5448-5463) names four operational determinism patterns that
+# the cassette must carry per-row metadata for: parallel tool calls
+# (parallel_index), cancellation mid-stream (abort_after), pagination
+# (page_index), and provider retries (per-attempt records). The existing
+# ReplayFixture v1 envelope is closed (extra="forbid") and lives in
+# packages/schemas/, which is out of scope for this feature. Per VAL-V2M08-020
+# we layer a new envelope -- relay.cassette.v1 -- on top of the ReplayFixture
+# record. The envelope's on-disk shape is:
+#
+#     {
+#       "schema_version": "relay.cassette.v1",
+#       "fixture":     { ...ReplayFixture v1 record... },
+#       "determinism": {
+#         "parallel_index": 0,                          # optional, >= 0
+#         "abort_after":    {"token_offset": 17},       # optional, >= 0
+#         "page_index":     0,                          # optional, >= 0
+#         "attempts": [                                 # optional
+#           {"attempt_index": 0, "attempt_delay_ms": 0,   "attempt_outcome": "http_5xx"},
+#           {"attempt_index": 1, "attempt_delay_ms": 250, "attempt_outcome": "success"}
+#         ]
+#       }
+#     }
+#
+# Backward compatibility: lines that are bare ReplayFixture v1 records (no
+# envelope wrapper, schema_version "relay.replay_fixture.v1") continue to
+# validate; they are treated as envelopes with an empty determinism block.
+#
+# Per CLAUDE.md keystone invariant #9 (cassette-first replay) the worker
+# never contacts the live provider in cassette mode; the attempt-iteration
+# helper operates on in-memory data only.
+#
+# Per CLAUDE.md keystone invariant #2 the new fields are recorded inputs to
+# replay determinism; emitting them is part of the evidence-binding contract.
+
+CASSETTE_ENVELOPE_SCHEMA_VERSION: Final[str] = "relay.cassette.v1"
+
+# Structured "reason" label carried on RelayCassetteCorruptError.details when
+# the cassette violates the page-ordering contract (VAL-V2M08-023). We do not
+# mint a new exception type because the wire-level surface (cassette
+# corruption) is unchanged; only the structured reason field tells callers it
+# was a page-ordering violation specifically.
+RELAY_REPLAY_PAGE_ORDER_CODE: Final[str] = "RELAY-REPLAY-PAGE-ORDER"
+
+# Per-attempt outcome enum mirrors the spec AC retry pattern (5xx / 429 /
+# success). Adding to the enum is a forward-compatible operation; the
+# validator pins the closed set so a typo on disk is caught at load time
+# rather than silently misinterpreted at replay.
+_ATTEMPT_OUTCOMES: Final[frozenset[str]] = frozenset(
+    {"success", "http_5xx", "http_429"}
+)
+
+
+@dataclass(frozen=True)
+class AbortAfter:
+    """Cancellation token recorded with a streaming cassette row.
+
+    ``token_offset`` is the number of tokens (or stream chunks) emitted
+    before the cancellation event fired. At replay time the streamer emits
+    ``token_offset`` tokens, then raises a ``cancelled_mid_stream`` event.
+    Must be a non-negative integer.
+    """
+
+    token_offset: int
+
+    def to_canonical_obj(self) -> dict[str, Any]:
+        return {"token_offset": self.token_offset}
+
+
+@dataclass(frozen=True)
+class CassetteAttempt:
+    """One provider-attempt row attached to a cassette record.
+
+    Replay re-emits attempts in ``attempt_index`` order with the recorded
+    ``attempt_delay_ms`` between them. ``attempt_outcome`` MUST be one of
+    ``_ATTEMPT_OUTCOMES``; it documents whether the recorded attempt was a
+    5xx, a 429, or a final success.
+    """
+
+    attempt_index: int
+    attempt_delay_ms: int
+    attempt_outcome: str
+
+    def to_canonical_obj(self) -> dict[str, Any]:
+        return {
+            "attempt_index": self.attempt_index,
+            "attempt_delay_ms": self.attempt_delay_ms,
+            "attempt_outcome": self.attempt_outcome,
+        }
+
+
+@dataclass(frozen=True)
+class CassetteDeterminism:
+    """Per-row determinism metadata block (VAL-V2M08-020 schema additions).
+
+    All four fields are optional; an empty block validates. The block is
+    serialized in a stable order so byte-equality holds across runs.
+    """
+
+    parallel_index: int | None = None
+    abort_after: AbortAfter | None = None
+    page_index: int | None = None
+    attempts: tuple[CassetteAttempt, ...] = ()
+
+    def to_canonical_obj(self) -> dict[str, Any]:
+        obj: dict[str, Any] = {}
+        if self.parallel_index is not None:
+            obj["parallel_index"] = self.parallel_index
+        if self.abort_after is not None:
+            obj["abort_after"] = self.abort_after.to_canonical_obj()
+        if self.page_index is not None:
+            obj["page_index"] = self.page_index
+        if self.attempts:
+            obj["attempts"] = [a.to_canonical_obj() for a in self.attempts]
+        return obj
+
+
+@dataclass(frozen=True)
+class CassetteEnvelope:
+    """relay.cassette.v1: ReplayFixture + per-row determinism metadata."""
+
+    fixture: ReplayFixture
+    determinism: CassetteDeterminism = field(default_factory=CassetteDeterminism)
+
+    def to_canonical_obj(self) -> dict[str, Any]:
+        return {
+            "schema_version": CASSETTE_ENVELOPE_SCHEMA_VERSION,
+            "fixture": json.loads(self.fixture.model_dump_json()),
+            "determinism": self.determinism.to_canonical_obj(),
+        }
+
+
+def _validate_non_negative_int(value: Any, field_name: str) -> int:
+    """Return ``value`` as an int >= 0 or raise a structured CorruptError."""
+    # ``bool`` is a subclass of ``int`` -- reject explicit booleans because a
+    # boolean masquerading as an index is almost always a recorder bug.
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RelayCassetteCorruptError(
+            f"determinism field {field_name!r} MUST be a non-negative integer; "
+            f"got {value!r} ({type(value).__name__})",
+            details={
+                "field": field_name,
+                "value": value,
+                "reason": "non_negative_integer_required",
+            },
+        )
+    return value
+
+
+def _validate_attempt(obj: Any, *, index: int) -> CassetteAttempt:
+    if not isinstance(obj, dict):
+        raise RelayCassetteCorruptError(
+            f"attempts[{index}] MUST be an object; got {type(obj).__name__}",
+            details={"index": index, "reason": "attempt_must_be_object"},
+        )
+    attempt_index = _validate_non_negative_int(
+        obj.get("attempt_index"), f"attempts[{index}].attempt_index"
+    )
+    attempt_delay_ms = _validate_non_negative_int(
+        obj.get("attempt_delay_ms"), f"attempts[{index}].attempt_delay_ms"
+    )
+    outcome = obj.get("attempt_outcome")
+    if not isinstance(outcome, str) or outcome not in _ATTEMPT_OUTCOMES:
+        raise RelayCassetteCorruptError(
+            f"attempts[{index}].attempt_outcome MUST be one of "
+            f"{sorted(_ATTEMPT_OUTCOMES)}; got {outcome!r}",
+            details={
+                "index": index,
+                "value": outcome,
+                "allowed": sorted(_ATTEMPT_OUTCOMES),
+                "reason": "attempt_outcome_not_in_enum",
+            },
+        )
+    return CassetteAttempt(
+        attempt_index=attempt_index,
+        attempt_delay_ms=attempt_delay_ms,
+        attempt_outcome=outcome,
+    )
+
+
+def _validate_determinism(obj: Any) -> CassetteDeterminism:
+    """Validate a ``determinism`` sub-object into a ``CassetteDeterminism``."""
+    if obj is None:
+        return CassetteDeterminism()
+    if not isinstance(obj, dict):
+        raise RelayCassetteCorruptError(
+            f"determinism MUST be an object; got {type(obj).__name__}",
+            details={"reason": "determinism_must_be_object"},
+        )
+    parallel_index: int | None = None
+    abort_after: AbortAfter | None = None
+    page_index: int | None = None
+    attempts: list[CassetteAttempt] = []
+    if "parallel_index" in obj:
+        parallel_index = _validate_non_negative_int(
+            obj["parallel_index"], "parallel_index"
+        )
+    if "abort_after" in obj:
+        aa = obj["abort_after"]
+        if not isinstance(aa, dict):
+            raise RelayCassetteCorruptError(
+                f"abort_after MUST be an object; got {type(aa).__name__}",
+                details={"reason": "abort_after_must_be_object"},
+            )
+        token_offset = _validate_non_negative_int(
+            aa.get("token_offset"), "abort_after.token_offset"
+        )
+        abort_after = AbortAfter(token_offset=token_offset)
+    if "page_index" in obj:
+        page_index = _validate_non_negative_int(obj["page_index"], "page_index")
+    if "attempts" in obj:
+        raw_attempts = obj["attempts"]
+        if not isinstance(raw_attempts, list):
+            raise RelayCassetteCorruptError(
+                f"attempts MUST be a list; got {type(raw_attempts).__name__}",
+                details={"reason": "attempts_must_be_list"},
+            )
+        for i, item in enumerate(raw_attempts):
+            attempts.append(_validate_attempt(item, index=i))
+    return CassetteDeterminism(
+        parallel_index=parallel_index,
+        abort_after=abort_after,
+        page_index=page_index,
+        attempts=tuple(attempts),
+    )
+
+
+def validate_cassette_envelope(obj: Any) -> CassetteEnvelope:
+    """Parse a cassette JSONL object into a ``CassetteEnvelope``.
+
+    Accepts both shapes:
+
+      1. ``relay.cassette.v1`` -- envelope wrapper with ``fixture`` and
+         ``determinism`` sub-objects.
+      2. ``relay.replay_fixture.v1`` -- legacy bare ReplayFixture record;
+         wrapped on the fly with an empty determinism block for backward
+         compatibility (VAL-V2M08-020).
+
+    Raises ``RelayCassetteCorruptError`` for any shape mismatch.
+    """
+    if not isinstance(obj, dict):
+        raise RelayCassetteCorruptError(
+            f"cassette record MUST be an object; got {type(obj).__name__}",
+            details={"reason": "record_must_be_object"},
+        )
+    schema_version = obj.get("schema_version")
+    if schema_version == CASSETTE_ENVELOPE_SCHEMA_VERSION:
+        fixture_obj = obj.get("fixture")
+        if not isinstance(fixture_obj, dict):
+            raise RelayCassetteCorruptError(
+                "cassette envelope: 'fixture' field missing or not an object",
+                details={"reason": "envelope_fixture_missing"},
+            )
+        try:
+            fixture = ReplayFixture.model_validate(fixture_obj)
+        except Exception as exc:
+            raise RelayCassetteCorruptError(
+                f"cassette envelope: fixture failed ReplayFixture v1 validation: {exc}",
+                details={
+                    "reason": "envelope_fixture_invalid",
+                    "schema_version": REPLAY_FIXTURE_SCHEMA_VERSION,
+                },
+            ) from exc
+        determinism = _validate_determinism(obj.get("determinism"))
+        return CassetteEnvelope(fixture=fixture, determinism=determinism)
+    if schema_version == REPLAY_FIXTURE_SCHEMA_VERSION:
+        # Legacy bare ReplayFixture row -- wrap with an empty determinism
+        # block so callers see a uniform CassetteEnvelope shape.
+        try:
+            fixture = ReplayFixture.model_validate(obj)
+        except Exception as exc:
+            raise RelayCassetteCorruptError(
+                f"legacy ReplayFixture v1 record failed validation: {exc}",
+                details={
+                    "reason": "legacy_fixture_invalid",
+                    "schema_version": REPLAY_FIXTURE_SCHEMA_VERSION,
+                },
+            ) from exc
+        return CassetteEnvelope(fixture=fixture, determinism=CassetteDeterminism())
+    raise RelayCassetteCorruptError(
+        f"cassette record schema_version {schema_version!r} is not recognized; "
+        f"expected {CASSETTE_ENVELOPE_SCHEMA_VERSION!r} or "
+        f"{REPLAY_FIXTURE_SCHEMA_VERSION!r}",
+        details={
+            "reason": "unknown_schema_version",
+            "observed": schema_version,
+        },
+    )
+
+
+def append_envelope(
+    cassette_path: Path,
+    *,
+    envelope: CassetteEnvelope,
+    canonical_request: CanonicalRequest,
+    response_bytes: bytes,
+    retry_delays_s: tuple[float, ...] = WRITE_RETRY_DELAYS_S,
+    sleep_fn: Any = time.sleep,
+    open_fn: Any = None,
+) -> str:
+    """APPEND-ONLY write of a relay.cassette.v1 envelope to ``cassette_path``.
+
+    Same on-disk semantics as ``append_record`` (VAL-W7-027 APPEND-ONLY,
+    VAL-W7-030 lock-retry), except the JSONL line is the canonical
+    envelope object rather than a bare ReplayFixture row.
+    """
+    cassette_path.parent.mkdir(parents=True, exist_ok=True)
+    bodies_dir = cassette_path.parent / "bodies"
+    requests_dir = cassette_path.parent / "requests"
+    bodies_dir.mkdir(parents=True, exist_ok=True)
+    requests_dir.mkdir(parents=True, exist_ok=True)
+
+    fixture_id = str(envelope.fixture.fixture_id)
+    body_path = bodies_dir / f"{fixture_id}.body"
+    body_path.write_bytes(response_bytes)
+
+    import base64
+
+    request_obj = {
+        "method": canonical_request.canonical_method(),
+        "url": canonical_request.url,
+        "headers": dict(canonical_request.headers),
+        "body_b64": base64.b64encode(canonical_request.body_bytes).decode("ascii"),
+        "content_type": canonical_request.content_type
+        or canonical_request.headers.get("content-type", ""),
+    }
+    request_path = requests_dir / f"{fixture_id}.request.json"
+    request_path.write_text(
+        json.dumps(request_obj, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+    canonical_key = derive_canonical_key(canonical_request)
+
+    envelope_line = json.dumps(
+        envelope.to_canonical_obj(),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    payload = (envelope_line + "\n").encode("utf-8")
+
+    last_exc: OSError | None = None
+    total_wait = 0.0
+    open_func = open_fn if open_fn is not None else os.open
+    attempts = max(len(retry_delays_s), 3)
+    for attempt in range(attempts):
+        try:
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            fd = open_func(str(cassette_path), flags, 0o600)
+            try:
+                os.write(fd, payload)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            return canonical_key
+        except OSError as exc:
+            if not _is_lock_or_share_violation(exc):
+                raise
+            last_exc = exc
+            if attempt >= len(retry_delays_s):
+                break
+            delay = retry_delays_s[attempt]
+            LOG.info(
+                "cassette envelope write retry %d/%d after EACCES on %s",
+                attempt + 1,
+                len(retry_delays_s),
+                cassette_path,
+            )
+            sleep_fn(delay)
+            total_wait += delay
+    raise RelayCassetteWriteRetryExhaustedError(
+        f"cassette envelope write retries exhausted on {cassette_path} after "
+        f"{len(retry_delays_s)} attempts (total wait {total_wait:.3f}s)",
+        details={
+            "attempts": len(retry_delays_s),
+            "last_errno": last_exc.errno if last_exc is not None else None,
+            "cassette_path": str(cassette_path),
+            "total_wait_s": total_wait,
+        },
+    )
+
+
+def load_cassette_envelopes(cassette_path: Path) -> list[CassetteEnvelope]:
+    """Parse a JSONL cassette into a list of validated envelopes.
+
+    Each line is decoded as JSON and passed through ``validate_cassette_envelope``,
+    which accepts both ``relay.cassette.v1`` envelopes and legacy bare
+    ``relay.replay_fixture.v1`` records. Lines are returned in on-disk order;
+    callers that need parallel- or page-ordering apply
+    ``order_parallel_records`` / ``order_pages_or_raise`` themselves.
+    """
+    if not cassette_path.exists():
+        raise RelayCassetteCorruptError(
+            f"cassette file does not exist: {cassette_path}",
+            details={"cassette_path": str(cassette_path), "line_number": 0},
+        )
+    raw = cassette_path.read_bytes()
+    text = raw.decode("utf-8", errors="strict")
+    if text and not text.endswith("\n"):
+        raise RelayCassetteCorruptError(
+            f"cassette {cassette_path} does not end with a trailing newline",
+            details={
+                "cassette_path": str(cassette_path),
+                "line_number": text.count("\n") + 1,
+            },
+        )
+    out: list[CassetteEnvelope] = []
+    for line_idx, line in enumerate(text.splitlines()):
+        line_number = line_idx + 1
+        if line.strip() == "":
+            raise RelayCassetteCorruptError(
+                f"cassette {cassette_path} line {line_number} is blank",
+                details={
+                    "cassette_path": str(cassette_path),
+                    "line_number": line_number,
+                },
+            )
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RelayCassetteCorruptError(
+                f"cassette {cassette_path} line {line_number}: malformed JSON: {exc.msg}",
+                details={
+                    "cassette_path": str(cassette_path),
+                    "line_number": line_number,
+                    "json_error": exc.msg,
+                },
+            ) from exc
+        out.append(validate_cassette_envelope(obj))
+    return out
+
+
+# -----------------------------------------------------------------------------
+# VAL-V2M08-021: parallel-index ordering
+# -----------------------------------------------------------------------------
+
+
+def order_parallel_records(
+    envelopes: list[CassetteEnvelope],
+) -> list[CassetteEnvelope]:
+    """Return envelopes sorted by ``parallel_index`` ascending.
+
+    Records without a ``parallel_index`` are passed through in input order
+    (Python's sort is stable). The sort key uses a large sentinel for
+    unindexed records so they trail any indexed ones; when ALL records are
+    unindexed the input order is preserved verbatim.
+
+    VAL-V2M08-021: the same input produces the same output across runs --
+    Python's Timsort is deterministic and the sort key is a function of
+    only ``parallel_index``.
+    """
+    if not any(e.determinism.parallel_index is not None for e in envelopes):
+        return list(envelopes)
+    sentinel = sys.maxsize
+
+    def _key(env: CassetteEnvelope) -> int:
+        idx = env.determinism.parallel_index
+        return idx if idx is not None else sentinel
+
+    return sorted(envelopes, key=_key)
+
+
+# -----------------------------------------------------------------------------
+# VAL-V2M08-022: abort_after cancellation
+# -----------------------------------------------------------------------------
+
+
+CANCELLED_MID_STREAM_EVENT: Final[str] = "cancelled_mid_stream"
+
+
+def apply_abort_after(
+    tokens: list[Any],
+    abort_after: AbortAfter | None,
+) -> tuple[list[Any], str | None]:
+    """Apply the cancellation token to a recorded stream.
+
+    Returns ``(emitted_tokens, cancellation_event)``. When ``abort_after``
+    is None or the recorded ``token_offset`` is at or beyond ``len(tokens)``,
+    the full sequence is emitted and the event is None (the recording was
+    not actually truncated). When the offset is strictly less than the
+    stream length, the first ``token_offset`` tokens are emitted and the
+    event is ``"cancelled_mid_stream"``.
+
+    Spec AC line 5457: "Cassette records the cancellation point; replay
+    reproduces it by emitting an abort_after token offset."
+    """
+    if abort_after is None:
+        return list(tokens), None
+    offset = abort_after.token_offset
+    if offset >= len(tokens):
+        # Recorded offset exceeds the captured stream length -- the
+        # original recording was not actually truncated mid-stream
+        # (likely the stream finished naturally before the offset). Emit
+        # what's there and do not synthesize a cancellation.
+        return list(tokens), None
+    return list(tokens[:offset]), CANCELLED_MID_STREAM_EVENT
+
+
+# -----------------------------------------------------------------------------
+# VAL-V2M08-023: page-index ordering
+# -----------------------------------------------------------------------------
+
+
+def order_pages_or_raise(
+    envelopes: list[CassetteEnvelope],
+) -> list[CassetteEnvelope]:
+    """Return envelopes sorted by ``page_index`` ascending, or raise.
+
+    Validation rules:
+      * If no envelope carries a ``page_index``, the list is returned
+        as-is (no pagination in play).
+      * If any envelope carries a ``page_index``, EVERY envelope MUST
+        carry one (mixed sets are a recorder bug).
+      * ``page_index`` values MUST be unique within the set.
+      * ``page_index`` values MUST be contiguous starting at 0
+        (0, 1, 2, ...); a gap is a recorder bug.
+
+    Violations raise ``RelayCassetteCorruptError`` with
+    ``details["reason"] = RELAY_REPLAY_PAGE_ORDER_CODE`` so callers can
+    distinguish this from other corruption classes.
+    """
+    indexed = [e for e in envelopes if e.determinism.page_index is not None]
+    if not indexed:
+        return list(envelopes)
+    if len(indexed) != len(envelopes):
+        missing = [
+            str(e.fixture.fixture_id)
+            for e in envelopes
+            if e.determinism.page_index is None
+        ]
+        raise RelayCassetteCorruptError(
+            f"paginated cassette set has {len(missing)} record(s) "
+            f"missing page_index: {missing!r}",
+            details={
+                "reason": RELAY_REPLAY_PAGE_ORDER_CODE,
+                "missing_fixture_ids": missing,
+                "violation": "missing_page_index",
+            },
+        )
+    seen: dict[int, str] = {}
+    for e in envelopes:
+        idx = e.determinism.page_index
+        assert idx is not None  # narrowed by the loop above
+        if idx in seen:
+            raise RelayCassetteCorruptError(
+                f"paginated cassette set has duplicate page_index {idx} "
+                f"(fixtures {seen[idx]} and {e.fixture.fixture_id})",
+                details={
+                    "reason": RELAY_REPLAY_PAGE_ORDER_CODE,
+                    "duplicate_page_index": idx,
+                    "fixture_ids": [seen[idx], str(e.fixture.fixture_id)],
+                    "violation": "duplicate_page_index",
+                },
+            )
+        seen[idx] = str(e.fixture.fixture_id)
+    expected = list(range(len(envelopes)))
+    actual = sorted(seen.keys())
+    if actual != expected:
+        raise RelayCassetteCorruptError(
+            f"paginated cassette set page_index values {actual!r} are not "
+            f"contiguous from 0; expected {expected!r}",
+            details={
+                "reason": RELAY_REPLAY_PAGE_ORDER_CODE,
+                "observed": actual,
+                "expected": expected,
+                "violation": "non_contiguous_page_index",
+            },
+        )
+    return sorted(envelopes, key=lambda e: e.determinism.page_index)  # type: ignore[arg-type, return-value]
+
+
+# -----------------------------------------------------------------------------
+# VAL-V2M08-024: per-attempt retry iteration
+# -----------------------------------------------------------------------------
+
+
+def iter_attempts_with_delays(
+    envelope: CassetteEnvelope,
+    *,
+    sleep_fn: Any = time.sleep,
+) -> Iterator[CassetteAttempt]:
+    """Yield recorded attempts in order, sleeping the recorded delay first.
+
+    For each attempt (sorted by ``attempt_index`` ascending), ``sleep_fn``
+    is called with ``attempt_delay_ms / 1000.0`` BEFORE the attempt is
+    yielded. This honors the recorded inter-attempt spacing without
+    contacting the live provider (CLAUDE.md keystone invariant #9).
+
+    ``sleep_fn`` defaults to ``time.sleep``; tests inject a list ``.append``
+    so the spacing is observable without wall-clock waits.
+
+    Spec AC line 5456: "Cassette records each attempt + delay; replay
+    re-emits attempts; the worker NEVER hits the live provider during
+    cassette mode."
+    """
+    ordered = sorted(
+        envelope.determinism.attempts, key=lambda a: a.attempt_index
+    )
+    for attempt in ordered:
+        sleep_fn(attempt.attempt_delay_ms / 1000.0)
+        yield attempt
+
+
+# -----------------------------------------------------------------------------
 # Suppress unused-import warnings for forward-compat scaffolding
 # -----------------------------------------------------------------------------
 
@@ -1128,9 +1742,15 @@ _ = (contextlib,)
 
 
 __all__ = [
+    "CANCELLED_MID_STREAM_EVENT",
+    "CASSETTE_ENVELOPE_SCHEMA_VERSION",
     "CASSETTE_FILENAME",
+    "AbortAfter",
     "CanonicalKeyConfig",
     "CanonicalRequest",
+    "CassetteAttempt",
+    "CassetteDeterminism",
+    "CassetteEnvelope",
     "CassetteIndex",
     "CassetteRecord",
     "EXIT_CODE_CASSETTE_MISS_REF",
@@ -1142,6 +1762,7 @@ __all__ = [
     "REFRESH_POLICY_INVALIDATE_ON_MODEL",
     "REFRESH_POLICY_INVALIDATE_ON_SIG",
     "REFRESH_POLICY_REFRESH_WEEKLY",
+    "RELAY_REPLAY_PAGE_ORDER_CODE",
     "REPLAY_FIXTURE_SCHEMA_VERSION",
     "RefreshDecision",
     "SIDE_EFFECT_APPROVAL_REQUIRED",
@@ -1149,13 +1770,20 @@ __all__ = [
     "SIDE_EFFECT_MUTATING",
     "SIDE_EFFECT_READ_ONLY",
     "WRITE_RETRY_DELAYS_S",
+    "append_envelope",
     "append_record",
+    "apply_abort_after",
     "derive_canonical_key",
     "emit_cassette_miss_stderr",
     "evaluate_refresh_policy",
+    "iter_attempts_with_delays",
     "load_cassette",
+    "load_cassette_envelopes",
+    "order_pages_or_raise",
+    "order_parallel_records",
     "raise_cassette_miss",
     "request_summary",
+    "validate_cassette_envelope",
 ]
 
 
