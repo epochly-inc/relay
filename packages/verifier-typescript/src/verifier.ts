@@ -181,7 +181,11 @@ export function canonicalJsonBytes(value: unknown): Uint8Array {
 // JWK -> Node KeyObject loader (RFC 7517 / 7518 / 8037)
 // ----------------------------------------------------------------------------
 
-function _loadPublicKeyFromJwk(jwk: JWK): import("node:crypto").KeyObject {
+// Internal helpers re-exported below under their underscore names so the
+// transparency-log and bundle-validator modules can resolve a JWK by kid
+// and load the public key without re-implementing the dispatch. Parity
+// with Python's relay_verifier.verifier:_select_jwk / _load_public_key_from_jwk.
+export function _loadPublicKeyFromJwk(jwk: JWK): import("node:crypto").KeyObject {
   if (jwk === null || typeof jwk !== "object") {
     throw new Error("JWK must be an object");
   }
@@ -241,7 +245,7 @@ function _loadPublicKeyFromJwk(jwk: JWK): import("node:crypto").KeyObject {
   throw new Error(`unsupported JWK kty: ${String(jwk.kty)}`);
 }
 
-function _selectJwk(jwks: JWKS, kid: string): JWK | null {
+export function _selectJwk(jwks: JWKS, kid: string): JWK | null {
   if (jwks === null || typeof jwks !== "object") {
     return null;
   }

@@ -1,0 +1,83 @@
+{
+  "schema_version": "relay.conformance.verifier_coverage.v1",
+  "notes": [
+    "Cross-language coverage map for the relay.verifier.output.v1 envelope.",
+    "For each output field, lists at least one Python and one TypeScript test",
+    "that exercises the field. Generated as part of M06-W6 (VAL-V2M06-024).",
+    "Adding a new output field requires a matching paired test on both sides."
+  ],
+  "fields": {
+    "schema_version": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_pinned_schema_version"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-022"]
+    },
+    "overall": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_overall_pass_path"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-022"]
+    },
+    "bundle_digest_sha256": {
+      "py": ["packages/verifier/tests/test_w10_3_canonical.py::test_bundle_digest"],
+      "ts": ["packages/verifier-typescript/test/w10_3_bundle_digest.test.ts"]
+    },
+    "digest_ok": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_digest_ok"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-022"]
+    },
+    "structure_ok": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_structure_ok"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-022"]
+    },
+    "signatures_ok": {
+      "py": ["packages/verifier/tests/test_w10_2_rfc7515_corpus.py::test_signatures_ok"],
+      "ts": ["packages/verifier-typescript/test/w10_2_rfc7515_corpus.test.ts"]
+    },
+    "signatures_checked": {
+      "py": ["packages/verifier/tests/test_w10_2_rfc7515_corpus.py::test_signatures_checked"],
+      "ts": ["packages/verifier-typescript/test/w10_2_rfc7515_corpus.test.ts"]
+    },
+    "claims_count": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_claims_count"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-022"]
+    },
+    "merkle_check": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_merkle_check"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-010"]
+    },
+    "tsa_check": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_tsa_check"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-003"]
+    },
+    "log_inclusion": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_log_inclusion"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-009"]
+    },
+    "trust_anchor": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_trust_anchor_echo"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-023"]
+    },
+    "trust_anchor_source": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_trust_anchor_source"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-022"]
+    },
+    "signer_key_revoked": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_signer_key_revoked"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-014"]
+    },
+    "signer_key_revoked_at": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_signer_key_revoked_at"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-014"]
+    },
+    "subject_resolution": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_subject_resolution"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-017"]
+    },
+    "warnings": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_warnings"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-023"]
+    },
+    "errors": {
+      "py": ["packages/verifier/tests/test_w10_4_bundle_validator.py::test_errors"],
+      "ts": ["packages/verifier-typescript/test/m06_parity.test.ts::VAL-V2M06-022"]
+    }
+  }
+}
