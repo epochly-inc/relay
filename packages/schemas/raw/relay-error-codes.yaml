@@ -45,6 +45,20 @@ schema: relay.error_codes.v1
 codes:
   - RELAY-AUTH-001
   - RELAY-AUTH-014
+  # V2M08 w8-ai-hardening (spec AI lines 5651-5732):
+  #   017 - clock-skew rejection: request bearing a signed timestamp
+  #         more than +/-300s outside the server's now() is rejected
+  #         with HTTP 401. Envelope carries server_now_utc and
+  #         client_claim_utc plus a remediation hint pointing at NTP /
+  #         system time sync. VAL-V2M08-006, VAL-V2M08-007.
+  #   022 - auditor-room first-use IP binding: an auditor token presented
+  #         from an IP that does not match its first-use IP is rejected
+  #         with HTTP 403. Enforcement lives in private relay-platform/
+  #         (auditor rooms are hosted-only); the code is registered in the
+  #         public OSS registry so verifier/CLI tools can decode it.
+  #         VAL-V2M08-008. [OUT-OF-SCOPE-PRIVATE] for enforcement path.
+  - RELAY-AUTH-017
+  - RELAY-AUTH-022
   - RELAY-CANON-001
   - RELAY-CEL-001
   - RELAY-CEL-002
@@ -139,6 +153,18 @@ codes:
   - RELAY-ING-022
   - RELAY-ING-031
   - RELAY-ING-032
+  # V2M08 w8-ai-hardening (spec AI line 5659, line 5698):
+  #   041 - canonical-JSON span size or nesting-depth limit exceeded at
+  #         /v1/ingest/spans:batch. The envelope carries either
+  #         offending_span_id + measured_bytes (256 KiB cap) or
+  #         offending_span_id + reason=nesting_depth_exceeded
+  #         (depth-16 cap). HTTP 413. VAL-V2M08-001, 002, 003.
+  #   045 - invalid UTF-8 in an indexed field (prompt_template_id,
+  #         tool_name, model, retriever_name, or any field listed in
+  #         indexed_string_fields). Envelope carries field_path. HTTP 400.
+  #         VAL-V2M08-009, 010.
+  - RELAY-ING-041
+  - RELAY-ING-045
   # W9.2 assertion-template error codes (eng plan W9; contract VAL-W9-013,
   # VAL-W9-014, VAL-W9-015). RELAY-MANIFEST-021 is raised when a tool_arg
   # template references a tool_name not declared in the active manifest
@@ -148,6 +174,14 @@ codes:
   - RELAY-MANIFEST-021
   - RELAY-RATE-001
   - RELAY-RATE-014
+  # V2M08 w8-ai-hardening (spec AI line 5665):
+  #   014 - ReDoS regex budget exceeded at redaction-policy publish.
+  #         Each regex matcher in candidate redaction_policies.body is
+  #         executed against a published catastrophic-backtracking corpus
+  #         under a 50 ms per-input wall-clock budget; a matcher exceeding
+  #         the budget aborts the publish with HTTP 422, envelope carries
+  #         matcher_id + measured_ms. VAL-V2M08-004, VAL-V2M08-005.
+  - RELAY-REDACT-014
   - RELAY-RELEASE-001
   - RELAY-RELEASE-002
   - RELAY-RELEASE-004
@@ -209,6 +243,21 @@ codes:
   - RELAY-REPLAY-021
   - RELAY-REPLAY-022
   - RELAY-REPLAY-023
+  # M04 w4-side-effects approval-flow codes (VAL-V2M04-026/027). Per
+  # VAL-W1-029 every code MUST match ^RELAY-[A-Z]+-[0-9]{3}$ -- numeric
+  # tail required. The contract narrative names these as
+  # "RELAY-REPLAY-APPROVAL-REQUIRED" / "...TOKEN-CONSUMED" / "...EXPIRED"
+  # for human readability; the wire-format tokens carry the numeric form:
+  #   031 - approval_required class hit during replay without a valid
+  #         single-use approval token. VAL-V2M04-026.
+  #   032 - approval token re-used (single-use contract). VAL-V2M04-027.
+  #   033 - approval token past approval_ttl_seconds. VAL-V2M04-027.
+  # The error envelope's details.subcode carries the descriptive alias
+  # ("APPROVAL_REQUIRED" / "APPROVAL_TOKEN_CONSUMED" / "APPROVAL_EXPIRED")
+  # for log readability without violating the wire-format grammar.
+  - RELAY-REPLAY-031
+  - RELAY-REPLAY-032
+  - RELAY-REPLAY-033
   - RELAY-SCHEMA-001
   - RELAY-SCHEMA-011
   - RELAY-SCHEMA-014
@@ -244,6 +293,28 @@ codes:
   - RELAY-SIDECAR-011
   - RELAY-SIDECAR-012
   - RELAY-SIDECAR-013
+  # M04 w4-side-effects ingest enforcement codes (VAL-V2M04-011..014,
+  # VAL-V2M04-017). Per VAL-W1-029 every code MUST match
+  # ^RELAY-[A-Z]+-[0-9]{3}$ -- numeric tail required. The contract
+  # narrative names these as RELAY-SIDEEFFECT-MARKER-MISSING /
+  # RELAY-SIDEEFFECT-PROOF-MISSING / RELAY-SIDEEFFECT-REPLAY-PREFIX-MISSING;
+  # the wire-format tokens carry the numeric form:
+  #   001 - span carries side_effect_class in {mutating,
+  #         external_irreversible, approval_required} without a matching
+  #         side_effect_markers row. VAL-V2M04-011/013/014.
+  #   002 - marker exists but no matching side_effect_proofs row.
+  #         VAL-V2M04-012/013/014.
+  #   011 - marker insert during an active replay context lacks the
+  #         "replay:<id>:" idempotency_key prefix. VAL-V2M04-017.
+  #   012 - replay-prefixed key written outside an active replay context
+  #         (defensive opposite to 011 per spec X line 5176).
+  # The error envelope's details.subcode carries the descriptive alias
+  # ("MARKER_MISSING" / "PROOF_MISSING" / "REPLAY_PREFIX_MISSING" /
+  # "REPLAY_PREFIX_PROD") for log readability.
+  - RELAY-SIDEEFFECT-001
+  - RELAY-SIDEEFFECT-002
+  - RELAY-SIDEEFFECT-011
+  - RELAY-SIDEEFFECT-012
   - RELAY-SQLITE-001
   - RELAY-VENDOR-001
   - RELAY-VENDOR-002
@@ -285,3 +356,71 @@ code_details:
       Spec T (line 4895).
     http_status: 422
     spec_anchor: "T 4895"
+  # V2M08 w8-ai-hardening structured metadata. Each entry below carries
+  # the contract-required `category` + `message_template` fields plus the
+  # canonical `description`, `http_status`, and `spec_anchor`. The loader
+  # at error_code_registry.py exposes all fields via CodeDetail; callers
+  # construct the wire envelope by formatting message_template against
+  # context.
+  RELAY-ING-041:
+    category: ingest
+    description: >-
+      Ingest span exceeded the canonical-JSON span size limit (256 KiB
+      / 262144 bytes) or the nesting depth limit (16 levels). The envelope
+      carries offending_span_id plus either measured_bytes or
+      reason=nesting_depth_exceeded.
+    message_template: >-
+      span exceeded ingest hardening limits (256 KiB canonical-JSON size
+      and depth-16 nesting); offending_span_id={offending_span_id}.
+    http_status: 413
+    spec_anchor: "AI line 5659"
+  RELAY-REDACT-014:
+    category: redaction
+    description: >-
+      Redaction policy publish rejected because a regex matcher exceeded
+      the 50 ms per-input wall-clock budget when evaluated against the
+      published catastrophic-backtracking corpus. Envelope carries
+      matcher_id plus measured_ms.
+    message_template: >-
+      redaction matcher {matcher_id} exceeded the 50 ms per-input ReDoS
+      regex budget (measured {measured_ms} ms); revise the pattern.
+    http_status: 422
+    spec_anchor: "AI line 5665"
+  RELAY-AUTH-017:
+    category: auth
+    description: >-
+      Request rejected because the signed timestamp is outside the
+      acceptable +/-300 s clock-skew window. Envelope carries
+      server_now_utc and client_claim_utc so the client can self-diagnose;
+      the remediation hint points at NTP / system time sync.
+    message_template: >-
+      clock skew exceeds +/-300 s window: server_now_utc={server_now_utc}
+      client_claim_utc={client_claim_utc}; remediation: sync the client
+      clock via NTP or the host time service.
+    http_status: 401
+    spec_anchor: "L line 4479; AI lines 5651-5670"
+  RELAY-AUTH-022:
+    category: auth
+    description: >-
+      Auditor-room token presented from an IP that does not match its
+      first-use IP binding. [OUT-OF-SCOPE-PRIVATE]: auditor rooms live in
+      private relay-platform/; the enforcement runtime is NOT shipped in
+      OSS relay/. This code is registered in the public OSS registry so
+      verifier and CLI tools can decode envelopes produced by the hosted
+      surface.
+    message_template: >-
+      auditor token rejected by first-use IP binding [OUT-OF-SCOPE-PRIVATE].
+    http_status: 403
+    spec_anchor: "AI line 5675"
+  RELAY-ING-045:
+    category: ingest
+    description: >-
+      Ingest span carried invalid UTF-8 byte sequences in an indexed
+      field (prompt_template_id, tool_name, model, retriever_name, or any
+      field declared via indexed_string_fields). Envelope carries
+      field_path identifying the offending field.
+    message_template: >-
+      indexed field {field_path} contains invalid UTF-8; all indexed
+      string fields MUST be valid UTF-8 NFC.
+    http_status: 400
+    spec_anchor: "AI line 5698"

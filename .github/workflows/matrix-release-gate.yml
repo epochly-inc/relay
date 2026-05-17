@@ -1,0 +1,203 @@
+# Relay v0.2 OSS -- Matrix CI aggregator: parent release gate
+# (VAL-V2M08-018, VAL-V2M08-019).
+#
+# Purpose: when a release is gated on multiple matrix legs (e.g., one
+# per Python version), each leg writes its own leg decision; this
+# workflow aggregates them and writes exactly one parent
+# `gate_decisions` row keyed (gate_id_parent, release_sha). The
+# parent decision is `accept` only if every leg decision is `accept`;
+# otherwise the parent is `reject` with reason.failed_legs[] listing
+# offending leg gate_ids.
+#
+# Spec citations:
+#   - contract VAL-V2M08-018 (parent release gate decision)
+#   - contract VAL-V2M08-019 (no parent decision while any leg pending)
+#   - eng plan AI line 5721 (matrix CI aggregator)
+#
+# Implementation note: the in-process aggregator primitive lives at
+# apps/local-sidecar/relay_sidecar/gate/aggregator.py. This workflow
+# wires legs into the aggregator via a final "aggregate" job that
+# depends on every leg job; GitHub Actions' "needs:" semantics
+# guarantee the aggregate job does not run until every dependent job
+# has reported (mirrors VAL-V2M08-019's pending-leg behavior).
+#
+# Process safety: never kills processes by name (CLAUDE.md banned
+# pattern #1); the aggregator is pure-Python and does not spawn
+# subprocesses.
+
+name: "matrix-release-gate"
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Each matrix leg writes its decision (accept/reject) to a JSON
+# artifact named "leg-<id>.json". The aggregate job collects every
+# artifact and feeds them into the MatrixAggregator, then writes the
+# parent decision JSON as a workflow artifact for the gate engine to
+# consume.
+
+jobs:
+  leg-py312:
+    name: "leg: py3.12"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install uv
+        run: pip install uv
+      - name: run plumbing tier
+        id: plumb
+        run: uv run pytest -m plumbing --timeout=60 -q
+      - name: emit leg decision
+        if: always()
+        shell: python
+        run: |
+          import json, os, pathlib
+          outcome = "accept" if "${{ steps.plumb.outcome }}" == "success" else "reject"
+          out = pathlib.Path("leg-py312.json")
+          out.write_text(json.dumps({"leg_id": "leg-py312", "decision": outcome}))
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: leg-py312
+          path: leg-py312.json
+
+  leg-py313:
+    name: "leg: py3.13"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: install uv
+        run: pip install uv
+      - name: run plumbing tier
+        id: plumb
+        run: uv run pytest -m plumbing --timeout=60 -q
+      - name: emit leg decision
+        if: always()
+        shell: python
+        run: |
+          import json, pathlib
+          outcome = "accept" if "${{ steps.plumb.outcome }}" == "success" else "reject"
+          pathlib.Path("leg-py313.json").write_text(
+              json.dumps({"leg_id": "leg-py313", "decision": outcome})
+          )
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: leg-py313
+          path: leg-py313.json
+
+  leg-py314:
+    name: "leg: py3.14"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: install uv
+        run: pip install uv
+      - name: run plumbing tier
+        id: plumb
+        run: uv run pytest -m plumbing --timeout=60 -q
+      - name: emit leg decision
+        if: always()
+        shell: python
+        run: |
+          import json, pathlib
+          outcome = "accept" if "${{ steps.plumb.outcome }}" == "success" else "reject"
+          pathlib.Path("leg-py314.json").write_text(
+              json.dumps({"leg_id": "leg-py314", "decision": outcome})
+          )
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: leg-py314
+          path: leg-py314.json
+
+  aggregate:
+    # VAL-V2M08-019: this job does NOT run until every leg has
+    # reported. GitHub Actions' "needs:" guarantees the equivalent of
+    # the in-process aggregator's "pending leg" check.
+    name: "aggregate: parent release decision"
+    needs: [leg-py312, leg-py313, leg-py314]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: install uv
+        run: pip install uv
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: leg-*
+          merge-multiple: true
+      - name: compute parent decision
+        shell: python
+        run: |
+          import json, pathlib, sys
+          sys.path.insert(0, "apps/local-sidecar")
+          from relay_sidecar.gate.aggregator import MatrixAggregator
+          legs = ("leg-py312", "leg-py313", "leg-py314")
+          # release_sha: 32-byte hex from GITHUB_SHA, prefixed sha256: per
+          # canonical gate_decisions schema. GitHub uses a 40-char SHA-1
+          # ref; we left-pad to a 64-char hex for compatibility.
+          import os
+          gh_sha = os.environ.get("GITHUB_SHA", "")
+          # If GITHUB_SHA is sha1 (40 hex chars), pad to 64 with zeroes
+          # so the parent row still satisfies the canonical sha256 form.
+          release_sha = "sha256:" + (gh_sha + "0" * (64 - len(gh_sha)))[:64]
+          agg = MatrixAggregator(
+              release_sha=release_sha,
+              leg_ids=legs,
+              parent_gate_id="release-parent-matrix",
+          )
+          for leg in legs:
+              p = pathlib.Path(f"{leg}.json")
+              if not p.exists():
+                  # Pending leg -- VAL-V2M08-019 enforces "no parent
+                  # decision while any leg is pending". Exit non-zero so
+                  # the aggregate job reflects the incomplete matrix.
+                  print(f"FAIL: leg {leg} did not report; aggregator holds parent decision")
+                  sys.exit(1)
+              data = json.loads(p.read_text())
+              agg.record_leg(leg, data["decision"])
+          parent = agg.compute_parent_decision()
+          assert parent is not None, "aggregator returned None despite all legs reported"
+          out = {
+              "gate_id": parent.gate_id,
+              "gate_kind": parent.gate_kind,
+              "release_sha": parent.release_sha,
+              "decision": parent.decision,
+              "written_by": parent.written_by,
+              "reason": parent.reason,
+              "leg_decisions": [
+                  {"leg_id": leg_id, "decision": dec}
+                  for leg_id, dec in parent.leg_decisions
+              ],
+          }
+          pathlib.Path("parent-release-decision.json").write_text(
+              json.dumps(out, indent=2, sort_keys=True)
+          )
+          print(json.dumps(out, indent=2, sort_keys=True))
+          if parent.decision != "accept":
+              sys.exit(2)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parent-release-decision
+          path: parent-release-decision.json

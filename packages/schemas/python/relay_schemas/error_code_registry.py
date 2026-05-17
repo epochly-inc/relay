@@ -33,12 +33,20 @@ YAML_PATH = _REPO_ROOT / "packages" / "schemas" / "raw" / "relay-error-codes.yam
 
 @dataclass(frozen=True)
 class CodeDetail:
-    """Structured metadata for a single error code."""
+    """Structured metadata for a single error code.
+
+    The ``category`` and ``message_template`` fields are required by the
+    M08-W8 hardening contract (VAL-V2M08-001 etc.) for codes whose
+    envelope shape is consumed by the verifier/CLI surface. Older entries
+    that predate the M08 contract may omit them.
+    """
 
     code: str
     description: str
     http_status: int
     spec_anchor: str | None = None
+    category: str | None = None
+    message_template: str | None = None
 
 
 def _load_yaml() -> dict[str, Any]:
@@ -92,6 +100,8 @@ def load_code_details() -> dict[str, CodeDetail]:
         description = fields.get("description")
         http_status = fields.get("http_status")
         spec_anchor = fields.get("spec_anchor")
+        category = fields.get("category")
+        message_template = fields.get("message_template")
         if not isinstance(description, str) or not description.strip():
             raise RuntimeError(
                 f"{YAML_PATH} code_details[{code!r}].description must be a non-empty string"
@@ -104,11 +114,31 @@ def load_code_details() -> dict[str, CodeDetail]:
             raise RuntimeError(
                 f"{YAML_PATH} code_details[{code!r}].spec_anchor must be a string if present"
             )
+        if category is not None and (
+            not isinstance(category, str) or not category.strip()
+        ):
+            raise RuntimeError(
+                f"{YAML_PATH} code_details[{code!r}].category must be a non-empty "
+                f"string if present"
+            )
+        if message_template is not None and (
+            not isinstance(message_template, str) or not message_template.strip()
+        ):
+            raise RuntimeError(
+                f"{YAML_PATH} code_details[{code!r}].message_template must be a "
+                f"non-empty string if present"
+            )
         out[code] = CodeDetail(
             code=code,
             description=description.strip(),
             http_status=http_status,
             spec_anchor=spec_anchor,
+            category=category.strip() if isinstance(category, str) else None,
+            message_template=(
+                message_template.strip()
+                if isinstance(message_template, str)
+                else None
+            ),
         )
     return out
 

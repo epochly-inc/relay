@@ -102,6 +102,8 @@ from .quiesce import (
 )
 from .recovery import recover_or_refuse
 from .state_engine.http_endpoint import build_state_router
+from .validation.ingest_limits import validate_span_size_and_depth
+from .validation.ingest_utf8 import validate_indexed_utf8
 
 # Drain grace window advertised to clients via ``Retry-After``. Matches the
 # manifest service.local-sidecar.quiesce_timeout_ms (30000 ms = 30 s).
@@ -1186,7 +1188,9 @@ def build_runtime_app(
 
     @app.post("/v1/ingest/spans:batch")
     async def v1_ingest_spans_batch(request: Request) -> JSONResponse:
-        """Spans-batch ingest with manifest enforcement (VAL-V2M03-012)."""
+        """Spans-batch ingest with manifest enforcement (VAL-V2M03-012)
+        + M08-W8 adversarial-input hardening (VAL-V2M08-002, 003, 010).
+        """
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
@@ -1210,6 +1214,29 @@ def build_runtime_app(
         enforced = await _enforce_manifest_anchors(body)
         if isinstance(enforced, JSONResponse):
             return enforced
+        # M08-W8 hardening: per-span size + nesting + indexed-UTF-8
+        # checks (VAL-V2M08-002, 003, 010). The body's "spans" array
+        # may be absent (legacy submission shape) or empty -- both
+        # accepted; only declared spans are validated.
+        spans = body.get("spans")
+        if isinstance(spans, list):
+            for span in spans:
+                if not isinstance(span, dict):
+                    continue
+                size_or_depth = validate_span_size_and_depth(span)
+                if size_or_depth is not None:
+                    return JSONResponse(
+                        status_code=size_or_depth["http_status"],
+                        content=size_or_depth,
+                    )
+                attrs = span.get("attributes")
+                if isinstance(attrs, dict):
+                    utf8_reject = validate_indexed_utf8(attrs)
+                    if utf8_reject is not None:
+                        return JSONResponse(
+                            status_code=utf8_reject["http_status"],
+                            content=utf8_reject,
+                        )
         tracker = runtime.quiesce.tracker
         async with tracker.acquire(description="ingest/spans:batch") as op:
             return JSONResponse(
