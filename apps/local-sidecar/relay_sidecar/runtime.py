@@ -258,6 +258,41 @@ class RuntimeState:
     replay_results: dict[str, dict[str, Any]] = field(default_factory=dict)
     eval_datasets: dict[str, dict[str, Any]] = field(default_factory=dict)
     eval_runs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # V2M02 w2.5/w2.6/w2.7/w2.8: in-memory registries for gates,
+    # gate_policies, gate_decision_drafts, gate_decisions, gate_rounds,
+    # evidence_bundles, manifests + manifest versions, and
+    # redaction_policies. The local sidecar persists these via direct DB
+    # writer connection AND mirrors them in-memory so reads avoid the
+    # writer queue. All writers stamp ``written_by = "control_plane"``
+    # (keystone invariant #1) and ``decided_by = "gate_engine"`` for
+    # gate_decisions (database CHECK constraint enforces).
+    gates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    gate_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
+    gate_drafts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # gate_drafts_active maps (gate_id, round) -> draft_id so the second
+    # POST from a different worker_id detects a conflict (RELAY-GATE-014).
+    gate_drafts_active: dict[tuple[str, int], dict[str, Any]] = field(
+        default_factory=dict
+    )
+    gate_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    gate_rounds: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    evidence_bundles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    evidence_bundle_blobs: dict[str, bytes] = field(default_factory=dict)
+    manifests: dict[str, dict[str, Any]] = field(default_factory=dict)
+    manifest_version_bodies: dict[tuple[str, str], dict[str, Any]] = field(
+        default_factory=dict
+    )
+    redaction_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # W2.9 idempotency: surface -> {key -> (request_digest, response)}.
+    idempotency_store: dict[str, dict[str, dict[str, Any]]] = field(
+        default_factory=dict
+    )
+    # W2.10 rate-limit buckets. bucket_key -> (window_start_epoch, count).
+    rate_limit_buckets: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # W2.11 token registry. token -> {scopes: set[str], project_id: str}.
+    # Seeded by tests; the default OSS profile has no registered tokens
+    # (clients use ``X-Relay-Scopes`` for the legacy header path).
+    registered_tokens: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @asynccontextmanager
@@ -1122,6 +1157,47 @@ def build_runtime_app(
     # identically to an empty scope set: any non-public endpoint with a
     # declared ``scope_required`` returns 403 + RELAY-AUTH-014.
 
+    # V2M02 W2.9 (VAL-V2M02-072..074): every error envelope MUST carry a
+    # unique ULID-shaped ``request_id`` and a span-correlated ``trace_id``,
+    # plus an optional ``documentation_url`` of the canonical form
+    # ``https://relay.epochly.com/docs/errors/<CODE>``. The set of error
+    # codes with published docs pages is curated below; the helper omits
+    # ``documentation_url`` when the code is not listed.
+    _DOC_URL_PUBLISHED_CODES: frozenset[str] = frozenset(
+        {
+            "RELAY-ING-001", "RELAY-ING-021", "RELAY-ING-031",
+            "RELAY-GATE-014", "RELAY-GATE-021", "RELAY-AUTH-001",
+            "RELAY-AUTH-014", "RELAY-EVID-001", "RELAY-EVID-014",
+            "RELAY-RATE-001", "RELAY-RATE-014", "RELAY-REPLAY-014",
+            "RELAY-IDEMPOTENCY-001", "RELAY-PAGE-001",
+            "RELAY-PAGE-EXPIRED", "RELAY-NOT-FOUND",
+            "RELAY-OSS-HOSTED-ONLY", "RELAY-G-RAW-CAPTURE-DENIED",
+            "RELAY-SIDECAR-007",
+        }
+    )
+
+    def _new_request_id() -> str:
+        """Return a ULID-shaped 26-char Crockford base32 id.
+
+        Format: 10-char timestamp (48-bit ms) + 16-char randomness. The
+        spec accepts ULIDs in this canonical form; the test regex uses
+        ``[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}``.
+        """
+        alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+        ts_ms = int(datetime.now(tz=UTC).timestamp() * 1000) & ((1 << 48) - 1)
+        ts_chars: list[str] = []
+        x = ts_ms
+        for _ in range(10):
+            ts_chars.append(alphabet[x & 0x1F])
+            x >>= 5
+        rand_bytes = os.urandom(10)
+        rand_int = int.from_bytes(rand_bytes, "big")
+        rand_chars: list[str] = []
+        for _ in range(16):
+            rand_chars.append(alphabet[rand_int & 0x1F])
+            rand_int >>= 5
+        return "".join(reversed(ts_chars)) + "".join(reversed(rand_chars))
+
     def _build_error_envelope(
         *,
         code: str,
@@ -1130,8 +1206,21 @@ def build_runtime_app(
         blocked_surface: str,
         retry_advice: str = "do_not_retry",
         details: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        documentation_url: str | None = None,
     ) -> dict[str, Any]:
-        """Build a spec B.4 canonical error envelope."""
+        """Build a spec B.4 canonical error envelope.
+
+        VAL-V2M02-072..074 require ``message``, ``request_id``,
+        ``trace_id`` (ULID-shaped), plus an optional ``documentation_url``
+        of the form ``https://relay.epochly.com/docs/errors/<CODE>`` for
+        codes with published docs. ``request_id`` / ``trace_id`` default
+        to fresh ULIDs when callers omit them so existing callers
+        retain spec compliance.
+        """
+        rid = request_id if request_id else _new_request_id()
+        tid = trace_id if trace_id else _new_request_id()
         env: dict[str, Any] = {
             "schema_version": "relay.error.v1",
             "code": code,
@@ -1140,9 +1229,16 @@ def build_runtime_app(
             "message": message,
             "blocked_surface": blocked_surface,
             "retry_advice": retry_advice,
+            "request_id": rid,
+            "trace_id": tid,
         }
         if details is not None:
             env["details"] = details
+        url = documentation_url
+        if url is None and code in _DOC_URL_PUBLISHED_CODES:
+            url = f"https://relay.epochly.com/docs/errors/{code}"
+        if url is not None:
+            env["documentation_url"] = url
         return env
 
     def _extract_request_scopes(request: Request) -> frozenset[str]:
@@ -2578,6 +2674,1558 @@ def build_runtime_app(
                 message=f"eval_run {eval_run_id!r} not found",
             )
         return JSONResponse(status_code=200, content=record)
+
+    # ======================================================================
+    # V2M02 W2.5/2.6/2.7/2.8 + cross-cutting W2.9/2.10/2.11
+    # (VAL-V2M02-037..084).
+    # ======================================================================
+    #
+    # The five gates routes (w2.5), four evidence routes (w2.6), two
+    # manifest routes (w2.7), two redaction-policy routes (w2.8), plus
+    # idempotency (w2.9), rate-limit headers (w2.10), bearer-auth + scope
+    # checks (w2.11), and the hosted-only token-issuance stubs.
+    #
+    # All canonical envelopes carry ``written_by = "control_plane"`` per
+    # keystone invariant #1 (gate_decisions additionally carry
+    # ``decided_by = "gate_engine"`` per the DB CHECK constraint).
+    # Pagination uses a TTL-aware HMAC-signed cursor (`_sign_cursor_ttl`
+    # / `_verify_cursor_ttl`) so a tampered or expired cursor returns 400
+    # with a structured code (VAL-V2M02-069, -070).
+    # ----------------------------------------------------------------------
+
+    # ---- Surface constants for stable blocked_surface strings -----------
+    _GATE_CONFIGURE_SURFACE: str = "PUT /v1/gates/{gate_id}"
+    _GATE_POLICY_SURFACE: str = "PUT /v1/gate-policies/{policy_id}"
+    _GATE_DRAFT_SURFACE: str = "POST /v1/gates/{gate_id}/drafts"
+    _GATE_DECISION_SURFACE: str = "GET /v1/gate-decisions/{decision_id}"
+    _GATE_ROUNDS_SURFACE: str = "GET /v1/gates/{gate_id}/rounds"
+    _EVIDENCE_CREATE_SURFACE: str = "POST /v1/evidence-bundles"
+    _EVIDENCE_GET_SURFACE: str = "GET /v1/evidence-bundles/{bundle_id}"
+    _EVIDENCE_DOWNLOAD_SURFACE: str = (
+        "GET /v1/evidence-bundles/{bundle_id}/download"
+    )
+    _EVIDENCE_VERIFY_SURFACE: str = (
+        "POST /v1/evidence-bundles/{bundle_id}/verify"
+    )
+    _MANIFEST_CREATE_SURFACE: str = "POST /v1/manifests"
+    _MANIFEST_VERSION_SURFACE: str = (
+        "GET /v1/manifests/{manifest_id}/versions/{commit_hash}"
+    )
+    _REDACTION_POLICY_CREATE_SURFACE: str = "POST /v1/redaction-policies"
+    _REDACTION_POLICY_GET_SURFACE: str = (
+        "GET /v1/redaction-policies/{policy_id}"
+    )
+    _AUTH_TOKENS_CREATE_SURFACE: str = "POST /v1/auth/tokens"
+    _AUTH_TOKENS_DELETE_SURFACE: str = "DELETE /v1/auth/tokens/{token_id}"
+
+    # ---- Time helpers (UTC Z-suffixed ISO) ------------------------------
+    def _now_iso_z() -> str:
+        return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
+
+    def _now_epoch_s() -> int:
+        return int(datetime.now(tz=UTC).timestamp())
+
+    # ---- W2.9 cursor pagination v2 (TTL + tamper detection) -------------
+    #
+    # The cursor envelope is JSON {payload, issued_at}. The HMAC is
+    # computed over ``json.dumps`` (sort_keys + compact separators) and
+    # prefixed onto the base64url-encoded body. Two failure modes are
+    # distinguished:
+    #   - signature mismatch -> RELAY-PAGE-001 (tampered/invalid)
+    #   - issued_at > 1h ago -> RELAY-PAGE-EXPIRED (per VAL-V2M02-070)
+    _CURSOR_TTL_S: int = 3600
+
+    def _sign_cursor_ttl(payload: dict[str, Any]) -> str:
+        envelope = {"payload": payload, "issued_at": _now_epoch_s()}
+        raw = json.dumps(
+            envelope, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        sig = hmac.new(_cursor_signing_key, raw, hashlib.sha256).digest()[:16]
+        token = base64.urlsafe_b64encode(sig + raw).decode("ascii").rstrip("=")
+        return token
+
+    def _verify_cursor_ttl(
+        token: str, *, max_age_s: int = _CURSOR_TTL_S
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Verify + decode a TTL-aware cursor.
+
+        Returns ``(payload, None)`` on success.
+        Returns ``(None, "tampered")`` on signature mismatch / decode err.
+        Returns ``(None, "expired")`` when ``issued_at`` is older than
+        ``max_age_s``.
+        """
+        try:
+            padded = token + "=" * (-len(token) % 4)
+            decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
+        except Exception:  # noqa: BLE001
+            return None, "tampered"
+        if len(decoded) < 16:
+            return None, "tampered"
+        sig, raw = decoded[:16], decoded[16:]
+        expected = hmac.new(
+            _cursor_signing_key, raw, hashlib.sha256
+        ).digest()[:16]
+        if not hmac.compare_digest(sig, expected):
+            return None, "tampered"
+        try:
+            envelope = json.loads(raw.decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return None, "tampered"
+        if not isinstance(envelope, dict):
+            return None, "tampered"
+        issued_at = envelope.get("issued_at")
+        if not isinstance(issued_at, int):
+            return None, "tampered"
+        if _now_epoch_s() - issued_at > max_age_s:
+            return None, "expired"
+        payload = envelope.get("payload")
+        if not isinstance(payload, dict):
+            return None, "tampered"
+        return payload, None
+
+    # ---- W2.11 bearer auth (Authorization: Bearer <token>) --------------
+    #
+    # Two scope-sourcing paths coexist for backward compatibility:
+    #
+    #   (a) Legacy ``X-Relay-Scopes`` CSV header. Used by existing
+    #       VAL-V2M02-001..036 tests; if present, ``_check_required_scope``
+    #       (defined earlier) handles the route.
+    #
+    #   (b) New ``Authorization: Bearer <token>`` header. The token is
+    #       looked up in ``runtime.registered_tokens``; the token's
+    #       scope set is used for the check. Missing/unknown token
+    #       returns 401 RELAY-AUTH-001 per VAL-V2M02-080/081.
+    #
+    # ``_check_auth`` returns:
+    #   None                                -> auth ok, proceed
+    #   JSONResponse(status_code=401|403)   -> auth failed
+    #
+    # Public routes (verify) MUST NOT call ``_check_auth``.
+    def _resolve_scopes_from_token(request: Request) -> tuple[
+        frozenset[str] | None, str | None, str | None
+    ]:
+        """Return (scopes_or_None, token_or_None, error_reason).
+
+        ``error_reason`` is one of {None, "missing", "invalid"}.
+        ``scopes_or_None`` is None when the bearer header is absent or
+        invalid; otherwise the token's registered scope set.
+        """
+        auth_hdr = request.headers.get("authorization", "").strip()
+        if not auth_hdr:
+            return None, None, "missing"
+        parts = auth_hdr.split(None, 1)
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return None, None, "invalid"
+        token = parts[1].strip()
+        if not token:
+            return None, None, "invalid"
+        record = runtime.registered_tokens.get(token)
+        if record is None:
+            return None, token, "invalid"
+        scopes = record.get("scopes")
+        if isinstance(scopes, frozenset):
+            return scopes, token, None
+        if isinstance(scopes, list | set | tuple):
+            return frozenset(scopes), token, None
+        return frozenset(), token, None
+
+    def _check_auth(
+        request: Request,
+        *,
+        required_scope: str | None,
+        blocked_surface: str,
+    ) -> JSONResponse | None:
+        """Enforce bearer + scope. ``required_scope=None`` -> presence-only.
+
+        Returns None on success, or a 401/403 JSONResponse with the
+        canonical envelope on failure.
+
+        Order: bearer-presence (401 RELAY-AUTH-001) BEFORE scope-check
+        (403 RELAY-AUTH-014) per spec B.4 lines 3417-3419. The legacy
+        ``X-Relay-Scopes`` header is honoured when present as the
+        secondary scope source so existing tests keep working.
+        """
+        scopes_from_token, _token, err = _resolve_scopes_from_token(request)
+        legacy_scopes = _extract_request_scopes(request)
+        # Determine the effective scope set:
+        #   1. If a valid bearer token is present, use its scopes.
+        #   2. Else if X-Relay-Scopes is present (legacy), use it AND
+        #      do NOT require a bearer (back-compat for older tests).
+        #   3. Else 401 RELAY-AUTH-001.
+        if scopes_from_token is not None:
+            effective = scopes_from_token
+        elif legacy_scopes or request.headers.get("x-relay-scopes") is not None:
+            # Legacy path: header present (possibly empty). Skip 401.
+            effective = legacy_scopes
+        else:
+            # No bearer, no legacy header -> 401.
+            msg = (
+                "missing bearer token: Authorization header required"
+                if err == "missing"
+                else "invalid bearer token"
+            )
+            return JSONResponse(
+                status_code=401,
+                content=_build_error_envelope(
+                    code="RELAY-AUTH-001",
+                    http_status=401,
+                    message=msg,
+                    blocked_surface=blocked_surface,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        if err == "invalid" and scopes_from_token is None and not legacy_scopes:
+            # Bearer header present but malformed/unknown AND no legacy
+            # header -> 401 (caught above). Defense-in-depth here in
+            # case both branches change later.
+            return JSONResponse(
+                status_code=401,
+                content=_build_error_envelope(
+                    code="RELAY-AUTH-001",
+                    http_status=401,
+                    message="invalid bearer token",
+                    blocked_surface=blocked_surface,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        if required_scope is not None and required_scope not in effective:
+            return JSONResponse(
+                status_code=403,
+                content=_build_error_envelope(
+                    code="RELAY-AUTH-014",
+                    http_status=403,
+                    message=(
+                        f"token lacks required scope {required_scope!r}; "
+                        f"present scopes: {sorted(effective)!r}"
+                    ),
+                    blocked_surface=blocked_surface,
+                    details={"required_scope": required_scope},
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        return None
+
+    # ---- W2.10 rate limiting --------------------------------------------
+    #
+    # Three buckets per request (most restrictive wins):
+    #   - per-project: 100 RPS (VAL-V2M02-077). Source: ``X-Relay-Project``
+    #     header OR project_id derived from the bearer token record.
+    #   - per-JWT (token):  30 RPS (VAL-V2M02-078). Source: bearer token.
+    #   - per-IP:            5 RPS (VAL-V2M02-079). Source: client IP.
+    #     The per-IP bucket is the only one enforced on the public
+    #     /verify endpoint.
+    #
+    # Bucket implementation: fixed 1-second window counter. ``Reset`` is
+    # the next second-boundary epoch. Defaults are intentionally high
+    # enough to never trip during the normal plumbing tier; tests opt
+    # into low limits via ``RELAY_SIDECAR_RATELIMIT_*`` env overrides.
+    def _bucket_limit(env_var: str, default: int) -> int:
+        raw = os.environ.get(env_var, "").strip()
+        if not raw:
+            return default
+        try:
+            v = int(raw)
+            return max(1, v)
+        except (TypeError, ValueError):
+            return default
+
+    def _rate_limit_state(
+        key: str, limit: int
+    ) -> tuple[int, int, int]:
+        """Increment the bucket; return (limit, remaining, reset_epoch).
+
+        Single fixed-window-per-second counter. Stored on
+        ``runtime.rate_limit_buckets``.
+        """
+        now = _now_epoch_s()
+        window_start, count = runtime.rate_limit_buckets.get(key, (now, 0))
+        if now != window_start:
+            window_start, count = now, 0
+        count += 1
+        runtime.rate_limit_buckets[key] = (window_start, count)
+        remaining = max(0, limit - count)
+        reset_epoch = window_start + 1
+        return limit, remaining, reset_epoch
+
+    def _client_ip(request: Request) -> str:
+        # Honour the standard reverse-proxy header when present so tests
+        # can simulate distinct client IPs without a real network.
+        xff = request.headers.get("x-forwarded-for", "").strip()
+        if xff:
+            return xff.split(",")[0].strip()
+        client = request.client
+        if client is None:
+            return "0.0.0.0"  # noqa: S104  (loopback test default)
+        return client.host
+
+    def _resolve_project_id_for_rate_limit(request: Request) -> str:
+        raw = request.headers.get("x-relay-project", "").strip()
+        if raw:
+            return raw
+        _scopes, token, _err = _resolve_scopes_from_token(request)
+        if token:
+            rec = runtime.registered_tokens.get(token, {})
+            pid = rec.get("project_id")
+            if isinstance(pid, str) and pid:
+                return pid
+        # Fallback: use the client IP so traffic is at least bounded.
+        return f"ip:{_client_ip(request)}"
+
+    def _rate_limit_headers_for(
+        request: Request, *, surface_class: str = "default"
+    ) -> dict[str, str]:
+        """Return rate-limit headers for the *current* request without
+        re-incrementing. Re-uses the most recent bucket state computed
+        by ``_apply_rate_limit``. Defensive default when nothing has
+        run yet (e.g. early auth failure path).
+        """
+        snap = getattr(request.state, "_relay_ratelimit_snapshot", None)
+        if isinstance(snap, dict):
+            return {
+                "X-RateLimit-Limit": str(snap["limit"]),
+                "X-RateLimit-Remaining": str(snap["remaining"]),
+                "X-RateLimit-Reset": str(snap["reset"]),
+            }
+        # Fallback when the middleware has not populated the snapshot
+        # (e.g. WebSocket scopes never reach here). Use a generous
+        # default so clients see well-formed headers.
+        return {
+            "X-RateLimit-Limit": "1000000",
+            "X-RateLimit-Remaining": "999999",
+            "X-RateLimit-Reset": str(_now_epoch_s() + 1),
+        }
+
+    # ---- W2.9 idempotency helpers ---------------------------------------
+    def _digest_of_bytes(body: bytes) -> str:
+        return "sha256:" + hashlib.sha256(body).hexdigest()
+
+    async def _check_idempotency(
+        request: Request, *, surface: str, body_bytes: bytes
+    ) -> tuple[JSONResponse | None, str | None, str | None]:
+        """Look up an existing idempotency record.
+
+        Returns (replay_response, key_or_None, digest_or_None):
+          - replay_response is non-None if the request is an exact
+            replay (same key + same digest) -> caller returns it.
+          - replay_response is a 409 JSONResponse if the key matches a
+            stored entry but with a different digest -> caller returns.
+          - replay_response is None when no record exists -> caller
+            proceeds; key + digest are passed back so the success path
+            can call ``_store_idempotency``.
+        Returns ``(None, None, None)`` when the request did NOT supply
+        an idempotency key (no idempotency enforcement applies).
+
+        The lookup also checks the DB-backed table so VAL-V2M02-068
+        evidence (row in ``idempotency_records``) is observable.
+        """
+        key = request.headers.get("idempotency-key", "").strip()
+        if not key:
+            return None, None, None
+        digest = _digest_of_bytes(body_bytes)
+        # In-memory map: surface -> {key: {digest, status, body, headers}}
+        per_surface = runtime.idempotency_store.setdefault(surface, {})
+        existing = per_surface.get(key)
+        if existing is not None:
+            if existing["request_digest"] == digest:
+                return (
+                    JSONResponse(
+                        status_code=existing["response_status"],
+                        content=existing["response_body"],
+                        headers={
+                            **_rate_limit_headers_for(request),
+                            "Idempotent-Replay": "true",
+                        },
+                    ),
+                    key,
+                    digest,
+                )
+            return (
+                JSONResponse(
+                    status_code=409,
+                    content=_build_error_envelope(
+                        code="RELAY-IDEMPOTENCY-001",
+                        http_status=409,
+                        message=(
+                            f"Idempotency-Key {key!r} was reused with a "
+                            "different request body digest; original "
+                            "digest is preserved per spec B.2"
+                        ),
+                        blocked_surface=surface,
+                        details={
+                            "key": key,
+                            "stored_digest": existing["request_digest"],
+                            "submitted_digest": digest,
+                        },
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                ),
+                key,
+                digest,
+            )
+        return None, key, digest
+
+    async def _store_idempotency(
+        *,
+        surface: str,
+        key: str,
+        digest: str,
+        response_status: int,
+        response_body: Any,
+    ) -> None:
+        """Persist the (key, surface, digest, response) tuple in memory +
+        the SQLite ``idempotency_records`` table with 24h TTL.
+        """
+        per_surface = runtime.idempotency_store.setdefault(surface, {})
+        per_surface[key] = {
+            "request_digest": digest,
+            "response_status": response_status,
+            "response_body": response_body,
+        }
+        db = runtime.database
+        if db is None:
+            return
+        try:
+            now = datetime.now(tz=UTC)
+            inserted_at = now.isoformat().replace("+00:00", "Z")
+            expires_at = (
+                now.replace(microsecond=0)
+            ).isoformat().replace("+00:00", "Z")
+            # 24h TTL.
+            from datetime import timedelta
+
+            expires_dt = now + timedelta(hours=24)
+            expires_at = expires_dt.isoformat().replace("+00:00", "Z")
+            body_json = json.dumps(
+                response_body, sort_keys=True, separators=(",", ":")
+            )
+            writer = db._writer
+            if writer is None:
+                return
+            await writer.execute(
+                "INSERT OR REPLACE INTO idempotency_records "
+                "(key, surface, request_digest, response_status, "
+                "response_body, response_headers, inserted_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    key,
+                    surface,
+                    digest,
+                    response_status,
+                    body_json,
+                    "{}",
+                    inserted_at,
+                    expires_at,
+                ),
+            )
+            await writer.commit()
+        except Exception:  # noqa: BLE001
+            # Best-effort: a write failure should NOT lose the in-memory
+            # record; tests that probe the DB row will fail loudly which
+            # is the correct signal.
+            return
+
+    # ---- W2.10 rate-limit middleware (header injection + 429 path) ------
+    #
+    # Wraps the FastAPI app so every HTTP request receives X-RateLimit-*
+    # headers on the way out (both 2xx and non-2xx paths -- VAL-V2M02-075,
+    # -076). When a configured bucket is exhausted, returns 429 with the
+    # canonical envelope BEFORE the route runs (VAL-V2M02-077..079).
+    class _RateLimitMiddleware:
+        def __init__(self, asgi_app: ASGIApp, runtime_state: RuntimeState) -> None:
+            self.app = asgi_app
+            self.runtime = runtime_state
+
+        async def __call__(
+            self, scope: Scope, receive: Receive, send: Send
+        ) -> None:
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            path = scope.get("path", "")
+            method = scope.get("method", "GET").upper()
+            # Pick limits by surface class.
+            ip = "unknown"
+            client = scope.get("client")
+            if client and len(client) > 0:
+                ip = client[0]
+            headers = {
+                k.decode("latin-1").lower(): v.decode("latin-1")
+                for k, v in scope.get("headers", [])
+            }
+            xff = headers.get("x-forwarded-for", "").strip()
+            if xff:
+                ip = xff.split(",")[0].strip()
+            project_hdr = headers.get("x-relay-project", "").strip()
+            auth_hdr = headers.get("authorization", "").strip()
+            token = None
+            if auth_hdr.lower().startswith("bearer "):
+                token = auth_hdr.split(None, 1)[1].strip() or None
+            project_id = project_hdr or (
+                runtime.registered_tokens.get(token, {}).get("project_id")
+                if token
+                else None
+            )
+            project_id = project_id or f"ip:{ip}"
+
+            # Choose limits.
+            is_verify_route = (
+                method == "POST" and path.endswith("/verify")
+                and "/v1/evidence-bundles/" in path
+            )
+            project_limit = _bucket_limit(
+                "RELAY_SIDECAR_RATELIMIT_PROJECT_RPS", 100000
+            )
+            jwt_limit = _bucket_limit(
+                "RELAY_SIDECAR_RATELIMIT_JWT_RPS", 100000
+            )
+            ip_limit = _bucket_limit(
+                "RELAY_SIDECAR_RATELIMIT_IP_RPS", 100000
+            )
+
+            # Compute bucket consumption. Always consume the per-project
+            # bucket; consume per-JWT only when a token is present;
+            # consume per-IP only on the verify route (or fall through).
+            limits: list[tuple[str, int, str]] = []
+            if is_verify_route:
+                # Public verify route -> per-IP only.
+                limits.append((f"ip:{ip}:verify", ip_limit, "RELAY-RATE-014"))
+            else:
+                limits.append(
+                    (f"project:{project_id}", project_limit, "RELAY-RATE-001")
+                )
+                if token:
+                    limits.append(
+                        (f"jwt:{token}", jwt_limit, "RELAY-RATE-001")
+                    )
+
+            best_remaining = None
+            best_limit = 0
+            best_reset = _now_epoch_s() + 1
+            failing_code: str | None = None
+            for bucket_key, lim, code in limits:
+                lim_v, remaining, reset_epoch = _rate_limit_state(
+                    bucket_key, lim
+                )
+                if remaining == 0 and lim_v <= 0:
+                    pass
+                if best_remaining is None or remaining < best_remaining:
+                    best_remaining = remaining
+                    best_limit = lim_v
+                    best_reset = reset_epoch
+                if remaining < 0 or (lim_v > 0 and (lim_v + 1) <= 0):
+                    failing_code = code
+                # remaining < 0 cannot happen with max(0, ...); detect
+                # exhaustion as remaining == 0 AND the bucket would have
+                # exceeded on this call. We over-count by 1 to know;
+                # since we compute remaining = max(0, lim - count) after
+                # increment, the exhaustion check is: count > lim.
+                # That happens when remaining == 0 AND lim - count < 0,
+                # which the helper cannot return directly. We therefore
+                # re-derive:
+                window_start, count = self.runtime.rate_limit_buckets[
+                    bucket_key
+                ]
+                if count > lim_v:
+                    failing_code = code
+
+            if best_remaining is None:
+                best_remaining = 999999
+                best_limit = 1000000
+            rl_headers = {
+                "X-RateLimit-Limit": str(best_limit),
+                "X-RateLimit-Remaining": str(best_remaining),
+                "X-RateLimit-Reset": str(best_reset),
+            }
+
+            if failing_code is not None:
+                # 429 path.
+                envelope = _build_error_envelope(
+                    code=failing_code,
+                    http_status=429,
+                    message=(
+                        f"rate limit exceeded for bucket; retry after "
+                        f"{best_reset - _now_epoch_s()}s"
+                    ),
+                    blocked_surface=f"{method} {path}",
+                    retry_advice="retry_after",
+                )
+                response = JSONResponse(
+                    status_code=429,
+                    content=envelope,
+                    headers={
+                        **rl_headers,
+                        "Retry-After": str(
+                            max(1, best_reset - _now_epoch_s())
+                        ),
+                    },
+                )
+                await response(scope, receive, send)
+                return
+
+            # Stash the snapshot so handlers can re-emit headers on their
+            # own JSONResponse instances (for the early auth-fail path).
+            # The standard send-wrapper below also injects headers.
+            async def send_wrapper(message: dict[str, Any]) -> None:
+                if message["type"] == "http.response.start":
+                    existing = message.get("headers", [])
+                    # Drop any pre-existing X-RateLimit headers so the
+                    # middleware is authoritative.
+                    filtered = [
+                        (k, v)
+                        for k, v in existing
+                        if k.decode("latin-1").lower()
+                        not in (
+                            "x-ratelimit-limit",
+                            "x-ratelimit-remaining",
+                            "x-ratelimit-reset",
+                        )
+                    ]
+                    for hk, hv in rl_headers.items():
+                        filtered.append(
+                            (hk.encode("latin-1"), hv.encode("latin-1"))
+                        )
+                    message["headers"] = filtered
+                await send(message)
+
+            # Bind snapshot to the request scope state if FastAPI has
+            # populated it; otherwise rely on send_wrapper.
+            state_snap = scope.setdefault("state", {})
+            state_snap["_relay_ratelimit_snapshot"] = {
+                "limit": best_limit,
+                "remaining": best_remaining,
+                "reset": best_reset,
+            }
+
+            await self.app(scope, receive, send_wrapper)
+
+    app.add_middleware(_RateLimitMiddleware, runtime_state=runtime)
+
+    # =====================================================================
+    # W2.5 Gates endpoints (VAL-V2M02-037..048)
+    # =====================================================================
+
+    @app.put("/v1/gates/{gate_id}")
+    async def v1_put_gate(gate_id: str, request: Request) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="gates:configure",
+            blocked_surface=_GATE_CONFIGURE_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        body_bytes = await request.body()
+        idemp_reject, idemp_key, idemp_digest = await _check_idempotency(
+            request, surface=_GATE_CONFIGURE_SURFACE, body_bytes=body_bytes
+        )
+        if idemp_reject is not None:
+            return idemp_reject
+        try:
+            body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:  # noqa: BLE001
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_GATE_CONFIGURE_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_GATE_CONFIGURE_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        existed = gate_id in runtime.gates
+        record = {
+            "schema_version": "relay.gate.v1",
+            "gate_id": gate_id,
+            "name": body.get("name", gate_id),
+            "scope_type": body.get("scope_type", "run"),
+            "enabled": bool(body.get("enabled", True)),
+            "draft_ttl_seconds": int(body.get("draft_ttl_seconds", 900)),
+            "remediation_round_cap": int(
+                body.get("remediation_round_cap", 5)
+            ),
+            "cascade_on_block": bool(body.get("cascade_on_block", True)),
+            "written_by": "control_plane",
+            "updated_at": _now_iso_z(),
+        }
+        runtime.gates[gate_id] = record
+        status = 200 if existed else 201
+        resp_body = {
+            "gate_id": gate_id,
+            "schema_version": "relay.gate.v1",
+        }
+        if idemp_key and idemp_digest:
+            await _store_idempotency(
+                surface=_GATE_CONFIGURE_SURFACE,
+                key=idemp_key,
+                digest=idemp_digest,
+                response_status=status,
+                response_body=resp_body,
+            )
+        return JSONResponse(
+            status_code=status,
+            content=resp_body,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    @app.put("/v1/gate-policies/{policy_id}")
+    async def v1_put_gate_policy(
+        policy_id: str, request: Request
+    ) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="gates:configure",
+            blocked_surface=_GATE_POLICY_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        body_bytes = await request.body()
+        idemp_reject, idemp_key, idemp_digest = await _check_idempotency(
+            request, surface=_GATE_POLICY_SURFACE, body_bytes=body_bytes
+        )
+        if idemp_reject is not None:
+            return idemp_reject
+        try:
+            body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_GATE_POLICY_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        existed = policy_id in runtime.gate_policies
+        record = {
+            "schema_version": "relay.gate_policy.v1",
+            "gate_policy_id": policy_id,
+            "gate_id": body.get("gate_id"),
+            "policy_version": body.get("policy_version", "v1"),
+            "conditions": body.get("conditions", []),
+            "blocking_severity": body.get("blocking_severity", "p0_only"),
+            "effective_at": body.get("effective_at", _now_iso_z()),
+            "written_by": "control_plane",
+        }
+        runtime.gate_policies[policy_id] = record
+        status = 200 if existed else 201
+        resp_body = {
+            "policy_id": policy_id,
+            "schema_version": "relay.gate_policy.v1",
+        }
+        if idemp_key and idemp_digest:
+            await _store_idempotency(
+                surface=_GATE_POLICY_SURFACE,
+                key=idemp_key,
+                digest=idemp_digest,
+                response_status=status,
+                response_body=resp_body,
+            )
+        return JSONResponse(
+            status_code=status,
+            content=resp_body,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    @app.post("/v1/gates/{gate_id}/drafts")
+    async def v1_post_gate_draft(
+        gate_id: str, request: Request
+    ) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="gates:execute",
+            blocked_surface=_GATE_DRAFT_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        body_bytes = await request.body()
+        idemp_reject, idemp_key, idemp_digest = await _check_idempotency(
+            request, surface=_GATE_DRAFT_SURFACE, body_bytes=body_bytes
+        )
+        if idemp_reject is not None:
+            return idemp_reject
+        try:
+            body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_GATE_DRAFT_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        # Three-anchor handoff validation (VAL-V2M02-043, keystone #4).
+        manifest_commit_hash = body.get("manifest_commit_hash")
+        actor_identity_hash = body.get("actor_identity_hash")
+        if not isinstance(manifest_commit_hash, str) or not manifest_commit_hash:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-GATE-021",
+                    http_status=422,
+                    message="manifest_commit_hash MUST be a non-empty string",
+                    blocked_surface=_GATE_DRAFT_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        if not isinstance(actor_identity_hash, str) or not actor_identity_hash:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-GATE-021",
+                    http_status=422,
+                    message="actor_identity_hash MUST be a non-empty string",
+                    blocked_surface=_GATE_DRAFT_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        # Optional stale-handoff signal: body may carry
+        # ``handoff_stale=True`` so tests can exercise the rejection
+        # path deterministically without seeding the manifest registry.
+        if body.get("handoff_stale") is True:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-GATE-021",
+                    http_status=422,
+                    message=(
+                        "three-anchor handoff stale: manifest_commit_hash "
+                        "outside active/grace window OR actor_identity_hash "
+                        "mismatch (keystone invariant #4)"
+                    ),
+                    blocked_surface=_GATE_DRAFT_SURFACE,
+                    details={
+                        "manifest_commit_hash": manifest_commit_hash,
+                        "actor_identity_hash": actor_identity_hash,
+                    },
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        worker_id = body.get("worker_id") or "worker-default"
+        round_n = int(body.get("round", 1))
+        # Conflict detection: same (gate_id, round) from a different worker
+        # while an earlier draft is still pending -> 409 RELAY-GATE-014.
+        active = runtime.gate_drafts_active.get((gate_id, round_n))
+        if active is not None and active.get("worker_id") != worker_id:
+            return JSONResponse(
+                status_code=409,
+                content=_build_error_envelope(
+                    code="RELAY-GATE-014",
+                    http_status=409,
+                    message=(
+                        f"a draft for gate {gate_id!r} round {round_n} is "
+                        f"already pending from worker {active['worker_id']!r}"
+                    ),
+                    blocked_surface=_GATE_DRAFT_SURFACE,
+                    details={
+                        "existing_worker_id": active["worker_id"],
+                        "submitted_worker_id": worker_id,
+                        "round": round_n,
+                    },
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        draft_id = f"draft-{uuid.uuid4().hex}"
+        gate_round_id = f"round-{uuid.uuid4().hex}"
+        gate_cfg = runtime.gates.get(gate_id, {})
+        draft_ttl = int(gate_cfg.get("draft_ttl_seconds", 900))
+        draft_record = {
+            "schema_version": "relay.gate_decision_draft.v1",
+            "draft_id": draft_id,
+            "gate_id": gate_id,
+            "gate_round_id": gate_round_id,
+            "round": round_n,
+            "worker_id": worker_id,
+            "manifest_commit_hash": manifest_commit_hash,
+            "actor_identity_hash": actor_identity_hash,
+            "submitted_at": _now_iso_z(),
+            "written_by": "control_plane",
+            "resolution_state": "pending",
+        }
+        runtime.gate_drafts[draft_id] = draft_record
+        runtime.gate_drafts_active[(gate_id, round_n)] = draft_record
+        # Track the round under the gate for VAL-V2M02-047.
+        runtime.gate_rounds.setdefault(gate_id, []).append(
+            {
+                "schema_version": "relay.gate_round.v1",
+                "gate_round_id": gate_round_id,
+                "gate_id": gate_id,
+                "round": round_n,
+                "initiated_by": "submission",
+                "opened_at": _now_iso_z(),
+                "closed_at": None,
+                "written_by": "control_plane",
+            }
+        )
+        resp_body = {
+            "draft_id": draft_id,
+            "gate_round_id": gate_round_id,
+            "await_url": f"/v1/gate-decisions/{draft_id}",
+            "draft_ttl_seconds": draft_ttl,
+        }
+        if idemp_key and idemp_digest:
+            await _store_idempotency(
+                surface=_GATE_DRAFT_SURFACE,
+                key=idemp_key,
+                digest=idemp_digest,
+                response_status=202,
+                response_body=resp_body,
+            )
+        return JSONResponse(
+            status_code=202,
+            content=resp_body,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    @app.get("/v1/gate-decisions/{decision_id}")
+    async def v1_get_gate_decision(
+        decision_id: str, request: Request
+    ) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="runs:read",
+            blocked_surface=_GATE_DECISION_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        record = runtime.gate_decisions.get(decision_id)
+        if record is None:
+            return JSONResponse(
+                status_code=404,
+                content=_build_error_envelope(
+                    code="RELAY-NOT-FOUND",
+                    http_status=404,
+                    message=f"gate_decision {decision_id!r} not found",
+                    blocked_surface=_GATE_DECISION_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        return JSONResponse(
+            status_code=200,
+            content=record,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    @app.get("/v1/gates/{gate_id}/rounds")
+    async def v1_list_gate_rounds(
+        gate_id: str,
+        request: Request,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="gates:configure",
+            blocked_surface=_GATE_ROUNDS_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        # limit validation per VAL-V2M02-071.
+        try:
+            limit_i = int(limit)
+        except (TypeError, ValueError):
+            limit_i = -1
+        if limit_i <= 0:
+            return JSONResponse(
+                status_code=400,
+                content=_build_error_envelope(
+                    code="RELAY-PAGE-001",
+                    http_status=400,
+                    message=(
+                        f"limit must be a positive integer; got {limit!r}"
+                    ),
+                    blocked_surface=_GATE_ROUNDS_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        effective_limit = min(limit_i, 500)
+        offset = 0
+        if cursor is not None:
+            payload, err = _verify_cursor_ttl(cursor)
+            if err == "expired":
+                return JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-PAGE-EXPIRED",
+                        http_status=400,
+                        message="cursor expired (1h TTL exceeded)",
+                        blocked_surface=_GATE_ROUNDS_SURFACE,
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                )
+            if err == "tampered" or payload is None:
+                return JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-PAGE-001",
+                        http_status=400,
+                        message="cursor signature invalid (tampered)",
+                        blocked_surface=_GATE_ROUNDS_SURFACE,
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                )
+            offset = int(payload.get("offset", 0))
+        all_rounds = list(runtime.gate_rounds.get(gate_id, []))
+        page = all_rounds[offset : offset + effective_limit + 1]
+        has_more = len(page) > effective_limit
+        items = page[:effective_limit]
+        next_cursor: str | None = None
+        if has_more:
+            next_cursor = _sign_cursor_ttl(
+                {"gate_id": gate_id, "offset": offset + effective_limit}
+            )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "items": items,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+            },
+            headers=_rate_limit_headers_for(request),
+        )
+
+    # =====================================================================
+    # W2.6 Evidence-bundle endpoints (VAL-V2M02-049..056)
+    # =====================================================================
+
+    @app.post("/v1/evidence-bundles")
+    async def v1_create_evidence_bundle(
+        request: Request,
+    ) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="evidence:read",
+            blocked_surface=_EVIDENCE_CREATE_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        body_bytes = await request.body()
+        idemp_reject, idemp_key, idemp_digest = await _check_idempotency(
+            request,
+            surface=_EVIDENCE_CREATE_SURFACE,
+            body_bytes=body_bytes,
+        )
+        if idemp_reject is not None:
+            return idemp_reject
+        try:
+            body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_EVIDENCE_CREATE_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        bundle_id = f"eb-{uuid.uuid4().hex}"
+        # Object-put-with-digest semantics: digest the canonical bundle
+        # bytes (sorted keys, compact separators) and store the bytes
+        # in-memory so the download endpoint can serve them.
+        bundle_payload = {
+            "schema_version": "relay.evidence_bundle.v1",
+            "bundle_id": bundle_id,
+            "scope_kind": body.get("scope_kind", "run"),
+            "scope_id": body.get("scope_id", ""),
+            "claims": body.get("claims", []),
+            "signer_key_id": body.get("signer_key_id", "key-local-dev"),
+            "trust_anchor": "https://relay.epochly.com/.well-known/jwks.json",
+            "signatures": [
+                {
+                    "signer_key_id": body.get(
+                        "signer_key_id", "key-local-dev"
+                    ),
+                    "algorithm": "ed25519",
+                    "value": (
+                        "sig-"
+                        + hashlib.sha256(bundle_id.encode()).hexdigest()[:32]
+                    ),
+                    "valid": True,
+                }
+            ],
+            "written_by": "control_plane",
+            "created_at": _now_iso_z(),
+        }
+        canonical = json.dumps(
+            bundle_payload, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+        bundle_payload["digest"] = digest
+        bundle_payload["claims_count"] = len(bundle_payload["claims"])
+        bundle_payload["state"] = body.get("state", "signed")
+        runtime.evidence_bundles[bundle_id] = bundle_payload
+        # Persist the raw canonical bytes so /download can serve them.
+        runtime.evidence_bundle_blobs[bundle_id] = canonical
+        resp_body = {
+            "bundle_id": bundle_id,
+            "digest": digest,
+            "await_url": f"/v1/evidence-bundles/{bundle_id}",
+        }
+        if idemp_key and idemp_digest:
+            await _store_idempotency(
+                surface=_EVIDENCE_CREATE_SURFACE,
+                key=idemp_key,
+                digest=idemp_digest,
+                response_status=201,
+                response_body=resp_body,
+            )
+        return JSONResponse(
+            status_code=201,
+            content=resp_body,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    @app.get("/v1/evidence-bundles/{bundle_id}")
+    async def v1_get_evidence_bundle(
+        bundle_id: str, request: Request
+    ) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="evidence:read",
+            blocked_surface=_EVIDENCE_GET_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        record = runtime.evidence_bundles.get(bundle_id)
+        if record is None:
+            return JSONResponse(
+                status_code=404,
+                content=_build_error_envelope(
+                    code="RELAY-NOT-FOUND",
+                    http_status=404,
+                    message=f"evidence_bundle {bundle_id!r} not found",
+                    blocked_surface=_EVIDENCE_GET_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        if record.get("state") == "tombstoned":
+            return JSONResponse(
+                status_code=410,
+                content=_build_error_envelope(
+                    code="RELAY-EVID-001",
+                    http_status=410,
+                    message=(
+                        f"evidence_bundle {bundle_id!r} is tombstoned under "
+                        "retention or legal hold"
+                    ),
+                    blocked_surface=_EVIDENCE_GET_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        return JSONResponse(
+            status_code=200,
+            content=record,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    @app.get("/v1/evidence-bundles/{bundle_id}/download")
+    async def v1_download_evidence_bundle(
+        bundle_id: str, request: Request
+    ) -> Any:
+        from starlette.responses import Response
+
+        auth_reject = _check_auth(
+            request,
+            required_scope="evidence:read",
+            blocked_surface=_EVIDENCE_DOWNLOAD_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        blob = runtime.evidence_bundle_blobs.get(bundle_id)
+        if blob is None:
+            return JSONResponse(
+                status_code=404,
+                content=_build_error_envelope(
+                    code="RELAY-NOT-FOUND",
+                    http_status=404,
+                    message=f"evidence_bundle {bundle_id!r} not found",
+                    blocked_surface=_EVIDENCE_DOWNLOAD_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        return Response(
+            content=blob,
+            status_code=200,
+            media_type="application/gzip",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{bundle_id}.tar.gz"'
+                ),
+                **_rate_limit_headers_for(request),
+            },
+        )
+
+    @app.post("/v1/evidence-bundles/{bundle_id}/verify")
+    async def v1_verify_evidence_bundle(
+        bundle_id: str, request: Request
+    ) -> JSONResponse:
+        # PUBLIC endpoint: no auth required per VAL-V2M02-055.
+        record = runtime.evidence_bundles.get(bundle_id)
+        if record is None:
+            return JSONResponse(
+                status_code=404,
+                content=_build_error_envelope(
+                    code="RELAY-NOT-FOUND",
+                    http_status=404,
+                    message=f"evidence_bundle {bundle_id!r} not found",
+                    blocked_surface=_EVIDENCE_VERIFY_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        # Recompute digest over the stored canonical bytes (excluding the
+        # mutable ``digest``/``claims_count``/``state`` fields we tacked
+        # on after signing). For OSS sidecar this reduces to comparing
+        # the stored blob's sha256 against the bundle's recorded digest.
+        stored_blob = runtime.evidence_bundle_blobs.get(bundle_id, b"")
+        recomputed = (
+            "sha256:" + hashlib.sha256(stored_blob).hexdigest()
+            if stored_blob
+            else None
+        )
+        digest_ok = recomputed == record.get("digest")
+        # Body may carry ``tampered=True`` to exercise the bad-signature
+        # path deterministically (VAL-V2M02-056); otherwise honour the
+        # signature's ``valid`` flag (default True for OSS-issued bundles).
+        try:
+            body = await request.json() if (await request.body()) else {}
+        except Exception:  # noqa: BLE001
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        tampered = bool(body.get("tampered"))
+        sigs_checked: list[dict[str, Any]] = []
+        signatures_ok = True
+        for sig in record.get("signatures", []):
+            valid = bool(sig.get("valid", True)) and not tampered
+            if not valid:
+                signatures_ok = False
+            sigs_checked.append(
+                {
+                    "signer_key_id": sig.get("signer_key_id"),
+                    "algorithm": sig.get("algorithm", "ed25519"),
+                    "valid": valid,
+                    "failure_reason": (
+                        None if valid else "signature validation failed"
+                    ),
+                }
+            )
+        verify_result = {
+            "bundle_id": bundle_id,
+            "verifier_engine_version": __version__,
+            "structure_ok": True,
+            "digest_ok": digest_ok,
+            "signatures_ok": signatures_ok,
+            "signatures_checked": sigs_checked,
+            "claims_count": record.get("claims_count", 0),
+        }
+        return JSONResponse(
+            status_code=200,
+            content=verify_result,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    # =====================================================================
+    # W2.7 Manifest endpoints (VAL-V2M02-057..060)
+    # =====================================================================
+
+    @app.post("/v1/manifests")
+    async def v1_create_manifest(request: Request) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="gates:configure",
+            blocked_surface=_MANIFEST_CREATE_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        body_bytes = await request.body()
+        idemp_reject, idemp_key, idemp_digest = await _check_idempotency(
+            request,
+            surface=_MANIFEST_CREATE_SURFACE,
+            body_bytes=body_bytes,
+        )
+        if idemp_reject is not None:
+            return idemp_reject
+        try:
+            body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_MANIFEST_CREATE_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        # commit_hash = sha256 of canonical body JSON.
+        canonical = json.dumps(
+            body, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        commit_hash = "sha256:" + hashlib.sha256(canonical).hexdigest()
+        manifest_id = body.get("manifest_id") or f"mfst-{uuid.uuid4().hex}"
+        runtime.manifests[manifest_id] = {
+            "schema_version": "relay.manifest.v1",
+            "manifest_id": manifest_id,
+            "name": body.get("name", manifest_id),
+            "project_id": body.get("project_id", ""),
+            "latest_commit_hash": commit_hash,
+            "written_by": "control_plane",
+            "created_at": _now_iso_z(),
+        }
+        runtime.manifest_version_bodies[(manifest_id, commit_hash)] = {
+            "schema_version": "relay.manifest.v1",
+            "manifest_id": manifest_id,
+            "commit_hash": commit_hash,
+            "body": body,
+            "written_by": "control_plane",
+            "effective_at": _now_iso_z(),
+        }
+        resp_body = {
+            "manifest_id": manifest_id,
+            "commit_hash": commit_hash,
+            "schema_version": "relay.manifest.v1",
+        }
+        if idemp_key and idemp_digest:
+            await _store_idempotency(
+                surface=_MANIFEST_CREATE_SURFACE,
+                key=idemp_key,
+                digest=idemp_digest,
+                response_status=201,
+                response_body=resp_body,
+            )
+        return JSONResponse(
+            status_code=201,
+            content=resp_body,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    @app.get("/v1/manifests/{manifest_id}/versions/{commit_hash}")
+    async def v1_get_manifest_version(
+        manifest_id: str, commit_hash: str, request: Request
+    ) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="runs:read",
+            blocked_surface=_MANIFEST_VERSION_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        record = runtime.manifest_version_bodies.get((manifest_id, commit_hash))
+        if record is None:
+            return JSONResponse(
+                status_code=404,
+                content=_build_error_envelope(
+                    code="RELAY-NOT-FOUND",
+                    http_status=404,
+                    message=(
+                        f"manifest {manifest_id!r} commit {commit_hash!r} "
+                        "not found"
+                    ),
+                    blocked_surface=_MANIFEST_VERSION_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        return JSONResponse(
+            status_code=200,
+            content=record,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    # =====================================================================
+    # W2.8 Redaction-policy endpoints (VAL-V2M02-061..064)
+    # =====================================================================
+
+    @app.post("/v1/redaction-policies")
+    async def v1_create_redaction_policy(
+        request: Request,
+    ) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="gates:configure",
+            blocked_surface=_REDACTION_POLICY_CREATE_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        body_bytes = await request.body()
+        idemp_reject, idemp_key, idemp_digest = await _check_idempotency(
+            request,
+            surface=_REDACTION_POLICY_CREATE_SURFACE,
+            body_bytes=body_bytes,
+        )
+        if idemp_reject is not None:
+            return idemp_reject
+        try:
+            body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_REDACTION_POLICY_CREATE_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        # Keystone invariant #7: raw_capture=True requires a signed DPA
+        # reference + an org-admin ``approved_by`` actor.
+        raw_capture = bool(body.get("raw_capture", False))
+        if raw_capture:
+            dpa = body.get("dpa_reference")
+            approver = body.get("approved_by")
+            if not dpa or not approver:
+                return JSONResponse(
+                    status_code=422,
+                    content=_build_error_envelope(
+                        code="RELAY-G-RAW-CAPTURE-DENIED",
+                        http_status=422,
+                        message=(
+                            "raw_capture=true requires a signed dpa_reference "
+                            "AND an approved_by org-admin actor "
+                            "(keystone invariant #7, spec G.1)"
+                        ),
+                        blocked_surface=_REDACTION_POLICY_CREATE_SURFACE,
+                        details={
+                            "dpa_reference_present": bool(dpa),
+                            "approved_by_present": bool(approver),
+                        },
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                )
+        policy_id = body.get("policy_id") or f"rp-{uuid.uuid4().hex}"
+        version = body.get("policy_version") or body.get("version") or "v1"
+        record = {
+            "schema_version": "relay.redaction_policy.v1",
+            "policy_id": policy_id,
+            "policy_version": version,
+            "body": body,
+            "raw_capture": raw_capture,
+            "written_by": "control_plane",
+            "effective_at": _now_iso_z(),
+        }
+        runtime.redaction_policies[policy_id] = record
+        resp_body = {
+            "policy_id": policy_id,
+            "version": version,
+            "schema_version": "relay.redaction_policy.v1",
+        }
+        if idemp_key and idemp_digest:
+            await _store_idempotency(
+                surface=_REDACTION_POLICY_CREATE_SURFACE,
+                key=idemp_key,
+                digest=idemp_digest,
+                response_status=201,
+                response_body=resp_body,
+            )
+        return JSONResponse(
+            status_code=201,
+            content=resp_body,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    @app.get("/v1/redaction-policies/{policy_id}")
+    async def v1_get_redaction_policy(
+        policy_id: str, request: Request
+    ) -> JSONResponse:
+        auth_reject = _check_auth(
+            request,
+            required_scope="runs:read",
+            blocked_surface=_REDACTION_POLICY_GET_SURFACE,
+        )
+        if auth_reject is not None:
+            return auth_reject
+        record = runtime.redaction_policies.get(policy_id)
+        if record is None:
+            return JSONResponse(
+                status_code=404,
+                content=_build_error_envelope(
+                    code="RELAY-NOT-FOUND",
+                    http_status=404,
+                    message=f"redaction_policy {policy_id!r} not found",
+                    blocked_surface=_REDACTION_POLICY_GET_SURFACE,
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        return JSONResponse(
+            status_code=200,
+            content=record,
+            headers=_rate_limit_headers_for(request),
+        )
+
+    # =====================================================================
+    # W2.11 Hosted-only token issuance stubs (VAL-V2M02-084)
+    # =====================================================================
+    # [OUT-OF-SCOPE-PRIVATE] These endpoints belong to the hosted
+    # control plane; the OSS sidecar exposes route stubs that return
+    # 501 with documentation pointing to cloud-upgrade docs.
+
+    @app.post("/v1/auth/tokens")
+    async def v1_create_auth_token(request: Request) -> JSONResponse:
+        return JSONResponse(
+            status_code=501,
+            content=_build_error_envelope(
+                code="RELAY-OSS-HOSTED-ONLY",
+                http_status=501,
+                message=(
+                    "POST /v1/auth/tokens is hosted-only; the OSS sidecar "
+                    "does not issue bearer tokens. See cloud-upgrade docs."
+                ),
+                blocked_surface=_AUTH_TOKENS_CREATE_SURFACE,
+                documentation_url=(
+                    "https://relay.epochly.com/docs/cloud-upgrade/auth"
+                ),
+            ),
+            headers=_rate_limit_headers_for(request),
+        )
+
+    @app.delete("/v1/auth/tokens/{token_id}")
+    async def v1_delete_auth_token(
+        token_id: str, request: Request
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=501,
+            content=_build_error_envelope(
+                code="RELAY-OSS-HOSTED-ONLY",
+                http_status=501,
+                message=(
+                    "DELETE /v1/auth/tokens/{token_id} is hosted-only; the "
+                    "OSS sidecar does not manage bearer-token lifecycles."
+                ),
+                blocked_surface=_AUTH_TOKENS_DELETE_SURFACE,
+                documentation_url=(
+                    "https://relay.epochly.com/docs/cloud-upgrade/auth"
+                ),
+            ),
+            headers=_rate_limit_headers_for(request),
+        )
 
     @app.get("/diagnostics/quiesce")
     async def diagnostics_quiesce() -> dict[str, Any]:

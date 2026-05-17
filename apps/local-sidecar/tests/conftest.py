@@ -10,6 +10,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -43,6 +44,13 @@ def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     cwd.mkdir(parents=True, exist_ok=True)
     monkeypatch.chdir(cwd)
     yield cwd
+
+
+# Re-export V2M02 W2.5..W2.11 shared fixture from the helpers module so
+# pytest discovers it without each test having to import the fixture
+# name (which would shadow imports + trigger F811 lint errors).
+with contextlib.suppress(ImportError):
+    from _v2m02_w25_helpers import v2m02_client  # noqa: F401
 
 
 # Suppress unused-import / unused-symbol warnings for fixtures.
