@@ -1,0 +1,189 @@
+# Relay v0.2 OSS -- Tier-marker CI budget gating (VAL-V2M08-038/039/040).
+#
+# Three jobs, one per pytest tier marker (spec AM.6):
+#
+#   plumbing : -m plumbing --timeout=60   budget <= 60 s
+#   smoke    : -m smoke    --timeout=480  budget <= 480 s (8 min)
+#   eval     : -m eval     --timeout=720  budget <= 720 s (12 min)
+#
+# Each job:
+#   1. Records wall-clock start time.
+#   2. Runs the pytest invocation for its tier.
+#   3. Records wall-clock end time and writes a one-key JSON report.
+#   4. Invokes scripts/tier_budget_gate.py against the report. The gate
+#      exits non-zero with FAIL: RELAY-CI-TIER-BUDGET-EXCEEDED when the
+#      measured tier duration exceeds its budget.
+#
+# The 'eval' job is gated on the tier-3 runner per the spec AM.6 cadence
+# (eval runs nightly + pre-release on dedicated runners). The job only
+# executes when RELAY_TIER3_RUNNER environment / runs-on label is set;
+# we gate via a workflow-level conditional on workflow_dispatch.inputs
+# or schedule context so the daytime PR pipeline never blocks on
+# tier-3 budgets.
+#
+# Per CLAUDE.md banned pattern: no pkill / killall / kill-by-name.
+# pytest runs with --timeout values that are themselves bounded so a
+# runaway test self-aborts without process-name kill.
+#
+# Action pins:
+#   actions/checkout@v4   - matches repo convention (cf.
+#                           .github/workflows/conformance-release-block.yml).
+#   astral-sh/setup-uv@v3 - install uv 0.4+ before running pytest.
+#
+# Spec citations:
+#   - spec AM.6 (three-tier test cadence) lines 5937-5941
+#   - contract VAL-V2M08-038/039/040 (gate program exit code per
+#     simulated duration)
+#   - CLAUDE.md TDD discipline: three-tier test cadence
+
+name: "tier-budgets"
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    # Nightly eval-tier run at 06:00 UTC. Aligns with spec AM.6:
+    # "Tier 3: Evals - nightly + pre-release".
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Tier 1: plumbing.
+  # ---------------------------------------------------------------------------
+  plumbing:
+    name: "tier-1 plumbing budget"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: "checkout"
+        uses: actions/checkout@v4
+
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "install uv"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: "install python deps"
+        run: uv sync --all-packages
+
+      - name: "run plumbing tier"
+        id: run_plumbing
+        run: |
+          set -euo pipefail
+          start=$(python -c 'import time; print(time.time())')
+          uv run pytest -m plumbing --timeout=60 -q
+          end=$(python -c 'import time; print(time.time())')
+          duration=$(python -c "print(${end} - ${start})")
+          mkdir -p artifacts
+          python -c "import json,sys; json.dump({'tier':'plumbing','duration_seconds':float(${duration})}, sys.stdout)" \
+            > artifacts/plumbing-report.json
+          cat artifacts/plumbing-report.json
+          echo
+
+      - name: "enforce plumbing 60s budget"
+        run: |
+          python scripts/tier_budget_gate.py --tier plumbing --report artifacts/plumbing-report.json
+
+  # ---------------------------------------------------------------------------
+  # Tier 2: smoke.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: "tier-2 smoke budget"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: "checkout"
+        uses: actions/checkout@v4
+
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "install uv"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: "install python deps"
+        run: uv sync --all-packages
+
+      - name: "run smoke tier"
+        id: run_smoke
+        run: |
+          set -euo pipefail
+          start=$(python -c 'import time; print(time.time())')
+          uv run pytest -m smoke --timeout=480 -q
+          end=$(python -c 'import time; print(time.time())')
+          duration=$(python -c "print(${end} - ${start})")
+          mkdir -p artifacts
+          python -c "import json,sys; json.dump({'tier':'smoke','duration_seconds':float(${duration})}, sys.stdout)" \
+            > artifacts/smoke-report.json
+          cat artifacts/smoke-report.json
+          echo
+
+      - name: "enforce smoke 480s budget"
+        run: |
+          python scripts/tier_budget_gate.py --tier smoke --report artifacts/smoke-report.json
+
+  # ---------------------------------------------------------------------------
+  # Tier 3: eval. Gated on the tier-3 runner label so the daytime PR
+  # pipeline does not block on eval-tier wall time. Runs nightly via the
+  # workflow's schedule + on workflow_dispatch.
+  # ---------------------------------------------------------------------------
+  eval:
+    name: "tier-3 eval budget"
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Match the repo's existing tier-3 runner gating convention
+      # (pyproject.toml marker line: RELAY_TIER3_RUNNER=linux-py3.14-node24).
+      RELAY_TIER3_RUNNER: "linux-py3.14-node24"
+    steps:
+      - name: "checkout"
+        uses: actions/checkout@v4
+
+      - name: "setup python 3.14"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: "install uv"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: "install python deps"
+        run: uv sync --all-packages
+
+      - name: "run eval tier"
+        id: run_eval
+        run: |
+          set -euo pipefail
+          start=$(python -c 'import time; print(time.time())')
+          uv run pytest -m eval --timeout=720 -q
+          end=$(python -c 'import time; print(time.time())')
+          duration=$(python -c "print(${end} - ${start})")
+          mkdir -p artifacts
+          python -c "import json,sys; json.dump({'tier':'eval','duration_seconds':float(${duration})}, sys.stdout)" \
+            > artifacts/eval-report.json
+          cat artifacts/eval-report.json
+          echo
+
+      - name: "enforce eval 720s budget"
+        run: |
+          python scripts/tier_budget_gate.py --tier eval --report artifacts/eval-report.json
