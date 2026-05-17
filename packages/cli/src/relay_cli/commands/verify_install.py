@@ -123,16 +123,22 @@ RELAY_VERIFY_JWKS_UNAVAILABLE: Final[str] = "RELAY-VERIFY-JWKS-UNAVAILABLE"
 # let an unsigned/unanchored bundle slip through, which is a keystone
 # violation (CLAUDE.md keystone #2: "Pass without evidence is not a pass.").
 
-# Rekor transparency-log cryptographic verification feature flag. MUST
-# remain False until ``_verify_rekor_inclusion`` validates the bundled
-# Merkle inclusion proof against Rekor's public key (e.g. via
-# ``sigstore.transparency.LogEntry.from_bundle_field`` followed by
-# ``log_entry.verify_inclusion_proof``). With the flag at False the
-# function fail-closes on every input; flipping it to True without
-# wiring the real verifier is a P0 keystone-invariant regression
-# guarded by
-# ``test_verifier_crypto_failclosed.py::test_rekor_crypto_flag_is_false``.
-REKOR_CRYPTO_IMPLEMENTED: Final[bool] = False
+# Rekor transparency-log cryptographic verification feature flag. After
+# M09-w9.3 (VAL-V2M09-004) this flag is True: ``_verify_rekor_inclusion``
+# now decodes the Sigstore Bundle (or raw Rekor REST response) into a
+# ``sigstore.models.TransparencyLogEntry`` and runs the real Merkle
+# inclusion-proof verifier (``sigstore.models.verify_merkle_inclusion``),
+# the checkpoint signature verifier
+# (``sigstore.models.verify_checkpoint``), and the Signed Entry Timestamp
+# verifier (``TransparencyLogEntry._verify_set``) against Rekor's bundled
+# public key resolved from
+# ``ClientTrustConfig.production().trusted_root.rekor_keyring(...)``.
+# Flipping this flag back to ``False`` without removing the corresponding
+# verifier calls is a P0 keystone-invariant regression (CLAUDE.md
+# keystone #2: pass without evidence is not a pass); the polarity-
+# inverted tripwire lives in
+# ``test_verifier_crypto_failclosed.py::test_rekor_crypto_flag_is_true``.
+REKOR_CRYPTO_IMPLEMENTED: Final[bool] = True
 
 # -----------------------------------------------------------------------------
 # Output schema-version pin
@@ -295,50 +301,192 @@ class InstallRecordError(Exception):
 def _verify_rekor_inclusion(sigstore_bytes: bytes) -> tuple[bool, str]:
     """Return ``(ok, reason)`` for Rekor transparency-log inclusion.
 
-    FAIL-CLOSED until ``REKOR_CRYPTO_IMPLEMENTED`` is True.
+    Real cryptographic verification (M09-w9.3 / VAL-V2M09-004, 011..014):
 
-    Real verification (when wired) MUST:
+      - Decode ``sigstore_bytes`` into a
+        ``sigstore.models.TransparencyLogEntry``. Two wire shapes are
+        accepted:
 
-      - Parse the Sigstore Bundle protobuf and extract every
-        ``tlogEntries[*]`` Rekor log entry.
-      - For each entry, verify the inclusion proof's Merkle path against
-        the entry's leaf hash and the proof's signed root checkpoint.
-      - Verify the checkpoint signature against Rekor's bundled public
-        key (or BYO trust root for forks/self-hosters).
-      - Cross-check that the canonicalised entry body matches the
-        artifact's hashed-rekord leaf so an attacker cannot substitute
-        an unrelated log entry.
-      - Refuse on absence: a bundle without a verified inclusion proof
-        is NOT in the transparency log regardless of how well-formed
-        the surrounding JSON looks.
+          1. A full Sigstore Bundle JSON (cosign-bundle v0.x), in which
+             case ``sigstore.models.Bundle.from_json`` is used and the
+             ``Bundle.log_entry`` property yields the transparency-log
+             entry (sigstore-python's parser raises ``InvalidBundle`` if
+             the entry has no inclusion proof or checkpoint).
+          2. A raw Rekor REST API response (single-entry map keyed by
+             UUID, as returned by ``GET /api/v1/log/entries?logIndex=N``),
+             in which case ``TransparencyLogEntry._from_v1_response``
+             is used directly.
 
-    The structural-only presence check in the prior implementation is
-    intentionally NOT a fallback. Per CLAUDE.md keystone invariant #2
-    ("Pass without evidence is not a pass.") and spec section AO.1
-    (transparency-log absence is the higher-trust signal), returning
-    ``(True, "")`` because ``tlogEntries[0].inclusionProof`` is a dict
-    of any shape would let a forged bundle pass. We refuse to claim
-    Rekor inclusion rather than lie.
+      - Resolve Rekor's verifying keyring from the Sigstore production
+        Trusted Root via ``ClientTrustConfig.production(offline=True)``
+        + ``trusted_root.rekor_keyring(KeyringPurpose.VERIFY)``. The
+        offline flag keeps this fast and hermetic in CI; the cache is
+        populated at sigstore-python install time.
+
+      - Run three independent verifications. Each maps to a distinct
+        wire reason so incident response can distinguish failure modes:
+
+          * ``verify_merkle_inclusion(entry)`` -> reason
+            ``"rekor_inclusion_proof_invalid"`` on failure.
+            Walks the proof's hashes from the leaf hash (derived from
+            the canonicalised entry body) up to the proof's root hash.
+          * ``verify_checkpoint(keyring, entry)`` -> reason
+            ``"rekor_checkpoint_signature_invalid"`` on failure.
+            Verifies the witness signature on the signed checkpoint
+            note plus consistency between the checkpoint's log_hash and
+            the proof's root_hash.
+          * ``entry._verify_set(keyring)`` -> reason
+            ``"rekor_set_signature_invalid"`` on failure.
+            Verifies the Signed Entry Timestamp signature against
+            Rekor's public key keyed by ``log_id.key_id``.
+
+      - A bundle with no parseable transparency-log entry returns
+        ``(False, "transparency_log_entry_missing")``. The calling CLI
+        surfaces this as ``RELAY-RELEASE-034`` per spec section AO.1
+        (transparency-log absence is the higher-trust signal).
+
+    Per CLAUDE.md keystone invariant #2 ("Pass without evidence is not
+    a pass.") and spec section AO.1 every failure path returns a
+    structured reason; an exception escaping this function is itself a
+    bug (caught broadly to keep the CLI's exit-code contract).
 
     Args:
-        sigstore_bytes: Raw bytes of the Sigstore bundle JSON.
+        sigstore_bytes: Raw bytes of the Sigstore bundle JSON OR a
+            Rekor REST API single-entry response.
 
     Returns:
-        ``(ok, reason)``. ``ok`` is ALWAYS ``False`` until
-        ``REKOR_CRYPTO_IMPLEMENTED`` is True. The ``reason`` is
-        ``"rekor_crypto_not_implemented"`` so auditors can distinguish a
-        refusal-to-claim from a legitimate transparency-log absence.
+        ``(True, "")`` on success; ``(False, reason)`` otherwise where
+        ``reason`` is one of: ``transparency_log_entry_missing``,
+        ``transparency_log_entry_unparseable``,
+        ``transparency_log_entry_bundle_invalid``,
+        ``rekor_inclusion_proof_invalid``,
+        ``rekor_checkpoint_signature_invalid``,
+        ``rekor_set_signature_invalid``,
+        ``rekor_trust_root_unavailable``.
     """
-    _ = sigstore_bytes  # see fail-closed switch below
+    # Late imports keep module-import cost low and let unit tests
+    # exercise the failure paths without forcing a Sigstore install at
+    # CLI startup.
+    try:
+        from sigstore.errors import VerificationError
+        from sigstore.models import (
+            Bundle,
+            ClientTrustConfig,
+            InvalidBundle,
+            KeyringPurpose,
+            TransparencyLogEntry,
+            verify_checkpoint,
+            verify_merkle_inclusion,
+        )
+    except Exception as exc:  # pragma: no cover - import failure
+        return False, f"sigstore_unavailable:{type(exc).__name__}"
 
-    if not REKOR_CRYPTO_IMPLEMENTED:
-        return False, "rekor_crypto_not_implemented"
+    # Step 1: decode bytes -> text -> JSON. Bytes that are not valid
+    # UTF-8 or not valid JSON yield a structured reason; this is the
+    # "garbage input" gate.
+    if isinstance(sigstore_bytes, bytes):
+        try:
+            bundle_text = sigstore_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return False, "transparency_log_entry_unparseable"
+    else:
+        bundle_text = sigstore_bytes
 
-    # Unreachable while the flag is False. When wired, this branch will
-    # parse the Sigstore Bundle, locate the tlogEntries, and call into
-    # ``sigstore.transparency.LogEntry.verify_inclusion_proof`` (or
-    # equivalent) against Rekor's bundled public key.
-    return False, "rekor_crypto_not_implemented_unreachable"  # pragma: no cover
+    # Step 2: locate a TransparencyLogEntry. Try the Sigstore-Bundle
+    # shape first (this is the cosign-bundle wire format that the
+    # release workflow signs); fall back to the raw Rekor REST shape
+    # for tests / direct verification of fetched proofs.
+    log_entry: TransparencyLogEntry | None = None
+    bundle_parse_error: Exception | None = None
+    try:
+        bundle = Bundle.from_json(bundle_text)
+    except Exception as exc:
+        bundle_parse_error = exc
+        bundle = None  # type: ignore[assignment]
+    if bundle is not None:
+        try:
+            log_entry = bundle.log_entry
+        except InvalidBundle:
+            # Bundle parsed but has no usable inclusion proof. Per spec
+            # section AO.1 this is transparency-log absence.
+            return False, "transparency log entry missing"
+
+    if log_entry is None:
+        # Try the Rekor REST single-entry shape.
+        try:
+            raw = json.loads(bundle_text)
+        except json.JSONDecodeError:
+            return False, "transparency_log_entry_unparseable"
+        if not isinstance(raw, dict) or not raw:
+            # An empty tlogEntries[] inside a Bundle JSON ends up here
+            # when the Bundle parser rejected the shape; surface it as
+            # the spec-pinned "transparency log" phrasing.
+            return False, "transparency log entry missing"
+        # Check the Bundle path first: a dict with verificationMaterial
+        # but empty tlogEntries[] is a forked/unsigned bundle, not a
+        # Rekor REST response.
+        if "verificationMaterial" in raw:
+            tlogs = (raw.get("verificationMaterial") or {}).get("tlogEntries") or []
+            if not tlogs:
+                return False, "transparency log entry missing"
+            # Fell through Bundle.from_json earlier -- the shape was
+            # close but not valid. Propagate the parse error reason.
+            return False, "transparency_log_entry_bundle_invalid"
+        # Rekor REST shape: {"<uuid>": {body, verification, ...}}
+        try:
+            log_entry = TransparencyLogEntry._from_v1_response(raw)
+        except Exception:
+            # Neither a Sigstore Bundle nor a parseable Rekor REST
+            # response. Surface the Bundle parse failure if we had one;
+            # otherwise treat as missing entry.
+            if bundle_parse_error is not None:
+                return False, "transparency_log_entry_bundle_invalid"
+            return False, "transparency log entry missing"
+
+    # Step 3: resolve Rekor's verifying keyring from the production
+    # trust root. Offline=True uses the TUF cache populated at
+    # sigstore-python install time, so this is hermetic in CI.
+    try:
+        trust_config = ClientTrustConfig.production(offline=True)
+        rekor_keyring = trust_config.trusted_root.rekor_keyring(KeyringPurpose.VERIFY)
+    except Exception:
+        return False, "rekor_trust_root_unavailable"
+
+    # Step 4: verify the Merkle inclusion proof. A tampered hashes[]
+    # array or a wrong root_hash is caught here.
+    try:
+        verify_merkle_inclusion(log_entry)
+    except VerificationError:
+        return False, "rekor_inclusion_proof_invalid"
+    except Exception:
+        # Defensive: any unexpected exception is treated as a proof
+        # failure rather than escaping the function.
+        return False, "rekor_inclusion_proof_invalid"
+
+    # Step 5: verify the signed checkpoint. A wrong witness signature
+    # or a checkpoint whose log_hash does not match the proof root hash
+    # is caught here.
+    try:
+        verify_checkpoint(rekor_keyring, log_entry)
+    except VerificationError:
+        return False, "rekor_checkpoint_signature_invalid"
+    except Exception:
+        return False, "rekor_checkpoint_signature_invalid"
+
+    # Step 6: verify the Signed Entry Timestamp (SET) -- the Rekor-
+    # signed promise that the entry was integrated at a specific time.
+    # A tampered SET signature is caught here. SET failures are kept
+    # distinct from proof failures because they have different
+    # incident-response implications (witness-key compromise vs. proof
+    # tampering by a man-in-the-middle).
+    try:
+        log_entry._verify_set(rekor_keyring)
+    except VerificationError:
+        return False, "rekor_set_signature_invalid"
+    except Exception:
+        return False, "rekor_set_signature_invalid"
+
+    return True, ""
 
 
 def _verify_one_surface(

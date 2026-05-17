@@ -173,47 +173,87 @@ def test_verify_sigstore_rejects_empty_bundle() -> None:
 
 
 @pytest.mark.plumbing
-def test_rekor_crypto_flag_is_false() -> None:
-    """Until the Merkle inclusion proof is verified against Rekor's
-    public key, the flag MUST be False."""
-    assert REKOR_CRYPTO_IMPLEMENTED is False, (
-        "REKOR_CRYPTO_IMPLEMENTED was flipped True without the "
-        "corresponding Merkle inclusion verification pipeline."
+@pytest.mark.fulfills("VAL-V2M09-004")
+def test_rekor_crypto_flag_is_true() -> None:
+    """M09-w9.3 / VAL-V2M09-004: after the real Merkle inclusion proof
+    + checkpoint signature + SET signature verifiers are wired against
+    Rekor's public key, the feature flag MUST be True. Flipping this
+    back to False without removing the corresponding
+    ``verify_merkle_inclusion`` / ``verify_checkpoint`` /
+    ``TransparencyLogEntry._verify_set`` calls is a P0 keystone-
+    invariant regression -- the polarity-inverted tripwire."""
+    assert REKOR_CRYPTO_IMPLEMENTED is True, (
+        "REKOR_CRYPTO_IMPLEMENTED was flipped False after the real "
+        "Rekor verification pipeline landed; this is a P0 keystone-"
+        "invariant regression (CLAUDE.md #2: pass without evidence "
+        "is not a pass)."
     )
 
 
 @pytest.mark.plumbing
 def test_verify_rekor_inclusion_rejects_well_formed_proof() -> None:
-    """A bundle with a structurally-well-formed inclusion proof but
-    cryptographically unverified hashes MUST be rejected. The previous
-    implementation accepted any dict at `tlogEntries[*].inclusionProof`."""
+    """A structurally-well-formed but cryptographically-forged inclusion
+    proof MUST be rejected. With real verification wired (M09-w9.3) the
+    rejection happens at one of: bundle parse (the forged JSON is not a
+    valid Sigstore protobuf bundle), Rekor REST shape parse failure
+    (forged body is not a valid hashedrekord/dsse), or Merkle
+    inclusion verification (the proof's leaf does not chain to the
+    claimed root). Either way the invariant is: rejection with a
+    structured non-success reason."""
     bundle = _forged_sigstore_bundle()
     ok, reason = _verify_rekor_inclusion(bundle.encode("utf-8"))
     assert ok is False
-    assert reason == "rekor_crypto_not_implemented", (
-        f"expected reason 'rekor_crypto_not_implemented', got {reason!r}"
+    assert reason in {
+        "transparency log entry missing",
+        "transparency_log_entry_unparseable",
+        "transparency_log_entry_bundle_invalid",
+        "rekor_inclusion_proof_invalid",
+        "rekor_checkpoint_signature_invalid",
+        "rekor_set_signature_invalid",
+        "rekor_trust_root_unavailable",
+    }, (
+        f"forged bundle MUST be rejected with a structured reason; "
+        f"got {reason!r}"
     )
+    # Historical fail-closed sentinel MUST be gone.
+    assert reason != "rekor_crypto_not_implemented"
 
 
 @pytest.mark.plumbing
 def test_verify_rekor_inclusion_rejects_bad_hashes() -> None:
-    """Even an inclusion proof with obviously-bogus hashes (all-zero
-    Merkle siblings) MUST be rejected -- the verifier does NOT inspect
-    hash contents because it does not perform real verification, so
-    every bundle MUST fail-closed."""
+    """An inclusion proof with obviously-bogus hashes (all-zero Merkle
+    siblings) MUST be rejected -- the real verifier inspects hash
+    contents and chains the leaf hash through the proof's hashes up
+    to the claimed root, which cannot match when the hashes are
+    forged."""
     payload = json.loads(_forged_sigstore_bundle())
     payload["verificationMaterial"]["tlogEntries"][0]["inclusionProof"][
         "hashes"
     ] = ["00" * 32]
     ok, reason = _verify_rekor_inclusion(json.dumps(payload).encode("utf-8"))
     assert ok is False
-    assert reason == "rekor_crypto_not_implemented", reason
+    assert reason != "rekor_crypto_not_implemented"
+    # The structured reason is one of the post-flip rejection paths
+    # (Bundle parse / Rekor REST decode / proof / checkpoint / SET).
+    assert reason in {
+        "transparency log entry missing",
+        "transparency_log_entry_unparseable",
+        "transparency_log_entry_bundle_invalid",
+        "rekor_inclusion_proof_invalid",
+        "rekor_checkpoint_signature_invalid",
+        "rekor_set_signature_invalid",
+        "rekor_trust_root_unavailable",
+    }, reason
 
 
 @pytest.mark.plumbing
 def test_verify_rekor_inclusion_rejects_legacy_rekorbundle() -> None:
-    """Legacy `rekorBundle.Payload` shape ALSO fails-closed; the
-    previous code returned True if the payload key was present."""
+    """Legacy ``rekorBundle.Payload`` shape (cosign v1.x) is NOT a
+    Sigstore Bundle and is NOT a Rekor REST single-entry response, so
+    it MUST be rejected as a missing / invalid transparency-log entry.
+    The previous structural-only verifier accepted it; the real
+    verifier refuses because there is no inclusion proof or checkpoint
+    to verify."""
     payload = {
         "cert": "fakecert",
         "signature": "fakesig",
@@ -221,4 +261,9 @@ def test_verify_rekor_inclusion_rejects_legacy_rekorbundle() -> None:
     }
     ok, reason = _verify_rekor_inclusion(json.dumps(payload).encode("utf-8"))
     assert ok is False
-    assert reason == "rekor_crypto_not_implemented", reason
+    assert reason != "rekor_crypto_not_implemented"
+    assert reason in {
+        "transparency log entry missing",
+        "transparency_log_entry_unparseable",
+        "transparency_log_entry_bundle_invalid",
+    }, reason

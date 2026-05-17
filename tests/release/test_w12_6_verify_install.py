@@ -608,17 +608,6 @@ def test_verify_install_online_fails_when_no_jwks_resolvable(
 
 
 @pytest.mark.fulfills("VAL-W12-034")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "_verify_rekor_inclusion is fail-closed; every input (including "
-        "fork-style bundles with omitted tlog entries) returns reason "
-        "'rekor_crypto_not_implemented' rather than the 'transparency log' "
-        "substring this test asserts. The error_code RELAY-RELEASE-034 is "
-        "still emitted correctly, but the human-readable reason changed. "
-        "See test_verifier_crypto_failclosed.py (P0 verifier crypto gap)."
-    ),
-)
 def test_verify_install_no_rekor_inclusion_proof_yields_release_034(
     tmp_path: Path,
 ) -> None:
