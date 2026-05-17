@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://relay.epochly.com/schemas/manifest.v1.json",
+  "title": "Relay Manifest v1",
+  "description": "Canonical JSON Schema for the Relay Manifest v1 (spec F lines 4007-4103). The manifest is the source of truth for what a worker is allowed to run. Workers REFUSE to execute commands not declared in the active manifest. Every event-log entry written by a worker carries the manifest_commit_hash of the manifest under which it ran. CLAUDE.md keystone invariant 3.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "manifest_id",
+    "services",
+    "commands",
+    "validation_surfaces"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "relay.manifest.v1",
+      "description": "Schema version discriminator. Engines refuse unknown versions (spec B.7 schema_version invariant)."
+    },
+    "manifest_id": {
+      "type": "string",
+      "description": "Stable manifest identifier. RFC 4122 UUID."
+    },
+    "project_id": {
+      "type": "string",
+      "description": "Owning project identifier. RFC 4122 UUID."
+    },
+    "services": {
+      "type": "array",
+      "description": "Declared services that may be started/stopped by workers (sidecar, replay proxy, etc.).",
+      "items": {
+        "type": "object",
+        "required": ["id", "image", "ports"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,62}$",
+            "description": "Service id. Lowercase alphanumeric with hyphen/underscore, starts with a letter, max 63 chars."
+          },
+          "image": {
+            "type": "string",
+            "description": "OCI image reference. Pinned digest preferred."
+          },
+          "ports": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "description": "Listening ports. Integers in the valid TCP/UDP port range."
+          },
+          "healthcheck": {
+            "type": "object",
+            "properties": {
+              "command": {"type": "array", "items": {"type": "string"}},
+              "interval_seconds": {"type": "integer", "minimum": 1},
+              "timeout_seconds": {"type": "integer", "minimum": 1},
+              "retries": {"type": "integer", "minimum": 1}
+            }
+          },
+          "readiness_probe": {"type": "object"},
+          "depends_on": {"type": "array", "items": {"type": "string"}},
+          "env": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "source"],
+              "properties": {
+                "name": {"type": "string"},
+                "source": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": ["literal"],
+                      "properties": {"literal": {"type": "string"}}
+                    },
+                    {
+                      "type": "object",
+                      "required": ["secret_ref"],
+                      "properties": {"secret_ref": {"type": "string"}}
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "secrets_policy": {
+            "type": "string",
+            "enum": ["no_secrets", "env_only", "mounted", "vault_only"]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "commands": {
+      "type": "array",
+      "description": "Declared commands. Workers may execute ONLY commands whose computed command_hash matches one of these entries (spec F line 4100, CLAUDE.md keystone 3).",
+      "items": {
+        "type": "object",
+        "required": ["id", "argv", "cwd", "timeout_seconds"],
+        "properties": {
+          "id": {"type": "string"},
+          "argv": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "description": "Argument vector. At least one element (the program)."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Working directory for the command."
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 7200,
+            "description": "Wall-clock timeout in seconds (1..7200)."
+          },
+          "container_image": {
+            "type": "string",
+            "description": "Optional OCI image override. Pinned digest preferred."
+          },
+          "env": {"type": "array", "items": {"type": "object"}},
+          "stdin_ref": {"type": "string"},
+          "stdout_policy": {
+            "type": "string",
+            "enum": ["drop", "capture_truncate", "capture_full"]
+          },
+          "stderr_policy": {
+            "type": "string",
+            "enum": ["drop", "capture_truncate", "capture_full"]
+          },
+          "network_policy": {
+            "type": "object",
+            "properties": {
+              "egress_default": {
+                "const": "deny",
+                "description": "Per spec F line 4069 + replay sandbox default-deny."
+              },
+              "egress_allowlist": {
+                "type": "array",
+                "items": {"type": "string"}
+              }
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "kind"],
+              "properties": {
+                "path": {"type": "string"},
+                "kind": {
+                  "type": "string",
+                  "enum": ["artifact", "exit_code", "span", "trace"]
+                },
+                "expected_digest": {
+                  "type": "string",
+                  "pattern": "^sha256-[0-9a-f]{64}$",
+                  "description": "sha256 wire form (spec F line 4083 command_hash pattern referenced)."
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {"kind": {"const": "artifact"}},
+                    "required": ["kind"]
+                  },
+                  "then": {
+                    "required": ["expected_digest"]
+                  }
+                }
+              ],
+              "additionalProperties": true
+            }
+          },
+          "setup": {"type": "array", "items": {"type": "string"}},
+          "teardown": {"type": "array", "items": {"type": "string"}},
+          "mutation_boundaries": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Declared mutation boundaries for replay/side-effect classification (spec X)."
+          },
+          "side_effect_tools": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Declared side-effecting tools used by the command (spec X, E.3)."
+          },
+          "command_hash": {
+            "type": "string",
+            "pattern": "^sha256-[0-9a-f]{64}$",
+            "description": "sha256_canonical(argv ++ cwd ++ env ++ container_image). Computed at submit time; control plane refuses mismatched submissions (spec F line 4100)."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "validation_surfaces": {
+      "type": "array",
+      "description": "Declared validation surfaces (test discovery is bound to surface globs declared here; filename heuristics are forbidden).",
+      "items": {
+        "type": "object",
+        "required": ["surface", "contract_ref"],
+        "properties": {
+          "surface": {
+            "type": "string",
+            "enum": [
+              "cli",
+              "api",
+              "browser",
+              "trace_replay",
+              "eval_dataset",
+              "provider_matrix",
+              "rag_diagnostics"
+            ]
+          },
+          "contract_ref": {
+            "type": "string",
+            "description": "Reference to the contract assertion id or contract file the surface fulfills."
+          },
+          "globs": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Declared test-discovery globs for this surface. Gate runner MUST use these; filename heuristics are forbidden (spec line 663, CLAUDE.md keystone 3)."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "network_policy": {
+      "type": "object",
+      "description": "Manifest-level default network policy. Per CLAUDE.md keystone 5: default-deny egress.",
+      "properties": {
+        "egress_default": {
+          "const": "deny",
+          "description": "Default-deny egress (spec F line 4069 applied at manifest scope)."
+        },
+        "egress_allowlist": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Allowlist of egress hosts; explicit allow only."
+        }
+      },
+      "required": ["egress_allowlist"]
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Manifest-level declared artifacts (top-level). Every entry that names an artifact-kind path MUST carry expected_digest.",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind"],
+        "properties": {
+          "path": {"type": "string"},
+          "kind": {
+            "type": "string",
+            "enum": ["artifact", "exit_code", "span", "trace"]
+          },
+          "expected_digest": {
+            "type": "string",
+            "pattern": "^sha256-[0-9a-f]{64}$"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {"kind": {"const": "artifact"}},
+              "required": ["kind"]
+            },
+            "then": {"required": ["expected_digest"]}
+          }
+        ],
+        "additionalProperties": true
+      }
+    },
+    "side_effect_tools": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Manifest-level declared side-effecting tools (aggregated)."
+    },
+    "mutation_boundaries": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Manifest-level declared mutation boundaries (aggregated)."
+    },
+    "grace_window": {
+      "type": "object",
+      "description": "Manifest rotation grace window (spec F line 4102). Absent grace_window means default seconds=1800.",
+      "properties": {
+        "seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1800
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

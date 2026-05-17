@@ -84,6 +84,11 @@ from .db import DEFAULT_READER_COUNT, SidecarDatabase
 from .errors import RelaySQLiteBusyExhausted
 from .health import HealthState, _register_health_routes
 from .lockfile import relay_home, resolve_lockfile_path
+from .manifest_enforcement import (
+    ManifestRegistry,
+    enforce_command_hash,
+    enforce_manifest_active_or_in_grace,
+)
 from .primitives import local_atomic_file_write
 from .primitives.transactional_db_write import (
     set_active_database,
@@ -220,6 +225,13 @@ class RuntimeState:
     quiesce: QuiesceState = field(default_factory=QuiesceState)
     idle_timeout_seconds: float | None = None
     drain_deadline_seconds: float | None = None
+    # W3 manifest enforcement (CLAUDE.md keystone invariant 3, spec F line 4100).
+    # Seeded at lifespan startup from the operation manifest; the new
+    # ingest routes (/v1/ingest/runs, /v1/ingest/spans:batch) look up
+    # declared command_hashes via this registry before accepting any
+    # submission. Empty in production until seeded; tests register
+    # entries directly.
+    manifest_registry: ManifestRegistry = field(default_factory=ManifestRegistry)
 
 
 @asynccontextmanager
@@ -1069,6 +1081,145 @@ def build_runtime_app(
                 "operation_id": op.operation_id,
                 "held_ms": hold_ms,
             }
+
+    # ----------------------------------------------------------------------
+    # W3 manifest-enforced ingest routes (VAL-V2M03-012, VAL-V2M03-013).
+    # ----------------------------------------------------------------------
+    #
+    # Per CLAUDE.md keystone invariant 3 + spec F line 4100: the control
+    # plane refuses any submission whose ``command_hash`` does not match a
+    # declared command in the active manifest version, OR whose
+    # ``manifest_commit_hash`` is neither active nor in grace. Both
+    # checks return HTTP 422 + ``RELAY-GATE-021`` envelope.
+
+    async def _enforce_manifest_anchors(
+        body: dict[str, Any],
+    ) -> JSONResponse | tuple[str, str]:
+        """Validate manifest + command anchors. Return JSONResponse on
+        reject or a (manifest_commit_hash, command_hash) tuple on accept.
+        """
+        manifest_commit_hash = body.get("manifest_commit_hash")
+        command_hash = body.get("command_hash")
+        if not isinstance(manifest_commit_hash, str) or not isinstance(
+            command_hash, str
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "code": "RELAY-ING-001",
+                    "error_class": "RELAY-ING-001",
+                    "message": (
+                        "manifest_commit_hash and command_hash MUST be "
+                        "non-empty strings"
+                    ),
+                },
+            )
+
+        cmd_reject = enforce_command_hash(
+            registry=runtime.manifest_registry,
+            manifest_commit_hash=manifest_commit_hash,
+            command_hash=command_hash,
+        )
+        if cmd_reject is not None:
+            return JSONResponse(
+                status_code=cmd_reject.http_status,
+                content=cmd_reject.envelope,
+            )
+
+        db = runtime.database
+        if db is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "code": "RELAY-SIDECAR-007",
+                    "error_class": "RELAY-SIDECAR-NOT-READY",
+                    "message": "sidecar database not yet available",
+                },
+            )
+        reader = db.acquire_reader()
+        manifest_reject = await enforce_manifest_active_or_in_grace(
+            reader, manifest_commit_hash=manifest_commit_hash
+        )
+        if manifest_reject is not None:
+            return JSONResponse(
+                status_code=manifest_reject.http_status,
+                content=manifest_reject.envelope,
+            )
+        return manifest_commit_hash, command_hash
+
+    @app.post("/v1/ingest/runs")
+    async def v1_ingest_runs(request: Request) -> JSONResponse:
+        """Run-submission ingest with manifest enforcement (VAL-V2M03-012)."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "code": "RELAY-ING-001",
+                    "error_class": "RELAY-ING-001",
+                    "message": "request body must be a JSON object",
+                },
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "code": "RELAY-ING-001",
+                    "error_class": "RELAY-ING-001",
+                    "message": "request body must be a JSON object",
+                },
+            )
+        enforced = await _enforce_manifest_anchors(body)
+        if isinstance(enforced, JSONResponse):
+            return enforced
+        tracker = runtime.quiesce.tracker
+        async with tracker.acquire(description="ingest/runs") as op:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "accepted": True,
+                    "operation_id": op.operation_id,
+                    "endpoint": "/v1/ingest/runs",
+                },
+            )
+
+    @app.post("/v1/ingest/spans:batch")
+    async def v1_ingest_spans_batch(request: Request) -> JSONResponse:
+        """Spans-batch ingest with manifest enforcement (VAL-V2M03-012)."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "code": "RELAY-ING-001",
+                    "error_class": "RELAY-ING-001",
+                    "message": "request body must be a JSON object",
+                },
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "code": "RELAY-ING-001",
+                    "error_class": "RELAY-ING-001",
+                    "message": "request body must be a JSON object",
+                },
+            )
+        enforced = await _enforce_manifest_anchors(body)
+        if isinstance(enforced, JSONResponse):
+            return enforced
+        tracker = runtime.quiesce.tracker
+        async with tracker.acquire(description="ingest/spans:batch") as op:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "accepted": True,
+                    "operation_id": op.operation_id,
+                    "endpoint": "/v1/ingest/spans:batch",
+                },
+            )
 
     @app.get("/diagnostics/quiesce")
     async def diagnostics_quiesce() -> dict[str, Any]:

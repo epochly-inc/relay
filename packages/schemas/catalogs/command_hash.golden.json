@@ -1,0 +1,74 @@
+[
+  {
+    "name": "empty-env-no-image",
+    "argv": ["echo", "hello"],
+    "cwd": "/tmp",
+    "env": {},
+    "container_image": null,
+    "expected": "sha256-2048923af6a6b60d56b1ee603009924bf081bfc15eeb0916a5e1ff4657f08774"
+  },
+  {
+    "name": "env-order-canary-1",
+    "argv": ["python", "-m", "pytest"],
+    "cwd": ".",
+    "env": {"A": "1", "B": "2", "C": "3"},
+    "container_image": null,
+    "expected": "sha256-8efafe4bd65125d5f2ec358889a66af29fc28ee81afc220bfec5ece8561c9059"
+  },
+  {
+    "name": "env-order-canary-2-equal-to-1",
+    "argv": ["python", "-m", "pytest"],
+    "cwd": ".",
+    "env": {"C": "3", "A": "1", "B": "2"},
+    "container_image": null,
+    "expected": "sha256-8efafe4bd65125d5f2ec358889a66af29fc28ee81afc220bfec5ece8561c9059"
+  },
+  {
+    "name": "with-image",
+    "argv": ["uv", "run", "ruff", "check"],
+    "cwd": "/work",
+    "env": {"PATH": "/usr/bin"},
+    "container_image": "ghcr.io/epochly/relay@sha256:abc",
+    "expected": "sha256-c60bd50edd74d9c4279c91d77e5b21cd3f2ea2ce9f35541dc04e8f6c92ca195b"
+  },
+  {
+    "name": "unicode-cwd",
+    "argv": ["ls"],
+    "cwd": "/work/relay",
+    "env": {"LANG": "en_US.UTF-8"},
+    "container_image": null,
+    "expected": "sha256-b1d1ec9934b95c64d4c3f70c599b59599343eab3a39c8b6e4607fd9edf3740e4"
+  },
+  {
+    "name": "cwd-trailing-space-A",
+    "argv": ["x"],
+    "cwd": "/tmp",
+    "env": {},
+    "container_image": null,
+    "expected": "sha256-587e0d391b2a10d507be5d55bfcc70d83fb135fd17c737b2885ea7a00685765f"
+  },
+  {
+    "name": "cwd-trailing-space-B-differs",
+    "argv": ["x"],
+    "cwd": "/tmp ",
+    "env": {},
+    "container_image": null,
+    "expected": "sha256-4277388828aa2cf0511345aedf8772b570e143b1dfc0030009a84e9aa6783267"
+  },
+  {
+    "name": "argv-order-A",
+    "argv": ["a", "b", "c"],
+    "cwd": ".",
+    "env": {},
+    "container_image": null,
+    "expected": "sha256-3b5ab20ab030e75d30a60e40e37b83b2ea8b9ea1712e6c87d4245fd4e9c51241"
+  },
+  {
+    "name": "argv-order-B-differs",
+    "argv": ["c", "b", "a"],
+    "cwd": ".",
+    "env": {},
+    "container_image": null,
+    "expected": "sha256-ae79642731f2c3ccf6703f96a74d373a52c89527c565e2d4cb9e24a984a4ccf3"
+  }
+]

@@ -107,3 +107,64 @@ Additionally:
   ("[check] codegen drift: 0 files differ")
 
 Contributes to: VAL-W1-040, VAL-W1-044.
+
+---
+
+## 2026-05-17 -- relay-v0.2-oss-completeness / m03-w3-manifest-locks-guards / VAL-V2M03-010
+
+Driver: w3-manifest sub-feature -- VAL-V2M03-010 requires that
+`relay/.ops/manifest.yaml` validate cleanly against the canonical
+`packages/schemas/catalogs/manifest.v1.schema.json` (spec F lines
+4007-4103) with zero errors.
+
+### Change
+
+Additive augmentation of `.ops/manifest.yaml` with the canonical fields
+required by `relay.manifest.v1`. No existing fields removed; the
+ops-runner-native fields (`name`, `cmd`, `timeout_ms`, `side_effect_class`,
+`requires_env`, etc.) coexist with the spec-canonical fields:
+
+| Level   | Added field(s)                                                              |
+|---------|------------------------------------------------------------------------------|
+| root    | `schema_version: relay.manifest.v1`                                          |
+| root    | `manifest_id: 0d63cba5-5e8e-4b69-9b3f-7c6e3c8a1d11`                          |
+| root    | `validation_surfaces[]` (aggregated from existing `test_discovery.*_glob`)   |
+| root    | `network_policy.egress_default: deny` + `egress_allowlist[]`                 |
+| root    | `artifacts: []`, `side_effect_tools: []`, `mutation_boundaries: []`          |
+| root    | `grace_window.seconds: 1800` (spec F line 4095 default)                      |
+| command | `id` (= existing `name`), `argv` (shlex-split from `cmd`),                   |
+| command | `timeout_seconds` (= `timeout_ms // 1000`, clamped to 1..7200)               |
+| command | `network_policy.egress_default: deny` + `egress_allowlist[]` (anchored)      |
+| command | `mutation_boundaries: []`, `side_effect_tools: []`, `artifacts: []`          |
+| service | `id` (= existing `name`), `image: local:<name>`, `ports: [1]` (sentinels)   |
+
+Reasoning: the existing manifest predates the canonical relay.manifest.v1
+schema. Workers operate against the YAML data structure -- the comment
+header was operational documentation, not load-bearing for any consumer
+(grep across packages/ apps/ scripts/ for `.ops/manifest` returns only
+docstrings and grep markers). The augmentation was performed via
+yaml.safe_dump roundtrip after dict augmentation; structure is fully
+preserved, only the comment header was removed.
+
+For commands whose shell `cmd` includes `&&`, `||`, `|`, or redirect
+operators, the canonical `argv` is wrapped as `["sh", "-c", <cmd_str>]`
+so the positional-argv invariant is preserved (the ops runner still
+interprets the original `cmd` as a shell string verbatim, so behavior
+is unchanged).
+
+### Verification
+
+```bash
+uv run pytest packages/schemas/python/tests/test_v2m03_manifest.py \
+              -m plumbing --timeout=60 --tb=short -q
+```
+
+Observed: `25 passed in 0.31s` (covering VAL-V2M03-001 through -011).
+The VAL-V2M03-010 specific test
+`test_ops_manifest_validates_against_canonical_schema` passes with
+zero errors from `Draft202012Validator(schema).iter_errors(body)`.
+
+Contributes to: VAL-V2M03-001, VAL-V2M03-002, VAL-V2M03-003,
+VAL-V2M03-004, VAL-V2M03-005, VAL-V2M03-006, VAL-V2M03-007,
+VAL-V2M03-008, VAL-V2M03-009, VAL-V2M03-010, VAL-V2M03-011.
+
