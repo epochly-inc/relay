@@ -53,18 +53,6 @@ from relay_verifier import (  # noqa: E402
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-021")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "validate_tsa_token is fail-closed until ASN.1 RFC 3161 "
-        "cryptographic signature verification is wired (asn1crypto / "
-        "rfc3161-client). The happy-path bundle includes a TSA token, "
-        "which now yields outcome='invalid' and forces overall='fail'. "
-        "See test_tsa_crypto_failclosed.py (P1 verifier crypto gap). "
-        "Re-enable this test once TSA_CRYPTO_IMPLEMENTED is True and the "
-        "fixture builder produces a real RFC 3161 TimeStampResp."
-    ),
-)
 def test_happy_path_full_bundle_verification_end_to_end() -> None:
     """A canonical hosted-signed bundle verifies end-to-end with every
     output field populated and overall="pass"."""
@@ -80,7 +68,10 @@ def test_happy_path_full_bundle_verification_end_to_end() -> None:
         jwks=built.jwks,
         bundle_path="/tmp/test-bundle.json",
         trust_anchor_source="live",
-        options=ValidateBundleOptions(artifact_resolver=resolver),
+        options=ValidateBundleOptions(
+            artifact_resolver=resolver,
+            tsa_extra_trusted_roots_pem=built.tsa_extra_roots_pem,
+        ),
     )
     assert output["schema_version"] == VERIFIER_OUTPUT_SCHEMA
     assert output["overall"] == "pass", output

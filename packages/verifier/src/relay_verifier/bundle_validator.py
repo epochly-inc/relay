@@ -67,6 +67,8 @@ from .tsa import (
     CLOCK_SKEW_TOLERANCE_SECONDS,
     RELAY_EVID_031,
     RELAY_EVID_038,
+    load_bundled_tsa_chain,
+    load_tsa_chain_pem_bytes,
     validate_tsa_token,
 )
 from .verifier import _select_jwk, verify_bundle
@@ -180,6 +182,20 @@ class ValidateBundleOptions:
       as its default; controls whether `local_dev` bundles emit the
       WARN. Defaults to the spec-pinned default
       (`relay_verifier.constants.DEFAULT_JWKS_URL`) when None.
+    `tsa_extra_trusted_roots_pem`: optional PEM blob of additional TSA
+      trust roots merged with the wheel-bundled chain at
+      ``packages/verifier/src/relay_verifier/tsa_chain/tsa-chain.pem``.
+      Test-injection seam used by fixture builders to anchor an
+      ephemeral TSA root generated at test time so the real RFC 3161
+      ``TimeStampResp`` signature verifies (VAL-V2M09-016) without
+      writing private key material to disk (banned pattern #14).
+      Production callers leave this None and the verifier uses only the
+      wheel-bundled chain.
+    `tsa_skip_bundled_chain`: if True, do NOT load the wheel-bundled
+      TSA cert chain. Used by tests that need to demonstrate the
+      "untrusted root" failure mode without their ephemeral cert
+      accidentally chaining into the bundled placeholder root via a
+      collision. Defaults False.
     """
 
     strict_log: bool = False
@@ -189,6 +205,8 @@ class ValidateBundleOptions:
     subject_store: SubjectStore | None = None
     witness_jwks: dict[str, Any] | None = None
     default_trust_anchor: str | None = None
+    tsa_extra_trusted_roots_pem: bytes | None = None
+    tsa_skip_bundled_chain: bool = False
 
 
 # -----------------------------------------------------------------------------
@@ -595,11 +613,25 @@ def validate_bundle(
     decided_at = raw_decided_at if isinstance(raw_decided_at, str) else ""
     binding_digest_hex = _compute_binding_digest(bundle)
     if decided_at:
+        # Load the wheel-bundled TSA chain so SignerInfo signatures can
+        # be cryptographically verified against the OSS placeholder root
+        # (VAL-V2M09-016). If the wheel is damaged (chain file absent)
+        # we tolerate the FileNotFoundError so the rest of the validator
+        # still emits a structured outcome -- the empty trust-roots list
+        # yields outcome="invalid" with reason="tsa_no_trust_roots_available".
+        bundled_chain_certs: list | None = None
+        if not opts.tsa_skip_bundled_chain:
+            try:
+                _, chain_bytes = load_bundled_tsa_chain()
+                bundled_chain_certs = load_tsa_chain_pem_bytes(chain_bytes)
+            except (FileNotFoundError, ValueError):
+                bundled_chain_certs = None
         tsa_result = validate_tsa_token(
             token=tsa_token if isinstance(tsa_token, dict) else None,
             bundle_digest_hex=binding_digest_hex,
             decided_at=decided_at,
-            chain_certs=None,
+            chain_certs=bundled_chain_certs,
+            extra_trusted_roots_pem=opts.tsa_extra_trusted_roots_pem,
         )
         output["tsa_check"] = tsa_result.outcome
         if tsa_result.outcome == "missing":

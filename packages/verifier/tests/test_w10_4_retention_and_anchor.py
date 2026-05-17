@@ -31,17 +31,9 @@ from relay_verifier import (  # noqa: E402
     validate_bundle,
 )
 
-# Shared xfail reason for tests that depend on `validate_bundle`
-# returning overall="pass" on the canonical happy-path bundle, which
-# requires `validate_tsa_token` to report outcome="ok". That path is
-# fail-closed until TSA_CRYPTO_IMPLEMENTED is True.
-_TSA_CRYPTO_XFAIL_REASON = (
-    "validate_tsa_token is fail-closed until ASN.1 RFC 3161 cryptographic "
-    "signature verification is wired; the canonical happy-path bundle now "
-    "yields overall='fail' on the TSA check. See "
-    "packages/verifier/tests/test_tsa_crypto_failclosed.py (P1 verifier "
-    "crypto gap)."
-)
+# w9-2 unblocked these tests: the cryptographic RFC 3161 verifier is now
+# wired. Tests pass the ephemeral fixture root via
+# ValidateBundleOptions(tsa_extra_trusted_roots_pem=built.tsa_extra_roots_pem).
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +43,6 @@ _TSA_CRYPTO_XFAIL_REASON = (
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-037")
-@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_subject_deleted_under_retention_resolves_tombstoned() -> None:
     """When the referenced subject is absent from the store the verifier
     MUST resolve to 'tombstoned' and still pass."""
@@ -60,7 +51,10 @@ def test_subject_deleted_under_retention_resolves_tombstoned() -> None:
     output = validate_bundle(
         bundle=built.bundle,
         jwks=built.jwks,
-        options=ValidateBundleOptions(subject_store=empty_store),
+        options=ValidateBundleOptions(
+            subject_store=empty_store,
+            tsa_extra_trusted_roots_pem=built.tsa_extra_roots_pem,
+        ),
     )
     assert output["subject_resolution"] == SUBJECT_RESOLUTION_TOMBSTONED
     assert output["overall"] == "pass", output
@@ -137,16 +131,18 @@ def test_subject_resolution_unknown_without_store() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-041")
-@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_local_dev_under_default_anchor_emits_warn_exit_0() -> None:
     """trust_anchor='local_dev' under the default trust anchor MUST
     emit WARN with reason 'local_dev_unsupported_for_audit', exit 0."""
     built = build_bundle(trust_anchor="local_dev")
-    # No options -> default trust anchor in effect.
+    # No default-anchor override -> default trust anchor in effect.
     output = validate_bundle(
         bundle=built.bundle,
         jwks=built.jwks,
         trust_anchor_source="live",
+        options=ValidateBundleOptions(
+            tsa_extra_trusted_roots_pem=built.tsa_extra_roots_pem,
+        ),
     )
     # WARN present with the canonical reason.
     matching_warns = [
@@ -181,7 +177,6 @@ def test_local_dev_under_strict_trust_anchor_is_error_exit_nonzero() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W10-041")
-@pytest.mark.xfail(strict=True, reason=_TSA_CRYPTO_XFAIL_REASON)
 def test_local_dev_under_byo_local_anchor_no_warn() -> None:
     """When the verifier is configured via BYO trust anchor (a local dev
     JWKS), local_dev bundles MUST validate normally with no WARN."""
@@ -192,6 +187,7 @@ def test_local_dev_under_byo_local_anchor_no_warn() -> None:
         trust_anchor_source="byo_flag",  # not the default
         options=ValidateBundleOptions(
             default_trust_anchor="http://localhost:8080/jwks.json",
+            tsa_extra_trusted_roots_pem=built.tsa_extra_roots_pem,
         ),
     )
     matching = [

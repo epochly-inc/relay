@@ -17,6 +17,7 @@ members = [
     "epochly-relay-explain",
     "epochly-relay-gate-engine",
     "epochly-relay-replay-proxy",
+    "epochly-relay-replay-sandbox-protocol",
     "epochly-relay-schemas",
     "epochly-relay-sidecar",
     "epochly-relay-verifier",
@@ -282,6 +283,15 @@ resolution-markers = [
 sdist = { url = "https://files.pythonhosted.org/packages/90/61/0aa957eec22ff70b830b22ff91f825e70e1ef732c06666a805730f28b36b/asgiref-3.9.1.tar.gz", hash = "sha256:a5ab6582236218e5ef1648f242fd9f10626cfd4de8dc377db215d5d5098e3142", size = 36870, upload-time = "2025-07-08T09:07:43.344Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7c/3c/0464dcada90d5da0e71018c04a140ad6349558afb30b3051b4264cc5b965/asgiref-3.9.1-py3-none-any.whl", hash = "sha256:f3bba7092a48005b5f5bacd747d36ee4a5a61f4a269a6df590b43144355ebd2c", size = 23790, upload-time = "2025-07-08T09:07:41.548Z" },
+]
+
+[[package]]
+name = "asn1crypto"
+version = "1.5.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/cf/d547feed25b5244fcb9392e288ff9fdc3280b10260362fc45d37a798a6ee/asn1crypto-1.5.1.tar.gz", hash = "sha256:13ae38502be632115abf8a24cbe5f4da52e3b5231990aff31123c805306ccb9c", size = 121080, upload-time = "2022-03-15T14:46:52.889Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c9/7f/09065fd9e27da0eda08b4d6897f1c13535066174cc023af248fc2a8d5e5a/asn1crypto-1.5.1-py2.py3-none-any.whl", hash = "sha256:db4e40728b728508912cbb3d44f19ce188f218e9eba635821bb4b68564f8fd67", size = 105045, upload-time = "2022-03-15T14:46:51.055Z" },
 ]
 
 [[package]]
@@ -893,6 +903,24 @@ requires-dist = [
 provides-extras = ["mitmproxy", "test"]
 
 [[package]]
+name = "epochly-relay-replay-sandbox-protocol"
+version = "0.0.0"
+source = { editable = "packages/replay-sandbox-protocol" }
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-timeout" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
+    { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
+]
+provides-extras = ["test"]
+
+[[package]]
 name = "epochly-relay-schemas"
 version = "0.0.0"
 source = { editable = "packages/schemas" }
@@ -963,9 +991,11 @@ name = "epochly-relay-verifier"
 version = "0.0.0"
 source = { editable = "packages/verifier" }
 dependencies = [
+    { name = "asn1crypto" },
     { name = "cryptography", version = "44.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
     { name = "cryptography", version = "45.0.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "epochly-relay-schemas" },
+    { name = "rfc3161-client" },
 ]
 
 [package.optional-dependencies]
@@ -976,10 +1006,12 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "asn1crypto", specifier = ">=1.5" },
     { name = "cryptography", specifier = ">=42" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
+    { name = "rfc3161-client", specifier = ">=1.0" },
 ]
 provides-extras = ["test"]
 

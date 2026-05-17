@@ -55,6 +55,8 @@ dependencies = [
   # (packages/cli/src/relay_cli/evidence_verifier.py) uses the same
   # surface and version family.
   "cryptography>=42",
+  "asn1crypto>=1.5",
+  "rfc3161-client>=1.0",
 ]
 
 [project.optional-dependencies]
