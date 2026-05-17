@@ -639,6 +639,18 @@ function sha256HexBytes(value: Uint8Array): string {
   return crypto.createHash("sha256").update(Buffer.from(value)).digest("hex");
 }
 
+/**
+ * Escape a single RFC 6901 JSON Pointer reference token.
+ *
+ * Per RFC 6901 sec 4: ``~`` -> ``~0``, ``/`` -> ``~1``. The ``~`` escape
+ * MUST happen before the ``/`` escape so the encoder is its own inverse
+ * on round-trip. Mirrors :func:`_escape_pointer_token` in the Python
+ * redaction module.
+ */
+function escapePointerToken(token: string): string {
+  return token.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
@@ -782,16 +794,55 @@ export class RedactionEngine {
     return this.walk(payload) as Record<string, unknown>;
   }
 
-  private walk(value: unknown): unknown {
-    if (value === null || value === undefined) return value;
-    if (typeof value === "string") return this.applyMatchersToString(value);
-    if (typeof value === "number" || typeof value === "boolean") return value;
+  private walk(value: unknown, pointer: string = ""): unknown {
+    // VAL-V2M08-025: json_pointer leaf evaluation. A matcher whose
+    // ``paths`` includes the current RFC 6901 pointer wins over any
+    // regex matcher for the same leaf (most-specific selector). Apply
+    // at every non-container leaf type. Containers (object/array)
+    // descend unconditionally.
+    const jsonPointerMatch = this.findJsonPointerMatch(pointer);
+    if (value === null || value === undefined) {
+      if (jsonPointerMatch !== null) {
+        return this.buildReplacement(jsonPointerMatch, value === null ? "null" : "undefined");
+      }
+      return value;
+    }
+    if (typeof value === "string") {
+      if (jsonPointerMatch !== null) {
+        // Pointer-match wins; skip regex matchers entirely.
+        return this.buildReplacement(jsonPointerMatch, value);
+      }
+      return this.applyMatchersToString(value);
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      if (jsonPointerMatch !== null) {
+        return this.buildReplacement(jsonPointerMatch, String(value));
+      }
+      return value;
+    }
     // Binary buffers MUST become digest-only references (VAL-W4-025).
+    // An explicit json_pointer match on a bytes leaf produces the
+    // matcher's placeholder instead (caller asked for the path to be
+    // redacted; honor that even when the leaf is binary). Mirrors
+    // Python redaction.py:_walk bytes branch.
     if (value instanceof Uint8Array) {
+      if (jsonPointerMatch !== null) {
+        return this.buildReplacement(
+          jsonPointerMatch,
+          new TextDecoder("utf-8", { fatal: false }).decode(value),
+        );
+      }
       return { _digest_sha256: sha256HexBytes(value) };
     }
     if (value instanceof ArrayBuffer) {
-      return { _digest_sha256: sha256HexBytes(new Uint8Array(value)) };
+      const bytes = new Uint8Array(value);
+      if (jsonPointerMatch !== null) {
+        return this.buildReplacement(
+          jsonPointerMatch,
+          new TextDecoder("utf-8", { fatal: false }).decode(bytes),
+        );
+      }
+      return { _digest_sha256: sha256HexBytes(bytes) };
     }
     if (typeof Blob !== "undefined" && value instanceof Blob) {
       // Blob is async-only; we cannot read it synchronously here. Refuse
@@ -806,19 +857,37 @@ export class RedactionEngine {
       );
     }
     if (Array.isArray(value)) {
-      return value.map((v) => this.walk(v));
+      return value.map((v, idx) => this.walk(v, pointer + "/" + String(idx)));
     }
     if (typeof value === "object") {
       const obj = value as Record<string, unknown>;
       const out: Record<string, unknown> = {};
       for (const k of Object.keys(obj)) {
-        out[k] = this.walk(obj[k]);
+        out[k] = this.walk(obj[k], pointer + "/" + escapePointerToken(k));
       }
       return out;
     }
     // Anything else (function, symbol, bigint) gets coerced to string and
     // re-matched -- mirrors Python ``str(value)`` fallback.
+    if (jsonPointerMatch !== null) {
+      return this.buildReplacement(jsonPointerMatch, String(value));
+    }
     return this.applyMatchersToString(String(value));
+  }
+
+  /**
+   * Return the first json_pointer matcher whose ``jsonPaths`` includes
+   * ``pointer``. Matchers are evaluated in declaration order. The root
+   * pointer (empty string) never matches: matchers declare leaf paths
+   * like ``/user/email``, not the document root.
+   */
+  private findJsonPointerMatch(pointer: string): CompiledMatcher | null {
+    if (pointer.length === 0) return null;
+    for (const matcher of this._policy.matchers) {
+      if (matcher.kind !== "json_pointer") continue;
+      if (matcher.jsonPaths.includes(pointer)) return matcher;
+    }
+    return null;
   }
 }
 

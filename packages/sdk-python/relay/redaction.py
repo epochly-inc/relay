@@ -509,6 +509,21 @@ def _hmac_sha256_hex(salt: bytes, plaintext: str) -> str:
     return hmac.new(salt, plaintext.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _escape_pointer_token(token: Any) -> str:
+    """Escape a single RFC 6901 JSON Pointer reference token.
+
+    Per RFC 6901 sec 4: ``~`` -> ``~0``, ``/`` -> ``~1``. The escape
+    of ``~`` MUST happen before the escape of ``/`` so the encoder is
+    its own inverse on round-trip.
+
+    Non-string keys (rare in trace payloads but legal in hand-built
+    dicts used by tests) are coerced via :func:`str` first so the
+    walker can compute a stable pointer for them.
+    """
+    raw = token if isinstance(token, str) else str(token)
+    return raw.replace("~", "~0").replace("/", "~1")
+
+
 def _to_string(value: Any) -> str:
     """Coerce a JSON-leaf value to a string for matcher consumption.
 
@@ -645,43 +660,82 @@ class RedactionEngine:
             details={"reason": "unsupported_action", "matcher_id": matcher.id},
         )
 
-    def _walk(self, value: Any) -> Any:
+    def _walk(self, value: Any, *, pointer: str = "") -> Any:
         """Walk ``value``, redacting strings and digesting bytes in place.
 
         Behavior per leaf type (must mirror TS ``walk`` at
         ``packages/sdk-typescript/src/redaction.ts:784-821``):
 
           * ``str``: NFKC + confusables-fold, run matchers, return
-            redacted string.
+            redacted string. If any ``json_pointer`` matcher declared
+            ``pointer`` (the current leaf's JSON Pointer per RFC 6901,
+            spec G.2 line 4132), the declared matcher's action wins
+            over any regex matchers because the pointer match is the
+            most specific selector (VAL-V2M08-025).
           * ``bytes`` / ``bytearray``: replace with a digest-only
             reference ``{"_digest_sha256": "<hex>"}`` (VAL-W4-025 /
             keystone invariant #7). Plaintext bytes MUST NOT survive
             into the wire body even when no matcher would fire on a
             decoded string; routing bytes through the string matcher
-            was the Bug 2 P0 violation.
+            was the Bug 2 P0 violation. A ``json_pointer`` matcher
+            that targets the same path produces the matcher's
+            placeholder instead (the caller asked for the path to be
+            redacted; we honor that even when the leaf is binary).
           * ``memoryview``: refused. ``memoryview`` is Python's
             parallel of JS ``Blob`` -- a view that does not guarantee
             a contiguous underlying buffer the engine can hash
             atomically. The caller MUST pass resolved ``bytes`` (or a
             ``bytearray``).
           * ``dict`` / ``list`` / ``tuple``: descended.
-          * Everything else (int, float, bool, None): passed through.
+          * Everything else (int, float, bool, None): passed through,
+            unless a ``json_pointer`` matcher fires on the current
+            ``pointer`` -- in which case the matcher's action applies
+            after stringifying the value (mirrors regex behavior on
+            non-string leaves at :meth:`_to_string`).
 
-        JSON-pointer matchers with declared paths are not yet
-        evaluated at the leaf level in v0.1; their declared paths are
-        walked alongside everything else, and the regex matchers run
-        on every string leaf.
+        ``pointer`` accumulates the RFC 6901 JSON Pointer path of the
+        current node ("" for the root). Per RFC 6901 sec 4, the tokens
+        "~" and "/" inside a key escape to "~0" and "~1" respectively;
+        :func:`_escape_pointer_token` handles that. List indices are
+        appended as decimal integer tokens.
         """
+        # JSON Pointer leaf evaluation (VAL-V2M08-025): a json_pointer
+        # matcher whose ``paths`` includes the current pointer wins
+        # over any regex matcher for the same leaf. Apply at every
+        # leaf type that can legitimately be a redaction target
+        # (string, bytes, scalar). Containers (dict/list/tuple) are
+        # descended unconditionally; the per-leaf evaluation happens
+        # when the walk reaches a non-container.
+        json_pointer_match = self._find_json_pointer_match(pointer)
         if isinstance(value, dict):
-            return {k: self._walk(v) for k, v in value.items()}
+            return {
+                k: self._walk(
+                    v,
+                    pointer=pointer + "/" + _escape_pointer_token(k),
+                )
+                for k, v in value.items()
+            }
         if isinstance(value, list):
-            return [self._walk(v) for v in value]
+            return [
+                self._walk(v, pointer=pointer + "/" + str(idx))
+                for idx, v in enumerate(value)
+            ]
         if isinstance(value, tuple):
-            return tuple(self._walk(v) for v in value)
+            return tuple(
+                self._walk(v, pointer=pointer + "/" + str(idx))
+                for idx, v in enumerate(value)
+            )
         if isinstance(value, bytes | bytearray):
-            # Bug 2 (P0) fix: digest-only reference, never route raw
-            # bytes through the string matcher path. Mirrors TS
-            # redaction.ts:789-794.
+            if json_pointer_match is not None:
+                # VAL-V2M08-025: an explicit json_pointer match at a
+                # bytes leaf yields the matcher's placeholder. Hashing
+                # path uses HMAC over the bytes (decoded utf-8 with
+                # replace) so the digest still references the bytes
+                # deterministically.
+                return self._build_replacement(
+                    json_pointer_match,
+                    _to_string(value),
+                )
             digest = hashlib.sha256(bytes(value)).hexdigest()
             return {"_digest_sha256": digest}
         if isinstance(value, memoryview):
@@ -691,8 +745,40 @@ class RedactionEngine:
                 details={"reason": "unresolved_memoryview"},
             )
         if isinstance(value, str):
+            if json_pointer_match is not None:
+                # Pointer-match wins over regex (most specific
+                # selector). Build the replacement on the original
+                # string so the placeholder is deterministic; do NOT
+                # run regex matchers on top, because the pointer
+                # match already produced the canonical output.
+                return self._build_replacement(json_pointer_match, value)
             return self._apply_matchers_to_string(value)
+        # Non-string, non-bytes scalar (int/float/bool/None).
+        if json_pointer_match is not None:
+            return self._build_replacement(
+                json_pointer_match,
+                _to_string(value),
+            )
         return value
+
+    def _find_json_pointer_match(
+        self, pointer: str
+    ) -> _CompiledMatcher | None:
+        """Return the first json_pointer matcher whose paths include ``pointer``.
+
+        Matchers are evaluated in declaration order; the first hit
+        wins. ``pointer`` is the empty string at the root and never
+        matches a matcher (matchers declare leaf paths like
+        ``/user/email``, not the document root).
+        """
+        if not pointer:
+            return None
+        for matcher in self._policy.matchers:
+            if matcher.kind != "json_pointer":
+                continue
+            if pointer in matcher.json_paths:
+                return matcher
+        return None
 
     def redact(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Return a redacted deep-copy of ``payload``.
