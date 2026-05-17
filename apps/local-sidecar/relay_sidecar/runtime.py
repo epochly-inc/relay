@@ -62,7 +62,10 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
+import hmac
 import json
 import os
 import uuid
@@ -239,6 +242,22 @@ class RuntimeState:
     # submission. Empty in production until seeded; tests register
     # entries directly.
     manifest_registry: ManifestRegistry = field(default_factory=ManifestRegistry)
+    # V2M02 w2.3/w2.4: in-memory replay + eval registries. The hosted
+    # control-plane writers for replay_cases / replay_fixtures /
+    # replay_results / eval_datasets / eval_runs are out-of-scope for the
+    # OSS sidecar at M02 (they land in later milestones). The HTTP
+    # surface lands now so SDKs + downstream clients have stable
+    # endpoints to call; payloads round-trip through these registries to
+    # preserve canonical response shapes per spec B.6 lines 3459-3468.
+    # ALL writes go through these in-process containers; ALL writers
+    # stamp ``written_by = "control_plane"`` (keystone invariant #1).
+    replay_cases: dict[str, dict[str, Any]] = field(default_factory=dict)
+    replay_fixtures: dict[str, list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
+    replay_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    eval_datasets: dict[str, dict[str, Any]] = field(default_factory=dict)
+    eval_runs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @asynccontextmanager
@@ -1718,6 +1737,847 @@ def build_runtime_app(
                     "batch_id": op.operation_id,
                 },
             )
+
+    # ----------------------------------------------------------------------
+    # V2M02 w2.2 read endpoints (VAL-V2M02-010..020).
+    #
+    # All five run-namespace read endpoints. Source of truth is the
+    # local SQLite ``run_results`` / ``spans`` / ``root_cause_hypotheses``
+    # tables seeded by writers in later milestones; for M02 the routes
+    # query whatever rows exist and return canonical envelopes per spec
+    # B.6 lines 3452-3456. Every handler enforces ``runs:read`` via
+    # ``_check_required_scope`` per spec B.1 line 3363.
+    # ----------------------------------------------------------------------
+
+    # Cursor signing: opaque server-signed pagination tokens per spec B.3
+    # lines 3381-3390. The key is per-process so two sidecars cannot
+    # accept each other's cursors (defense-in-depth; the OSS profile
+    # is single-process by design).
+    _cursor_signing_key: bytes = hashlib.sha256(
+        f"{runtime.sqlite_path}:{uuid.uuid4()}".encode()
+    ).digest()
+
+    def _sign_cursor(payload: dict[str, Any]) -> str:
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        sig = hmac.new(_cursor_signing_key, raw, hashlib.sha256).digest()[:16]
+        token_bytes = base64.urlsafe_b64encode(sig + raw)
+        return token_bytes.decode("ascii").rstrip("=")
+
+    def _verify_cursor(token: str) -> dict[str, Any] | None:
+        try:
+            padded = token + "=" * (-len(token) % 4)
+            decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
+        except Exception:  # noqa: BLE001
+            return None
+        if len(decoded) < 16:
+            return None
+        sig, raw = decoded[:16], decoded[16:]
+        expected = hmac.new(
+            _cursor_signing_key, raw, hashlib.sha256
+        ).digest()[:16]
+        if not hmac.compare_digest(sig, expected):
+            return None
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return None
+
+    _RUN_LIST_SURFACE: str = "GET /v1/projects/{project_id}/runs"
+    _RUN_DETAIL_SURFACE: str = "GET /v1/runs/{run_id}"
+    _RUN_TRACE_SURFACE: str = "GET /v1/runs/{run_id}/trace"
+    _RUN_RESULT_SURFACE: str = "GET /v1/runs/{run_id}/result"
+    _RUN_EXPLAIN_SURFACE: str = "GET /v1/runs/{run_id}/explain"
+
+    def _not_found(*, surface: str, message: str) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content=_build_error_envelope(
+                code="RELAY-NOT-FOUND",
+                http_status=404,
+                message=message,
+                blocked_surface=surface,
+            ),
+        )
+
+    @app.get("/v1/projects/{project_id}/runs")
+    async def v1_list_project_runs(
+        project_id: str,
+        request: Request,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> JSONResponse:
+        """List runs for a project with cursor pagination (VAL-V2M02-010,
+        VAL-V2M02-011, VAL-V2M02-012).
+
+        Pagination per spec B.3 lines 3381-3390:
+          - ``limit`` defaults to 100, max 500.
+          - ``next_cursor`` is opaque + HMAC-signed.
+          - ``has_more`` is True iff a subsequent page exists.
+        Sort order is ``(decided_at DESC, run_id ASC)`` for stable paging.
+        """
+        scope_reject = _check_required_scope(
+            request, required="runs:read", blocked_surface=_RUN_LIST_SURFACE
+        )
+        if scope_reject is not None:
+            return scope_reject
+        effective_limit = max(1, min(int(limit), 500))
+        offset = 0
+        if cursor is not None:
+            decoded = _verify_cursor(cursor)
+            if decoded is None or decoded.get("project_id") != project_id:
+                return JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-PAGE-001",
+                        http_status=400,
+                        message="cursor is invalid or expired",
+                        blocked_surface=_RUN_LIST_SURFACE,
+                    ),
+                )
+            offset = int(decoded.get("offset", 0))
+
+        db = runtime.database
+        if db is None:
+            return JSONResponse(
+                status_code=503,
+                content=_build_error_envelope(
+                    code="RELAY-SIDECAR-007",
+                    http_status=503,
+                    message="sidecar database not yet available",
+                    blocked_surface=_RUN_LIST_SURFACE,
+                ),
+            )
+        reader = db.acquire_reader()
+        # Over-fetch by one to detect ``has_more``.
+        async with reader.execute(
+            "SELECT run_id, project_id, schema_version, status, "
+            "manifest_commit_hash, actor_identity_hash, decided_at "
+            "FROM run_results WHERE project_id = ? "
+            "ORDER BY decided_at DESC, run_id ASC LIMIT ? OFFSET ?",
+            (project_id, effective_limit + 1, offset),
+        ) as cur:
+            rows = await cur.fetchall()
+        has_more = len(rows) > effective_limit
+        page_rows = rows[:effective_limit]
+        items = [
+            {
+                "run_id": r[0],
+                "project_id": r[1],
+                "schema_version": r[2],
+                "status": r[3],
+                "manifest_commit_hash": r[4],
+                "actor_identity_hash": r[5],
+                "decided_at": r[6],
+            }
+            for r in page_rows
+        ]
+        next_cursor: str | None = None
+        if has_more:
+            next_cursor = _sign_cursor(
+                {"project_id": project_id, "offset": offset + effective_limit}
+            )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "items": items,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+            },
+        )
+
+    @app.get("/v1/runs/{run_id}")
+    async def v1_get_run(
+        run_id: str, request: Request
+    ) -> JSONResponse:
+        """Run detail (VAL-V2M02-013, VAL-V2M02-014).
+
+        Returns the canonical ``relay.run.v1`` envelope. The local sidecar
+        synthesizes the envelope from the ``run_results`` row plus the
+        manifest/actor anchors; the hosted control plane projects this
+        from the runs table directly.
+        """
+        scope_reject = _check_required_scope(
+            request, required="runs:read", blocked_surface=_RUN_DETAIL_SURFACE
+        )
+        if scope_reject is not None:
+            return scope_reject
+        db = runtime.database
+        if db is None:
+            return _not_found(
+                surface=_RUN_DETAIL_SURFACE,
+                message="sidecar database not yet available",
+            )
+        reader = db.acquire_reader()
+        async with reader.execute(
+            "SELECT run_id, project_id, status, manifest_commit_hash, "
+            "actor_identity_hash, decided_at FROM run_results "
+            "WHERE run_id = ?",
+            (run_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return _not_found(
+                surface=_RUN_DETAIL_SURFACE,
+                message=f"run_id {run_id!r} not found",
+            )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "schema_version": "relay.run.v1",
+                "run_id": row[0],
+                "project_id": row[1],
+                "status": row[2],
+                "started_at": row[5],
+                "ended_at": row[5],
+                "manifest_commit_hash": row[3],
+                "actor_identity_hash": row[4],
+            },
+        )
+
+    @app.get("/v1/runs/{run_id}/trace")
+    async def v1_get_run_trace(
+        run_id: str, request: Request
+    ) -> JSONResponse:
+        """Run trace (VAL-V2M02-015, VAL-V2M02-016).
+
+        Returns spans ordered by ``started_at`` with parent_span_id
+        references intact. Unknown run_id (no row in run_results) is 404.
+        """
+        scope_reject = _check_required_scope(
+            request, required="runs:read", blocked_surface=_RUN_TRACE_SURFACE
+        )
+        if scope_reject is not None:
+            return scope_reject
+        db = runtime.database
+        if db is None:
+            return _not_found(
+                surface=_RUN_TRACE_SURFACE,
+                message="sidecar database not yet available",
+            )
+        reader = db.acquire_reader()
+        async with reader.execute(
+            "SELECT 1 FROM run_results WHERE run_id = ?", (run_id,)
+        ) as cur:
+            run_row = await cur.fetchone()
+        if run_row is None:
+            return _not_found(
+                surface=_RUN_TRACE_SURFACE,
+                message=f"run_id {run_id!r} not found",
+            )
+        async with reader.execute(
+            "SELECT span_id, parent_span_id, span_type, name, status, "
+            "started_at, ended_at, error_class FROM spans "
+            "WHERE run_id = ? ORDER BY started_at ASC, span_id ASC",
+            (run_id,),
+        ) as cur:
+            span_rows = await cur.fetchall()
+        spans = [
+            {
+                "span_id": r[0],
+                "parent_span_id": r[1],
+                "span_type": r[2],
+                "name": r[3],
+                "status": r[4],
+                "started_at": r[5],
+                "ended_at": r[6],
+                "error_class": r[7],
+            }
+            for r in span_rows
+        ]
+        return JSONResponse(
+            status_code=200,
+            content={
+                "schema_version": "relay.trace.v1",
+                "run_id": run_id,
+                "spans": spans,
+            },
+        )
+
+    @app.get("/v1/runs/{run_id}/result")
+    async def v1_get_run_result(
+        run_id: str, request: Request
+    ) -> JSONResponse:
+        """Canonical RunResult (VAL-V2M02-017, VAL-V2M02-018).
+
+        Returns the ``run_results`` row including ``written_by``. The
+        control-plane invariant (#1) is enforced at the SQL layer via the
+        ``written_by_control_plane`` CHECK constraint on the table; this
+        handler is read-only.
+        """
+        scope_reject = _check_required_scope(
+            request, required="runs:read", blocked_surface=_RUN_RESULT_SURFACE
+        )
+        if scope_reject is not None:
+            return scope_reject
+        db = runtime.database
+        if db is None:
+            return _not_found(
+                surface=_RUN_RESULT_SURFACE,
+                message="sidecar database not yet available",
+            )
+        reader = db.acquire_reader()
+        async with reader.execute(
+            "SELECT run_result_id, run_id, project_id, schema_version, "
+            "written_by, status, primary_failure_class, error_priority_rule, "
+            "evidence_bundle_id, manifest_commit_hash, actor_identity_hash, "
+            "decided_at, decision_epoch, signature, signature_key_id "
+            "FROM run_results WHERE run_id = ?",
+            (run_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return _not_found(
+                surface=_RUN_RESULT_SURFACE,
+                message=f"run_result for run_id {run_id!r} not found",
+            )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "run_result_id": row[0],
+                "run_id": row[1],
+                "project_id": row[2],
+                "schema_version": row[3],
+                "written_by": row[4],
+                "status": row[5],
+                "primary_failure_class": row[6],
+                "error_priority_rule": row[7],
+                "evidence_bundle_id": row[8],
+                "manifest_commit_hash": row[9],
+                "actor_identity_hash": row[10],
+                "decided_at": row[11],
+                "decision_epoch": row[12],
+                "signature": row[13],
+                "signature_key_id": row[14],
+            },
+        )
+
+    @app.get("/v1/runs/{run_id}/explain")
+    async def v1_get_run_explain(
+        run_id: str, request: Request
+    ) -> JSONResponse:
+        """Root cause hypotheses (VAL-V2M02-019, VAL-V2M02-020).
+
+        The generator implementation lands in M05; M02 ships the route
+        serving whatever rows M05 produces. Returns an empty list for
+        runs with no hypotheses (NOT 404 -- the spec is explicit on
+        this), 404 only if the run itself is unknown.
+        """
+        scope_reject = _check_required_scope(
+            request,
+            required="runs:read",
+            blocked_surface=_RUN_EXPLAIN_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        db = runtime.database
+        if db is None:
+            return _not_found(
+                surface=_RUN_EXPLAIN_SURFACE,
+                message="sidecar database not yet available",
+            )
+        reader = db.acquire_reader()
+        async with reader.execute(
+            "SELECT 1 FROM run_results WHERE run_id = ?", (run_id,)
+        ) as cur:
+            run_row = await cur.fetchone()
+        if run_row is None:
+            return _not_found(
+                surface=_RUN_EXPLAIN_SURFACE,
+                message=f"run_id {run_id!r} not found",
+            )
+        async with reader.execute(
+            "SELECT hypothesis_id, run_id, span_id, hypothesis_class, "
+            "confidence, evidence_refs, evidence_refs_digest, generator, "
+            "created_at FROM root_cause_hypotheses "
+            "WHERE run_id = ? ORDER BY created_at ASC, hypothesis_id ASC",
+            (run_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        hypotheses = [
+            {
+                "schema_version": "relay.root_cause_hypothesis.v1",
+                "hypothesis_id": r[0],
+                "run_id": r[1],
+                "span_id": r[2],
+                "hypothesis_class": r[3],
+                "confidence": r[4],
+                "evidence_refs": json.loads(r[5]) if r[5] else [],
+                "evidence_refs_digest": r[6],
+                "generator": r[7],
+                "created_at": r[8],
+            }
+            for r in rows
+        ]
+        return JSONResponse(
+            status_code=200, content={"run_id": run_id, "hypotheses": hypotheses}
+        )
+
+    # ----------------------------------------------------------------------
+    # V2M02 w2.3 replay endpoints (VAL-V2M02-021..030).
+    #
+    # The hosted writers for replay_cases / replay_fixtures / replay_results
+    # do not exist in the OSS sidecar at M02; the canonical SQLite tables
+    # for these objects land in later milestones. The HTTP surface lands
+    # now so SDKs + CLI have stable endpoints. Each handler round-trips
+    # canonical response shapes via in-memory registries on RuntimeState.
+    # ``written_by = "control_plane"`` is stamped on every persisted
+    # envelope per keystone invariant #1.
+    # ----------------------------------------------------------------------
+
+    _REPLAY_CREATE_SURFACE: str = "POST /v1/replay-cases"
+    _REPLAY_GET_SURFACE: str = "GET /v1/replay-cases/{case_id}"
+    _REPLAY_FIXTURES_SURFACE: str = "POST /v1/replay-cases/{case_id}/fixtures"
+    _REPLAY_RUN_SURFACE: str = "POST /v1/replay-cases/{case_id}/run"
+    _REPLAY_RESULT_SURFACE: str = "GET /v1/replay-results/{result_id}"
+
+    @app.post("/v1/replay-cases")
+    async def v1_create_replay_case(request: Request) -> JSONResponse:
+        """Create a replay case from a failed run (VAL-V2M02-021,
+        VAL-V2M02-022). Returns 201 + ``{case_id}``; unknown
+        ``from_run_id`` returns 404.
+        """
+        scope_reject = _check_required_scope(
+            request,
+            required="replay:write",
+            blocked_surface=_REPLAY_CREATE_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_REPLAY_CREATE_SURFACE,
+                ),
+            )
+        from_run_id = body.get("from_run_id")
+        if not isinstance(from_run_id, str) or not from_run_id:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="from_run_id MUST be a non-empty string",
+                    blocked_surface=_REPLAY_CREATE_SURFACE,
+                ),
+            )
+        # Verify the source run exists.
+        db = runtime.database
+        if db is None:
+            return _not_found(
+                surface=_REPLAY_CREATE_SURFACE,
+                message="sidecar database not yet available",
+            )
+        reader = db.acquire_reader()
+        async with reader.execute(
+            "SELECT 1 FROM run_results WHERE run_id = ?", (from_run_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return _not_found(
+                surface=_REPLAY_CREATE_SURFACE,
+                message=f"from_run_id {from_run_id!r} not found",
+            )
+        case_id = f"case-{uuid.uuid4().hex}"
+        created_at = datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
+        case = {
+            "schema_version": "relay.replay_case.v1",
+            "case_id": case_id,
+            "from_run_id": from_run_id,
+            "scope_name": body.get("scope_name"),
+            "written_by": "control_plane",
+            "created_at": created_at,
+        }
+        runtime.replay_cases[case_id] = case
+        runtime.replay_fixtures.setdefault(case_id, [])
+        return JSONResponse(
+            status_code=201,
+            content={"case_id": case_id, "schema_version": "relay.replay_case.v1"},
+        )
+
+    @app.get("/v1/replay-cases/{case_id}")
+    async def v1_get_replay_case(
+        case_id: str, request: Request
+    ) -> JSONResponse:
+        scope_reject = _check_required_scope(
+            request,
+            required="runs:read",
+            blocked_surface=_REPLAY_GET_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        case = runtime.replay_cases.get(case_id)
+        if case is None:
+            return _not_found(
+                surface=_REPLAY_GET_SURFACE,
+                message=f"case_id {case_id!r} not found",
+            )
+        fixtures = runtime.replay_fixtures.get(case_id, [])
+        return JSONResponse(
+            status_code=200,
+            content={**case, "fixtures_count": len(fixtures)},
+        )
+
+    @app.post("/v1/replay-cases/{case_id}/fixtures")
+    async def v1_post_replay_fixture(
+        case_id: str, request: Request
+    ) -> JSONResponse:
+        """Upload a fixture for a replay case (VAL-V2M02-025,
+        VAL-V2M02-026). Persistence path mirrors the spec
+        ``object_put_with_digest`` primitive: the digest returned is the
+        sha256 of the canonical JSON payload.
+        """
+        scope_reject = _check_required_scope(
+            request,
+            required="replay:write",
+            blocked_surface=_REPLAY_FIXTURES_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_REPLAY_FIXTURES_SURFACE,
+                ),
+            )
+        if case_id not in runtime.replay_cases:
+            return _not_found(
+                surface=_REPLAY_FIXTURES_SURFACE,
+                message=f"case_id {case_id!r} not found",
+            )
+        canonical = json.dumps(
+            body, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+        fixture_id = f"fix-{uuid.uuid4().hex}"
+        record = {
+            "fixture_id": fixture_id,
+            "case_id": case_id,
+            "fixture_kind": body.get("fixture_kind"),
+            "digest": digest,
+            "payload": body,
+            "written_by": "control_plane",
+        }
+        runtime.replay_fixtures.setdefault(case_id, []).append(record)
+        return JSONResponse(
+            status_code=201,
+            content={"fixture_id": fixture_id, "digest": digest},
+        )
+
+    @app.post("/v1/replay-cases/{case_id}/run")
+    async def v1_post_replay_run(
+        case_id: str, request: Request
+    ) -> JSONResponse:
+        """Execute a reproduction (VAL-V2M02-027, VAL-V2M02-028).
+
+        Mode defaults to ``cassette`` per keystone invariant #9
+        (cassette-first replay). Live mode against ``mutating`` or
+        ``external_irreversible`` tools is refused with
+        ``RELAY-REPLAY-014`` per spec B.4 line 3428.
+        """
+        scope_reject = _check_required_scope(
+            request,
+            required="replay:write",
+            blocked_surface=_REPLAY_RUN_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_REPLAY_RUN_SURFACE,
+                ),
+            )
+        if case_id not in runtime.replay_cases:
+            return _not_found(
+                surface=_REPLAY_RUN_SURFACE,
+                message=f"case_id {case_id!r} not found",
+            )
+        mode = body.get("mode", "cassette")
+        if mode not in ("cassette", "live"):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message=f"mode must be 'cassette' or 'live'; got {mode!r}",
+                    blocked_surface=_REPLAY_RUN_SURFACE,
+                ),
+            )
+        if mode == "live":
+            side_effect = body.get("side_effect_class")
+            if side_effect in ("mutating", "external_irreversible"):
+                return JSONResponse(
+                    status_code=422,
+                    content=_build_error_envelope(
+                        code="RELAY-REPLAY-014",
+                        http_status=422,
+                        message=(
+                            "live replay against side_effect_class "
+                            f"{side_effect!r} is refused; cassette mode is "
+                            "the default (keystone invariant #9)"
+                        ),
+                        blocked_surface=_REPLAY_RUN_SURFACE,
+                        details={"side_effect_class": side_effect},
+                    ),
+                )
+        manifest_hash = body.get("manifest_commit_hash")
+        if not isinstance(manifest_hash, str) or not manifest_hash:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="manifest_commit_hash MUST be a non-empty string",
+                    blocked_surface=_REPLAY_RUN_SURFACE,
+                ),
+            )
+        result_id = f"rr-{uuid.uuid4().hex}"
+        await_url = f"/v1/replay-results/{result_id}"
+        result_record = {
+            "schema_version": "relay.replay_result.v1",
+            "replay_result_id": result_id,
+            "case_id": case_id,
+            "replay_mode": mode,
+            "manifest_commit_hash": manifest_hash,
+            "digest_ok": True,
+            "outcome": "pending",
+            "evidence": {"bundle_id": None, "claims": []},
+            "written_by": "control_plane",
+            "created_at": datetime.now(tz=UTC)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+        runtime.replay_results[result_id] = result_record
+        return JSONResponse(
+            status_code=202,
+            content={"replay_result_id": result_id, "await_url": await_url},
+        )
+
+    @app.get("/v1/replay-results/{result_id}")
+    async def v1_get_replay_result(
+        result_id: str, request: Request
+    ) -> JSONResponse:
+        scope_reject = _check_required_scope(
+            request,
+            required="runs:read",
+            blocked_surface=_REPLAY_RESULT_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        record = runtime.replay_results.get(result_id)
+        if record is None:
+            return _not_found(
+                surface=_REPLAY_RESULT_SURFACE,
+                message=f"replay_result {result_id!r} not found",
+            )
+        return JSONResponse(status_code=200, content=record)
+
+    # ----------------------------------------------------------------------
+    # V2M02 w2.4 eval endpoints (VAL-V2M02-031..036).
+    #
+    # The hosted writers for eval_datasets / eval_runs land in later
+    # milestones; the route surface lands now so SDKs have stable
+    # endpoints. Same in-memory pattern as replay; written_by is
+    # always "control_plane".
+    # ----------------------------------------------------------------------
+
+    _EVAL_DATASET_SURFACE: str = "POST /v1/eval-datasets"
+    _EVAL_RUN_CREATE_SURFACE: str = "POST /v1/eval-runs"
+    _EVAL_RUN_GET_SURFACE: str = "GET /v1/eval-runs/{eval_run_id}"
+
+    @app.post("/v1/eval-datasets")
+    async def v1_create_eval_dataset(request: Request) -> JSONResponse:
+        scope_reject = _check_required_scope(
+            request,
+            required="replay:write",
+            blocked_surface=_EVAL_DATASET_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_EVAL_DATASET_SURFACE,
+                ),
+            )
+        name = body.get("name")
+        if not isinstance(name, str) or not name:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="name MUST be a non-empty string",
+                    blocked_surface=_EVAL_DATASET_SURFACE,
+                ),
+            )
+        fixtures = body.get("fixtures", [])
+        if not isinstance(fixtures, list):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="fixtures MUST be an array (may be empty)",
+                    blocked_surface=_EVAL_DATASET_SURFACE,
+                ),
+            )
+        dataset_id = f"ds-{uuid.uuid4().hex}"
+        record = {
+            "schema_version": "relay.eval_dataset.v1",
+            "dataset_id": dataset_id,
+            "name": name,
+            "description": body.get("description"),
+            "fixtures": fixtures,
+            "written_by": "control_plane",
+            "created_at": datetime.now(tz=UTC)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+        runtime.eval_datasets[dataset_id] = record
+        return JSONResponse(
+            status_code=201,
+            content={
+                "dataset_id": dataset_id,
+                "schema_version": "relay.eval_dataset.v1",
+            },
+        )
+
+    @app.post("/v1/eval-runs")
+    async def v1_create_eval_run(request: Request) -> JSONResponse:
+        scope_reject = _check_required_scope(
+            request,
+            required="replay:write",
+            blocked_surface=_EVAL_RUN_CREATE_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="request body must be a JSON object",
+                    blocked_surface=_EVAL_RUN_CREATE_SURFACE,
+                ),
+            )
+        dataset_id = body.get("dataset_id")
+        if not isinstance(dataset_id, str) or not dataset_id:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="dataset_id MUST be a non-empty string",
+                    blocked_surface=_EVAL_RUN_CREATE_SURFACE,
+                ),
+            )
+        if dataset_id not in runtime.eval_datasets:
+            return _not_found(
+                surface=_EVAL_RUN_CREATE_SURFACE,
+                message=f"dataset_id {dataset_id!r} not found",
+            )
+        contract_id = body.get("contract_id")
+        manifest_hash = body.get("manifest_commit_hash")
+        if not isinstance(contract_id, str) or not contract_id:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="contract_id MUST be a non-empty string",
+                    blocked_surface=_EVAL_RUN_CREATE_SURFACE,
+                ),
+            )
+        if not isinstance(manifest_hash, str) or not manifest_hash:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message="manifest_commit_hash MUST be a non-empty string",
+                    blocked_surface=_EVAL_RUN_CREATE_SURFACE,
+                ),
+            )
+        eval_run_id = f"er-{uuid.uuid4().hex}"
+        await_url = f"/v1/eval-runs/{eval_run_id}"
+        record = {
+            "schema_version": "relay.eval_run.v1",
+            "eval_run_id": eval_run_id,
+            "dataset_id": dataset_id,
+            "contract_id": contract_id,
+            "manifest_commit_hash": manifest_hash,
+            "status": "queued",
+            "metrics": {},
+            "evidence": {"bundle_id": None, "claims": []},
+            "written_by": "control_plane",
+            "created_at": datetime.now(tz=UTC)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+        runtime.eval_runs[eval_run_id] = record
+        return JSONResponse(
+            status_code=202,
+            content={"eval_run_id": eval_run_id, "await_url": await_url},
+        )
+
+    @app.get("/v1/eval-runs/{eval_run_id}")
+    async def v1_get_eval_run(
+        eval_run_id: str, request: Request
+    ) -> JSONResponse:
+        scope_reject = _check_required_scope(
+            request,
+            required="runs:read",
+            blocked_surface=_EVAL_RUN_GET_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
+        record = runtime.eval_runs.get(eval_run_id)
+        if record is None:
+            return _not_found(
+                surface=_EVAL_RUN_GET_SURFACE,
+                message=f"eval_run {eval_run_id!r} not found",
+            )
+        return JSONResponse(status_code=200, content=record)
 
     @app.get("/diagnostics/quiesce")
     async def diagnostics_quiesce() -> dict[str, Any]:
