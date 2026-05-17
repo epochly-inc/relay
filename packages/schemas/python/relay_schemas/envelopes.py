@@ -1607,10 +1607,129 @@ class TransparencyLogEntry(_RelayEnvelope):
     inclusion_proof_ref: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# v0.2 OSS completeness, M01 w1-5 (added 2026-05-16): canonical envelopes for
+# the three section-AE evidence-binding tables in
+# packages/schemas/sql/0006_human_oversight.sql.
+#
+# Per CLAUDE.md keystone invariant #2, evidence claims that reference human
+# oversight, data-quality checks, or data-provenance rows require first-class
+# canonical rows to bind to. Per keystone invariant #10 every envelope pins
+# schema_version via Literal[...].
+#
+# Decoupled-namespace note: the wire-format envelopes here use the
+# ``relay.*.v1`` namespace (control-plane canonical wire form). The
+# pre-existing ACEF extension dataclasses at
+# ``packages/acef/relay_extensions/models/{human_oversight_event,
+# data_quality_check,data_provenance_record}.py`` use the
+# ``x-relay.*.v1`` namespace (ACEF wire form). Both layers coexist; callers
+# choose the surface that matches their consumer.
+# ---------------------------------------------------------------------------
+
+
+class HumanOversightEvent(_RelayEnvelope):
+    """Human-in-the-loop oversight event row (spec AE lines 5494-5508;
+    VAL-V2M01-030).
+
+    Captures every human oversight event tied to a project, optional run,
+    and optional AI-system classification. ``oversight_kind`` is the closed
+    six-member enum mirrored from the SQL CHECK constraint. ``evidence_refs``
+    is a JSON array of evidence-bundle / evidence-claim references binding
+    the oversight event to durable evidence; defaults to ``[]`` so a
+    freshly-created event can be progressively enriched before sealing.
+    """
+
+    schema_version: Literal["relay.human_oversight_event.v1"]
+    oversight_id: UUID
+    project_id: UUID
+    run_id: UUID | None = None
+    ai_system_classification_id: UUID | None = None
+    oversight_kind: Literal[
+        "pre_action_review",
+        "post_action_review",
+        "escalation",
+        "override",
+        "manual_classification",
+        "content_review",
+    ]
+    actor_user_id: UUID | None = None
+    decision: str | None = None
+    rationale: str | None = None
+    evidence_refs: list[Any] = Field(default_factory=list)
+    occurred_at: datetime
+
+
+class DataQualityCheck(_RelayEnvelope):
+    """Per-dataset data-quality check row (spec AE lines 5510-5525;
+    VAL-V2M01-031).
+
+    ``check_kind`` is the closed seven-member enum and ``outcome`` is the
+    closed five-member enum, both mirrored from the SQL CHECK constraints.
+    ``evaluator`` follows the spec narrative: canonical forms are
+    ``code:<module>.<fn>:vN`` for a code-based check and
+    ``human:<user_id>`` for a human-evaluated check; the wire-format layer
+    does not lock the evaluator grammar.
+    """
+
+    schema_version: Literal["relay.data_quality_check.v1"]
+    data_quality_check_id: UUID
+    project_id: UUID
+    dataset_id: UUID | None = None
+    check_kind: Literal[
+        "lineage",
+        "representativeness",
+        "duplicate_detection",
+        "schema_conformance",
+        "pii_minimization",
+        "licensing",
+        "staleness",
+    ]
+    check_name: str
+    inputs_ref: str | None = None
+    outcome: Literal["pass", "fail", "warn", "skipped", "error"]
+    metric_value: float | None = None
+    threshold_value: float | None = None
+    evaluator: str
+    evidence_refs: list[Any] = Field(default_factory=list)
+    performed_at: datetime
+
+
+class DataProvenanceRecord(_RelayEnvelope):
+    """Per-dataset data-provenance row (spec AE lines 5527-5539;
+    VAL-V2M01-032).
+
+    ``source_kind`` is the closed six-member enum mirrored from the SQL
+    CHECK constraint. ``license_ref`` is the canonical license identifier
+    (SPDX expression preferred, e.g. ``"Apache-2.0"`` / ``"CC-BY-4.0"``) or
+    a customer license-registry URI; the wire-format layer does not lock
+    the grammar.
+    """
+
+    schema_version: Literal["relay.data_provenance_record.v1"]
+    provenance_id: UUID
+    project_id: UUID
+    dataset_id: UUID
+    source_kind: Literal[
+        "first_party",
+        "licensed",
+        "public_domain",
+        "web_scrape",
+        "synthetic",
+        "user_generated",
+    ]
+    license_ref: str | None = None
+    acquired_at: datetime | None = None
+    acquired_by_user_id: UUID | None = None
+    notes: str | None = None
+    evidence_refs: list[Any] = Field(default_factory=list)
+
+
 __all__ = [
     "Actor",
     "AssertionDefinition",
     "ContractResult",
+    "DataProvenanceRecord",
+    "DataQualityCheck",
     "EmbeddingSpan",
     "ErrorEnvelope",
     "EventLogEntry",
@@ -1626,6 +1745,7 @@ __all__ = [
     "GateRound",
     "GateRoundScopeState",
     "HttpStatus4xx5xx",
+    "HumanOversightEvent",
     "IdempotencyRecord",
     "Incident",
     "Manifest",

@@ -1928,3 +1928,175 @@ components:
           type: string
         inclusion_proof_ref:
           type: [string, "null"]
+
+    HumanOversightEvent:
+      type: object
+      additionalProperties: false
+      description: |
+        Human-in-the-loop oversight event row. Spec AE lines 5494-5508
+        (VAL-V2M01-030). oversight_kind is the closed six-member enum
+        {pre_action_review, post_action_review, escalation, override,
+        manual_classification, content_review} mirrored from the SQL
+        CHECK constraint. evidence_refs is a JSON array of evidence-bundle
+        / evidence-claim references binding the event to durable evidence;
+        defaults to [] so a freshly-created event can be progressively
+        enriched before sealing.
+      required:
+        - schema_version
+        - oversight_id
+        - project_id
+        - oversight_kind
+        - occurred_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.human_oversight_event.v1
+        oversight_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        run_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        ai_system_classification_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        oversight_kind:
+          type: string
+          enum: [pre_action_review, post_action_review, escalation, override, manual_classification, content_review]
+        actor_user_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        decision:
+          type: [string, "null"]
+        rationale:
+          type: [string, "null"]
+        evidence_refs:
+          type: array
+          items: {}
+          default: []
+        occurred_at:
+          type: string
+          format: date-time
+
+    DataQualityCheck:
+      type: object
+      additionalProperties: false
+      description: |
+        Per-dataset data-quality check row. Spec AE lines 5510-5525
+        (VAL-V2M01-031). check_kind is the closed seven-member enum
+        {lineage, representativeness, duplicate_detection,
+        schema_conformance, pii_minimization, licensing, staleness} and
+        outcome is the closed five-member enum {pass, fail, warn,
+        skipped, error}; both mirrored from the SQL CHECK constraints.
+        evaluator canonical forms are 'code:<module>.<fn>:vN' or
+        'human:<user_id>'; the wire-format layer does not lock the
+        evaluator grammar.
+      required:
+        - schema_version
+        - data_quality_check_id
+        - project_id
+        - check_kind
+        - check_name
+        - outcome
+        - evaluator
+        - performed_at
+      properties:
+        schema_version:
+          type: string
+          const: relay.data_quality_check.v1
+        data_quality_check_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        dataset_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        check_kind:
+          type: string
+          enum: [lineage, representativeness, duplicate_detection, schema_conformance, pii_minimization, licensing, staleness]
+        check_name:
+          type: string
+        inputs_ref:
+          type: [string, "null"]
+        outcome:
+          type: string
+          enum: [pass, fail, warn, skipped, error]
+        metric_value:
+          type: [number, "null"]
+        threshold_value:
+          type: [number, "null"]
+        evaluator:
+          type: string
+        evidence_refs:
+          type: array
+          items: {}
+          default: []
+        performed_at:
+          type: string
+          format: date-time
+
+    DataProvenanceRecord:
+      type: object
+      additionalProperties: false
+      description: |
+        Per-dataset data-provenance row. Spec AE lines 5527-5539
+        (VAL-V2M01-032). source_kind is the closed six-member enum
+        {first_party, licensed, public_domain, web_scrape, synthetic,
+        user_generated} mirrored from the SQL CHECK constraint.
+        license_ref is the canonical license identifier (SPDX expression
+        preferred, e.g. 'Apache-2.0' / 'CC-BY-4.0') or a customer
+        license-registry URI; the wire-format layer does not lock the
+        grammar.
+      required:
+        - schema_version
+        - provenance_id
+        - project_id
+        - dataset_id
+        - source_kind
+      properties:
+        schema_version:
+          type: string
+          const: relay.data_provenance_record.v1
+        provenance_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        dataset_id:
+          type: string
+          format: uuid
+        source_kind:
+          type: string
+          enum: [first_party, licensed, public_domain, web_scrape, synthetic, user_generated]
+        license_ref:
+          type: [string, "null"]
+        acquired_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        acquired_by_user_id:
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
+        notes:
+          type: [string, "null"]
+        evidence_refs:
+          type: array
+          items: {}
+          default: []

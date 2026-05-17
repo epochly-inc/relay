@@ -74,7 +74,10 @@ export const CANONICAL_ENVELOPES = [
   "EvidenceLegalHold",
   "EvidenceBundleRegistry",
   "EvidenceTimestamp",
-  "TransparencyLogEntry"
+  "TransparencyLogEntry",
+  "HumanOversightEvent",
+  "DataQualityCheck",
+  "DataProvenanceRecord"
 ] as const;
 
 export type CanonicalEnvelopeName = (typeof CANONICAL_ENVELOPES)[number];

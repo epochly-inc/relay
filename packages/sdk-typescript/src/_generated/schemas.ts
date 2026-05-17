@@ -900,6 +900,96 @@ export interface components {
             tree_root_after: string;
             inclusion_proof_ref?: string | null;
         };
+        /**
+         * @description Human-in-the-loop oversight event row. Spec AE lines 5494-5508
+         *     (VAL-V2M01-030). oversight_kind is the closed six-member enum
+         *     {pre_action_review, post_action_review, escalation, override,
+         *     manual_classification, content_review} mirrored from the SQL
+         *     CHECK constraint. evidence_refs is a JSON array of evidence-bundle
+         *     / evidence-claim references binding the event to durable evidence;
+         *     defaults to [] so a freshly-created event can be progressively
+         *     enriched before sealing.
+         */
+        HumanOversightEvent: {
+            /** @constant */
+            schema_version: "relay.human_oversight_event.v1";
+            /** Format: uuid */
+            oversight_id: string;
+            /** Format: uuid */
+            project_id: string;
+            run_id?: string | null;
+            ai_system_classification_id?: string | null;
+            /** @enum {string} */
+            oversight_kind: "pre_action_review" | "post_action_review" | "escalation" | "override" | "manual_classification" | "content_review";
+            actor_user_id?: string | null;
+            decision?: string | null;
+            rationale?: string | null;
+            /** @default [] */
+            evidence_refs: unknown[];
+            /** Format: date-time */
+            occurred_at: string;
+        };
+        /**
+         * @description Per-dataset data-quality check row. Spec AE lines 5510-5525
+         *     (VAL-V2M01-031). check_kind is the closed seven-member enum
+         *     {lineage, representativeness, duplicate_detection,
+         *     schema_conformance, pii_minimization, licensing, staleness} and
+         *     outcome is the closed five-member enum {pass, fail, warn,
+         *     skipped, error}; both mirrored from the SQL CHECK constraints.
+         *     evaluator canonical forms are 'code:<module>.<fn>:vN' or
+         *     'human:<user_id>'; the wire-format layer does not lock the
+         *     evaluator grammar.
+         */
+        DataQualityCheck: {
+            /** @constant */
+            schema_version: "relay.data_quality_check.v1";
+            /** Format: uuid */
+            data_quality_check_id: string;
+            /** Format: uuid */
+            project_id: string;
+            dataset_id?: string | null;
+            /** @enum {string} */
+            check_kind: "lineage" | "representativeness" | "duplicate_detection" | "schema_conformance" | "pii_minimization" | "licensing" | "staleness";
+            check_name: string;
+            inputs_ref?: string | null;
+            /** @enum {string} */
+            outcome: "pass" | "fail" | "warn" | "skipped" | "error";
+            metric_value?: number | null;
+            threshold_value?: number | null;
+            evaluator: string;
+            /** @default [] */
+            evidence_refs: unknown[];
+            /** Format: date-time */
+            performed_at: string;
+        };
+        /**
+         * @description Per-dataset data-provenance row. Spec AE lines 5527-5539
+         *     (VAL-V2M01-032). source_kind is the closed six-member enum
+         *     {first_party, licensed, public_domain, web_scrape, synthetic,
+         *     user_generated} mirrored from the SQL CHECK constraint.
+         *     license_ref is the canonical license identifier (SPDX expression
+         *     preferred, e.g. 'Apache-2.0' / 'CC-BY-4.0') or a customer
+         *     license-registry URI; the wire-format layer does not lock the
+         *     grammar.
+         */
+        DataProvenanceRecord: {
+            /** @constant */
+            schema_version: "relay.data_provenance_record.v1";
+            /** Format: uuid */
+            provenance_id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: uuid */
+            dataset_id: string;
+            /** @enum {string} */
+            source_kind: "first_party" | "licensed" | "public_domain" | "web_scrape" | "synthetic" | "user_generated";
+            license_ref?: string | null;
+            acquired_at?: string | null;
+            acquired_by_user_id?: string | null;
+            notes?: string | null;
+            /** @default [] */
+            evidence_refs: unknown[];
+        };
     };
     responses: never;
     parameters: never;

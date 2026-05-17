@@ -922,6 +922,117 @@ class TransparencyLogEntry(BaseModel):
     inclusion_proof_ref: str | None = None
 
 
+class HumanOversightEvent(BaseModel):
+    """
+    Human-in-the-loop oversight event row. Spec AE lines 5494-5508
+    (VAL-V2M01-030). oversight_kind is the closed six-member enum
+    {pre_action_review, post_action_review, escalation, override,
+    manual_classification, content_review} mirrored from the SQL
+    CHECK constraint. evidence_refs is a JSON array of evidence-bundle
+    / evidence-claim references binding the event to durable evidence;
+    defaults to [] so a freshly-created event can be progressively
+    enriched before sealing.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_version: Literal["relay.human_oversight_event.v1"]
+    oversight_id: UUID
+    project_id: UUID
+    run_id: UUID | None = None
+    ai_system_classification_id: UUID | None = None
+    oversight_kind: Literal[
+        "pre_action_review",
+        "post_action_review",
+        "escalation",
+        "override",
+        "manual_classification",
+        "content_review",
+    ]
+    actor_user_id: UUID | None = None
+    decision: str | None = None
+    rationale: str | None = None
+    evidence_refs: list[Any] | None = []
+    occurred_at: AwareDatetime
+
+
+class DataQualityCheck(BaseModel):
+    """
+    Per-dataset data-quality check row. Spec AE lines 5510-5525
+    (VAL-V2M01-031). check_kind is the closed seven-member enum
+    {lineage, representativeness, duplicate_detection,
+    schema_conformance, pii_minimization, licensing, staleness} and
+    outcome is the closed five-member enum {pass, fail, warn,
+    skipped, error}; both mirrored from the SQL CHECK constraints.
+    evaluator canonical forms are 'code:<module>.<fn>:vN' or
+    'human:<user_id>'; the wire-format layer does not lock the
+    evaluator grammar.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_version: Literal["relay.data_quality_check.v1"]
+    data_quality_check_id: UUID
+    project_id: UUID
+    dataset_id: UUID | None = None
+    check_kind: Literal[
+        "lineage",
+        "representativeness",
+        "duplicate_detection",
+        "schema_conformance",
+        "pii_minimization",
+        "licensing",
+        "staleness",
+    ]
+    check_name: str
+    inputs_ref: str | None = None
+    outcome: Literal["pass", "fail", "warn", "skipped", "error"]
+    metric_value: float | None = None
+    threshold_value: float | None = None
+    evaluator: str
+    evidence_refs: list[Any] | None = []
+    performed_at: AwareDatetime
+
+
+class DataProvenanceRecord(BaseModel):
+    """
+    Per-dataset data-provenance row. Spec AE lines 5527-5539
+    (VAL-V2M01-032). source_kind is the closed six-member enum
+    {first_party, licensed, public_domain, web_scrape, synthetic,
+    user_generated} mirrored from the SQL CHECK constraint.
+    license_ref is the canonical license identifier (SPDX expression
+    preferred, e.g. 'Apache-2.0' / 'CC-BY-4.0') or a customer
+    license-registry URI; the wire-format layer does not lock the
+    grammar.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_version: Literal["relay.data_provenance_record.v1"]
+    provenance_id: UUID
+    project_id: UUID
+    dataset_id: UUID
+    source_kind: Literal[
+        "first_party",
+        "licensed",
+        "public_domain",
+        "web_scrape",
+        "synthetic",
+        "user_generated",
+    ]
+    license_ref: str | None = None
+    acquired_at: AwareDatetime | None = None
+    acquired_by_user_id: UUID | None = None
+    notes: str | None = None
+    evidence_refs: list[Any] | None = []
+
+
 class ScopeState(
     RootModel[
         RunScopeState

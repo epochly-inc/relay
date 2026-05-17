@@ -99,6 +99,13 @@ CANONICAL_ENVELOPES: tuple[str, ...] = (
     # at apps/local-sidecar/migrations/0015_evidence_timestamps_log.sql.
     "EvidenceTimestamp",
     "TransparencyLogEntry",
+    # v0.2 OSS completeness, M01 w1-5 (added 2026-05-16): three sectionAE
+    # evidence-binding envelopes (human oversight, data-quality checks,
+    # data provenance). DDL at packages/schemas/sql/0006_human_oversight.sql;
+    # sidecar mirror at apps/local-sidecar/migrations/0014_human_oversight.sql.
+    "HumanOversightEvent",
+    "DataQualityCheck",
+    "DataProvenanceRecord",
 )
 
 # Additional generated symbols that the SDK re-export module surfaces. These
