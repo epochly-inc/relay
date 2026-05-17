@@ -52,6 +52,12 @@ from .gate_engine_invariants import CHECK_NAME as GATE_ENGINE_INVARIANTS_CHECK
 from .gate_engine_invariants import run as run_gate_engine_invariants
 from .mocks_in_source import CHECK_NAME as MOCKS_IN_SOURCE_CHECK
 from .mocks_in_source import run as run_mocks_in_source
+from .rekor_verifier import CHECK_NAME as REKOR_VERIFIER_CHECK
+from .rekor_verifier import run as run_rekor_verifier
+from .sigstore_verifier import CHECK_NAME as SIGSTORE_VERIFIER_CHECK
+from .sigstore_verifier import run as run_sigstore_verifier
+from .tsa_verifier import CHECK_NAME as TSA_VERIFIER_CHECK
+from .tsa_verifier import run as run_tsa_verifier
 from .util import Finding, finding_to_dict
 
 # -----------------------------------------------------------------------------
@@ -70,6 +76,9 @@ CHECK_ORDER: Final[tuple[str, ...]] = (
     CONTROL_PLANE_CHECK,
     GATE_ENGINE_INVARIANTS_CHECK,
     MOCKS_IN_SOURCE_CHECK,
+    REKOR_VERIFIER_CHECK,
+    SIGSTORE_VERIFIER_CHECK,
+    TSA_VERIFIER_CHECK,
 )
 
 # Map of canonical check name -> runner function.
@@ -81,6 +90,9 @@ _CHECK_DISPATCH: Final[
     CONTROL_PLANE_CHECK: run_control_plane_writes,
     GATE_ENGINE_INVARIANTS_CHECK: run_gate_engine_invariants,
     MOCKS_IN_SOURCE_CHECK: run_mocks_in_source,
+    REKOR_VERIFIER_CHECK: run_rekor_verifier,
+    SIGSTORE_VERIFIER_CHECK: run_sigstore_verifier,
+    TSA_VERIFIER_CHECK: run_tsa_verifier,
 }
 
 # -----------------------------------------------------------------------------

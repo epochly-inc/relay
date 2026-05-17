@@ -80,6 +80,37 @@ RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING: Final[str] = (
 )
 
 # -----------------------------------------------------------------------------
+# M09 crypto-verifier-implemented findings
+# -----------------------------------------------------------------------------
+#
+# After M09 (real Sigstore + Rekor + TSA crypto wired) the three
+# ``*_CRYPTO_IMPLEMENTED`` flags MUST be True. A False value indicates
+# the verifier has reverted to fail-closed mode and the public trust
+# anchor cannot be exercised. Each flag has its own finding code so
+# remediation is targeted.
+
+#: The Sigstore verifier (``VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED`` in
+#: ``packages/cli/src/relay_cli/bundle.py``) is False; real cosign-bundle
+#: cryptographic verification is disabled.
+RELAY_VERIFY_SELF_SIGSTORE_NOT_IMPLEMENTED: Final[str] = (
+    "RELAY-VERIFY-SELF-SIGSTORE-NOT-IMPLEMENTED"
+)
+
+#: The Rekor verifier (``REKOR_CRYPTO_IMPLEMENTED`` in
+#: ``packages/cli/src/relay_cli/commands/verify_install.py``) is False;
+#: transparency-log inclusion-proof verification is disabled.
+RELAY_VERIFY_SELF_REKOR_NOT_IMPLEMENTED: Final[str] = (
+    "RELAY-VERIFY-SELF-REKOR-NOT-IMPLEMENTED"
+)
+
+#: The TSA verifier (``TSA_CRYPTO_IMPLEMENTED`` in
+#: ``packages/verifier/src/relay_verifier/tsa.py``) is False; RFC 3161
+#: TimeStampResp ASN.1 verification is disabled.
+RELAY_VERIFY_SELF_TSA_NOT_IMPLEMENTED: Final[str] = (
+    "RELAY-VERIFY-SELF-TSA-NOT-IMPLEMENTED"
+)
+
+# -----------------------------------------------------------------------------
 # Closed enum
 # -----------------------------------------------------------------------------
 
@@ -96,6 +127,9 @@ FINDING_CODES: Final[frozenset[str]] = frozenset(
         RELAY_VERIFY_SELF_PRIMITIVE_BYPASS,
         RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
         RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING,
+        RELAY_VERIFY_SELF_SIGSTORE_NOT_IMPLEMENTED,
+        RELAY_VERIFY_SELF_REKOR_NOT_IMPLEMENTED,
+        RELAY_VERIFY_SELF_TSA_NOT_IMPLEMENTED,
     }
 )
 
@@ -109,5 +143,8 @@ __all__ = [
     "RELAY_VERIFY_SELF_MOCK_IN_SOURCE",
     "RELAY_VERIFY_SELF_PRIMITIVE_BYPASS",
     "RELAY_VERIFY_SELF_PYTEST_SKIP",
+    "RELAY_VERIFY_SELF_REKOR_NOT_IMPLEMENTED",
+    "RELAY_VERIFY_SELF_SIGSTORE_NOT_IMPLEMENTED",
     "RELAY_VERIFY_SELF_TODO_FIXME",
+    "RELAY_VERIFY_SELF_TSA_NOT_IMPLEMENTED",
 ]

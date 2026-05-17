@@ -48,7 +48,10 @@ from verify_self.finding_codes import (
     RELAY_VERIFY_SELF_MOCK_IN_SOURCE,
     RELAY_VERIFY_SELF_PRIMITIVE_BYPASS,
     RELAY_VERIFY_SELF_PYTEST_SKIP,
+    RELAY_VERIFY_SELF_REKOR_NOT_IMPLEMENTED,
+    RELAY_VERIFY_SELF_SIGSTORE_NOT_IMPLEMENTED,
     RELAY_VERIFY_SELF_TODO_FIXME,
+    RELAY_VERIFY_SELF_TSA_NOT_IMPLEMENTED,
 )
 
 # -----------------------------------------------------------------------------
@@ -230,6 +233,21 @@ _SUGGESTED_FIX_BY_CODE: Final[dict[str, str]] = {
         "gate_decisions_bundle_manifest_match). Re-run the migration or "
         "restore the trigger declaration in "
         "apps/local-sidecar/migrations/0009_gate_decision_writer.sql."
+    ),
+    RELAY_VERIFY_SELF_SIGSTORE_NOT_IMPLEMENTED: (
+        "Set VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED to True in "
+        "packages/cli/src/relay_cli/bundle.py after wiring real "
+        "sigstore-python verification (M09 / VAL-V2M09-001..003)."
+    ),
+    RELAY_VERIFY_SELF_REKOR_NOT_IMPLEMENTED: (
+        "Set REKOR_CRYPTO_IMPLEMENTED to True in "
+        "packages/cli/src/relay_cli/commands/verify_install.py after wiring "
+        "Rekor inclusion-proof verification (M09 / VAL-V2M09-004..006)."
+    ),
+    RELAY_VERIFY_SELF_TSA_NOT_IMPLEMENTED: (
+        "Set TSA_CRYPTO_IMPLEMENTED to True in "
+        "packages/verifier/src/relay_verifier/tsa.py after wiring RFC 3161 "
+        "TimeStampResp ASN.1 verification (M09 / VAL-V2M09-016..019)."
     ),
 }
 
