@@ -81,7 +81,11 @@ envelope:
 
     signatures_checked:
       type: array
-      description: Per-signature verdicts in bundle declaration order.
+      description: >-
+        Per-signature verdicts in bundle declaration order. Empty for
+        over-cap bundles (the verifier refuses to attempt per-signature
+        verification when `signatures_present > MAX_BUNDLE_SIGNATURES`,
+        VAL-V2M08-041).
       items:
         type: object
         required: [kid, alg, ok]
@@ -91,6 +95,18 @@ envelope:
           ok:  { type: boolean }
           reason: { type: string, description: "Empty when ok=true." }
           code:   { type: string, description: "RELAY-VERIFY-NNN or RELAY-EVID-NNN." }
+
+    signatures_present:
+      type: integer
+      minimum: 0
+      description: >-
+        VAL-V2M08-041. Wire count of signature entries the producer
+        attached to the bundle. Surfaced regardless of per-signature
+        outcomes so consumers can detect the over-cap-rejection case
+        (signatures_present > MAX_BUNDLE_SIGNATURES = 4, per spec L.5
+        line 4481). When the cap is exceeded the verifier emits
+        `RELAY-EVID-SIGCOUNT-EXCEEDED` in `errors[]` and leaves
+        `signatures_checked` empty.
 
     claims_count:
       type: integer
@@ -133,6 +149,20 @@ envelope:
         VAL-W10-035. Verbatim echo of the bundle's `trust_anchor` field.
         Common values: "https://relay.epochly.com/.well-known/jwks.json",
         "local_dev", or a third-party anchor URL.
+
+    trust_anchor_class:
+      type: string
+      enum: ["", relay_inc, untrusted_local, byo]
+      description: >-
+        VAL-V2M08-044. Classification of the bundle's declared
+        `trust_anchor` value. Derived ONLY from the bundle's declared
+        anchor, never from the JWKS URL the verifier is configured
+        with: a `local_dev`-labelled bundle stays `untrusted_local`
+        even when the verifier is running under the Relay-Inc default
+        anchor (spec section AO.4 lines 6164-6168, OSS cannot
+        auto-promote into Relay-Inc trust). Empty string when the
+        bundle is missing the `trust_anchor` field; the verifier also
+        emits `RELAY-EVID-MISSING-TRUST-ANCHOR` in that case.
 
     trust_anchor_source:
       type: string

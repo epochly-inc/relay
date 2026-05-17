@@ -95,6 +95,16 @@ codes:
   - RELAY-EVID-040
   - RELAY-EVID-041
   - RELAY-EVID-042
+  # V2M08 w8-trust-anchor word-form codes (spec L.5 line 4481, AO.4
+  # lines 6164-6168). NOT listed in this numeric registry because the
+  # contract narrative (VAL-V2M08-041 / VAL-V2M08-043) names them by
+  # their human-readable word form; the numeric-suffix VAL-W1-057 token
+  # guard refuses word-form codes by design. Both codes are defined in
+  # packages/verifier/src/relay_verifier/bundle_validator.py:
+  #   RELAY-EVID-SIGCOUNT-EXCEEDED      - over-cap signature rejection
+  #   RELAY-EVID-MISSING-TRUST-ANCHOR   - missing trust_anchor field
+  # This matches the precedent set by RELAY-EVID-DECIDED-AT-MISSING
+  # (bundle_validator.py:92) which is similarly word-form and unlisted.
   # M05 w5-explain: span_id does not exist on the associated run_id when
   # an explain ingestion path tries to write a hypothesis. The cross-row
   # check is performed by the explain engine before INSERT; the response

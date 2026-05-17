@@ -99,9 +99,61 @@ doing so silently moves the trust boundary. A bundle missing
 ``decided_at`` is rejected fail-closed and surfaces this code so
 operators can fix the producer."""
 
+# w8-trust-anchor: cross-signing cap (VAL-V2M08-041; spec L.5 line 4481).
+MAX_BUNDLE_SIGNATURES: Final[int] = 4
+"""Maximum number of cross-signing signatures the verifier will accept
+on a single bundle. Per spec section L.5 line 4481:
+
+    "Bundles can carry up to 4 signatures; verifier reports
+    signatures_checked[] with valid/invalid per signature."
+
+A bundle carrying more than this many signatures is rejected fail-closed
+BEFORE any per-signature verification work runs. The cap defends against
+two abuse patterns: (1) a malicious producer padding a bundle with
+hundreds of dummy signatures to amplify verification cost (DoS); and
+(2) a producer abusing the cross-signing slot for non-signature data.
+Both are blocked by surfacing :data:`RELAY_EVID_SIGCOUNT_EXCEEDED`
+without invoking any cryptographic primitive on the over-cap input."""
+
+RELAY_EVID_SIGCOUNT_EXCEEDED: Final[str] = "RELAY-EVID-SIGCOUNT-EXCEEDED"
+"""Bundle carries more than :data:`MAX_BUNDLE_SIGNATURES` signatures
+(VAL-V2M08-041). Surfaced in :attr:`validate_bundle` output as a
+structured error with ``signatures_present`` echoing the wire count so
+operators can identify which producer emitted the over-cap bundle."""
+
+RELAY_EVID_MISSING_TRUST_ANCHOR: Final[str] = "RELAY-EVID-MISSING-TRUST-ANCHOR"
+"""Bundle is missing the top-level ``trust_anchor`` field (or the field
+is not a non-empty string) (VAL-V2M08-043). Per spec section AO.4 line
+6166 every signed bundle MUST declare its trust anchor; absence means
+the verifier cannot classify the bundle against the operator's trust
+posture and the bundle is rejected fail-closed."""
+
 # Trust-anchor "local_dev" sentinel (per spec section AO.4 line 6166).
 TRUST_ANCHOR_LOCAL_DEV: Final[str] = "local_dev"
 WARN_LOCAL_DEV_UNSUPPORTED: Final[str] = "local_dev_unsupported_for_audit"
+
+# w8-trust-anchor: trust_anchor_class output enum (VAL-V2M08-044).
+# Per spec section AO.4 lines 6164-6168 the verifier MUST classify the
+# bundle's declared trust_anchor into one of three buckets:
+#
+#   * relay_inc       -- the Relay-Inc default JWKS URL (or any URL
+#                        whose host is ``relay.epochly.com`` with the
+#                        canonical ``/.well-known/jwks.json`` path).
+#   * untrusted_local -- the ``local_dev`` sentinel emitted by the OSS
+#                        local signer. NEVER auto-promotes to
+#                        ``relay_inc`` regardless of which JWKS the
+#                        bundle's signature happens to verify under.
+#   * byo             -- everything else (a third-party operator's BYO
+#                        anchor URL or any non-Relay-Inc string).
+#
+# The classification is computed from the BUNDLE's declared
+# ``trust_anchor`` field alone -- NOT from the JWKS URL the verifier
+# happens to be configured with. This is the load-bearing guarantee of
+# VAL-V2M08-044: a local_dev bundle stays untrusted_local even if the
+# operator runs the verifier under a Relay-Inc anchor.
+TRUST_ANCHOR_CLASS_RELAY_INC: Final[str] = "relay_inc"
+TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL: Final[str] = "untrusted_local"
+TRUST_ANCHOR_CLASS_BYO: Final[str] = "byo"
 
 # Default trust-anchor URL is owned by constants.py; the validator does
 # not paste the literal here (CLAUDE.md banned pattern #13 + VAL-W10-001
@@ -186,11 +238,20 @@ def _new_output() -> dict[str, Any]:
         "structure_ok": False,
         "signatures_ok": False,
         "signatures_checked": [],
+        # w8-trust-anchor: wire count of signatures the producer attached
+        # to the bundle, surfaced regardless of per-signature outcomes so
+        # consumers can detect the over-cap-rejection case (VAL-V2M08-041).
+        "signatures_present": 0,
         "claims_count": 0,
         "merkle_check": "absent",
         "tsa_check": "missing",
         "log_inclusion": "absent",
         "trust_anchor": "",
+        # w8-trust-anchor: classification of the bundle's declared
+        # trust_anchor field (VAL-V2M08-044). Empty string when the
+        # bundle lacks a declarable trust_anchor (which also produces a
+        # structural error via RELAY-EVID-MISSING-TRUST-ANCHOR).
+        "trust_anchor_class": "",
         "trust_anchor_source": "",
         "signer_key_revoked": False,
         "signer_key_revoked_at": None,
@@ -198,6 +259,46 @@ def _new_output() -> dict[str, Any]:
         "warnings": [],
         "errors": [],
     }
+
+
+def classify_trust_anchor(trust_anchor_value: Any) -> str:
+    """Return the trust_anchor_class for a bundle-declared trust_anchor.
+
+    The classification depends ONLY on the bundle's declared value, never
+    on the JWKS URL the verifier is configured with. This is the
+    load-bearing guarantee of VAL-V2M08-044: a ``local_dev`` bundle stays
+    ``untrusted_local`` even if the operator happens to be running the
+    verifier under the Relay-Inc default anchor.
+
+    Returns one of:
+      * :data:`TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL` -- value equals the
+        ``local_dev`` sentinel.
+      * :data:`TRUST_ANCHOR_CLASS_RELAY_INC` -- value is a URL whose
+        host is ``relay.epochly.com`` AND whose path ends with
+        ``/.well-known/jwks.json``. The exact-path check defends against
+        a producer that points at an attacker-controlled path on the
+        Relay-Inc host (e.g. ``https://relay.epochly.com/evil``).
+      * :data:`TRUST_ANCHOR_CLASS_BYO` -- any other non-empty string.
+      * ``""`` -- value is missing, non-string, or empty. The caller
+        emits :data:`RELAY_EVID_MISSING_TRUST_ANCHOR` separately.
+    """
+    if not isinstance(trust_anchor_value, str) or not trust_anchor_value:
+        return ""
+    if trust_anchor_value == TRUST_ANCHOR_LOCAL_DEV:
+        return TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL
+    # Parse as URL (lazy import to keep top-of-module diff narrow).
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(trust_anchor_value)
+    except ValueError:
+        return TRUST_ANCHOR_CLASS_BYO
+    host = (parsed.hostname or "").strip().lower()
+    if host == "relay.epochly.com" and parsed.path.endswith(
+        "/.well-known/jwks.json"
+    ):
+        return TRUST_ANCHOR_CLASS_RELAY_INC
+    return TRUST_ANCHOR_CLASS_BYO
 
 
 def _append_warning(
@@ -310,6 +411,71 @@ def validate_bundle(
     trust_anchor = bundle.get("trust_anchor")
     if isinstance(trust_anchor, str):
         output["trust_anchor"] = trust_anchor
+
+    # --- Trust anchor classification (VAL-V2M08-044) -------------------------
+    # Classification is derived from the BUNDLE's declared trust_anchor
+    # field ONLY, never from the JWKS URL the verifier is configured
+    # with. local_dev stays untrusted_local even if the verifier is
+    # running under the Relay-Inc default anchor.
+    output["trust_anchor_class"] = classify_trust_anchor(trust_anchor)
+
+    # --- Missing-trust_anchor rejection (VAL-V2M08-043) ----------------------
+    # Fail-closed when the bundle declares no trust_anchor (or declares
+    # a non-string / empty value). This MUST happen before signature
+    # work so an unsigned classification cannot leak past the gate.
+    if not isinstance(trust_anchor, str) or not trust_anchor:
+        _append_error(
+            output,
+            reason="trust_anchor_missing",
+            message=(
+                "bundle is missing the required top-level 'trust_anchor' "
+                "field (spec section AO.4 line 6166); verifier cannot "
+                "classify the bundle against any trust posture"
+            ),
+            code=RELAY_EVID_MISSING_TRUST_ANCHOR,
+        )
+
+    # --- Signature-count cap (VAL-V2M08-041) ---------------------------------
+    # Per spec L.5 line 4481 bundles can carry up to 4 cross-signing
+    # signatures. An over-cap bundle is rejected BEFORE per-signature
+    # verification work runs (defends against DoS and against producers
+    # abusing the cross-signing slot for non-signature data). The
+    # signatures_checked[] array stays empty for the over-cap bundle.
+    raw_sigs = bundle.get("signatures")
+    signatures_count = (
+        len(raw_sigs) if isinstance(raw_sigs, list) else 0
+    )
+    output["signatures_present"] = signatures_count
+    if signatures_count > MAX_BUNDLE_SIGNATURES:
+        _append_error(
+            output,
+            reason="signature_count_exceeded",
+            message=(
+                f"bundle carries {signatures_count} signatures; the "
+                f"maximum supported is {MAX_BUNDLE_SIGNATURES} per spec "
+                f"section L.5 line 4481 cross-signing cap"
+            ),
+            code=RELAY_EVID_SIGCOUNT_EXCEEDED,
+        )
+        # Refuse signature verification on the over-cap bundle. Recover
+        # the bundle_digest_sha256 for diagnostic continuity but do NOT
+        # populate signatures_checked[] -- per VAL-V2M08-041 the verifier
+        # does not attempt verification on an over-cap bundle.
+        import contextlib
+
+        from .verifier import _payload_for_signing as _pfs
+        from .verifier import canonical_json_bytes as _vcjb
+
+        # Defensive: a malformed payload that breaks canonicalization
+        # leaves bundle_digest_sha256 as its safe default "".
+        with contextlib.suppress(TypeError, ValueError):
+            output["bundle_digest_sha256"] = hashlib.sha256(
+                _vcjb(_pfs(bundle))
+            ).hexdigest()
+        claims = bundle.get("claims")
+        output["claims_count"] = len(claims) if isinstance(claims, list) else 0
+        output["overall"] = _compute_overall(output)
+        return output
 
     # --- JWS + bundle-level verification (VAL-W10-021, 023, 014) -------------
     jws_result = verify_bundle(bundle, jwks)
@@ -717,6 +883,7 @@ __all__ = [
     "CLOCK_SKEW_TOLERANCE_SECONDS",
     "MAX_BUNDLE_BYTES",
     "MAX_BUNDLE_ENTRIES",
+    "MAX_BUNDLE_SIGNATURES",
     "RELAY_EVID_014",
     "RELAY_EVID_024",
     "RELAY_EVID_031",
@@ -724,11 +891,17 @@ __all__ = [
     "RELAY_EVID_040",
     "RELAY_EVID_041",
     "RELAY_EVID_042",
+    "RELAY_EVID_MISSING_TRUST_ANCHOR",
+    "RELAY_EVID_SIGCOUNT_EXCEEDED",
+    "TRUST_ANCHOR_CLASS_BYO",
+    "TRUST_ANCHOR_CLASS_RELAY_INC",
+    "TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL",
     "TRUST_ANCHOR_LOCAL_DEV",
     "VERIFIER_OUTPUT_SCHEMA",
     "WARN_LOCAL_DEV_UNSUPPORTED",
     "ValidateBundleOptions",
     "check_archive_bomb_limits",
+    "classify_trust_anchor",
     "validate_bundle",
     "validate_bundle_with_archive_check",
 ]
