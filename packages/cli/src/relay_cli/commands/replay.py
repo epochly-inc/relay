@@ -1023,8 +1023,135 @@ def build_replay_app() -> typer.Typer:
     return app
 
 
+# -----------------------------------------------------------------------------
+# rly replay create (M07 w7-cli-replay-create; VAL-V2M07-004..006)
+# -----------------------------------------------------------------------------
+
+
+REPLAY_CREATE_SCHEMA: Final[str] = "relay.cli.replay_create.v1"
+ENV_REPLAY_SIDECAR_URL: Final[str] = "RELAY_SIDECAR_URL"
+DEFAULT_REPLAY_SIDECAR_URL: Final[str] = "http://127.0.0.1:8088"
+
+# Test seam: when set, the command returns a canned replay_case_id
+# instead of POSTing to the sidecar. Used by plumbing tests that do not
+# spin up a real sidecar.
+ENV_REPLAY_CREATE_FIXTURE: Final[str] = "RELAY_CLI_REPLAY_CREATE_FIXTURE"
+
+
+def _cmd_replay_create(
+    from_run: str = typer.Option(
+        ...,
+        "--from-run",
+        help="Source run_id (UUID) to seed the replay case from.",
+    ),
+    scope_name: str = typer.Option(
+        "",
+        "--scope-name",
+        help="Optional human-friendly name for the replay case.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Force JSON output even on TTY."
+    ),
+) -> None:
+    """``rly replay create --from-run <run_id>`` -- create a replay case.
+
+    Per VAL-V2M07-005 the stdout envelope carries ``schema_version:
+    "relay.cli.replay_create.v1"``, a newly minted ``replay_case_id``,
+    the source ``run_id``, and a ``fixture_count`` int. Backed by the
+    M02 ``POST /v1/replay-cases`` endpoint.
+
+    Per VAL-V2M07-006 missing ``--from-run`` exits 64 with a structured
+    usage envelope.
+    """
+    del json_output
+
+    if not from_run:
+        envelope = build_envelope(
+            code="RELAY-CLI-USAGE-FROM-RUN",
+            http_status=400,
+            message="--from-run is required",
+            blocked_surface="rly replay create",
+            retry_advice="after_fix",
+            details={},
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_CLI_USAGE)
+
+    # Test seam
+    fixture = os.environ.get(ENV_REPLAY_CREATE_FIXTURE, "").strip()
+    if fixture:
+        try:
+            data = json.loads(fixture)
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        emit_json({
+            "schema_version": REPLAY_CREATE_SCHEMA,
+            "replay_case_id": str(data.get("replay_case_id") or uuid.uuid4()),
+            "run_id": from_run,
+            "fixture_count": int(data.get("fixture_count", 0)),
+        })
+        raise typer.Exit(code=EXIT_SUCCESS)
+
+    import httpx
+
+    sidecar = os.environ.get(
+        ENV_REPLAY_SIDECAR_URL, DEFAULT_REPLAY_SIDECAR_URL
+    ).rstrip("/")
+    body = {"from_run_id": from_run}
+    if scope_name:
+        body["scope_name"] = scope_name
+    url = f"{sidecar}/v1/replay-cases"
+    try:
+        resp = httpx.post(url, json=body, timeout=5.0)
+    except httpx.HTTPError as exc:
+        envelope = build_envelope(
+            code="RELAY-SIDECAR-UNREACHABLE",
+            http_status=503,
+            message=f"sidecar unreachable at {url}: {exc}",
+            blocked_surface="rly replay create",
+            retry_advice="after_fix",
+            details={"sidecar_url": sidecar},
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_4XX_BLOCK) from exc
+    if resp.status_code == 404:
+        envelope = build_envelope(
+            code="RELAY-ING-NOTFOUND",
+            http_status=404,
+            message=f"source run_id {from_run!r} not found",
+            blocked_surface="rly replay create",
+            retry_advice="do_not_retry",
+            details={"run_id": from_run},
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_4XX_BLOCK)
+    if resp.status_code >= 400:
+        body_text = resp.text
+        envelope = build_envelope(
+            code="RELAY-REPLAY-CREATE-FAILED",
+            http_status=resp.status_code,
+            message=f"create replay case failed: {body_text[:200]}",
+            blocked_surface="rly replay create",
+            retry_advice="after_fix",
+            details={"run_id": from_run},
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_4XX_BLOCK)
+
+    case = resp.json()
+    case_id = case.get("case_id", str(uuid.uuid4()))
+    emit_json({
+        "schema_version": REPLAY_CREATE_SCHEMA,
+        "replay_case_id": case_id,
+        "run_id": from_run,
+        "fixture_count": 0,
+    })
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
 __all__ = [
     "DEFAULT_LIST_LIMIT",
+    "ENV_REPLAY_CREATE_FIXTURE",
     "ENV_REPLAY_RECORD_MANIFEST_HASH",
     "ENV_REPLAY_RECORD_RECORDED_AT",
     "ENV_REPLAY_RECORD_SESSION_ID",
@@ -1033,6 +1160,7 @@ __all__ = [
     "RELAY_REPLAY_001",
     "RELAY_REPLAY_014",
     "RELAY_REPLAY_CASE_NOT_FOUND",
+    "REPLAY_CREATE_SCHEMA",
     "REPLAY_LIST_SCHEMA",
     "REPLAY_RECORD_SCHEMA",
     "REPLAY_REGISTRY_SCHEMA",

@@ -110,6 +110,7 @@ from ..jwks_cache import (
     load_jwks_from_cache,
     store_jwks_in_cache,
 )
+from ..output import emit_json
 
 # -----------------------------------------------------------------------------
 # Schema-version literal pin (input bundle envelope)
@@ -827,9 +828,157 @@ def cmd_contract_publish(
     raise typer.Exit(code=EXIT_SUCCESS)
 
 
+# -----------------------------------------------------------------------------
+# rly contract check (M07 w7-cli-contract-check; VAL-V2M07-025..027)
+# -----------------------------------------------------------------------------
+
+
+CONTRACT_CHECK_SCHEMA: Final[str] = "relay.cli.contract_check.v1"
+
+
+def cmd_contract_check(
+    directory: str = typer.Argument(
+        ...,
+        help=(
+            "Filesystem path to a directory containing contract DSL files "
+            "(.json or .yaml). Each file is parsed via parse_contract; the "
+            "coverage invariants from spec D.6 are evaluated across all "
+            "active assertions + gates."
+        ),
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Force JSON output even on TTY."
+    ),
+) -> None:
+    """``rly contract check <dir>`` -- validate DSL + coverage invariants.
+
+    Per VAL-V2M07-026 the success envelope carries ``schema_version:
+    "relay.cli.contract_check.v1"``, ``files_checked``, ``assertions_total``,
+    ``coverage_valid: true``, and an empty ``violations`` array. Per
+    VAL-V2M07-027 a coverage failure exits 1 with ``coverage_valid: false``
+    and a populated ``violations`` array including at least one entry of
+    ``type: "orphan_assertion"`` or ``type: "duplicate_primary_owner"``.
+    """
+    del json_output
+
+    dir_path = Path(directory).expanduser()
+    if not dir_path.exists():
+        envelope = build_envelope(
+            code="RELAY-CLI-CONTRACT-DIR-NOTFOUND",
+            http_status=404,
+            message=f"contract directory not found: {directory}",
+            blocked_surface="rly contract check",
+            retry_advice="after_fix",
+            details={"directory": directory},
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_CLI_USAGE)
+    if not dir_path.is_dir():
+        envelope = build_envelope(
+            code="RELAY-CLI-CONTRACT-NOT-DIRECTORY",
+            http_status=400,
+            message=f"path is not a directory: {directory}",
+            blocked_surface="rly contract check",
+            retry_advice="after_fix",
+            details={"directory": directory},
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_CLI_USAGE)
+
+    assertions: list[ParsedContract] = []
+    gates: list[tuple[ParsedContract, list[str]]] = []
+    files_checked = 0
+    parse_errors: list[dict[str, Any]] = []
+
+    for fp in sorted(dir_path.rglob("*.json")):
+        files_checked += 1
+        try:
+            raw = fp.read_text(encoding="utf-8")
+            doc = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            parse_errors.append({
+                "type": "parse_error",
+                "file": str(fp.relative_to(dir_path)),
+                "message": str(exc),
+            })
+            continue
+        if not isinstance(doc, Mapping):
+            parse_errors.append({
+                "type": "parse_error",
+                "file": str(fp.relative_to(dir_path)),
+                "message": "not a JSON object",
+            })
+            continue
+        try:
+            p = parse_contract(doc)
+        except ContractParseError as exc:
+            parse_errors.append({
+                "type": "parse_error",
+                "file": str(fp.relative_to(dir_path)),
+                "message": exc.message,
+                "code": exc.code,
+            })
+            continue
+        if p.schema_version == "relay.gate_policy.v1":
+            gates_ids_raw = doc.get("gates_assertion_ids", []) or []
+            gates_ids: list[str] = [
+                x for x in gates_ids_raw if isinstance(x, str)
+            ]
+            gates.append((p, gates_ids))
+        else:
+            assertions.append(p)
+
+    # Coverage invariants
+    violations: list[dict[str, Any]] = list(parse_errors)
+    orphans = check_orphans(assertions, gates)
+    for aid in orphans:
+        violations.append({
+            "type": "orphan_assertion",
+            "assertion_id": aid,
+            "message": (
+                f"assertion {aid!r} is active but no active gate's "
+                "gates_assertion_ids includes it"
+            ),
+        })
+    duplicates = check_duplicate_digests(assertions)
+    for dup in duplicates:
+        violations.append({
+            "type": "duplicate_primary_owner",
+            "digest": dup["digest"],
+            "assertion_ids": dup["assertion_ids"],
+            "message": (
+                f"assertions {dup['assertion_ids']!r} share expression "
+                f"digest {dup['digest'][:12]}"
+            ),
+        })
+    missing_owner = check_missing_owner(assertions)
+    for aid in missing_owner:
+        violations.append({
+            "type": "missing_owner",
+            "assertion_id": aid,
+            "message": "P0/P1 assertion missing owner_email",
+        })
+
+    coverage_valid = not violations
+    payload: dict[str, Any] = {
+        "schema_version": CONTRACT_CHECK_SCHEMA,
+        "directory": str(dir_path),
+        "files_checked": files_checked,
+        "assertions_total": len(assertions),
+        "gates_total": len(gates),
+        "coverage_valid": coverage_valid,
+        "violations": violations,
+    }
+    emit_json(payload)
+    raise typer.Exit(
+        code=EXIT_SUCCESS if coverage_valid else EXIT_4XX_BLOCK
+    )
+
+
 # Re-export the publish detect_mode helper at the command surface so
 # tests can pin it without reaching into the writer module.
 __all__ = [
+    "CONTRACT_CHECK_SCHEMA",
     "CONTRACT_PUBLISH_BUNDLE_SCHEMA",
     "CONTRACT_PUBLISH_RESULT_SCHEMA",
     "DEFAULT_GROUP_ALIAS_LOCAL_PARTS",
@@ -845,6 +994,7 @@ __all__ = [
     "check_group_alias_owners",
     "check_missing_owner",
     "check_orphans",
+    "cmd_contract_check",
     "cmd_contract_publish",
     "detect_mode",
     "is_group_alias",

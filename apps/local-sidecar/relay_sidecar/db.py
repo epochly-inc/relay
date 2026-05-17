@@ -128,6 +128,13 @@ class _WriteRequest:
     mode: str = "event_log"
     natural_key_column: str | None = None  # required when mode='raw'
     return_column: str | None = None  # column to surface in WriteResult.ingest_sequence
+    # M07 w7-cli-invocations: mode='update_raw' carries an UPDATE shape.
+    # ``row`` is the SET column->value map; ``where_column``/``where_value``
+    # identify the target row by primary key. The update runs inside the
+    # same BEGIN IMMEDIATE/COMMIT envelope as INSERTs and serializes through
+    # the single writer queue, preserving keystone invariant #8.
+    where_column: str | None = None
+    where_value: Any = None
 
 
 @dataclass
@@ -454,6 +461,48 @@ class SidecarDatabase:
         await self._queue.put(req)
         return await future
 
+    async def transactional_db_update_raw(
+        self,
+        *,
+        table: str,
+        set_columns: dict[str, Any],
+        where_column: str,
+        where_value: Any,
+    ) -> WriteResult:
+        """Atomic UPDATE through the sidecar writer queue (M07 w7-cli-invocations).
+
+        Used for the cli_invocations exit-row update (VAL-V2M07-035,
+        VAL-V2M07-037). Serializes through the SAME single-writer queue as
+        :meth:`transactional_db_write` / :meth:`transactional_db_write_raw`
+        so keystone invariant #8 ("four atomic primitives") is preserved:
+        UPDATE is the same atomic operation shape as INSERT (BEGIN
+        IMMEDIATE -> mutate -> COMMIT inside one txn).
+
+        Returns ``WriteResult(ok=True, ingest_sequence=<rows_updated>)``.
+        When the WHERE clause matches no rows the result still resolves
+        ``ok=True`` with ``ingest_sequence=0`` so callers can detect
+        no-op updates (e.g., exit-update racing a reconciliation sweep
+        that already marked the row).
+        """
+        if self._queue is None or self._writer_task is None:
+            raise RuntimeError(
+                "SidecarDatabase.open() not called or already closed"
+            )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[WriteResult] = loop.create_future()
+        req = _WriteRequest(
+            table=table,
+            row=dict(set_columns),
+            scope_id="",
+            idempotency_key=None,
+            future=future,
+            mode="update_raw",
+            where_column=where_column,
+            where_value=where_value,
+        )
+        await self._queue.put(req)
+        return await future
+
     async def transactional_db_write(
         self,
         *,
@@ -674,6 +723,9 @@ class SidecarDatabase:
         if req.mode == "raw":
             return await self._execute_raw_attempt(req, conn)
 
+        if req.mode == "update_raw":
+            return await self._execute_update_raw_attempt(req, conn)
+
         # Pre-check idempotency: if a row with (scope_id, idempotency_key)
         # already exists, return its ingest_sequence without writing.
         # This is a fast path that avoids the round-trip when the caller
@@ -828,6 +880,55 @@ class SidecarDatabase:
             return WriteResult(
                 ok=True,
                 ingest_sequence=int(row_id),
+                idempotent=False,
+                retry_count=0,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await conn.execute("ROLLBACK")
+            raise
+
+    async def _execute_update_raw_attempt(
+        self,
+        req: _WriteRequest,
+        conn: aiosqlite.Connection,
+    ) -> WriteResult:
+        """Execute a single BEGIN IMMEDIATE -> UPDATE -> COMMIT attempt.
+
+        Used by M07 w7-cli-invocations exit-row update. ``req.row`` is the
+        SET column-value map; ``req.where_column`` / ``req.where_value``
+        identify the target row by primary key.
+
+        Returns ``WriteResult(ok=True, ingest_sequence=<rows_updated>)``
+        where ``ingest_sequence`` is the SQLite ``cursor.rowcount`` for
+        the UPDATE. Zero rows updated is NOT an error (no-op detection
+        for racing reconciliation sweeps).
+        """
+        if not req.row:
+            return WriteResult(
+                ok=True, ingest_sequence=0, idempotent=False, retry_count=0
+            )
+        if req.where_column is None:
+            raise ValueError(
+                "update_raw requires where_column to identify the target row"
+            )
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            columns = sorted(req.row.keys())
+            set_clause = ", ".join(f"{c} = ?" for c in columns)
+            values = tuple(_encode_value(req.row[c]) for c in columns)
+            sql = (
+                f"UPDATE {req.table} SET {set_clause} "
+                f"WHERE {req.where_column} = ?"
+            )
+            cursor = await conn.execute(
+                sql, values + (_encode_value(req.where_value),)
+            )
+            rows_updated = cursor.rowcount or 0
+            await conn.execute("COMMIT")
+            return WriteResult(
+                ok=True,
+                ingest_sequence=int(rows_updated),
                 idempotent=False,
                 retry_count=0,
             )
@@ -1014,4 +1115,11 @@ def _allowed_tables() -> Iterable[str]:
         # the lint guard a single source of truth.
         "side_effect_markers",
         "side_effect_proofs",
+        # M07 w7-cli-invocations (VAL-V2M07-037): the cli_invocations audit
+        # table is written exclusively through transactional_db_write_raw
+        # (entry insert) and update_existing_row (exit update) via the SAME
+        # single-writer queue as event_log_entries. Listing here makes the
+        # surface explicit and keeps keystone invariant #8 satisfied for the
+        # CLI's invocation recorder.
+        "cli_invocations",
     )

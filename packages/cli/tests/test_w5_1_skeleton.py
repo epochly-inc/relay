@@ -43,13 +43,17 @@ from relay_cli.exit_codes import (
     EXIT_CASSETTE_MISS,
     EXIT_CLI_USAGE,
     EXIT_EVAL_DEFERRED,
-    EXIT_GATE_TTL_EXPIRED,
     EXIT_SIGINT_INTERRUPTED,
     EXIT_SUCCESS,
     EXIT_UNCAUGHT_INTERNAL,
     EXIT_WAL_STORAGE,
     exit_code_for_code_and_status,
 )
+
+# M07 w7-exit-codes (VAL-V2M07-028): EXIT_GATE_TTL_EXPIRED removed from
+# the CLI's exit_codes module. RELAY-GATE-024 now maps to exit code 4
+# (transient bucket) per VAL-V2M07-016. The SDK retains
+# EXIT_GATE_TTL_EXPIRED=7 for cross-language parity at the SDK layer.
 from relay_cli.output import (
     CLI_HELP_SCHEMA_VERSION,
     CLI_VERSION_SCHEMA_VERSION,
@@ -361,8 +365,12 @@ def test_retry_advice_is_always_in_wire_enum() -> None:
         ("RELAY-SIDECAR-001", 503, None, EXIT_5XX_TRANSIENT),
         # exit 6 = WAL/storage error
         ("RELAY-SIDECAR-STORAGE-001", 500, None, EXIT_WAL_STORAGE),
-        # exit 7 = gate TTL expired
-        ("RELAY-GATE-024", 422, None, EXIT_GATE_TTL_EXPIRED),
+        # M07 VAL-V2M07-016 / VAL-V2M07-028: RELAY-GATE-024 now maps to
+        # exit 4 (transient/cassette-miss bucket) rather than the
+        # historical OSS-only exit 7. The SDK still exports
+        # EXIT_GATE_TTL_EXPIRED=7 for cross-language parity, but the CLI
+        # wraps the resolver to short-circuit to EXIT_CASSETTE_MISS.
+        ("RELAY-GATE-024", 422, None, EXIT_CASSETTE_MISS),
         # exit 8 = LLM-judge deferred
         ("RELAY-EVAL-EVALUATOR-DEFERRED", 503, None, EXIT_EVAL_DEFERRED),
         # exit 70 = uncaught internal
@@ -386,10 +394,16 @@ def test_exit_code_for_canonical_table_row(
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W5-006")
 def test_cli_uses_sdk_exit_code_table_verbatim() -> None:
-    """The CLI's exit-code table MUST be the SDK's canonical table.
+    """The CLI's exit-code table MUST match the SDK's canonical table.
 
     Single source of truth: relay.exit_codes (the W4.4 SDK module). The
-    CLI must NOT redefine constants with different values.
+    CLI must NOT redefine constants with different values for the
+    constants it re-exports.
+
+    M07 VAL-V2M07-028: EXIT_GATE_TTL_EXPIRED is intentionally excluded
+    from the CLI's table (the OSS-only exit code 7 has been removed; the
+    SDK retains it for cross-language parity). Asserting parity for the
+    CLI-re-exported names only.
     """
     from relay import exit_codes as sdk_exit_codes
     from relay_cli import exit_codes as cli_exit_codes
@@ -402,12 +416,15 @@ def test_cli_uses_sdk_exit_code_table_verbatim() -> None:
         "EXIT_CASSETTE_MISS",
         "EXIT_5XX_TRANSIENT",
         "EXIT_WAL_STORAGE",
-        "EXIT_GATE_TTL_EXPIRED",
         "EXIT_EVAL_DEFERRED",
         "EXIT_CLI_USAGE",
         "EXIT_UNCAUGHT_INTERNAL",
     ):
         assert getattr(cli_exit_codes, name) == getattr(sdk_exit_codes, name)
+    # VAL-V2M07-028: EXIT_GATE_TTL_EXPIRED MUST NOT be re-exported by
+    # the CLI module. The SDK still has it.
+    assert not hasattr(cli_exit_codes, "EXIT_GATE_TTL_EXPIRED")
+    assert hasattr(sdk_exit_codes, "EXIT_GATE_TTL_EXPIRED")
 
 
 # -----------------------------------------------------------------------------

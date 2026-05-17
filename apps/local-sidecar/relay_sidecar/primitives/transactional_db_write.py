@@ -62,6 +62,40 @@ def get_active_database() -> SidecarDatabase:
     return _active_database
 
 
+async def transactional_db_update_raw(
+    *,
+    table: str,
+    set_columns: dict[str, Any],
+    where_column: str,
+    where_value: Any,
+) -> WriteResult:
+    """Atomic UPDATE through the sidecar's writer queue (M07 w7-cli-invocations).
+
+    Module-level entry point that mirrors :func:`transactional_db_write` but
+    routes the request to the active database's
+    :meth:`SidecarDatabase.transactional_db_update_raw`. Used by the CLI
+    invocation recorder's exit-row update path (VAL-V2M07-035, VAL-V2M07-037).
+
+    Args:
+        table: SQLite table name. Currently ``cli_invocations`` is the
+            sole consumer.
+        set_columns: Column -> new-value map for the SET clause.
+        where_column: Primary-key column to identify the target row.
+        where_value: Primary-key value (typically the invocation_id UUID).
+
+    Returns:
+        WriteResult carrying ``ok``, ``ingest_sequence`` (rows updated;
+        zero means no matching row).
+    """
+    db = get_active_database()
+    return await db.transactional_db_update_raw(
+        table=table,
+        set_columns=set_columns,
+        where_column=where_column,
+        where_value=where_value,
+    )
+
+
 async def transactional_db_write(
     *,
     table: str,
@@ -102,5 +136,6 @@ __all__ = [
     "build_event_log_row",
     "get_active_database",
     "set_active_database",
+    "transactional_db_update_raw",
     "transactional_db_write",
 ]

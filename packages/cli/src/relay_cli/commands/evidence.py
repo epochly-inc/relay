@@ -590,9 +590,81 @@ def _cmd_evidence_verify(
     raise typer.Exit(code=EXIT_4XX_BLOCK)
 
 
+# -----------------------------------------------------------------------------
+# rly evidence assess (M07 w7-cli-evidence-assess; VAL-V2M07-020/021)
+# -----------------------------------------------------------------------------
+
+
+EVIDENCE_ASSESS_SCHEMA: Final[str] = "relay.cli.evidence_assess.v1"
+
+
+def _cmd_evidence_assess(
+    bundle: str = typer.Option(
+        ..., "--bundle", help="Evidence bundle id (UUID) to assess."
+    ),
+    readiness_profile: str = typer.Option(
+        "default",
+        "--readiness-profile",
+        help=(
+            "Readiness profile to assess against (e.g., 'eu-ai-act', "
+            "'nist-ai-rmf'). The OSS assessment surface returns 'queued'; "
+            "hosted assessment workers complete the evaluation."
+        ),
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Force JSON output even on TTY."
+    ),
+) -> None:
+    """``rly evidence assess --bundle <id>`` -- enqueue an assessment.
+
+    Per VAL-V2M07-021 the stdout envelope carries ``schema_version:
+    "relay.cli.evidence_assess.v1"``, ``assessment_id``, ``bundle_id``,
+    ``readiness_profile``, ``enqueued_at``, and ``status: "queued"``.
+    The command is non-blocking (returns immediately after enqueue).
+
+    The assessment worker itself lives in private relay-platform (out of
+    scope for OSS); this CLI surface only enqueues the request and emits
+    the canonical envelope so downstream consumers have a stable id to
+    poll the hosted endpoint with.
+    """
+    del json_output
+
+    if not bundle:
+        envelope = build_envelope(
+            code="RELAY-CLI-USAGE-BUNDLE",
+            http_status=400,
+            message="--bundle is required",
+            blocked_surface="rly evidence assess",
+            retry_advice="after_fix",
+            details={},
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_CLI_USAGE)
+
+    import uuid
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    enqueued_at = (
+        _dt.now(tz=UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    emit_json({
+        "schema_version": EVIDENCE_ASSESS_SCHEMA,
+        "assessment_id": str(uuid.uuid4()),
+        "bundle_id": bundle,
+        "readiness_profile": readiness_profile,
+        "enqueued_at": enqueued_at,
+        "status": "queued",
+    })
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
 __all__ = [
     "DEFAULT_LIST_LIMIT",
     "DEFAULT_TRUST_ANCHOR_URL",
+    "EVIDENCE_ASSESS_SCHEMA",
     "EVIDENCE_LIST_SCHEMA",
     "EVIDENCE_SHOW_SCHEMA",
     "EVIDENCE_VERIFY_SCHEMA",
@@ -605,6 +677,7 @@ __all__ = [
     "REQUIRED_LIST_BINDING_FIELDS",
     "REQUIRED_SHOW_FIELDS",
     "VERIFIER_RESULT_SCHEMA",
+    "_cmd_evidence_assess",
     "_cmd_evidence_list",
     "_cmd_evidence_show",
     "_cmd_evidence_verify",

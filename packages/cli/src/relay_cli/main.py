@@ -78,15 +78,24 @@ _EXIT_CODE_HELP_ROWS: Final[list[dict[str, Any]]] = [
     {"code": 1, "meaning": "4xx with action=block"},
     {"code": 2, "meaning": "4xx with action=remediate"},
     {"code": 3, "meaning": "4xx auth/handoff (RELAY-GATE-021, RELAY-AUTH-*)"},
-    {"code": 4, "meaning": "cassette miss (RELAY-CASSETTE-MISS)"},
+    {"code": 4, "meaning": (
+        "transient (cassette miss, RELAY-GATE-024 draft TTL expired, "
+        "network partition past TTL)"
+    )},
     {"code": 5, "meaning": "5xx + network transient"},
     {"code": 6, "meaning": "WAL/storage error (RELAY-SIDECAR-STORAGE-*)"},
-    {"code": 7, "meaning": "gate TTL expired (RELAY-GATE-024)"},
     {"code": 8, "meaning": "LLM-judge deferred (RELAY-EVAL-EVALUATOR-DEFERRED)"},
     {"code": 64, "meaning": "wrong-flag (CLI usage error)"},
     {"code": 70, "meaning": "uncaught internal"},
     {"code": 130, "meaning": "SIGINT/SIGTERM interrupted"},
 ]
+# M07 w7-exit-codes (VAL-V2M07-028): the historical exit code 7 row for
+# RELAY-GATE-024 (draft TTL expired) has been removed. The TTL-expired
+# condition is now mapped to exit code 4 (transient) per the canonical
+# §P.1 exit-code table; the runtime override of the SDK's
+# exit_code_for_code_and_status function in relay_cli.exit_codes ensures
+# the wire code resolves to 4. Re-introducing the row trips
+# tests/contract/cli/test_exit_code_7_removed.py (VAL-V2M07-029).
 
 
 # -----------------------------------------------------------------------------
@@ -341,44 +350,98 @@ def _init_root(ctx: typer.Context) -> None:
         _emit_not_implemented("init", "w5.future")
 
 
-# --- trace group -------------------------------------------------------------
+# --- trace command (M07 w7-cli-trace; VAL-V2M07-001..003) -------------------
+# Per VAL-V2M07-001 ``rly trace <run_id>`` is a leaf command (positional
+# run_id, no subcommand layer). Implementation lives in commands/trace.py.
 
-trace_app = typer.Typer(
-    name="trace",
-    cls=_RelayTyperGroup,
-    help="Submit and inspect agent runs (lifecycle metadata only).",
-    no_args_is_help=False,
-    rich_markup_mode=None,
-    context_settings={"help_option_names": ["-h", "--help"]},
-)
-app.add_typer(trace_app, name="trace")
+from .commands.trace import cmd_trace  # noqa: E402
+
+app.command("trace", cls=_RelayTyperCommand)(cmd_trace)
 
 
-@trace_app.callback(invoke_without_command=True)
-def _trace_root(ctx: typer.Context) -> None:
-    """Stub root for ``rly trace``. Lands in a future W5 sub-feature."""
-    if ctx.invoked_subcommand is None:
-        _emit_not_implemented("trace", "w5.future")
+# --- gate group (M07 w7-cli-gate-evaluate; VAL-V2M07-010..019) --------------
 
-
-# --- gate group --------------------------------------------------------------
+from .commands.gate import cmd_gate_evaluate  # noqa: E402
 
 gate_app = typer.Typer(
     name="gate",
     cls=_RelayTyperGroup,
-    help="Evaluate a contract gate against a run (drafts only; CP writes decision).",
+    help=(
+        "Evaluate a contract gate against a release/manifest. Submits a "
+        "draft via POST /v1/gates/{id}/drafts, polls await_url with "
+        "exponential backoff, emits the canonical "
+        "relay.cli.gate_evaluate.v1 envelope on resolution."
+    ),
     no_args_is_help=False,
     rich_markup_mode=None,
+    add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+gate_app.command("evaluate", cls=_RelayTyperCommand)(cmd_gate_evaluate)
 app.add_typer(gate_app, name="gate")
 
 
 @gate_app.callback(invoke_without_command=True)
 def _gate_root(ctx: typer.Context) -> None:
-    """Stub root for ``rly gate``. Lands in W5.4."""
+    """``rly gate`` root: defer to ``evaluate`` subcommand or emit not-implemented."""
     if ctx.invoked_subcommand is None:
-        _emit_not_implemented("gate", "w5.4")
+        _emit_not_implemented("gate", "w7-cli-gate-evaluate")
+
+
+# --- eval group (M07 w7-cli-eval-run; VAL-V2M07-007..009) -------------------
+
+from .commands.eval import cmd_eval_run  # noqa: E402
+
+eval_app = typer.Typer(
+    name="eval",
+    cls=_RelayTyperGroup,
+    help=(
+        "Run evaluation datasets through the local sidecar. The ``run`` "
+        "subcommand enqueues an eval-run against POST /v1/eval-runs and "
+        "emits the canonical relay.cli.eval_run.v1 envelope."
+    ),
+    no_args_is_help=False,
+    rich_markup_mode=None,
+    add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+eval_app.command("run", cls=_RelayTyperCommand)(cmd_eval_run)
+app.add_typer(eval_app, name="eval")
+
+
+@eval_app.callback(invoke_without_command=True)
+def _eval_root(ctx: typer.Context) -> None:
+    """``rly eval`` root: defer to ``run`` subcommand or emit not-implemented."""
+    if ctx.invoked_subcommand is None:
+        _emit_not_implemented("eval", "w7-cli-eval-run")
+
+
+# --- manifest group (M07 w7-cli-manifest-check; VAL-V2M07-022..024) ---------
+
+from .commands.manifest import cmd_manifest_check  # noqa: E402
+
+manifest_app = typer.Typer(
+    name="manifest",
+    cls=_RelayTyperGroup,
+    help=(
+        "Validate Relay manifests against the canonical manifest.v1.json "
+        "schema. The ``check`` subcommand validates the body, computes "
+        "command_hash digests, and emits a structured report."
+    ),
+    no_args_is_help=False,
+    rich_markup_mode=None,
+    add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+manifest_app.command("check", cls=_RelayTyperCommand)(cmd_manifest_check)
+app.add_typer(manifest_app, name="manifest")
+
+
+@manifest_app.callback(invoke_without_command=True)
+def _manifest_root(ctx: typer.Context) -> None:
+    """``rly manifest`` root: defer to ``check`` subcommand or emit not-implemented."""
+    if ctx.invoked_subcommand is None:
+        _emit_not_implemented("manifest", "w7-cli-manifest-check")
 
 
 # --- evidence group (W5.4 wired) --------------------------------------------
@@ -388,6 +451,7 @@ def _gate_root(ctx: typer.Context) -> None:
 # ``rly evidence --help`` consistently with the rest of the tree.
 
 from .commands.evidence import (  # noqa: E402 - late import keeps load order stable
+    _cmd_evidence_assess,
     _cmd_evidence_list,
     _cmd_evidence_show,
     _cmd_evidence_verify,
@@ -397,10 +461,12 @@ evidence_app = typer.Typer(
     name="evidence",
     cls=_RelayTyperGroup,
     help=(
-        "List, show, and verify evidence bundles. The verifier defaults "
-        "to the spec-pinned trust anchor; --trust-anchor accepts a BYO "
-        "JWKS URL for forks and self-hosters and emits a structured "
-        "stderr WARN when used."
+        "List, show, verify, and assess evidence bundles. The verifier "
+        "defaults to the spec-pinned trust anchor; --trust-anchor accepts "
+        "a BYO JWKS URL for forks and self-hosters and emits a structured "
+        "stderr WARN when used. The ``assess`` subcommand (M07 "
+        "w7-cli-evidence-assess) enqueues a readiness-profile assessment "
+        "against the bundle id."
     ),
     no_args_is_help=False,
     rich_markup_mode=None,
@@ -410,6 +476,7 @@ evidence_app = typer.Typer(
 evidence_app.command("list", cls=_RelayTyperCommand)(_cmd_evidence_list)
 evidence_app.command("show", cls=_RelayTyperCommand)(_cmd_evidence_show)
 evidence_app.command("verify", cls=_RelayTyperCommand)(_cmd_evidence_verify)
+evidence_app.command("assess", cls=_RelayTyperCommand)(_cmd_evidence_assess)
 app.add_typer(evidence_app, name="evidence")
 
 
@@ -427,6 +494,7 @@ def _evidence_root(ctx: typer.Context) -> None:
 # replay --help`` consistently with the rest of the tree.
 
 from .commands.replay import (  # noqa: E402 - late import keeps load order stable
+    _cmd_replay_create,
     _cmd_replay_list,
     _cmd_replay_record,
     _cmd_replay_run,
@@ -448,6 +516,9 @@ replay_app = typer.Typer(
 replay_app.command("list", cls=_RelayTyperCommand)(_cmd_replay_list)
 replay_app.command("record", cls=_RelayTyperCommand)(_cmd_replay_record)
 replay_app.command("run", cls=_RelayTyperCommand)(_cmd_replay_run)
+# M07 w7-cli-replay-create (VAL-V2M07-004..006): adds `create` to seed a
+# replay case from a source run_id via POST /v1/replay-cases.
+replay_app.command("create", cls=_RelayTyperCommand)(_cmd_replay_create)
 app.add_typer(replay_app, name="replay")
 
 
@@ -519,6 +590,7 @@ def _sidecar_root(ctx: typer.Context) -> None:
 # tree.
 
 from .commands.contract import (  # noqa: E402 - late import keeps load order stable
+    cmd_contract_check,
     cmd_contract_publish,
 )
 
@@ -539,6 +611,9 @@ contract_app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 contract_app.command("publish", cls=_RelayTyperCommand)(cmd_contract_publish)
+# M07 w7-cli-contract-check (VAL-V2M07-025..027): adds `check <dir>` to
+# validate DSL files + coverage invariants without publishing.
+contract_app.command("check", cls=_RelayTyperCommand)(cmd_contract_check)
 app.add_typer(contract_app, name="contract")
 
 
@@ -637,6 +712,35 @@ def _install_signal_handlers() -> None:
 # -----------------------------------------------------------------------------
 
 
+def _build_invocation_command(argv: list[str]) -> str:
+    """Project sys.argv into the canonical dotted command string.
+
+    Per VAL-V2M07-034 the cli_invocations.command column is the dotted
+    subcommand path with a "relay " prefix (e.g., "relay gate evaluate").
+    We use "relay" rather than "rly" so the field is stable even if the
+    binary is renamed in a future release.
+
+    Strategy: drop argv[0] (the binary name) and any leading global
+    flags (--json, --version), then take the first two non-flag tokens
+    as the group + subcommand. Heuristic but stable for the M07 command
+    surface.
+    """
+    parts: list[str] = ["relay"]
+    seen_command = False
+    skipped_global = 0
+    for tok in argv[1:]:
+        if seen_command and len(parts) >= 3:
+            break
+        if tok.startswith("-"):
+            if not seen_command and skipped_global < 4:
+                skipped_global += 1
+                continue
+            break
+        parts.append(tok)
+        seen_command = True
+    return " ".join(parts)
+
+
 def run() -> None:
     """The ``rly`` console-script entrypoint.
 
@@ -652,6 +756,14 @@ def run() -> None:
       * Any other ``BaseException`` -- emit RELAY-CLI-070 envelope with
         a redacted ``details["traceback"]``, exit 70 (VAL-W5-004).
 
+    M07 w7-cli-invocations integration (VAL-V2M07-034..037): the entire
+    dispatch is bracketed by the invocation recorder. An entry row is
+    inserted before ``app(...)`` runs (durably committed via the atomic
+    primitive); on every exit path the exit-row update writes the
+    captured exit_code + outcome before sys.exit. A SIGKILL between
+    insert and exit-update leaves the row in place for reconciliation
+    (VAL-V2M07-036).
+
     Rich tracebacks on stderr are a release-blocker (VAL-W5-004), so any
     leak of ``Traceback (most recent call last):`` would fail the
     plumbing test. The wrapper catches every base exception that can
@@ -663,6 +775,22 @@ def run() -> None:
     # step is required.
     _install_signal_handlers()
 
+    # M07 w7-cli-invocations: write the entry row BEFORE handler dispatch
+    # so SIGKILL mid-handler leaves a recoverable audit trail.
+    from . import __version__ as _cli_version
+    from .invocations import insert_entry_row, update_exit_row
+
+    invocation_handle = insert_entry_row(
+        command=_build_invocation_command(list(sys.argv)),
+        argv=list(sys.argv),
+        cli_version=_cli_version,
+    )
+
+    def _exit(code: int) -> None:
+        """Update the exit row and exit. Centralizes all sys.exit paths."""
+        update_exit_row(invocation_handle, code)
+        sys.exit(code)
+
     try:
         # In standalone_mode=False the Typer/Click runtime intercepts
         # typer.Exit and RETURNS its exit_code (an int) rather than
@@ -671,11 +799,17 @@ def run() -> None:
         # guard for any Click version that re-introduces propagation.
         result = app(standalone_mode=False)
         if isinstance(result, int):
-            sys.exit(result)
-        sys.exit(EXIT_SUCCESS)
-    except SystemExit:
+            _exit(result)
+        _exit(EXIT_SUCCESS)
+    except SystemExit as _se:
         # A raw SystemExit (rare; typer.Exit is a RuntimeError subclass
-        # via click.exceptions.Exit, NOT SystemExit). Re-raise verbatim.
+        # via click.exceptions.Exit, NOT SystemExit). Update the audit
+        # row with the embedded exit code (or 0) then re-raise.
+        try:
+            _code = int(_se.code) if isinstance(_se.code, int) else 0
+        except (TypeError, ValueError):
+            _code = 0
+        update_exit_row(invocation_handle, _code)
         raise
     except click.exceptions.Exit as exc:
         # Typer.Exit / typer.exit raises click.exceptions.Exit. In
@@ -684,7 +818,7 @@ def run() -> None:
         # envelope (when there is one to emit) was already written by
         # the command callback before raising; we ONLY translate the
         # exit code here.
-        sys.exit(int(exc.exit_code))
+        _exit(int(exc.exit_code))
     except KeyboardInterrupt:
         # Windows Ctrl-C path: KeyboardInterrupt is raised in the main
         # thread before our SIGINT handler fires.
@@ -697,7 +831,7 @@ def run() -> None:
             details={"signal": "KeyboardInterrupt", "signum": 0},
         )
         emit_envelope(envelope)
-        sys.exit(EXIT_SIGINT_INTERRUPTED)
+        _exit(EXIT_SIGINT_INTERRUPTED)
     except click.UsageError as exc:
         # Click usage errors (bad flag, missing arg). Map to exit code 64
         # (CLI usage error) per the canonical exit-code table.
@@ -710,7 +844,7 @@ def run() -> None:
             details={"exception_class": type(exc).__name__},
         )
         emit_envelope(envelope)
-        sys.exit(EXIT_CLI_USAGE)
+        _exit(EXIT_CLI_USAGE)
     except click.ClickException as exc:
         # Other Click exceptions (e.g., file path errors). Same exit code
         # as usage errors per the canonical table.
@@ -723,13 +857,13 @@ def run() -> None:
             details={"exception_class": type(exc).__name__},
         )
         emit_envelope(envelope)
-        sys.exit(EXIT_CLI_USAGE)
+        _exit(EXIT_CLI_USAGE)
     except RelayError as exc:
         # SDK-typed error. Map via the canonical exit-code table; the
         # envelope carries the same wire code the SDK produced.
         envelope = envelope_from_relay_error(exc)
         emit_envelope(envelope)
-        sys.exit(exit_code_for_relay_error(exc))
+        _exit(exit_code_for_relay_error(exc))
     except BaseException as exc:  # noqa: BLE001 -- top-level wrapper
         # Anything else: emit a generic uncaught envelope. The traceback
         # is captured into ``details["traceback_summary"]`` as a list of
@@ -768,7 +902,7 @@ def run() -> None:
         # belt-and-braces.
         if code != EXIT_UNCAUGHT_INTERNAL:
             code = EXIT_UNCAUGHT_INTERNAL
-        sys.exit(code)
+        _exit(code)
 
 
 __all__ = ["app", "run"]
