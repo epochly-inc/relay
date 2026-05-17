@@ -86,9 +86,28 @@ def test_every_yaml_transition_is_in_table() -> None:
 def _seed_scope_at_state(
     db_path: Path, scope_kind: str, scope_id: str, state: str, project_id: str
 ) -> None:
-    """Insert a scope_state row directly at the given state (test setup)."""
+    """Insert a scope_state row directly at the given state (test setup).
+
+    The sidecar's spec W initial-state policy trigger (migration 0016) rejects
+    epoch=0 inserts whose state is not the transition-table origin state for
+    the scope_kind. To simulate "the scope is mid-flight already at <state>",
+    seed with epoch=1 unless <state> is the canonical origin state for the
+    scope_kind. epoch is the optimistic-concurrency aggregate version per
+    spec C.4 lines 3679-3722; epoch>=1 means at least one transition has
+    occurred and the row is no longer an "initial" row from the trigger's
+    point of view.
+    """
     import sqlite3 as _sqlite3
 
+    _origin_state: dict[str, str] = {
+        "run": "pending",
+        "replay_case": "proposed",
+        "gate_round": "open",
+        "evidence_bundle": "building",
+        "eval_run": "pending",
+        "release": "open",
+    }
+    seed_epoch = 0 if state == _origin_state.get(scope_kind) else 1
     now = _ts()
     conn = _sqlite3.connect(str(db_path))
     try:
@@ -96,8 +115,8 @@ def _seed_scope_at_state(
         conn.execute(
             "INSERT INTO scope_state "
             "(scope_kind, scope_id, project_id, state, epoch, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 0, ?, ?)",
-            (scope_kind, scope_id, project_id, state, now, now),
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (scope_kind, scope_id, project_id, state, seed_epoch, now, now),
         )
         conn.commit()
     finally:

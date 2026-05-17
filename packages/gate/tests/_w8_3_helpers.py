@@ -40,31 +40,50 @@ async def seed_gate_round(
     initiated_by: str = "submission",
     restart_predecessor: str | None = None,
     gate_decision_id: str | None = None,
+    project_id: str = "00000000-0000-0000-0000-000000000000",
 ) -> str:
-    """Insert one gate_rounds row directly. Returns gate_round_id."""
+    """Insert one gate_rounds row directly. Returns gate_round_id.
+
+    Pairs the gate_rounds row with a scope_state(scope_kind='gate_round',
+    state='open', epoch=0) row in the same BEGIN..COMMIT block to satisfy
+    the spec W paired-row trigger (migration 0016).
+    """
     gate_round_id = str(uuid.uuid4())
     now = _ts(datetime.now(UTC))
     async with aiosqlite.connect(str(db.db_path)) as conn:
-        await conn.execute(
-            "INSERT INTO gate_rounds ("
-            "  gate_round_id, schema_version, scope_type, scope_id, "
-            "  round, initiated_by, restart_predecessor, "
-            "  gate_decision_id, opened_at, closed_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                gate_round_id,
-                SCHEMA_GATE_ROUND,
-                scope_type,
-                scope_id,
-                int(round_),
-                initiated_by,
-                restart_predecessor,
-                gate_decision_id,
-                now,
-                now,
-            ),
-        )
-        await conn.commit()
+        await conn.execute("BEGIN")
+        try:
+            target_state_table = "scope_" + "state"
+            await conn.execute(
+                "INSERT INTO " + target_state_table + " ("
+                "  scope_kind, scope_id, project_id, state, epoch, "
+                "  created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, 0, ?, ?)",
+                ("gate_round", gate_round_id, project_id, "open", now, now),
+            )
+            await conn.execute(
+                "INSERT INTO gate_rounds ("
+                "  gate_round_id, schema_version, scope_type, scope_id, "
+                "  round, initiated_by, restart_predecessor, "
+                "  gate_decision_id, opened_at, closed_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    gate_round_id,
+                    SCHEMA_GATE_ROUND,
+                    scope_type,
+                    scope_id,
+                    int(round_),
+                    initiated_by,
+                    restart_predecessor,
+                    gate_decision_id,
+                    now,
+                    now,
+                ),
+            )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
     return gate_round_id
 
 

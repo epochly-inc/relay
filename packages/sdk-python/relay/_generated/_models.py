@@ -271,6 +271,48 @@ class EvidenceBundleScopeState(BaseModel):
     updated_at: AwareDatetime
 
 
+class EvalRunScopeState(BaseModel):
+    """
+    scope_kind='eval_run' variant of ScopeState. Spec AM eval lifecycle:
+    pending -> running -> scored | terminal. Initial state 'pending' per
+    spec W lines 5101-5111. VAL-V2M01-036.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_version: Literal["relay.scope_state.v1"]
+    scope_kind: Literal["eval_run"]
+    state: Literal["pending", "running", "scored", "terminal"]
+    scope_id: UUID
+    project_id: UUID
+    epoch: conint(ge=0)
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+
+
+class ReleaseScopeState(BaseModel):
+    """
+    scope_kind='release' variant of ScopeState. Spec Q.2 release
+    lifecycle: open -> gated -> released | rolled_back | terminal.
+    Initial state 'open' per spec W lines 5101-5111. VAL-V2M01-036.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_version: Literal["relay.scope_state.v1"]
+    scope_kind: Literal["release"]
+    state: Literal["open", "gated", "released", "rolled_back", "terminal"]
+    scope_id: UUID
+    project_id: UUID
+    epoch: conint(ge=0)
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+
+
 class IdempotencyRecord(BaseModel):
     """
     Request dedupe record. idempotency_key is a Crockford-base32 ULID
@@ -1039,6 +1081,8 @@ class ScopeState(
         | ReplayCaseScopeState
         | GateRoundScopeState
         | EvidenceBundleScopeState
+        | EvalRunScopeState
+        | ReleaseScopeState
     ]
 ):
     root: (
@@ -1046,8 +1090,10 @@ class ScopeState(
         | ReplayCaseScopeState
         | GateRoundScopeState
         | EvidenceBundleScopeState
+        | EvalRunScopeState
+        | ReleaseScopeState
     ) = Field(
         ...,
-        description="Mutable scope state per (scope_kind, scope_id). Discriminated union\non scope_kind so each kind's allowed state set (spec C.1) is\nstatically enforced at the wire-format layer. Spec W.\n",
+        description="Mutable scope state per (scope_kind, scope_id). Discriminated union\non scope_kind so each kind's allowed state set (spec C.1, spec AM,\nspec Q.2) is statically enforced at the wire-format layer. Spec W\nlines 5072-5085 enumerate all six scope_kind values; eval_run and\nrelease land in milestone M01 feature w1.7 (VAL-V2M01-036).\n",
         discriminator="scope_kind",
     )

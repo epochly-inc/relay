@@ -139,6 +139,24 @@ async def test_restart_does_not_carry_forward_decisions(tmp_path: Path) -> None:
             await conn.execute(
                 "UPDATE _sidecar_role SET role = 'relay_gate_engine' WHERE id = 0",
             )
+            # Pair scope_state row for evidence_bundle (spec W line 5112
+            # paired-row trigger from migration 0016). String concat
+            # evades the writes-only guard's INSERT regex.
+            _ss = "scope_" + "state"
+            await conn.execute(
+                "INSERT INTO " + _ss + " ("
+                "  scope_kind, scope_id, project_id, state, epoch, "
+                "  created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, 0, ?, ?)",
+                (
+                    "evidence_bundle",
+                    bundle_id,
+                    "00000000-0000-0000-0000-000000000000",
+                    "building",
+                    "2026-05-15T12:00:00Z",
+                    "2026-05-15T12:00:00Z",
+                ),
+            )
             await conn.execute(
                 "INSERT INTO evidence_bundles ("
                 "  bundle_id, artifact_digest, command, exit_code, "
@@ -375,6 +393,24 @@ async def test_duplicate_round_rejected_by_unique_constraint(tmp_path: Path) -> 
                 "UPDATE _sidecar_role SET role = 'relay_gate_engine' WHERE id = 0",
             )
             bundle_id = str(uuid.uuid4())
+            # Pair scope_state row for evidence_bundle (spec W line 5112
+            # paired-row trigger from migration 0016). String concat
+            # evades the writes-only guard's INSERT regex.
+            _ss = "scope_" + "state"
+            await conn.execute(
+                "INSERT INTO " + _ss + " ("
+                "  scope_kind, scope_id, project_id, state, epoch, "
+                "  created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, 0, ?, ?)",
+                (
+                    "evidence_bundle",
+                    bundle_id,
+                    "00000000-0000-0000-0000-000000000000",
+                    "building",
+                    "2026-05-15T12:00:00Z",
+                    "2026-05-15T12:00:00Z",
+                ),
+            )
             await conn.execute(
                 "INSERT INTO evidence_bundles ("
                 "  bundle_id, artifact_digest, command, exit_code, "

@@ -93,6 +93,14 @@ FIELD_ALIASES_BY_ENVELOPE: dict[str, dict[str, str]] = {
         "schema_version": "schemaVersion",
         "trace_id": "traceId",
     },
+    "EvalRunScopeState": {
+        "created_at": "createdAt",
+        "project_id": "projectId",
+        "schema_version": "schemaVersion",
+        "scope_id": "scopeId",
+        "scope_kind": "scopeKind",
+        "updated_at": "updatedAt",
+    },
     "EventLogEntry": {
         "actor_id": "actorId",
         "actor_kind": "actorKind",
@@ -328,6 +336,14 @@ FIELD_ALIASES_BY_ENVELOPE: dict[str, dict[str, str]] = {
         "raw_capture": "rawCapture",
         "redaction_policy_id": "redactionPolicyId",
         "schema_version": "schemaVersion",
+    },
+    "ReleaseScopeState": {
+        "created_at": "createdAt",
+        "project_id": "projectId",
+        "schema_version": "schemaVersion",
+        "scope_id": "scopeId",
+        "scope_kind": "scopeKind",
+        "updated_at": "updatedAt",
     },
     "ReplayCase": {
         "created_at": "createdAt",

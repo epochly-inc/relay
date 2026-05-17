@@ -191,10 +191,12 @@ export interface components {
         };
         /**
          * @description Mutable scope state per (scope_kind, scope_id). Discriminated union
-         *     on scope_kind so each kind's allowed state set (spec C.1) is
-         *     statically enforced at the wire-format layer. Spec W.
+         *     on scope_kind so each kind's allowed state set (spec C.1, spec AM,
+         *     spec Q.2) is statically enforced at the wire-format layer. Spec W
+         *     lines 5072-5085 enumerate all six scope_kind values; eval_run and
+         *     release land in milestone M01 feature w1.7 (VAL-V2M01-036).
          */
-        ScopeState: components["schemas"]["RunScopeState"] | components["schemas"]["ReplayCaseScopeState"] | components["schemas"]["GateRoundScopeState"] | components["schemas"]["EvidenceBundleScopeState"];
+        ScopeState: components["schemas"]["RunScopeState"] | components["schemas"]["ReplayCaseScopeState"] | components["schemas"]["GateRoundScopeState"] | components["schemas"]["EvidenceBundleScopeState"] | components["schemas"]["EvalRunScopeState"] | components["schemas"]["ReleaseScopeState"];
         RunScopeState: {
             /** @constant */
             schema_version: "relay.scope_state.v1";
@@ -265,6 +267,56 @@ export interface components {
             scope_kind: "evidence_bundle";
             /** @enum {string} */
             state: "building" | "signed" | "published" | "superseded" | "revoked";
+            /** Format: uuid */
+            scope_id: string;
+            /** Format: uuid */
+            project_id: string;
+            epoch: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description scope_kind='eval_run' variant of ScopeState. Spec AM eval lifecycle:
+         *     pending -> running -> scored | terminal. Initial state 'pending' per
+         *     spec W lines 5101-5111. VAL-V2M01-036.
+         */
+        EvalRunScopeState: {
+            /** @constant */
+            schema_version: "relay.scope_state.v1";
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            scope_kind: "eval_run";
+            /** @enum {string} */
+            state: "pending" | "running" | "scored" | "terminal";
+            /** Format: uuid */
+            scope_id: string;
+            /** Format: uuid */
+            project_id: string;
+            epoch: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description scope_kind='release' variant of ScopeState. Spec Q.2 release
+         *     lifecycle: open -> gated -> released | rolled_back | terminal.
+         *     Initial state 'open' per spec W lines 5101-5111. VAL-V2M01-036.
+         */
+        ReleaseScopeState: {
+            /** @constant */
+            schema_version: "relay.scope_state.v1";
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            scope_kind: "release";
+            /** @enum {string} */
+            state: "open" | "gated" | "released" | "rolled_back" | "terminal";
             /** Format: uuid */
             scope_id: string;
             /** Format: uuid */

@@ -263,21 +263,27 @@ schemas:
     description: |
       Mutable scope state per (scope_kind, scope_id). Implemented as a
       discriminated union on scope_kind so each scope kind's allowed state
-      set (spec C.1 lines 3632-3636) is statically enforced at the
-      wire-format layer. A document with scope_kind=run carrying
-      state=building (an evidence_bundle state) MUST fail validation
-      (VAL-W1-011). epoch is the optimistic-concurrency aggregate version
-      (spec C.4 lines 3679-3722); it is a non-negative bigint and MUST
-      reject -1 (VAL-W1-012). schema_version pins to relay.scope_state.v1
+      set (spec C.1 lines 3632-3636 plus spec AM for eval_run and spec
+      Q.2 for release) is statically enforced at the wire-format layer.
+      A document with scope_kind=run carrying state=building (an
+      evidence_bundle state) MUST fail validation (VAL-W1-011). epoch is
+      the optimistic-concurrency aggregate version (spec C.4 lines
+      3679-3722); it is a non-negative bigint and MUST reject -1
+      (VAL-W1-012). schema_version pins to relay.scope_state.v1
       (VAL-W1-049).
 
-      Note on spec coverage: spec W declares six scope_kind values
-      ('run','replay_case','gate_round','evidence_bundle','eval_run','release')
-      but spec C.1 only declares state sets for the first four. The
-      remaining two (eval_run, release) are state-set-declared in spec
-      AM and Q.2 respectively and fall outside the W1.2 contract surface;
-      this envelope therefore enumerates only the four C.1 kinds in its
-      discriminator. The full six-way union lands when W9/W12 land.
+      Spec coverage: per spec W lines 5072-5085 the union enumerates all
+      six scope_kind values ('run','replay_case','gate_round',
+      'evidence_bundle','eval_run','release'). The first four kinds use
+      the state sets defined in spec C.1; eval_run uses the engine-
+      controlled set {pending, running, scored, terminal} from spec AM;
+      release uses {open, gated, released, rolled_back, terminal} from
+      spec Q.2. The initial-state mapping per spec W lines 5101-5111 is
+      enforced at the storage layer (run -> pending, replay_case ->
+      proposed, gate_round -> open, evidence_bundle -> building,
+      eval_run -> pending, release -> open) and raises RELAY-STATE-001
+      on bad initial state. Per VAL-V2M01-036/037 the eval_run and
+      release variants land in milestone M01 feature w1.7.
     discriminator: scope_kind
     variants:
       - kind: run
@@ -288,6 +294,10 @@ schemas:
         state_values: [open, draft_received, evaluating, decision_written, restarted, terminal]
       - kind: evidence_bundle
         state_values: [building, signed, published, superseded, revoked]
+      - kind: eval_run
+        state_values: [pending, running, scored, terminal]
+      - kind: release
+        state_values: [open, gated, released, rolled_back, terminal]
     common_fields:
       schema_version:
         type: literal

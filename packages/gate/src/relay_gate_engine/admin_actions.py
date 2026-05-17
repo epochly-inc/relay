@@ -56,6 +56,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from relay_sidecar.state_engine import init_scope_on_conn
+
 from .circuit_breaker import (
     STALLED_REASON_ADMIN_TERMINATED,
 )
@@ -423,6 +425,19 @@ class AdminActionService:
                     "SET reopened_at = ? "
                     "WHERE scope_type = ? AND scope_id = ?",
                     (now, scope_type, str(scope_id)),
+                )
+
+                # 2a. INSERT the paired scope_state row for the new
+                # gate_round (spec W line 5112 paired-row invariant;
+                # migration 0008 / 0016 deferred trigger). state engine
+                # is the canonical writer of scope_state per CLAUDE.md
+                # keystone invariant #1.
+                await init_scope_on_conn(
+                    conn=conn,
+                    scope_kind="gate_round",
+                    scope_id=new_gate_round_id,
+                    project_id=self.project_id,
+                    initial_state="open",
                 )
 
                 # 2. INSERT new gate_rounds row (admin_override).

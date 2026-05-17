@@ -518,12 +518,55 @@ class EvidenceBundleScopeState(_ScopeStateBase):
     ]
 
 
+class EvalRunScopeState(_ScopeStateBase):
+    """scope_kind='eval_run' (spec AM eval lifecycle: pending -> running ->
+    scored | terminal). Per spec W lines 5101-5111 the initial state is
+    'pending'; transitions are engine-controlled via compare_and_set_state.
+
+    VAL-V2M01-036: variant landed in milestone M01 feature w1.7.
+    VAL-V2M01-037: initial-state policy enforced at storage layer.
+    """
+
+    scope_kind: Literal["eval_run"]
+    state: Literal[
+        "pending",
+        "running",
+        "scored",
+        "terminal",
+    ]
+
+
+class ReleaseScopeState(_ScopeStateBase):
+    """scope_kind='release' (spec Q.2 release lifecycle: open -> gated ->
+    released | rolled_back | terminal). Per spec W lines 5101-5111 the
+    initial state is 'open'; transitions are engine-controlled.
+
+    VAL-V2M01-036: variant landed in milestone M01 feature w1.7.
+    VAL-V2M01-037: initial-state policy enforced at storage layer.
+    """
+
+    scope_kind: Literal["release"]
+    state: Literal[
+        "open",
+        "gated",
+        "released",
+        "rolled_back",
+        "terminal",
+    ]
+
+
 # Discriminated union (Pydantic v2 ``discriminator='scope_kind'``). The union
 # is exposed both as a TypeAlias for callers AND as a ``ScopeState`` class
 # wrapper that mirrors the Pydantic ``model_validate`` surface used by the
-# tests.
+# tests. Per VAL-V2M01-036 the union spans all six scope_kinds enumerated
+# by spec W lines 5072-5085.
 _ScopeStateUnion = Annotated[
-    RunScopeState | ReplayCaseScopeState | GateRoundScopeState | EvidenceBundleScopeState,
+    RunScopeState
+    | ReplayCaseScopeState
+    | GateRoundScopeState
+    | EvidenceBundleScopeState
+    | EvalRunScopeState
+    | ReleaseScopeState,
     Field(discriminator="scope_kind"),
 ]
 
@@ -1732,6 +1775,7 @@ __all__ = [
     "DataQualityCheck",
     "EmbeddingSpan",
     "ErrorEnvelope",
+    "EvalRunScopeState",
     "EventLogEntry",
     "EvidenceBundle",
     "EvidenceBundleRegistry",
@@ -1758,6 +1802,7 @@ __all__ = [
     "RELAY_ERROR_CODE_PATTERN",
     "RelayErrorCodeStr",
     "RelayUnknownEnumValueError",
+    "ReleaseScopeState",
     "ReplayCase",
     "ReplayCaseScopeState",
     "ReplayFixture",

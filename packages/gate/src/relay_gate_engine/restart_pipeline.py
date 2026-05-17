@@ -57,6 +57,7 @@ from datetime import UTC, datetime
 from typing import Any, Final
 
 from relay_schemas.error_codes import RelayErrorCode
+from relay_sidecar.state_engine import init_scope_on_conn
 
 from .decision_writer import (
     SCHEMA_EVENT_LOG,
@@ -476,6 +477,19 @@ class RestartCoordinator:
         async with _borrow_gate_writer(self.database) as conn:
             await conn.execute("BEGIN IMMEDIATE")
             try:
+                # 1a. INSERT the paired scope_state row for the new
+                # gate_round (spec W line 5112 paired-row invariant;
+                # migration 0008 / 0016 deferred trigger). state engine
+                # is the canonical writer of scope_state per CLAUDE.md
+                # keystone invariant #1.
+                await init_scope_on_conn(
+                    conn=conn,
+                    scope_kind="gate_round",
+                    scope_id=new_gate_round_id,
+                    project_id=self.project_id,
+                    initial_state="open",
+                )
+
                 # 1. INSERT the new gate_rounds row.
                 await conn.execute(
                     "INSERT INTO gate_rounds ("

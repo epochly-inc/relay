@@ -201,6 +201,63 @@ async def init_scope(
             raise
 
 
+async def init_scope_on_conn(
+    *,
+    conn: aiosqlite.Connection,
+    scope_kind: str,
+    scope_id: str,
+    project_id: str,
+    initial_state: str | None = None,
+    table: TransitionTable | None = None,
+) -> None:
+    """Insert a fresh scope_state row at the canonical initial state, using
+    the caller's existing connection and transaction.
+
+    Same semantics as ``init_scope`` (spec W "Initialization rules": the
+    initial state must be a transition-table-defined origin state for the
+    scope kind), but runs INSIDE the caller's existing BEGIN IMMEDIATE..
+    COMMIT transaction. The caller is responsible for committing or rolling
+    back the surrounding transaction. This is the spec W line 5112 path
+    used by canonical writers that already hold the writer connection and
+    must co-commit the scope_state row alongside their object row insert
+    (e.g., the gate decision writer inserting evidence_bundles +
+    gate_rounds within its own BEGIN IMMEDIATE..COMMIT block, satisfying
+    the migration 0008 / 0016 paired-row deferred trigger).
+
+    Per CLAUDE.md keystone invariant #1: the state engine remains the
+    canonical control-plane writer of scope_state; this helper merely
+    permits inlining that write into another canonical writer's
+    pre-existing transaction so the spec W invariant ("a creating
+    transaction that inserts an object row without the matching
+    scope_state row fails the integrity check at commit") is satisfiable
+    without two-transaction race windows.
+
+    Raises:
+        ValueError: scope_kind unknown to the transition table OR
+            initial_state not the canonical origin state.
+        sqlite3.IntegrityError: scope_state row already exists for
+            (scope_kind, scope_id) -- the caller should treat this as an
+            idempotent no-op or surface a structured error.
+    """
+    tbl = table if table is not None else TRANSITION_TABLE
+    spec = tbl.scope_spec(scope_kind)
+    if spec is None:
+        raise ValueError(f"unknown scope_kind: {scope_kind!r}")
+    actual_initial = initial_state if initial_state is not None else spec.initial_state
+    if actual_initial != spec.initial_state:
+        raise ValueError(
+            f"initial_state {actual_initial!r} for scope_kind {scope_kind!r} "
+            f"does not match the canonical initial state {spec.initial_state!r}"
+        )
+    now = _now_rfc3339_utc()
+    await conn.execute(
+        "INSERT INTO scope_state "
+        "(scope_kind, scope_id, project_id, state, epoch, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 0, ?, ?)",
+        (scope_kind, scope_id, project_id, actual_initial, now, now),
+    )
+
+
 async def _was_event_already_applied(
     conn: aiosqlite.Connection,
     *,

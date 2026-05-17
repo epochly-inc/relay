@@ -41,6 +41,7 @@ from .compare_and_set import (
     StateTransitionResult,
     compare_and_set_state,
     init_scope,
+    init_scope_on_conn,
 )
 from .handoff import (
     ACTOR_NOT_REGISTERED,
@@ -77,6 +78,7 @@ __all__ = [
     "UNKNOWN_SCOPE",
     "compare_and_set_state",
     "init_scope",
+    "init_scope_on_conn",
     "load_transition_table",
     "validate_three_anchor_handoff",
 ]

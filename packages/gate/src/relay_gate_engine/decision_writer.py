@@ -56,6 +56,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
+from relay_sidecar.state_engine import init_scope_on_conn
+
 from .db_grants import (
     ROLE_GATE_ENGINE,
     ROLE_STATE_ENGINE,
@@ -637,6 +639,21 @@ class GateDecisionWriter:
                 with assert_role_token(ROLE_GATE_ENGINE):
                     await conn.execute(role_update_sql(), (ROLE_GATE_ENGINE,))
 
+                # Step 3a: INSERT the paired scope_state row for the new
+                # evidence_bundle (spec W line 5112 paired-row invariant;
+                # migration 0008 / 0016 deferred trigger requires both
+                # rows to commit together). The state engine is the
+                # canonical writer of scope_state per CLAUDE.md keystone
+                # invariant #1; init_scope_on_conn inlines that write
+                # into this writer's existing BEGIN IMMEDIATE..COMMIT.
+                await init_scope_on_conn(
+                    conn=conn,
+                    scope_kind="evidence_bundle",
+                    scope_id=bundle_id,
+                    project_id=self._project_id,
+                    initial_state="building",
+                )
+
                 # Step 3: INSERT evidence_bundles.
                 await conn.execute(
                     "INSERT INTO evidence_bundles ("
@@ -722,6 +739,19 @@ class GateDecisionWriter:
                     existing = await cur.fetchone()
                 if existing is None:
                     gate_round_id = str(uuid.uuid4())
+                    # INSERT the paired scope_state row for the new
+                    # gate_round (spec W line 5112 paired-row invariant;
+                    # migration 0008 / 0016 deferred trigger requires
+                    # both rows to commit together). state engine is
+                    # the canonical writer of scope_state per CLAUDE.md
+                    # keystone invariant #1.
+                    await init_scope_on_conn(
+                        conn=conn,
+                        scope_kind="gate_round",
+                        scope_id=gate_round_id,
+                        project_id=self._project_id,
+                        initial_state="open",
+                    )
                     await conn.execute(
                         "INSERT INTO gate_rounds ("
                         "  gate_round_id, schema_version, scope_type, "

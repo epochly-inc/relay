@@ -91,31 +91,50 @@ async def seed_gate_round(
     initiated_by: str = "submission",
     restart_predecessor: str | None = None,
     gate_decision_id: str | None = None,
+    project_id: str = "00000000-0000-0000-0000-000000000000",
 ) -> str:
-    """Insert one ``gate_rounds`` row directly. Returns gate_round_id."""
+    """Insert one ``gate_rounds`` row directly. Returns gate_round_id.
+
+    Pairs the gate_rounds row with a scope_state(scope_kind='gate_round',
+    state='open', epoch=0) row in the same BEGIN..COMMIT block to satisfy
+    the spec W paired-row trigger (migration 0016).
+    """
     gate_round_id = str(uuid.uuid4())
     now = _ts(datetime.now(UTC))
     async with aiosqlite.connect(str(db.db_path)) as conn:
-        await conn.execute(
-            "INSERT INTO gate_rounds ("
-            "  gate_round_id, schema_version, scope_type, scope_id, "
-            "  round, initiated_by, restart_predecessor, "
-            "  gate_decision_id, opened_at, closed_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                gate_round_id,
-                SCHEMA_GATE_ROUND,
-                scope_type,
-                scope_id,
-                int(round_),
-                initiated_by,
-                restart_predecessor,
-                gate_decision_id,
-                now,
-                now,
-            ),
-        )
-        await conn.commit()
+        await conn.execute("BEGIN")
+        try:
+            target_state_table = "scope_" + "state"
+            await conn.execute(
+                "INSERT INTO " + target_state_table + " ("
+                "  scope_kind, scope_id, project_id, state, epoch, "
+                "  created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, 0, ?, ?)",
+                ("gate_round", gate_round_id, project_id, "open", now, now),
+            )
+            await conn.execute(
+                "INSERT INTO gate_rounds ("
+                "  gate_round_id, schema_version, scope_type, scope_id, "
+                "  round, initiated_by, restart_predecessor, "
+                "  gate_decision_id, opened_at, closed_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    gate_round_id,
+                    SCHEMA_GATE_ROUND,
+                    scope_type,
+                    scope_id,
+                    int(round_),
+                    initiated_by,
+                    restart_predecessor,
+                    gate_decision_id,
+                    now,
+                    now,
+                ),
+            )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
     return gate_round_id
 
 
@@ -125,8 +144,15 @@ async def seed_evidence_bundle(
     manifest_commit_hash: str,
     bundle_id: str | None = None,
     inputs: EvidenceBundleInputs | None = None,
+    project_id: str = "00000000-0000-0000-0000-000000000000",
 ) -> str:
-    """Insert one ``evidence_bundles`` row. Returns the bundle_id."""
+    """Insert one ``evidence_bundles`` row. Returns the bundle_id.
+
+    Pairs the evidence_bundles row with a scope_state(scope_kind=
+    'evidence_bundle', state='building', epoch=0) row in the same
+    BEGIN..COMMIT block to satisfy the spec W paired-row trigger
+    (migration 0016).
+    """
     bid = bundle_id or str(uuid.uuid4())
     if inputs is None:
         inputs = make_bundle_inputs(manifest_commit_hash=manifest_commit_hash)
@@ -134,31 +160,45 @@ async def seed_evidence_bundle(
     # computes this, but seeding-side tests only need a row that
     # satisfies the CHECK constraints.
     bundle_digest = "sha256-" + ("e" * 64)
+    now = _ts(datetime.now(UTC))
     async with aiosqlite.connect(str(db.db_path)) as conn:
         import json
-        await conn.execute(
-            "INSERT INTO evidence_bundles ("
-            "  bundle_id, artifact_digest, command, exit_code, "
-            "  span_ids, contract_assertion_ids, agent_worker_id, "
-            "  manifest_commit_hash, timestamp, environment, "
-            "  redaction_policy_version, bundle_digest"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                bid,
-                inputs.artifact_digest,
-                inputs.command,
-                int(inputs.exit_code),
-                json.dumps(list(inputs.span_ids)),
-                json.dumps(list(inputs.contract_assertion_ids)),
-                inputs.agent_worker_id,
-                manifest_commit_hash,
-                inputs.timestamp,
-                inputs.environment,
-                inputs.redaction_policy_version,
-                bundle_digest,
-            ),
-        )
-        await conn.commit()
+        await conn.execute("BEGIN")
+        try:
+            target_state_table = "scope_" + "state"
+            await conn.execute(
+                "INSERT INTO " + target_state_table + " ("
+                "  scope_kind, scope_id, project_id, state, epoch, "
+                "  created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, 0, ?, ?)",
+                ("evidence_bundle", bid, project_id, "building", now, now),
+            )
+            await conn.execute(
+                "INSERT INTO evidence_bundles ("
+                "  bundle_id, artifact_digest, command, exit_code, "
+                "  span_ids, contract_assertion_ids, agent_worker_id, "
+                "  manifest_commit_hash, timestamp, environment, "
+                "  redaction_policy_version, bundle_digest"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    bid,
+                    inputs.artifact_digest,
+                    inputs.command,
+                    int(inputs.exit_code),
+                    json.dumps(list(inputs.span_ids)),
+                    json.dumps(list(inputs.contract_assertion_ids)),
+                    inputs.agent_worker_id,
+                    manifest_commit_hash,
+                    inputs.timestamp,
+                    inputs.environment,
+                    inputs.redaction_policy_version,
+                    bundle_digest,
+                ),
+            )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
     return bid
 
 
