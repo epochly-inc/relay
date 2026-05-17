@@ -102,13 +102,32 @@ class WriteResult:
 
 @dataclass
 class _WriteRequest:
-    """One queued write request awaiting the single writer coroutine."""
+    """One queued write request awaiting the single writer coroutine.
+
+    ``mode`` selects the column-augmentation policy:
+
+      - ``"event_log"`` (default, W2.3 behavior): the writer augments
+        ``row`` with ``ingest_sequence`` (monotonic via SELECT MAX+1) and
+        ``idempotency_key``; an existing
+        ``(scope_id, idempotency_key)`` pair short-circuits to the prior
+        row's ``ingest_sequence`` (idempotent retry semantics).
+      - ``"raw"`` (M04 w4-side-effects): the writer issues a plain INSERT
+        of ``row`` verbatim and returns the row's caller-supplied primary
+        key in ``WriteResult.ingest_sequence``. Idempotency is enforced
+        at the schema layer (UNIQUE constraint on the table's natural
+        key, e.g. ``side_effect_markers.idempotency_key``); the primitive
+        catches IntegrityError and surfaces ``idempotent=True`` so the
+        caller can attach to the prior winning write.
+    """
 
     table: str
     row: dict[str, Any]
     scope_id: str
     idempotency_key: str | None
     future: asyncio.Future[WriteResult]
+    mode: str = "event_log"
+    natural_key_column: str | None = None  # required when mode='raw'
+    return_column: str | None = None  # column to surface in WriteResult.ingest_sequence
 
 
 @dataclass
@@ -394,6 +413,47 @@ class SidecarDatabase:
 
     # ---- Public write API ----
 
+    async def transactional_db_write_raw(
+        self,
+        *,
+        table: str,
+        row: dict[str, Any],
+        natural_key: str,
+        natural_key_column: str,
+    ) -> WriteResult:
+        """Atomic raw INSERT through the sidecar writer queue (M04 w4).
+
+        Mirrors :meth:`transactional_db_write` but skips the
+        ingest_sequence/idempotency_key augmentation. Used for tables
+        whose shape predates W2.3 (side_effect_markers,
+        side_effect_proofs). Idempotency is enforced at the schema layer
+        via a UNIQUE constraint on ``natural_key_column``; on collision
+        this method returns the prior row's rowid with
+        ``WriteResult.idempotent=True``.
+
+        All writes serialize through the SAME single-writer coroutine as
+        :meth:`transactional_db_write` so the keystone invariant #8
+        ("four atomic primitives") and the single-writer guarantee are
+        both preserved.
+        """
+        if self._queue is None or self._writer_task is None:
+            raise RuntimeError(
+                "SidecarDatabase.open() not called or already closed"
+            )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[WriteResult] = loop.create_future()
+        req = _WriteRequest(
+            table=table,
+            row=row,
+            scope_id="",  # not used in raw mode; natural key is the dedupe surface
+            idempotency_key=natural_key,
+            future=future,
+            mode="raw",
+            natural_key_column=natural_key_column,
+        )
+        await self._queue.put(req)
+        return await future
+
     async def transactional_db_write(
         self,
         *,
@@ -599,9 +659,20 @@ class SidecarDatabase:
         On idempotency-key collision (unique-index violation), returns
         the pre-existing row's ingest_sequence with idempotent=True
         instead of propagating IntegrityError.
+
+        M04 w4-side-effects: when ``req.mode == "raw"`` the augmentation
+        step (adding ``ingest_sequence`` + ``idempotency_key`` columns)
+        is skipped; the row is inserted verbatim. Idempotency is enforced
+        by the schema's UNIQUE constraint on ``req.natural_key_column``.
+        Used by the side_effect_markers / side_effect_proofs writer to
+        keep keystone invariant #8 ("four atomic primitives") satisfied
+        for tables whose shape predates the W2.3 event_log convention.
         """
         assert self._writer is not None  # noqa: S101
         conn = self._writer
+
+        if req.mode == "raw":
+            return await self._execute_raw_attempt(req, conn)
 
         # Pre-check idempotency: if a row with (scope_id, idempotency_key)
         # already exists, return its ingest_sequence without writing.
@@ -683,6 +754,80 @@ class SidecarDatabase:
             return WriteResult(
                 ok=True,
                 ingest_sequence=next_seq,
+                idempotent=False,
+                retry_count=0,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await conn.execute("ROLLBACK")
+            raise
+
+    async def _execute_raw_attempt(
+        self,
+        req: _WriteRequest,
+        conn: aiosqlite.Connection,
+    ) -> WriteResult:
+        """Execute a verbatim INSERT for ``req.mode == 'raw'``.
+
+        Used by M04 w4-side-effects' side_effect_markers /
+        side_effect_proofs writer. The schema's UNIQUE constraint on
+        ``req.natural_key_column`` carries the load-bearing idempotency
+        invariant; on collision we return the prior row's primary key
+        with ``idempotent=True``.
+
+        ``req.return_column`` names the column whose integer value (or
+        positional row id) is surfaced as ``WriteResult.ingest_sequence``.
+        For tables without an integer primary key (side_effect_markers
+        uses a TEXT uuid), the rowid is returned instead.
+        """
+        # Pre-check by natural key. Cheap fast path that avoids the
+        # round-trip on retry.
+        if req.natural_key_column and req.idempotency_key is not None:
+            async with conn.execute(
+                f"SELECT rowid FROM {req.table} "
+                f"WHERE {req.natural_key_column} = ?",
+                (req.idempotency_key,),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing is not None:
+                return WriteResult(
+                    ok=True,
+                    ingest_sequence=int(existing[0]),
+                    idempotent=True,
+                    retry_count=0,
+                )
+
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            columns = sorted(req.row.keys())
+            placeholders = ",".join("?" for _ in columns)
+            colnames = ",".join(columns)
+            values = tuple(_encode_value(req.row[c]) for c in columns)
+            sql = f"INSERT INTO {req.table} ({colnames}) VALUES ({placeholders})"
+            try:
+                cursor = await conn.execute(sql, values)
+                row_id = cursor.lastrowid or 0
+            except sqlite3.IntegrityError:
+                await conn.execute("ROLLBACK")
+                if req.natural_key_column and req.idempotency_key is not None:
+                    async with conn.execute(
+                        f"SELECT rowid FROM {req.table} "
+                        f"WHERE {req.natural_key_column} = ?",
+                        (req.idempotency_key,),
+                    ) as cur:
+                        existing = await cur.fetchone()
+                    if existing is not None:
+                        return WriteResult(
+                            ok=True,
+                            ingest_sequence=int(existing[0]),
+                            idempotent=True,
+                            retry_count=0,
+                        )
+                raise
+            await conn.execute("COMMIT")
+            return WriteResult(
+                ok=True,
+                ingest_sequence=int(row_id),
                 idempotent=False,
                 retry_count=0,
             )
@@ -860,4 +1005,13 @@ def _allowed_tables() -> Iterable[str]:
     ``run_results`` and ``scope_state``. This whitelist exists so future
     callers cannot point the primitive at arbitrary tables.
     """
-    return ("event_log_entries",)
+    return (
+        "event_log_entries",
+        # M04 w4-side-effects (VAL-V2M04-034): the side-effect tables are
+        # written exclusively through ``transactional_db_write_raw`` which
+        # serializes through the SAME single-writer queue as the W2.3
+        # event_log path. Listing them here documents the surface and gives
+        # the lint guard a single source of truth.
+        "side_effect_markers",
+        "side_effect_proofs",
+    )

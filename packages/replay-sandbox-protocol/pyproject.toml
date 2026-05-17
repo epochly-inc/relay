@@ -1,0 +1,52 @@
+# epochly-relay-replay-sandbox-protocol (M04 w4-side-effects).
+#
+# OSS Python package that exports the public ReplaySandboxDriver Protocol
+# plus its supporting dataclasses (NetworkPolicy, ToolPolicy,
+# EphemeralCredential). Concrete drivers (e2b, modal, local-firecracker,
+# local-docker) live in relay-platform (proprietary) per spec line 3941
+# and CLAUDE.md repo-boundary rule "drivers stay private". This package is
+# the only OSS surface third-party drivers may target.
+#
+# Spec anchors:
+#   E.4 3941-3987 ReplaySandboxDriver Protocol + NetworkPolicy + ToolPolicy
+#                 + EphemeralCredential
+#
+# Contract assertions: VAL-V2M04-030 (Protocol + 5 methods + runtime-checkable),
+# VAL-V2M04-031 (supporting dataclasses + ttl <= 900 validator),
+# VAL-V2M04-032 (no concrete drivers in OSS).
+#
+# Per CLAUDE.md keystone invariant: a third-party driver implementing this
+# Protocol does NOT need network access to the relay-platform package and
+# does NOT inherit any private dependencies. The Protocol is pure-Python,
+# stdlib-only.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epochly-relay-replay-sandbox-protocol"
+version = "0.0.0"
+description = "Public Protocol for Relay replay sandbox drivers (concrete drivers stay private)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Epochly, Inc.", email = "engineering@epochly.com" },
+]
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/relay_replay_sandbox_protocol"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/relay_replay_sandbox_protocol",
+  "README.md",
+]

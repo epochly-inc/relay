@@ -101,6 +101,10 @@ from .quiesce import (
     resolve_idle_timeout_seconds,
 )
 from .recovery import recover_or_refuse
+from .side_effect_markers import (
+    EnforcementRejection,
+    check_span_marker_pairing,
+)
 from .state_engine.http_endpoint import build_state_router
 from .validation.ingest_limits import validate_span_size_and_depth
 from .validation.ingest_utf8 import validate_indexed_utf8
@@ -1149,6 +1153,79 @@ def build_runtime_app(
             )
         return manifest_commit_hash, command_hash
 
+    async def _enforce_side_effect_pairing(
+        *,
+        spans: list[Any],
+        database: Any,
+    ) -> EnforcementRejection | None:
+        """M04 w4 side-effect marker/proof check (VAL-V2M04-011..015).
+
+        For every span carrying ``side_effect_class != 'read_only'``,
+        verify that a paired ``side_effect_markers`` row exists AND a
+        ``side_effect_proofs`` row exists. Returns the first rejection
+        encountered (consistent with the prior per-span validators) or
+        None when all spans pass.
+
+        ``database`` is the SidecarDatabase instance; we use a reader
+        connection to look up the marker / proof existence. ``None`` is
+        treated as "no markers/proofs exist" -- any enforced span fails
+        the pairing check.
+        """
+        if not spans:
+            return None
+        # Pre-filter spans that require enforcement so we don't query
+        # for read_only spans (the dominant case).
+        from .side_effect_markers import is_enforced_class
+
+        enforced_spans = [
+            s for s in spans
+            if isinstance(s, dict) and is_enforced_class(s.get("side_effect_class"))
+        ]
+        if not enforced_spans:
+            return None
+
+        # Collect the set of idempotency_keys to look up.
+        keys: list[str] = []
+        for s in enforced_spans:
+            k = s.get("idempotency_key")
+            if isinstance(k, str) and k:
+                keys.append(k)
+
+        # Build existence sets via single reader queries.
+        marker_keys: set[str] = set()
+        proof_keys: set[str] = set()
+        if database is not None and keys:
+            reader = database.acquire_reader()
+            placeholders = ",".join("?" for _ in keys)
+            sql_markers = (
+                f"SELECT idempotency_key FROM side_effect_markers "
+                f"WHERE idempotency_key IN ({placeholders})"
+            )
+            async with reader.execute(sql_markers, tuple(keys)) as cur:
+                async for row in cur:
+                    marker_keys.add(str(row[0]))
+            # For proofs we join through markers; a span passes the proof
+            # check iff a side_effect_proofs row exists for its marker.
+            sql_proofs = (
+                f"SELECT m.idempotency_key FROM side_effect_proofs p "
+                f"JOIN side_effect_markers m ON m.marker_id = p.marker_id "
+                f"WHERE m.idempotency_key IN ({placeholders})"
+            )
+            async with reader.execute(sql_proofs, tuple(keys)) as cur:
+                async for row in cur:
+                    proof_keys.add(str(row[0]))
+
+        for s in enforced_spans:
+            k = s.get("idempotency_key")
+            has_marker = isinstance(k, str) and k in marker_keys
+            has_proof = isinstance(k, str) and k in proof_keys
+            rejection = check_span_marker_pairing(
+                span=s, has_marker=has_marker, has_proof=has_proof
+            )
+            if rejection is not None:
+                return rejection
+        return None
+
     @app.post("/v1/ingest/runs")
     async def v1_ingest_runs(request: Request) -> JSONResponse:
         """Run-submission ingest with manifest enforcement (VAL-V2M03-012)."""
@@ -1237,6 +1314,25 @@ def build_runtime_app(
                             status_code=utf8_reject["http_status"],
                             content=utf8_reject,
                         )
+            # M04 w4-side-effects (VAL-V2M04-011..015, -035): every span
+            # carrying side_effect_class != 'read_only' MUST have a paired
+            # side_effect_markers row AND a side_effect_proofs row. This
+            # check runs AFTER three-anchor handoff (above) so the manifest
+            # invariant remains the outer gate (CLAUDE.md keystone #4).
+            side_reject = await _enforce_side_effect_pairing(
+                spans=spans,
+                database=runtime.database,
+            )
+            if side_reject is not None:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "code": side_reject.code,
+                        "error_class": side_reject.code,
+                        "message": side_reject.message,
+                        "details": side_reject.details,
+                    },
+                )
         tracker = runtime.quiesce.tracker
         async with tracker.acquire(description="ingest/spans:batch") as op:
             return JSONResponse(

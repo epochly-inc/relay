@@ -89,15 +89,23 @@ RELAY_REPLAY_014: Final[str] = "RELAY-REPLAY-014"
 RELAY_REPLAY_CASE_NOT_FOUND: Final[str] = "RELAY-CLI-REPLAY-CASE-NOT-FOUND"
 RELAY_REPLAY_RUN_NOT_FOUND: Final[str] = "RELAY-CLI-REPLAY-RUN-NOT-FOUND"
 
-# Side-effect classes (spec §X, §E.3). Cassette mode safely replays
-# ``none`` and ``reversible`` calls without override; ``mutating`` and
-# ``external_irreversible`` REQUIRE an audited policy override.
-SIDE_EFFECT_NONE: Final[str] = "none"
-SIDE_EFFECT_REVERSIBLE: Final[str] = "reversible"
+# Side-effect classes (spec §X, §E.3 lines 3931-3936). M04 w4
+# (VAL-V2M04-023/024/025) removed the OSS-historical legacy strings
+# "none" / "reversible" from this module. The four canonical classes are
+# read_only | mutating | external_irreversible | approval_required.
+# Cassette mode safely replays ``read_only`` calls without override;
+# ``mutating`` and ``external_irreversible`` REQUIRE an audited policy
+# override; ``approval_required`` requires a named human single-use token.
+SIDE_EFFECT_READ_ONLY: Final[str] = "read_only"
 SIDE_EFFECT_MUTATING: Final[str] = "mutating"
 SIDE_EFFECT_EXTERNAL_IRREVERSIBLE: Final[str] = "external_irreversible"
+SIDE_EFFECT_APPROVAL_REQUIRED: Final[str] = "approval_required"
 _DANGEROUS_SIDE_EFFECTS: Final[frozenset[str]] = frozenset(
-    {SIDE_EFFECT_MUTATING, SIDE_EFFECT_EXTERNAL_IRREVERSIBLE}
+    {
+        SIDE_EFFECT_MUTATING,
+        SIDE_EFFECT_EXTERNAL_IRREVERSIBLE,
+        SIDE_EFFECT_APPROVAL_REQUIRED,
+    }
 )
 
 # Default page size for ``rly replay list``.
@@ -341,7 +349,10 @@ def _build_entries(
         request = call.get("request")
         response = call.get("response")
         timestamp = call.get("timestamp")
-        side_class = call.get("side_effect_class", SIDE_EFFECT_NONE)
+        # VAL-V2M04-025: default to the canonical 'read_only' class when a
+        # recorded call dict omits side_effect_class. The legacy "none"
+        # default was removed alongside SIDE_EFFECT_NONE.
+        side_class = call.get("side_effect_class", SIDE_EFFECT_READ_ONLY)
         if not isinstance(provider, str) or not provider:
             raise CassetteFormatError(
                 f"call[{idx}] missing non-empty 'provider'", idx, path_for_errors
@@ -1026,9 +1037,9 @@ __all__ = [
     "REPLAY_RECORD_SCHEMA",
     "REPLAY_REGISTRY_SCHEMA",
     "REPLAY_RUN_SCHEMA",
+    "SIDE_EFFECT_APPROVAL_REQUIRED",
     "SIDE_EFFECT_EXTERNAL_IRREVERSIBLE",
     "SIDE_EFFECT_MUTATING",
-    "SIDE_EFFECT_NONE",
-    "SIDE_EFFECT_REVERSIBLE",
+    "SIDE_EFFECT_READ_ONLY",
     "build_replay_app",
 ]
