@@ -1,6 +1,13 @@
 -- M05 w5-explain sidecar mirror of packages/schemas/sql/0009_explain.sql
 -- (VAL-V2M05-007..013).
 --
+-- SUPERSEDED BY 0023_audit_r3_schema_alignment.sql (VAL-V3M1-025): the
+-- narrow reviewer_decision CHECK declared at lines 64-66 of this file
+-- ({accept, modify, reject}) was widened by 0023:128-174 to the
+-- spec-aligned 4-value enum {accept, reject, modify, pending} via a
+-- DROP+CREATE rebuild of root_cause_hypotheses. Readers of this file
+-- should consult 0023 for the authoritative reviewer_decision shape.
+--
 -- The Postgres canonical DDL lives at packages/schemas/sql/0009_explain.sql.
 -- This file is the SQLite mirror executed by the sidecar migration runner
 -- (apps/local-sidecar/relay_sidecar/db.py:_run_migrations).
