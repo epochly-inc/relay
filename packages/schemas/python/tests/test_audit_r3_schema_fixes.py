@@ -166,9 +166,9 @@ def test_d8_python_reviewer_decisions_is_four_values() -> None:
     """REVIEWER_DECISIONS frozenset has exactly 4 values."""
     from relay_schemas.root_cause_hypothesis import REVIEWER_DECISIONS
 
-    assert REVIEWER_DECISIONS == frozenset(
+    assert frozenset(
         {"accept", "reject", "modify", "pending"}
-    )
+    ) == REVIEWER_DECISIONS
 
 
 @pytest.mark.plumbing
