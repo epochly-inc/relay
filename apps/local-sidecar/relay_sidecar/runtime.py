@@ -1849,36 +1849,17 @@ def build_runtime_app(
     # lines 3381-3390. The key is per-process so two sidecars cannot
     # accept each other's cursors (defense-in-depth; the OSS profile
     # is single-process by design).
+    #
+    # All paginated GETs sign + verify via ``_sign_cursor_ttl`` /
+    # ``_verify_cursor_ttl`` (defined later in this factory). Those
+    # helpers wrap the payload in a ``{payload, issued_at}`` envelope
+    # so a stolen cursor expires after ``_CURSOR_TTL_S`` (1 hour) per
+    # spec B.3 lines 3381-3390 and VAL-V2M02-070. The non-TTL
+    # ``_sign_cursor`` / ``_verify_cursor`` variants were removed in
+    # the V2M02 audit cleanup because they let cursors live forever.
     _cursor_signing_key: bytes = hashlib.sha256(
         f"{runtime.sqlite_path}:{uuid.uuid4()}".encode()
     ).digest()
-
-    def _sign_cursor(payload: dict[str, Any]) -> str:
-        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        sig = hmac.new(_cursor_signing_key, raw, hashlib.sha256).digest()[:16]
-        token_bytes = base64.urlsafe_b64encode(sig + raw)
-        return token_bytes.decode("ascii").rstrip("=")
-
-    def _verify_cursor(token: str) -> dict[str, Any] | None:
-        try:
-            padded = token + "=" * (-len(token) % 4)
-            decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
-        except Exception:  # noqa: BLE001
-            return None
-        if len(decoded) < 16:
-            return None
-        sig, raw = decoded[:16], decoded[16:]
-        expected = hmac.new(
-            _cursor_signing_key, raw, hashlib.sha256
-        ).digest()[:16]
-        if not hmac.compare_digest(sig, expected):
-            return None
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except Exception:  # noqa: BLE001
-            return None
 
     _RUN_LIST_SURFACE: str = "GET /v1/projects/{project_id}/runs"
     _RUN_DETAIL_SURFACE: str = "GET /v1/runs/{run_id}"
@@ -1921,18 +1902,28 @@ def build_runtime_app(
         effective_limit = max(1, min(int(limit), 500))
         offset = 0
         if cursor is not None:
-            decoded = _verify_cursor(cursor)
-            if decoded is None or decoded.get("project_id") != project_id:
+            payload, err = _verify_cursor_ttl(cursor)
+            if err == "expired":
+                return JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-PAGE-EXPIRED",
+                        http_status=400,
+                        message="cursor expired (1h TTL exceeded)",
+                        blocked_surface=_RUN_LIST_SURFACE,
+                    ),
+                )
+            if payload is None or payload.get("project_id") != project_id:
                 return JSONResponse(
                     status_code=400,
                     content=_build_error_envelope(
                         code="RELAY-PAGE-001",
                         http_status=400,
-                        message="cursor is invalid or expired",
+                        message="cursor signature invalid (tampered)",
                         blocked_surface=_RUN_LIST_SURFACE,
                     ),
                 )
-            offset = int(decoded.get("offset", 0))
+            offset = int(payload.get("offset", 0))
 
         db = runtime.database
         if db is None:
@@ -1971,7 +1962,7 @@ def build_runtime_app(
         ]
         next_cursor: str | None = None
         if has_more:
-            next_cursor = _sign_cursor(
+            next_cursor = _sign_cursor_ttl(
                 {"project_id": project_id, "offset": offset + effective_limit}
             )
         return JSONResponse(

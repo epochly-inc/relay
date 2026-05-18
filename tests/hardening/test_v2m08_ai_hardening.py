@@ -443,6 +443,50 @@ def test_egress_allowlist_denies_link_local_and_cloud_metadata() -> None:
     validate_egress_entries(["198.51.100.1"])
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-014")
+def test_egress_allowlist_handles_bracketed_ipv6_authority_form() -> None:
+    """RFC 3986 bracketed IPv6 + port form is parsed correctly.
+
+    Regression for the audit P2: previously the bare bracketed
+    ``[ipv6]:port`` form was undocumented. The host extractor now
+    strips brackets (and any trailing ``:port``) and the SSRF
+    classifier sees the canonical IPv6 literal.
+    """
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    # Link-local IPv6 in bracketed-with-port form must be denied.
+    for bracketed in ("[fe80::1]:8080", "[fe80::1]:443", "[fe80::1]"):
+        with pytest.raises(EgressDenied) as exc:
+            validate_egress_entries([bracketed])
+        env = exc.value.envelope
+        assert env["denied_reason"] == "link_local", (
+            f"expected link_local for {bracketed!r}; got {env!r}"
+        )
+        assert env["denied_entry"] == bracketed
+
+    # ULA (unique local address fc00::/7) in bracketed form -> rfc1918.
+    with pytest.raises(EgressDenied) as exc:
+        validate_egress_entries(["[fc00::1]:9090"])
+    assert exc.value.envelope["denied_reason"] == "rfc1918"
+
+    # Loopback ``::1`` is tagged ``rfc1918`` because Python's
+    # ``IPv6Address.is_private`` reports True for the IPv6 loopback
+    # (and the SSRF guard rolls up rfc4193 ULA + loopback under
+    # ``rfc1918`` for parity with IPv4 internal addresses).
+    # Bracketed-form parsing is what we are testing here: the
+    # extractor must yield ``"::1"`` (no brackets, no port) so that
+    # ``_classify`` can run at all.
+    with pytest.raises(EgressDenied) as exc:
+        validate_egress_entries(["[::1]:8080"])
+    assert exc.value.envelope["denied_reason"] == "rfc1918"
+
+    # URL form with bracketed IPv6 authority -> urlparse strips brackets.
+    with pytest.raises(EgressDenied) as exc:
+        validate_egress_entries(["http://[fe80::1]:8080/path"])
+    assert exc.value.envelope["denied_reason"] == "link_local"
+
+
 # -----------------------------------------------------------------------------
 # VAL-V2M08-015..017: bundle verifier path-traversal hardening
 # -----------------------------------------------------------------------------

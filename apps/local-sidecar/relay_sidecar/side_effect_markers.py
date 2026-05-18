@@ -44,7 +44,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiosqlite
@@ -340,6 +340,25 @@ def _new_uuid() -> str:
     return str(uuid.uuid4())
 
 
+# Default marker lifetime when no policy-derived expires_at is supplied.
+# Spec V2M04: an in_flight marker's expires_at controls when the
+# resurrection scan (scan_orphan_markers) classifies it as orphaned. The
+# previous default of ``_now_iso()`` made every marker an orphan as soon
+# as it was written; the resurrection / compensation hook fired
+# immediately and silently invalidated the side-effect idempotency
+# contract. We default to one hour from creation so callers that do not
+# supply an explicit lifetime get a sane, finite-but-non-zero window.
+# Callers that need a different TTL (e.g. policy.approval_ttl_seconds)
+# pass ``expires_at`` explicitly.
+DEFAULT_MARKER_TTL_SECONDS: int = 3600
+
+
+def _now_plus_seconds_iso(seconds: int) -> str:
+    return (
+        datetime.now(tz=UTC) + timedelta(seconds=seconds)
+    ).isoformat().replace("+00:00", "Z")
+
+
 def build_marker_row(
     *,
     run_id: str,
@@ -351,7 +370,12 @@ def build_marker_row(
     expires_at: str | None = None,
     marker_id: str | None = None,
 ) -> dict[str, Any]:
-    """Construct a side_effect_markers row dict suitable for the raw writer."""
+    """Construct a side_effect_markers row dict suitable for the raw writer.
+
+    When ``expires_at`` is omitted, the row defaults to
+    ``now() + DEFAULT_MARKER_TTL_SECONDS`` so the marker is not
+    immediately eligible for ``scan_orphan_markers()``.
+    """
     if state not in MARKER_STATES:
         raise ValueError(
             f"build_marker_row: state must be one of {sorted(MARKER_STATES)}; "
@@ -366,7 +390,9 @@ def build_marker_row(
         "policy_id": policy_id,
         "state": state,
         "created_at": _now_iso(),
-        "expires_at": expires_at or _now_iso(),
+        "expires_at": expires_at or _now_plus_seconds_iso(
+            DEFAULT_MARKER_TTL_SECONDS
+        ),
     }
 
 

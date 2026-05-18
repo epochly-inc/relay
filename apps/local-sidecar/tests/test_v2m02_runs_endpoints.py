@@ -167,6 +167,10 @@ async def sidecar_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[tuple[httpx.AsyncClient, Path]]:
     monkeypatch.setenv("RELAY_SIDECAR_IDLE_TIMEOUT_S", "60.0")
+    # Audit fix (2026-05-17 P0): opt-in to the legacy X-Relay-Scopes
+    # header (now disabled by default) so these W2.2 legacy tests keep
+    # passing under the production default-deny gate.
+    monkeypatch.setenv("RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", "1")
     monkeypatch.setenv("RELAY_HOME", str(tmp_path / "relay-home"))
     (tmp_path / "relay-home").mkdir(exist_ok=True)
     db_path = tmp_path / "sidecar.db"
@@ -246,6 +250,88 @@ async def test_list_runs_cursor_round_trip(
     assert p2["next_cursor"] is None
     # Together the two pages cover the seeded set.
     assert page1_ids | page2_ids == set(seeded)
+
+
+# ---- Audit P1: list runs cursor carries 1h TTL ---------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M02-010")
+@pytest.mark.asyncio
+async def test_list_runs_cursor_expires_after_1h(
+    sidecar_client: tuple[httpx.AsyncClient, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audit P1 regression: ``_sign_cursor`` had no TTL; cursors lived
+    forever. The runs endpoint now uses ``_sign_cursor_ttl`` per spec
+    B.3 lines 3381-3390. A cursor older than 1h must reject with
+    ``RELAY-PAGE-EXPIRED``.
+    """
+    client, db_path = sidecar_client
+    project_id = "project-ttl-001"
+    await _seed_runs(db_path, project_id=project_id, count=3)
+    page1 = await client.get(
+        f"/v1/projects/{project_id}/runs",
+        headers=_read_headers(),
+        params={"limit": 1},
+    )
+    assert page1.status_code == 200, page1.text
+    cursor = json.loads(page1.text)["next_cursor"]
+    assert isinstance(cursor, str) and cursor
+
+    # Freeze the clock 2h forward so the cursor's issued_at appears
+    # > _CURSOR_TTL_S (1h) old. Patch the runtime module's `datetime`
+    # symbol (same approach as the gate-rounds expiry test in
+    # test_v2m02_pagination.py).
+    import time as _time
+
+    import relay_sidecar.runtime as rt_mod
+
+    real_dt = rt_mod.datetime
+
+    class _FrozenDT:
+        @staticmethod
+        def now(tz=None):  # noqa: ANN001
+            return real_dt.now(tz=tz).fromtimestamp(_time.time() + 7200, tz=tz)
+
+    monkeypatch.setattr(rt_mod, "datetime", _FrozenDT)
+    try:
+        r2 = await client.get(
+            f"/v1/projects/{project_id}/runs",
+            headers=_read_headers(),
+            params={"limit": 1, "cursor": cursor},
+        )
+        assert r2.status_code == 400, r2.text
+        assert json.loads(r2.text)["code"] == "RELAY-PAGE-EXPIRED"
+    finally:
+        monkeypatch.setattr(rt_mod, "datetime", real_dt)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M02-010")
+@pytest.mark.asyncio
+async def test_list_runs_tampered_cursor_returns_400(
+    sidecar_client: tuple[httpx.AsyncClient, Path],
+) -> None:
+    """A tampered cursor must reject with RELAY-PAGE-001."""
+    client, db_path = sidecar_client
+    project_id = "project-tamper-001"
+    await _seed_runs(db_path, project_id=project_id, count=3)
+    page1 = await client.get(
+        f"/v1/projects/{project_id}/runs",
+        headers=_read_headers(),
+        params={"limit": 1},
+    )
+    cursor = json.loads(page1.text)["next_cursor"]
+    tampered = cursor[:-1] + ("A" if cursor[-1] != "A" else "B")
+    r2 = await client.get(
+        f"/v1/projects/{project_id}/runs",
+        headers=_read_headers(),
+        params={"limit": 1, "cursor": tampered},
+    )
+    assert r2.status_code == 400, r2.text
+    body = json.loads(r2.text)
+    assert body["code"] in ("RELAY-PAGE-001", "RELAY-PAGE-EXPIRED")
 
 
 # ---- VAL-V2M02-012: list scope check -------------------------------------

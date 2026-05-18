@@ -87,14 +87,32 @@ class EgressDenied(Exception):
 
 
 def _extract_host(entry: str) -> str:
-    """Return the host portion of ``entry`` (URL or bare host)."""
+    """Return the host portion of ``entry`` (URL or bare host).
+
+    Supported entry forms:
+
+      * URL with scheme: ``https://host[:port]/path`` or
+        ``https://[ipv6][:port]/path`` -- delegated to ``urlparse``,
+        whose ``hostname`` attribute strips brackets per RFC 3986.
+      * Bare IPv4 / hostname, optionally with port: ``10.0.0.1`` or
+        ``10.0.0.1:8080``. The single trailing ``:port`` is stripped.
+      * Bare bracketed IPv6, optionally with port (RFC 3986
+        authority form): ``[::1]``, ``[::1]:8080``,
+        ``[fe80::1]:8080``. The brackets are stripped and any
+        trailing ``:port`` after the closing bracket is discarded.
+      * Bare unbracketed IPv6 literal: ``::1``, ``fe80::1``. Returned
+        as-is (no port-stripping; the unbracketed form cannot carry
+        a port unambiguously and the caller's input is treated as a
+        pure host literal).
+    """
     if "://" in entry:
         parsed = urlparse(entry)
         host = parsed.hostname or ""
         return host
     # Bare host -- may carry an optional port and IPv6 bracket form.
     host = entry
-    # Strip optional :port for IPv4 / hostname; leave IPv6 alone for now.
+    # RFC 3986 bracketed IPv6 authority form: ``[ipv6]`` or
+    # ``[ipv6]:port``. Strip brackets and discard any trailing port.
     if host.startswith("["):
         end = host.find("]")
         if end > 0:

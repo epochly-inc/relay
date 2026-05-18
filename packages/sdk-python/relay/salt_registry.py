@@ -83,6 +83,66 @@ def _default_relay_home() -> Path:
     return Path.home() / ".relay"
 
 
+def _parse_version_components(version: str) -> tuple[int, ...]:
+    """Parse ``version`` into a tuple of integer components for ordering.
+
+    Accepts the two formats observed in the wild on Relay policies:
+
+      * ``v<N>`` / ``V<N>`` -- single integer, optionally prefixed
+        (``v1``, ``v10``, ``v100``).
+      * Dotted numeric / date-stamped versions where each ``.``-separated
+        segment is an unsigned integer (``2026-05-12.001`` is
+        decomposed by ``-`` and ``.`` -- ``2026, 5, 12, 1``).
+
+    Returns a tuple of ints so that Python's natural tuple ordering
+    gives semver-style comparison: ``(1, 10) > (1, 9)`` even though
+    ``"v10" < "v9"`` under lexicographic compare.
+
+    Raises ``ValueError`` if any segment is not an unsigned integer
+    after stripping a leading ``v``/``V``. Callers should fall back to
+    lexicographic compare in that case (preserving back-compat for
+    unparseable / opaque version strings).
+    """
+    if not version:
+        raise ValueError("empty version")
+    stripped = version.lstrip("vV")
+    if not stripped:
+        raise ValueError(f"version {version!r} has no numeric body")
+    # Split on both '.' and '-' so date-stamped versions like
+    # 2026-05-12.001 decompose into (2026, 5, 12, 1).
+    raw_parts: list[str] = []
+    for chunk in stripped.split("-"):
+        raw_parts.extend(chunk.split("."))
+    components: list[int] = []
+    for part in raw_parts:
+        if not part:
+            raise ValueError(f"version {version!r} has an empty segment")
+        if not part.isdigit():
+            raise ValueError(
+                f"version {version!r} segment {part!r} is not an unsigned integer"
+            )
+        components.append(int(part))
+    return tuple(components)
+
+
+def _policy_version_greater(candidate: str, predecessor: str) -> bool:
+    """Return True iff ``candidate`` is strictly greater than
+    ``predecessor`` under semver-numeric ordering.
+
+    Strategy: parse both into integer-component tuples and compare
+    tuples. If EITHER side fails to parse, fall back to lexicographic
+    string compare (preserving prior behavior for opaque version
+    strings while fixing the ``v9`` vs ``v10`` and
+    ``2026-05-12.001`` vs ``2026-05-12.010`` regressions).
+    """
+    try:
+        cand_t = _parse_version_components(candidate)
+        pred_t = _parse_version_components(predecessor)
+    except ValueError:
+        return candidate > predecessor
+    return cand_t > pred_t
+
+
 def _utcnow_iso() -> str:
     """Return current UTC time as RFC 3339 string with seconds precision.
 
@@ -398,11 +458,14 @@ class SaltRegistry:
         VAL-V2M08-027 / VAL-V2M08-028:
 
           - ``new_salt_ref`` MUST NOT collide with an existing salt.
-          - ``new_policy_version`` MUST be strictly greater (lexicographic
-            string compare) than the predecessor binding's
-            ``policy_version`` for the same ``policy_id``. This enforces
-            monotonicity at the registry layer; the redaction policy
-            publish flow re-checks at insert time.
+          - ``new_policy_version`` MUST be strictly greater than the
+            predecessor binding's ``policy_version`` for the same
+            ``policy_id`` under semver-numeric ordering (so ``v10`` is
+            correctly greater than ``v9``, not less than). Versions
+            that fail numeric parsing fall back to lexicographic
+            compare. This enforces monotonicity at the registry
+            layer; the redaction policy publish flow re-checks at
+            insert time.
           - The predecessor binding is PRESERVED, never overwritten.
             Historical hashes computed under the predecessor salt remain
             valid for predecessor-era lookups (spec G.3).
@@ -427,7 +490,9 @@ class SaltRegistry:
             )
         predecessor = self.latest_policy_version(policy_id=policy_id)
         if predecessor is not None:
-            if new_policy_version <= predecessor.policy_version:
+            if not _policy_version_greater(
+                new_policy_version, predecessor.policy_version
+            ):
                 raise RelayPolicyError(
                     "rotate: new_policy_version MUST be strictly greater "
                     "than the predecessor's policy_version",

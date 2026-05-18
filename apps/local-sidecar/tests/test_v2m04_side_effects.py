@@ -447,6 +447,58 @@ def test_build_marker_row_includes_all_required_columns() -> None:
 
 
 @pytest.mark.plumbing
+def test_build_marker_row_default_expires_at_is_not_immediately_orphaned() -> None:
+    """When ``expires_at`` is omitted the row MUST NOT be immediately
+    eligible for the orphan scan.
+
+    Regression for the audit P1: prior to the fix, ``build_marker_row``
+    defaulted ``expires_at`` to ``_now_iso()``, so the very next call
+    to ``scan_orphan_markers`` (whose SQL is
+    ``WHERE state = 'in_flight' AND expires_at < now()``) classified
+    the marker as an orphan and silently fired the compensation hook.
+    """
+    row = build_marker_row(
+        run_id=_new_uuid(),
+        span_id=_new_uuid(),
+        tool_name="t",
+        idempotency_key="k",
+        policy_id=_new_uuid(),
+    )
+    # Parse the ISO 8601 timestamp; accept the trailing 'Z' suffix used
+    # by the V2M04 module.
+    expires_str = row["expires_at"]
+    assert isinstance(expires_str, str) and expires_str
+    expires = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+    now = datetime.now(tz=UTC)
+    # The default lifetime is one hour; allow generous slack for slow
+    # CI machines (the assertion is "well in the future", not the exact
+    # value).
+    assert expires > now + timedelta(minutes=30), (
+        f"default expires_at must be at least 30 minutes in the future; "
+        f"got expires={expires_str!r}, now={now.isoformat()!r}"
+    )
+    assert expires < now + timedelta(hours=24), (
+        f"default expires_at must not be more than 24h in the future; "
+        f"got {expires_str!r}"
+    )
+
+
+@pytest.mark.plumbing
+def test_build_marker_row_honors_explicit_expires_at() -> None:
+    """Explicit ``expires_at`` overrides the default-future timestamp."""
+    explicit = "2099-01-01T00:00:00+00:00"
+    row = build_marker_row(
+        run_id=_new_uuid(),
+        span_id=_new_uuid(),
+        tool_name="t",
+        idempotency_key="k",
+        policy_id=_new_uuid(),
+        expires_at=explicit,
+    )
+    assert row["expires_at"] == explicit
+
+
+@pytest.mark.plumbing
 def test_build_marker_row_rejects_invalid_state() -> None:
     with pytest.raises(ValueError, match="state must be one of"):
         build_marker_row(

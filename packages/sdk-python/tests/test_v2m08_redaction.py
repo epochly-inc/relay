@@ -239,6 +239,85 @@ def test_salt_rotation_refuses_non_monotonic_policy_version(tmp_path: Path) -> N
     assert exc_info.value.details.get("reason") == "policy_version_not_monotonic"
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-027")
+def test_salt_rotation_v9_to_v10_uses_numeric_compare(tmp_path: Path) -> None:
+    """Regression: ``v9 -> v10`` is a legitimate monotonic bump.
+
+    Audit P1: rotate() previously used lexicographic string compare,
+    which incorrectly rejected ``"v10" > "v9"`` (lex ordering gives
+    ``"v10" < "v9"`` because ``'1' < '9'``). The fix switches to
+    numeric semver compare.
+    """
+    registry = SaltRegistry(path=tmp_path / "salts.json")
+    registry.rotate(
+        policy_id="p1",
+        new_salt_ref="s_v9",
+        new_policy_version="v9",
+        new_salt_bytes=b"\x09" * 32,
+    )
+    # v10 > v9 numerically -- must be accepted, not rejected.
+    result = registry.rotate(
+        policy_id="p1",
+        new_salt_ref="s_v10",
+        new_policy_version="v10",
+        new_salt_bytes=b"\x10" * 32,
+    )
+    assert result.successor.policy_version == "v10"
+    assert result.predecessor is not None
+    assert result.predecessor.policy_version == "v9"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-027")
+def test_salt_rotation_dated_version_uses_numeric_compare(tmp_path: Path) -> None:
+    """Regression: zero-padded date suffix ``.010 > .001`` not lex-less.
+
+    A date-stamped version ``2026-05-12.010`` must be accepted as
+    greater than ``2026-05-12.009`` even though both lex compares
+    happen to give the right answer here (numeric and lex agree on
+    zero-padded suffixes). Where they disagree is mixed-width
+    suffixes (``001`` vs ``10``); this case is the dangerous one
+    and the test pins it.
+    """
+    registry = SaltRegistry(path=tmp_path / "salts.json")
+    registry.rotate(
+        policy_id="p1",
+        new_salt_ref="s_a",
+        new_policy_version="2026-05-12.001",
+        new_salt_bytes=b"\x01" * 32,
+    )
+    # numeric: (2026, 5, 12, 10) > (2026, 5, 12, 1) -- accept.
+    result = registry.rotate(
+        policy_id="p1",
+        new_salt_ref="s_b",
+        new_policy_version="2026-05-12.10",
+        new_salt_bytes=b"\x02" * 32,
+    )
+    assert result.successor.policy_version == "2026-05-12.10"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-027")
+def test_salt_rotation_v10_to_v9_still_rejected(tmp_path: Path) -> None:
+    """Going backwards numerically (v10 -> v9) must be rejected."""
+    registry = SaltRegistry(path=tmp_path / "salts.json")
+    registry.rotate(
+        policy_id="p1",
+        new_salt_ref="s_v10",
+        new_policy_version="v10",
+        new_salt_bytes=b"\x10" * 32,
+    )
+    with pytest.raises(RelayPolicyError) as exc_info:
+        registry.rotate(
+            policy_id="p1",
+            new_salt_ref="s_v9",
+            new_policy_version="v9",
+            new_salt_bytes=b"\x09" * 32,
+        )
+    assert exc_info.value.details.get("reason") == "policy_version_not_monotonic"
+
+
 # -----------------------------------------------------------------------------
 # VAL-V2M08-028: salt rotation does not re-derive historical hashes
 # -----------------------------------------------------------------------------
