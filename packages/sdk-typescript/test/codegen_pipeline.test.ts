@@ -40,6 +40,13 @@ import {
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 
+// Canonical envelope-name contract list. Must equal the generated
+// CANONICAL_ENVELOPES tuple in src/_generated/index.ts (kept in lockstep by
+// the codegen drift guard). The original W1 14-name baseline grew during v0.2
+// M01 by 19 entries (12 from w1-1 + 2 from w1-4 + 3 from w1-5 + 2 from w1-6).
+// Any new canonical envelope MUST be appended here AND in codegen.py
+// CANONICAL_ENVELOPES; the drift guard at scripts/check-codegen-drift.py
+// enforces synchrony between source and generated tree.
 const CANONICAL_ENVELOPE_LIST = [
   "RunResult",
   "GateDecision",
@@ -55,6 +62,29 @@ const CANONICAL_ENVELOPE_LIST = [
   "ReplayFixture",
   "RedactionPolicy",
   "ErrorEnvelope",
+  // v0.2 M01 w1-1 (audit-driven additions, 12 envelopes):
+  "GatePolicy",
+  "ContractResult",
+  "AssertionDefinition",
+  "ReplayResult",
+  "Manifest",
+  "Incident",
+  "RootCauseHypothesis",
+  "Span",
+  "ModelCallSpan",
+  "ToolCallSpan",
+  "RetrievalSpan",
+  "EmbeddingSpan",
+  // v0.2 M01 w1-4 (legal holds + bundle registry):
+  "EvidenceLegalHold",
+  "EvidenceBundleRegistry",
+  // v0.2 M01 w1-6 (TSA + transparency log SQL):
+  "EvidenceTimestamp",
+  "TransparencyLogEntry",
+  // v0.2 M01 w1-5 (ACEF oversight Postgres mirrors):
+  "HumanOversightEvent",
+  "DataQualityCheck",
+  "DataProvenanceRecord",
 ] as const;
 
 function validRunResultPayload(): Record<string, unknown> {
@@ -84,7 +114,7 @@ describe("VAL-W1-034: generated TypeScript", () => {
     // (CANONICAL_ENVELOPES, parseEnvelope, etc.) are present.
     expect(CANONICAL_ENVELOPES).toBeDefined();
     expect(Array.isArray(CANONICAL_ENVELOPES)).toBe(true);
-    expect(CANONICAL_ENVELOPES.length).toBe(14);
+    expect(CANONICAL_ENVELOPES.length).toBe(CANONICAL_ENVELOPE_LIST.length);
   });
 
   it("tsc --noEmit on the SDK package exits 0", () => {
@@ -133,7 +163,7 @@ describe("VAL-W1-034: generated TypeScript", () => {
     expect(_ee).toBeUndefined();
   });
 
-  it("CANONICAL_ENVELOPES matches the 14-name contract list", () => {
+  it("CANONICAL_ENVELOPES matches the canonical contract list", () => {
     expect([...CANONICAL_ENVELOPES]).toEqual([...CANONICAL_ENVELOPE_LIST]);
   });
 
@@ -281,6 +311,9 @@ describe("VAL-W1-037: cross-language wire-form round-trip", () => {
         "ReplayCaseScopeState",
         "GateRoundScopeState",
         "EvidenceBundleScopeState",
+        // v0.2 M01 w1-7 (scope_state extension to 6 kinds):
+        "EvalRunScopeState",
+        "ReleaseScopeState",
         "RedactionPolicyMatcherRegex",
         "RedactionPolicyMatcherJsonPointer",
       ].includes(env);

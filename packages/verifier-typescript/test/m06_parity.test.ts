@@ -179,19 +179,29 @@ describe("VAL-V2M06-022 bundle_validator.ts orchestrator + constants", () => {
 });
 
 // ============================================================================
-// VAL-V2M06-002: TSA_CRYPTO_IMPLEMENTED flag mirrors Python and is false
+// VAL-V2M06-002: TSA_CRYPTO_IMPLEMENTED — TS fail-closes; Python now real-crypto
 // ============================================================================
-
-describe("VAL-V2M06-002 TSA_CRYPTO_IMPLEMENTED is false in both runtimes", () => {
-  test("python and ts both expose false", () => {
+//
+// Python flipped TSA_CRYPTO_IMPLEMENTED to True in v0.2 M09 w9-2 (commit
+// 2031152) wiring rfc3161-client + asn1crypto. The TypeScript port at M06 w6
+// stayed fail-closed (TSA_CRYPTO_IMPLEMENTED = false) because porting the full
+// RFC 3161 ASN.1 stack to TS is a separate work item. Both behaviors are
+// correct: Python actively verifies; TS refuses to claim verification rather
+// than lie. The cross-language acceptance gate is "does the runtime ever
+// report outcome=ok without verifying?" — both runtimes pass that gate (Python
+// via real crypto, TS via fail-closed).
+describe("VAL-V2M06-002 TSA_CRYPTO_IMPLEMENTED runtime posture", () => {
+  test("TS stays fail-closed (false) until ASN.1 port lands", () => {
     expect(TSA_CRYPTO_IMPLEMENTED).toBe(false);
+  });
+  test("Python now real-crypto (true) per M09 w9-2", () => {
     const py = pyJson<{ py: boolean }>(
       `import json, sys
 from relay_verifier.tsa import TSA_CRYPTO_IMPLEMENTED as f
 sys.stdout.write(json.dumps({'py': bool(f)}))
 `,
     );
-    expect(py.py).toBe(false);
+    expect(py.py).toBe(true);
   });
 });
 
