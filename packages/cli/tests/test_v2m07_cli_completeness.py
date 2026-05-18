@@ -255,6 +255,111 @@ def test_eval_run_failed_cases_exits_1(tmp_path: Path) -> None:
     assert payload["failed"] == 2
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M07-009")
+def test_eval_run_real_path_queued_no_completion_times_out(tmp_path: Path) -> None:
+    """When the sidecar returns 202 queued and the eval never completes
+    within --timeout, the CLI MUST exit 4 with RELAY-EVAL-TIMEOUT and
+    MUST NOT fabricate an evidence_bundle_id. Per CLAUDE.md keystone #2:
+    pass without evidence is not a pass. The eval.py M02 stub previously
+    fabricated str(uuid.uuid4()) as the bundle id and exited 0 -- this
+    test guards against regression.
+    """
+    env = _rly_env(tmp_path, {
+        "RELAY_CLI_EVAL_CREATE_RESPONSE": json.dumps({
+            "eval_run_id": "er-incomplete-001",
+            "await_url": "/v1/eval-runs/er-incomplete-001",
+        }),
+        # Poll seam: every poll returns the queued record (no metrics,
+        # bundle_id is None). The CLI MUST NOT treat this as a passing run.
+        "RELAY_CLI_EVAL_POLL_RESPONSES": json.dumps([
+            {
+                "schema_version": "relay.eval_run.v1",
+                "eval_run_id": "er-incomplete-001",
+                "status": "queued",
+                "metrics": {},
+                "evidence": {"bundle_id": None, "claims": []},
+            },
+        ] * 10),
+    })
+    result = _run_rly(
+        ["eval", "run", "--dataset", "ds-x", "--timeout", "2"], env,
+        timeout=15.0,
+    )
+    assert result.returncode == 4, (
+        f"expected exit 4 (transient); got {result.returncode}\n"
+        f"stdout={result.stdout}\nstderr={result.stderr}"
+    )
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "relay.cli.eval_run.v1"
+    assert payload["eval_run_id"] == "er-incomplete-001"
+    # No fabrication: evidence_bundle_id MUST be null when no completion.
+    assert payload["evidence_bundle_id"] is None, (
+        "CLI fabricated an evidence_bundle_id with no completed eval; "
+        "violates CLAUDE.md keystone #2"
+    )
+    assert payload["total_cases"] == 0
+    assert payload["passed"] == 0
+    assert payload["failed"] == 0
+    # Stderr envelope carries RELAY-EVAL-TIMEOUT.
+    envelope = json.loads(result.stderr.strip().splitlines()[-1])
+    assert envelope["code"] == "RELAY-EVAL-TIMEOUT"
+    assert envelope["blocked_surface"] == "rly eval run"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M07-009")
+def test_eval_run_real_path_completion_emits_bundle(tmp_path: Path) -> None:
+    """When the sidecar completes the eval-run during polling, the CLI
+    emits the real evidence_bundle_id from the sidecar's record and exits
+    per pass/fail. This is the success counterpart to the timeout test:
+    it proves the CLI propagates the SIDECAR's bundle id rather than
+    fabricating one.
+    """
+    real_bundle_id = "eb-real-" + uuid.uuid4().hex
+    env = _rly_env(tmp_path, {
+        "RELAY_CLI_EVAL_CREATE_RESPONSE": json.dumps({
+            "eval_run_id": "er-completed-001",
+            "await_url": "/v1/eval-runs/er-completed-001",
+        }),
+        "RELAY_CLI_EVAL_POLL_RESPONSES": json.dumps([
+            # First poll: still queued.
+            {
+                "schema_version": "relay.eval_run.v1",
+                "eval_run_id": "er-completed-001",
+                "status": "queued",
+                "metrics": {},
+                "evidence": {"bundle_id": None, "claims": []},
+            },
+            # Second poll: completed with real bundle id.
+            {
+                "schema_version": "relay.eval_run.v1",
+                "eval_run_id": "er-completed-001",
+                "status": "completed",
+                "metrics": {
+                    "total_cases": 4, "passed": 4, "failed": 0,
+                },
+                "evidence": {
+                    "bundle_id": real_bundle_id, "claims": [],
+                },
+            },
+        ]),
+    })
+    result = _run_rly(
+        ["eval", "run", "--dataset", "ds-x", "--timeout", "10"], env,
+        timeout=15.0,
+    )
+    assert result.returncode == 0, (
+        f"expected exit 0 (all passed); got {result.returncode}\n"
+        f"stdout={result.stdout}\nstderr={result.stderr}"
+    )
+    payload = json.loads(result.stdout)
+    assert payload["evidence_bundle_id"] == real_bundle_id
+    assert payload["total_cases"] == 4
+    assert payload["passed"] == 4
+    assert payload["failed"] == 0
+
+
 # =============================================================================
 # w7-cli-gate-evaluate (VAL-V2M07-010..019)
 # =============================================================================
@@ -486,13 +591,37 @@ def test_evidence_assess_command_registered(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M07-021")
-def test_evidence_assess_happy_path(tmp_path: Path) -> None:
+def test_evidence_assess_hosted_only_when_bundle_exists(tmp_path: Path) -> None:
+    """Assess surface is hosted-only in OSS: with a real local bundle the
+    CLI emits a hosted-only envelope (assessment_id is null because no OSS
+    worker exists to write a canonical assessment row), exits 1 with
+    RELAY-CLI-HOSTED-ONLY. Per CLAUDE.md keystone #2 the CLI MUST NOT
+    fabricate a local assessment_id when no hosted worker has issued one.
+    """
     env = _rly_env(tmp_path)
+    # Seed a minimal evidence bundle on disk so the bundle-existence
+    # precondition passes.
+    home = Path(env["RELAY_HOME"])
+    evidence_dir = home / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    bundle_id = "bundle-test-001"
+    (evidence_dir / f"{bundle_id}.json").write_text(
+        json.dumps({
+            "evidence_bundle_id": bundle_id,
+            "schema_version": "relay.evidence_bundle.v1",
+        })
+    )
     result = _run_rly(
-        ["evidence", "assess", "--bundle", "bundle-test-001"],
+        ["evidence", "assess", "--bundle", bundle_id],
         env,
     )
-    assert result.returncode == 0, result.stderr
+    # Exit 1: hosted-only surface; no canonical row was written.
+    assert result.returncode == 1, (
+        f"expected exit 1; got {result.returncode}\n"
+        f"stdout={result.stdout}\nstderr={result.stderr}"
+    )
+    # Stdout still emits the assess envelope so machine consumers see a
+    # stable record, but assessment_id MUST be null (no fabrication).
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "relay.cli.evidence_assess.v1"
     for key in (
@@ -500,7 +629,39 @@ def test_evidence_assess_happy_path(tmp_path: Path) -> None:
         "enqueued_at", "status",
     ):
         assert key in payload
-    assert payload["status"] == "queued"
+    assert payload["assessment_id"] is None, (
+        "CLI fabricated an assessment_id with no backing hosted worker; "
+        "violates CLAUDE.md keystone #2 (pass without evidence is not a pass)"
+    )
+    assert payload["status"] == "hosted_only_pending"
+    assert payload["bundle_id"] == bundle_id
+    # Stderr envelope carries RELAY-CLI-HOSTED-ONLY.
+    envelope = json.loads(result.stderr.strip().splitlines()[-1])
+    assert envelope["code"] == "RELAY-CLI-HOSTED-ONLY"
+    assert envelope["blocked_surface"] == "rly evidence assess"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M07-021")
+def test_evidence_assess_rejects_unknown_bundle(tmp_path: Path) -> None:
+    """A bundle id with no on-disk artifact MUST exit non-zero with
+    RELAY-CLI-EVIDENCE-BUNDLE-NOT-FOUND. The CLI MUST NOT enqueue an
+    assessment against a bundle id that does not exist (CLAUDE.md
+    keystone #2 / banned pattern: do not fabricate IDs that have no
+    backing artifact).
+    """
+    env = _rly_env(tmp_path)
+    result = _run_rly(
+        ["evidence", "assess", "--bundle", "nonexistent-bundle-xyz"],
+        env,
+    )
+    assert result.returncode != 0, (
+        f"CLI exit 0 with no backing bundle; "
+        f"stdout={result.stdout}\nstderr={result.stderr}"
+    )
+    envelope = json.loads(result.stderr.strip().splitlines()[-1])
+    assert envelope["code"] == "RELAY-CLI-EVIDENCE-BUNDLE-NOT-FOUND"
+    assert envelope["blocked_surface"] == "rly evidence assess"
 
 
 # =============================================================================

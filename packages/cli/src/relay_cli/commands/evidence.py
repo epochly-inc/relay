@@ -597,6 +597,20 @@ def _cmd_evidence_verify(
 
 EVIDENCE_ASSESS_SCHEMA: Final[str] = "relay.cli.evidence_assess.v1"
 
+# Per CLAUDE.md keystone #2 ("pass without evidence is not a pass") and
+# banned pattern "NEVER fabricate IDs that have no backing artifact":
+# the readiness-assessment worker lives in private relay-platform and is
+# NOT implemented in the OSS sidecar. The OSS CLI therefore MUST NOT
+# fabricate an assessment_id locally and emit ``status: "queued"`` with
+# exit 0 -- doing so misrepresents a never-enqueued request as a queued
+# one. Instead the OSS surface verifies the bundle exists on disk and
+# emits a structured ``RELAY-CLI-HOSTED-ONLY`` envelope with
+# ``assessment_id: null`` and exit 1 (block / not actionable here). The
+# stdout envelope is preserved so machine consumers see a stable record
+# with the discriminating ``status: "hosted_only_pending"``.
+RELAY_CLI_HOSTED_ONLY: Final[str] = "RELAY-CLI-HOSTED-ONLY"
+RELAY_CLI_EVIDENCE_ASSESS_STATUS_HOSTED_ONLY: Final[str] = "hosted_only_pending"
+
 
 def _cmd_evidence_assess(
     bundle: str = typer.Option(
@@ -607,25 +621,48 @@ def _cmd_evidence_assess(
         "--readiness-profile",
         help=(
             "Readiness profile to assess against (e.g., 'eu-ai-act', "
-            "'nist-ai-rmf'). The OSS assessment surface returns 'queued'; "
-            "hosted assessment workers complete the evaluation."
+            "'nist-ai-rmf'). Hosted-only in OSS v0.2: the OSS sidecar "
+            "does not implement the assessment worker (lives in private "
+            "relay-platform). The OSS CLI verifies the bundle exists "
+            "locally and emits a hosted-only envelope."
         ),
+    ),
+    home: str = typer.Option(
+        "",
+        "--home",
+        help="Override RELAY_HOME (test seam).",
     ),
     json_output: bool = typer.Option(
         False, "--json", help="Force JSON output even on TTY."
     ),
 ) -> None:
-    """``rly evidence assess --bundle <id>`` -- enqueue an assessment.
+    """``rly evidence assess --bundle <id>`` -- bundle-existence preflight.
 
     Per VAL-V2M07-021 the stdout envelope carries ``schema_version:
     "relay.cli.evidence_assess.v1"``, ``assessment_id``, ``bundle_id``,
-    ``readiness_profile``, ``enqueued_at``, and ``status: "queued"``.
-    The command is non-blocking (returns immediately after enqueue).
+    ``readiness_profile``, ``enqueued_at``, and ``status``.
 
-    The assessment worker itself lives in private relay-platform (out of
-    scope for OSS); this CLI surface only enqueues the request and emits
-    the canonical envelope so downstream consumers have a stable id to
-    poll the hosted endpoint with.
+    Behavior (OSS v0.2):
+
+      * If the bundle is not found under ``${RELAY_HOME}/evidence/<id>.json``
+        the CLI emits ``RELAY-CLI-EVIDENCE-BUNDLE-NOT-FOUND`` on stderr
+        and exits with EXIT_4XX_BLOCK (1). No assess envelope is emitted
+        because there is no backing artifact to assess.
+      * If the bundle exists the CLI emits the assess envelope with
+        ``assessment_id: null`` and ``status: "hosted_only_pending"``,
+        accompanied by a ``RELAY-CLI-HOSTED-ONLY`` stderr envelope, and
+        exits EXIT_4XX_BLOCK (1). This signals: the request reached a
+        well-formed bundle but the OSS sidecar has no assessment worker
+        to enqueue against; operators must point at hosted Relay to
+        complete the assessment.
+
+    This shape preserves the canonical CLI envelope contract (so a CI
+    runner sees a parseable stdout record) while making the absence of
+    a backing hosted assessment explicit (``assessment_id`` null,
+    non-zero exit). The previous OSS behavior fabricated a UUID and
+    exited 0; that violated CLAUDE.md keystone #2 ("pass without
+    evidence is not a pass") and was a P0 bug surfaced by the 2026-05-17
+    audit.
     """
     del json_output
 
@@ -641,7 +678,23 @@ def _cmd_evidence_assess(
         emit_envelope(envelope)
         raise typer.Exit(code=EXIT_CLI_USAGE)
 
-    import uuid
+    base_home = _resolve_home(home)
+    bundle_path = _bundle_path_by_id(base_home, bundle)
+    if not bundle_path.exists():
+        envelope = build_envelope(
+            code=RELAY_CLI_EVIDENCE_BUNDLE_NOT_FOUND,
+            http_status=404,
+            message=(
+                f"evidence bundle {bundle!r} not found at {bundle_path!s}; "
+                "cannot assess a bundle with no backing artifact"
+            ),
+            blocked_surface="rly evidence assess",
+            retry_advice="after_fix",
+            details={"bundle_id": bundle, "path": str(bundle_path)},
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_4XX_BLOCK)
+
     from datetime import UTC
     from datetime import datetime as _dt
 
@@ -650,15 +703,37 @@ def _cmd_evidence_assess(
         .isoformat(timespec="microseconds")
         .replace("+00:00", "Z")
     )
+    # Emit the canonical assess envelope with assessment_id explicitly
+    # null. The discriminating ``status: "hosted_only_pending"`` plus the
+    # null assessment_id make the OSS reality machine-detectable without
+    # parsing stderr.
     emit_json({
         "schema_version": EVIDENCE_ASSESS_SCHEMA,
-        "assessment_id": str(uuid.uuid4()),
+        "assessment_id": None,
         "bundle_id": bundle,
         "readiness_profile": readiness_profile,
         "enqueued_at": enqueued_at,
-        "status": "queued",
+        "status": RELAY_CLI_EVIDENCE_ASSESS_STATUS_HOSTED_ONLY,
     })
-    raise typer.Exit(code=EXIT_SUCCESS)
+    envelope = build_envelope(
+        code=RELAY_CLI_HOSTED_ONLY,
+        http_status=501,
+        message=(
+            "evidence assessment worker is hosted-only; OSS sidecar does "
+            "not enqueue or write assessments. Bundle was verified to "
+            "exist locally but no assessment_id was issued. Point at "
+            "hosted Relay (relay.epochly.com) to complete the assessment."
+        ),
+        blocked_surface="rly evidence assess",
+        retry_advice="do_not_retry",
+        details={
+            "bundle_id": bundle,
+            "readiness_profile": readiness_profile,
+            "bundle_path": str(bundle_path),
+        },
+    )
+    emit_envelope(envelope)
+    raise typer.Exit(code=EXIT_4XX_BLOCK)
 
 
 __all__ = [
@@ -669,9 +744,11 @@ __all__ = [
     "EVIDENCE_SHOW_SCHEMA",
     "EVIDENCE_VERIFY_SCHEMA",
     "MAX_LIST_LIMIT",
+    "RELAY_CLI_EVIDENCE_ASSESS_STATUS_HOSTED_ONLY",
     "RELAY_CLI_EVIDENCE_BUNDLE_INVALID",
     "RELAY_CLI_EVIDENCE_BUNDLE_NOT_FOUND",
     "RELAY_CLI_EVIDENCE_NO_JWKS_CACHE",
+    "RELAY_CLI_HOSTED_ONLY",
     "RELAY_CLI_TRUST_ANCHOR_OVERRIDE",
     "RELAY_EVID_014",
     "REQUIRED_LIST_BINDING_FIELDS",
