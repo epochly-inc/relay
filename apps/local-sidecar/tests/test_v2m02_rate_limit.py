@@ -151,11 +151,12 @@ async def test_per_ip_verify_rate_limit_429(
 ) -> None:
     monkeypatch.setenv("RELAY_SIDECAR_RATELIMIT_IP_RPS", "2")
     c, _db, _app = v2m02_client
-    # Create a bundle so /verify has something to verify.
+    # Audit fix (2026-05-17 P0): POST /v1/evidence-bundles requires
+    # ``evidence:write`` (was incorrectly ``evidence:read``).
     r_create = await c.post(
         "/v1/evidence-bundles",
         json={"scope_kind": "run", "scope_id": "r", "claims": []},
-        headers=scope_header("evidence:read"),
+        headers=scope_header("evidence:write"),
     )
     bid = json.loads(r_create.text)["bundle_id"]
     status_codes = []
