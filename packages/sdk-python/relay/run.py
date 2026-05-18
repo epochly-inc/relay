@@ -448,7 +448,12 @@ class Run:
         # READ the canonical decision -- never compute it locally.
         return client.get_gate_decision(str(decision_id))
 
-    def replay_create(self, *, run_id: str) -> dict[str, Any]:
+    def replay_create(
+        self,
+        *,
+        run_id: str,
+        egress_allowlist: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Create a replay case bound to the canonical RunResult.
 
         Per VAL-W3-014 the SDK MUST first fetch the canonical
@@ -456,22 +461,26 @@ class Run:
         ``RELAY-REPLAY-002`` and the SDK raises
         :class:`RelayReplayPrecondition`. The SDK does NOT derive a
         replay case from raw SDK lifecycle.
+
+        Audit-r3 BUG-B3: when ``egress_allowlist`` is supplied, every
+        entry is validated against the SSRF guard at the SDK boundary
+        BEFORE the request is sent. A rejected entry raises
+        :class:`relay.network_policy.EgressDenied`.
         """
         client = self._ensure_client()
         # Pre-flight: confirm the canonical RunResult exists.
         client.get_run_result(run_id)
-        # If we got here the sidecar returned a canonical row; proceed
-        # to the replay-create POST.
+        # Build the envelope through the SDK-side validator so the SSRF
+        # guard runs on the allowlist before the HTTP POST is issued.
+        envelope = lifecycle.build_replay_case_envelope(
+            run_id=run_id,
+            manifest_commit_hash=self.manifest_commit_hash,
+            actor_identity_hash=self.actor_identity_hash,
+            egress_allowlist=egress_allowlist,
+        )
         resp = client._http.post(  # noqa: SLF001 - internal pass-through
             f"{client.base_url}/v1/runs/{run_id}/replays",
-            content=json.dumps(
-                {
-                    "schema_version": "relay.replay_case.create.v1",
-                    "run_id": run_id,
-                    "manifest_commit_hash": self.manifest_commit_hash,
-                    "actor_identity_hash": self.actor_identity_hash,
-                }
-            ).encode("utf-8"),
+            content=json.dumps(envelope).encode("utf-8"),
             headers=client._auth_headers(),  # noqa: SLF001
         )
         client._raise_for_error_envelope(resp)  # noqa: SLF001

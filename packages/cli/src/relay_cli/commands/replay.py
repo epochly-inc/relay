@@ -100,13 +100,32 @@ SIDE_EFFECT_READ_ONLY: Final[str] = "read_only"
 SIDE_EFFECT_MUTATING: Final[str] = "mutating"
 SIDE_EFFECT_EXTERNAL_IRREVERSIBLE: Final[str] = "external_irreversible"
 SIDE_EFFECT_APPROVAL_REQUIRED: Final[str] = "approval_required"
+# Audit-r3 BUG-B4: ``approval_required`` is NOT subtractable via
+# ``--allow-side-effects``. The only way to satisfy an
+# ``approval_required`` fixture is a valid single-use approval token
+# (RELAY-REPLAY-031/032/033 enforce this at the sidecar boundary). The
+# CLI flag bypass would let an operator silently waive the human
+# single-use token contract (CLAUDE.md keystone invariant #6). Keep
+# this set restricted to the two classes the operator-authored policy
+# override is intended to cover.
 _DANGEROUS_SIDE_EFFECTS: Final[frozenset[str]] = frozenset(
     {
         SIDE_EFFECT_MUTATING,
         SIDE_EFFECT_EXTERNAL_IRREVERSIBLE,
-        SIDE_EFFECT_APPROVAL_REQUIRED,
     }
 )
+# Separate set of all classes that require some form of explicit
+# authorization in replay. ``approval_required`` is here so the run
+# command can detect its presence and emit
+# ``RELAY-REPLAY-APPROVAL-031`` (audit-r3 BUG-B4) rather than silently
+# allowing playback.
+_APPROVAL_REQUIRED_CLASSES: Final[frozenset[str]] = frozenset(
+    {SIDE_EFFECT_APPROVAL_REQUIRED}
+)
+
+# Wire-format error code: approval token required (mirrors
+# relay_sidecar.side_effect_markers.RELAY_REPLAY_APPROVAL_REQUIRED).
+RELAY_REPLAY_APPROVAL_REQUIRED: Final[str] = "RELAY-REPLAY-031"
 
 # Default page size for ``rly replay list``.
 DEFAULT_LIST_LIMIT: Final[int] = 50
@@ -618,6 +637,14 @@ def _parse_allow_side_effects(raw: str) -> set[str]:
     ``external_irreversible`` are accepted; ``none`` and ``reversible`` are
     rejected because they are always allowed and listing them would mislead
     operators into thinking they are gated behind a flag.
+
+    Audit-r3 BUG-B4: ``approval_required`` is rejected here with a
+    dedicated error message. There is no CLI flag that bypasses the
+    human single-use approval token contract (spec §X); only a valid
+    ``--approval-token=<token>`` satisfies an ``approval_required``
+    fixture. Letting the operator pass ``--allow-side-effects=approval_required``
+    silently waived the contract and bypassed
+    ``RELAY-REPLAY-APPROVAL-031/032/033``.
     """
     if not raw:
         return set()
@@ -626,6 +653,17 @@ def _parse_allow_side_effects(raw: str) -> set[str]:
         token = token.strip()
         if not token:
             continue
+        # Audit-r3 BUG-B4: explicit error for the approval_required
+        # bypass attempt. Surfaced BEFORE the generic membership check
+        # so the operator sees the precise reason rather than a
+        # generic enum-mismatch.
+        if token == SIDE_EFFECT_APPROVAL_REQUIRED:
+            raise ValueError(
+                "approval_required cannot be bypassed via "
+                "--allow-side-effects; provide --approval-token=<token> "
+                "per spec section X (human single-use approval token "
+                "contract)."
+            )
         if token not in _DANGEROUS_SIDE_EFFECTS:
             raise ValueError(
                 f"--allow-side-effects accepts only "
@@ -653,7 +691,19 @@ def _cmd_replay_run(
             "Comma-separated side-effect classes to permit. Default empty: "
             "any 'mutating' or 'external_irreversible' call in the recorded "
             "fixture causes RELAY-REPLAY-014. Permitted values: "
-            "'mutating', 'external_irreversible'."
+            "'mutating', 'external_irreversible'. Note: 'approval_required' "
+            "is NOT accepted here; an approval_required fixture requires "
+            "--approval-token=<token> per spec section X (audit-r3 BUG-B4)."
+        ),
+    ),
+    approval_token: str = typer.Option(
+        "",
+        "--approval-token",
+        help=(
+            "Single-use human approval token (spec section X). Required "
+            "when the recorded fixture declares an 'approval_required' "
+            "side-effect class. There is no other CLI flag that "
+            "bypasses this contract."
         ),
     ),
     home: str = typer.Option(
@@ -814,6 +864,41 @@ def _cmd_replay_run(
         )
         emit_envelope(envelope)
         raise typer.Exit(code=EXIT_4XX_BLOCK) from exc
+
+    # Audit-r3 BUG-B4: ``approval_required`` is enforced BEFORE the
+    # mutating / external_irreversible gate so the operator sees the
+    # most specific failure first. There is no CLI flag that bypasses
+    # this contract; only a valid single-use ``--approval-token``
+    # satisfies it. Token validation against the sidecar's approval
+    # registry (RELAY-REPLAY-032 token-consumed, RELAY-REPLAY-033
+    # expired) is the sidecar's responsibility; this CLI surface
+    # enforces the presence requirement and the structural envelope
+    # so an operator cannot accidentally short-circuit the human gate.
+    if (
+        declared_side_effects & _APPROVAL_REQUIRED_CLASSES
+        and not approval_token.strip()
+    ):
+        envelope = build_envelope(
+            code=RELAY_REPLAY_APPROVAL_REQUIRED,
+            http_status=403,
+            message=(
+                "replay refused: case declares side-effect class "
+                "'approval_required' but --approval-token was not "
+                "supplied. Per CLAUDE.md keystone invariant #6 and "
+                "spec section X, an 'approval_required' fixture "
+                "requires a single-use human approval token. There "
+                "is no CLI flag that bypasses this contract."
+            ),
+            blocked_surface="rly replay run",
+            retry_advice="after_state_change",
+            details={
+                "replay_case_id": case,
+                "subcode": "APPROVAL_REQUIRED",
+                "declared_side_effect_classes": sorted(declared_side_effects),
+            },
+        )
+        emit_envelope(envelope)
+        raise typer.Exit(code=EXIT_4XX_BLOCK)
 
     # VAL-W5-022: refuse playback when the case's recorded run touched a
     # mutating / external_irreversible tool unless the operator explicitly

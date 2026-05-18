@@ -477,6 +477,61 @@ def build_evidence_envelope(
     }
 
 
+REPLAY_CASE_CREATE_SCHEMA_VERSION: Final[str] = "relay.replay_case.create.v1"
+
+
+def build_replay_case_envelope(
+    *,
+    run_id: str,
+    manifest_commit_hash: str,
+    actor_identity_hash: str,
+    egress_allowlist: Iterable[str] | None = None,
+    scope_name: str | None = None,
+) -> dict[str, Any]:
+    """Build the ``POST /v1/runs/{run_id}/replays`` envelope.
+
+    Audit-r3 BUG-B3: this is the SDK-side ReplayCase submit boundary
+    that runs the SSRF guard (:func:`relay.network_policy.validate_egress_entries`)
+    over every caller-supplied ``egress_allowlist`` entry BEFORE the
+    request leaves the SDK. A rejected entry raises
+    :class:`relay.network_policy.EgressDenied` with a structured
+    envelope; the SDK does not retry and does not send the request.
+
+    Per spec §AI line 5664 the egress allowlist is a default-deny
+    closed set: every entry must clear the RFC1918 / link-local /
+    loopback / multicast / reserved / cloud-metadata / reserved-
+    hostname checks before it is honored.
+    """
+    # Three-anchor handoff -- same validator as ingest. A stale handoff
+    # is rejected before the SSRF check runs so RELAY-GATE-021 -class
+    # errors surface first.
+    scope_id, actor, manifest = _validate_three_anchor_handoff(
+        scope_id=run_id,
+        actor_identity_hash=actor_identity_hash,
+        manifest_commit_hash=manifest_commit_hash,
+    )
+    # SSRF guard. Local import keeps lifecycle.py importable in
+    # environments where network_policy was stripped (unlikely, but
+    # the SDK boundary should not pull a transitive import for a
+    # potentially-empty allowlist).
+    from .network_policy import validate_egress_entries
+
+    entries = list(egress_allowlist or [])
+    if entries:
+        validate_egress_entries(entries)
+
+    envelope: dict[str, Any] = {
+        "schema_version": REPLAY_CASE_CREATE_SCHEMA_VERSION,
+        "run_id": scope_id,
+        "manifest_commit_hash": manifest,
+        "actor_identity_hash": actor,
+        "egress_allowlist": entries,
+    }
+    if scope_name:
+        envelope["scope_name"] = scope_name
+    return envelope
+
+
 __all__ = [
     "CANONICAL_WRITE_FIELDS",
     "EVIDENCE_REQUIRED_FIELDS",
@@ -485,7 +540,9 @@ __all__ = [
     "HANDOFF_ANCHORS",
     "INGEST_RUN_SCHEMA_VERSION",
     "LIFECYCLE_STATUSES",
+    "REPLAY_CASE_CREATE_SCHEMA_VERSION",
     "build_evidence_envelope",
     "build_gate_draft_envelope",
     "build_ingest_run_envelope",
+    "build_replay_case_envelope",
 ]

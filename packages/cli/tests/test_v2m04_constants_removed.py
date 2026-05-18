@@ -127,12 +127,27 @@ def test_replay_module_exports_canonical_four_classes() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M04-025")
-def test_approval_required_treated_as_dangerous_in_replay() -> None:
-    """approval_required class is blocked alongside mutating and
-    external_irreversible (the _DANGEROUS_SIDE_EFFECTS set)."""
-    from relay_cli.commands.replay import _DANGEROUS_SIDE_EFFECTS
+def test_approval_required_is_separately_gated_from_dangerous_set() -> None:
+    """approval_required is blocked, but via a DIFFERENT gate from
+    mutating / external_irreversible.
 
-    assert "approval_required" in _DANGEROUS_SIDE_EFFECTS
+    Audit-r3 BUG-B4 superseded the prior contract: approval_required is
+    no longer subtractable via --allow-side-effects (which would let an
+    operator silently bypass the human single-use token contract).
+    It now lives in its own ``_APPROVAL_REQUIRED_CLASSES`` set and
+    requires --approval-token=<token>; the CLI emits RELAY-REPLAY-031
+    when the token is missing.
+    """
+    from relay_cli.commands.replay import (
+        _APPROVAL_REQUIRED_CLASSES,
+        _DANGEROUS_SIDE_EFFECTS,
+    )
+
+    # The two genuinely-dangerous-but-overridable classes.
     assert "mutating" in _DANGEROUS_SIDE_EFFECTS
     assert "external_irreversible" in _DANGEROUS_SIDE_EFFECTS
     assert "read_only" not in _DANGEROUS_SIDE_EFFECTS
+    # Audit-r3 BUG-B4: approval_required is gated separately so it
+    # cannot be silently waived by --allow-side-effects.
+    assert "approval_required" not in _DANGEROUS_SIDE_EFFECTS
+    assert "approval_required" in _APPROVAL_REQUIRED_CLASSES

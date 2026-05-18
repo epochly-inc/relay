@@ -377,9 +377,12 @@ def test_egress_allowlist_denies_10_8() -> None:
         assert env["code"] == "RELAY-REPLAY-SSRF"
         assert env["denied_entry"] == host
 
-    # Outside 10/8 -> ok (we test against a stable public RFC 5737
-    # documentation address).
-    validate_egress_entries(["http://192.0.2.1/"])
+    # Outside 10/8 + outside every reserved range -> ok. Audit-r3
+    # BUG-B1 tightened the guard so RFC 5737 documentation ranges
+    # (192.0.2/24, 198.51.100/24, 203.0.113/24) are now rejected (the
+    # stdlib flags them ``is_private=True``); use a genuinely public
+    # routable address for the negative path.
+    validate_egress_entries(["http://1.1.1.1/"])
 
 
 @pytest.mark.plumbing
@@ -439,8 +442,13 @@ def test_egress_allowlist_denies_link_local_and_cloud_metadata() -> None:
     env = exc.value.envelope
     assert env["denied_reason"] == "link_local"
 
-    # Public address outside any reserved range -> accepted.
-    validate_egress_entries(["198.51.100.1"])
+    # Globally-routable public address -> accepted. Note: audit-r3 BUG-B1
+    # tightened the guard so RFC 5737 documentation ranges (192.0.2.0/24,
+    # 198.51.100.0/24, 203.0.113.0/24) are now classified as
+    # ``rfc1918`` via Python's ``IPv4Address.is_private`` (the stdlib
+    # tags those documentation ranges private). A genuinely public
+    # routable address must be used here.
+    validate_egress_entries(["8.8.8.8"])
 
 
 @pytest.mark.plumbing
