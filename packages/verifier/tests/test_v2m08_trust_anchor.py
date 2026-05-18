@@ -174,10 +174,18 @@ def _build_four_sig_bundle(
     if invalid_indices:
         for idx in invalid_indices:
             sig_rec = dict(built.bundle["signatures"][idx])
-            # Flip the last base64url character to a different valid
-            # base64url character to invalidate the signature.
+            # Flip a base64url character in the MIDDLE of the encoded
+            # signature so the flipped bits land in meaningful payload
+            # bytes. Flipping the last char is unsafe: ed25519 sigs are
+            # 64 bytes = 512 bits, encoded as 86 base64url chars = 516
+            # bits with 4 trailing stuffing bits; a single-char flip at
+            # the tail only touches stuffing bits, leaving the decoded
+            # signature bytes unchanged and verification still passing.
+            # A middle-position flip guarantees a real signature-byte
+            # mutation.
             sb = sig_rec["signature_b64u"]
-            flipped = sb[:-1] + ("A" if sb[-1] != "A" else "B")
+            mid = len(sb) // 2
+            flipped = sb[:mid] + ("A" if sb[mid] != "A" else "B") + sb[mid + 1 :]
             sig_rec["signature_b64u"] = flipped
             built.bundle["signatures"][idx] = sig_rec
 
