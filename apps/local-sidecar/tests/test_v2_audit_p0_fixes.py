@@ -140,12 +140,14 @@ async def test_manifest_commit_hash_uses_hyphen_form(
     payload = json.loads(r.text)
     assert payload["commit_hash"].startswith("sha256-")
     # Verify the manifest_versions row was inserted.
-    async with aiosqlite.connect(str(db)) as conn:
-        async with conn.execute(
+    async with (
+        aiosqlite.connect(str(db)) as conn,
+        conn.execute(
             "SELECT commit_hash FROM manifest_versions WHERE commit_hash = ?",
             (payload["commit_hash"],),
-        ) as cur:
-            row = await cur.fetchone()
+        ) as cur,
+    ):
+        row = await cur.fetchone()
     assert row is not None, "manifest_versions row was not seeded"
 
 

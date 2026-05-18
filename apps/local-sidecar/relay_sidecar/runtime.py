@@ -4302,7 +4302,7 @@ def build_runtime_app(
         manifest_version_id = f"mv-{uuid.uuid4().hex}"
         db = runtime.database
         if db is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await db.transactional_db_write_raw(
                     table="manifest_versions",
                     row={
@@ -4318,8 +4318,6 @@ def build_runtime_app(
                     natural_key=commit_hash,
                     natural_key_column="commit_hash",
                 )
-            except Exception:  # noqa: BLE001
-                pass
         resp_body = {
             "manifest_id": manifest_id,
             "commit_hash": commit_hash,
