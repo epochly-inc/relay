@@ -1225,4 +1225,17 @@ def _allowed_tables() -> Iterable[str]:
         # ``_state_engine_writer_lock`` and surface as "cannot start a
         # transaction within a transaction".
         "idempotency_records",
+        # V3M1-F01 (2026-05-18; VAL-V3M1-001 / VAL-V3M1-002 /
+        # VAL-V3M1-003): the run_result -> {contract_results,
+        # gate_decisions} join tables. Spec authority is spec A.1 (the
+        # join form replaces the historical array-column form for FK
+        # integrity). Per CLAUDE.md keystone invariant #8 ("four atomic
+        # primitives"), writes to these tables MUST route through
+        # ``transactional_db_write_raw`` so they serialize through the
+        # SAME single-writer queue as the canonical run_results /
+        # gate_decisions writes (keystone invariant #1: control plane
+        # writes the result). Direct ``db._writer.execute(...)`` is a
+        # banned bypass per the audit-r3 BUG-A1 precedent.
+        "run_result_contract_results",
+        "run_result_gate_decisions",
     )
