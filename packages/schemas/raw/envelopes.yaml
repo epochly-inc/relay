@@ -429,13 +429,63 @@ schemas:
 
   EvidenceClaim:
     schema_version: relay.evidence_claim.v1
-    spec: A.16
+    spec: K
     description: |
-      Atomic claim inside an evidence bundle (spec sectionA.16 lines 3331-3353).
-      claim_type is a closed eight-member enum (VAL-W1-020). claim_digest
-      is the canonical sha256-<hex> wire form (VAL-W1-021). signature is a
-      required, non-empty string. supersedes_claim_id is a nullable UUID
-      self-reference; a non-UUID string MUST fail validation.
+      Atomic claim inside an evidence bundle. Spec authority is sectionK
+      lines 4388-4438 (Evidence Claim v1 schema, ACEF-anchored). The
+      historical sectionA.16 shape carried only flat subject_kind /
+      subject_id columns; V3M1-F05 (2026-05-18) extended the envelope
+      to the full spec K shape with 7 new/restructured fields:
+
+        * subject               -> nested ClaimSubject {kind, id,
+                                   manifest_commit_hash}. The historical
+                                   flat subject_kind / subject_id are
+                                   preserved as deprecated property
+                                   accessors on the Pydantic model;
+                                   the wire-format envelope canonical
+                                   shape uses the nested object only.
+        * evidence_refs[]       -> list of EvidenceRef {kind, ref,
+                                   digest?, value?}. Spec K line 4402-4406.
+        * claim_predicate       -> recursive ClaimPredicate {op, args}.
+                                   Wire-format Pydantic enforces depth-8
+                                   bound per VAL-V3M1-012.
+        * actor_kind            -> closed-enum string mirroring the
+                                   EventLogEntry actor_kind enum
+                                   {control_plane, gate_engine, worker,
+                                   sdk, user, cron}. Spec K line 4415
+                                   and the K rule at line 4427 ("the
+                                   signer can only be the control-plane
+                                   evidence-signer service for hosted
+                                   bundles"). The closed enum is pinned
+                                   at the Pydantic + SQL CHECK layers;
+                                   the YAML carries the field as
+                                   ``type: string`` to keep openapi.yaml
+                                   parity (the openapi mirror gains the
+                                   enum constraint via m1-f08).
+        * actor_identity_hash   -> sha256-<hex> wire form. Spec K
+                                   line 4416.
+        * occurred_at           -> RFC 3339 timestamp distinct from
+                                   created_at. Spec K line 4417.
+        * namespaces            -> optional dict carrying the ACEF
+                                   x-relay extension envelope. Spec K
+                                   line 4421-4423. Verifier-side
+                                   closed-key enforcement (VAL-V3M1-022)
+                                   ships with m1-f07.
+
+      Existing rules preserved:
+        * claim_type             closed eight-member enum (VAL-W1-020).
+        * claim_digest           canonical sha256-<hex> wire form
+                                 (VAL-W1-021).
+        * signature              non-empty string.
+        * supersedes_claim_id    nullable UUID; the spec K line 4429
+                                 type restriction
+                                 (only human_oversight / incident may
+                                 carry a non-null supersedes_claim_id)
+                                 lands as a CHECK constraint via m1-f07.
+        * schema_version         pinned to ``relay.evidence_claim.v1``
+                                 (additive field changes do not bump
+                                 the envelope version per the W1.6
+                                 forward-compat policy).
     fields:
       schema_version:
         type: literal
@@ -455,14 +505,19 @@ schemas:
           - data_quality_check
           - provider_compatibility
         required: true
-      subject_kind:                { type: string, required: true }
-      subject_id:                  { type: uuid, required: true }
+      subject:                     { type: any_object, required: true }
+      evidence_refs:               { type: list_any, required: false, default: [] }
+      claim_predicate:             { type: any_object, required: false, nullable: true }
       claim_digest:                { type: sha256_hash, required: true }
       redaction_transform_version: { type: string, required: true }
+      actor_kind:                  { type: string, required: true }
+      actor_identity_hash:         { type: sha256_hash, required: true }
+      occurred_at:                 { type: timestamptz, required: true }
       manifest_commit_hash:        { type: sha256_hash, required: true }
       signer_key_id:               { type: string, required: true }
       signature:                   { type: non_empty_string, required: true }
       supersedes_claim_id:         { type: uuid, required: false, nullable: true }
+      namespaces:                  { type: any_object, required: false, nullable: true }
       created_at:                  { type: timestamptz, required: true }
 
   ReplayCase:

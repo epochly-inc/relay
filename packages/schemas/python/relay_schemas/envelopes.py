@@ -837,13 +837,147 @@ class EvidenceBundle(_RelayEnvelope):
     created_at: datetime
 
 
+# ---------------------------------------------------------------------------
+# V3M1-F05 (2026-05-18): full EvidenceClaim shape per spec K lines 4388-4438.
+#
+# Adds 7 new/restructured fields to the v1 envelope while preserving the
+# 'relay.evidence_claim.v1' schema_version literal (the wire shape is
+# additive; back-compat is provided via flat-subject property accessors
+# and a mode='before' validator that absorbs the flat construction form
+# into the nested subject dict).
+#
+# Spec K lines 4388-4438 authoritative shape:
+#   subject              -> ClaimSubject {kind, id, manifest_commit_hash}
+#   evidence_refs[]      -> list[EvidenceRef {kind, ref, digest?, value?}]
+#   claim_predicate      -> ClaimPredicate {op, args: list[ClaimPredicate]}
+#                            (recursion bounded at depth 8)
+#   actor_kind           -> closed-enum Literal (control_plane / gate_engine /
+#                            worker / sdk / user / cron)
+#   actor_identity_hash  -> Sha256Hash
+#   occurred_at          -> datetime (distinct from created_at)
+#   namespaces           -> optional dict carrying the ACEF x-relay extension
+#                            envelope (e.g. {"x-relay": {"schema_version": "v1"}}).
+#
+# Per VAL-V3M1-015 the flat ``subject_kind`` / ``subject_id`` access path
+# remains readable as a property accessor; a SINGLE deprecation warning
+# fires per Python process (tracked via the module-level
+# ``_FLAT_SUBJECT_DEPRECATION_EMITTED`` set, mirroring VAL-V3M1-023 cross-
+# cutting rule on first-occurrence-only emission).
+# ---------------------------------------------------------------------------
+
+# Process-level emission tracker for the flat-subject deprecation warning.
+# Cleared by tests for hermeticism; checked by ClaimSubject property accessors.
+_FLAT_SUBJECT_DEPRECATION_EMITTED: set[str] = set()
+
+# Spec K line 4407: recursion depth bound. ClaimPredicate.args may nest
+# ClaimPredicate values up to this many op-layers deep. The bound is
+# enforced by a model_validator (after) walk.
+_CLAIM_PREDICATE_MAX_DEPTH: int = 8
+
+
+class ClaimSubject(_RelayEnvelope):
+    """Nested subject object for EvidenceClaim per spec K line 4397-4401.
+
+    The kind enum mirrors spec K line 4398:
+    ``run | replay | eval_run | release | domain_pack | ai_system``.
+    """
+
+    kind: Literal[
+        "run",
+        "replay",
+        "eval_run",
+        "release",
+        "domain_pack",
+        "ai_system",
+    ]
+    id: UUID
+    manifest_commit_hash: Sha256Hash
+
+
+class EvidenceRef(_RelayEnvelope):
+    """Reference to a piece of evidence inside an EvidenceClaim.
+
+    Spec K line 4402-4406 shows three variants of EvidenceRef:
+      * ``{kind, ref, digest}``  -- artifact / run_result with sha256 digest.
+      * ``{kind, ref, value}``   -- exit_code / scalar evidence with literal
+                                    value.
+      * digest and value are both optional independently; at least one of
+        ref or value must be meaningful but the spec does not impose a
+        cross-field rule, so we keep both optional and let the verifier
+        bundle-validator enforce the manifest-binding rule (VAL-V3M1-019,
+        owned by m1-f07).
+    """
+
+    kind: str
+    ref: str
+    digest: Sha256Hash | None = None
+    value: Any = None
+
+
+class ClaimPredicate(_RelayEnvelope):
+    """Recursive op/args structure per spec K line 4407-4413.
+
+    ``op`` is a free-text op identifier (e.g. ``and``, ``or``,
+    ``run_result_status_is``, ``gate_decision_action_is``). ``args`` is a
+    list of either nested ClaimPredicate values or leaf objects carrying a
+    ``value`` field. We model args as ``list[ClaimPredicate]`` because the
+    spec example uses nested ops uniformly; leaf rows of the form
+    ``{"op": "run_result_status_is", "value": "accepted"}`` parse fine as
+    a ClaimPredicate with empty/absent args and a ``value`` extra.
+
+    Recursion depth is bounded at ``_CLAIM_PREDICATE_MAX_DEPTH`` (8) per
+    VAL-V3M1-012. Enforcement runs in a model_validator(mode='after') on
+    the parent EvidenceClaim; this class itself is lenient on extras so
+    leaf ``value`` payloads (which are valid op-args) can ride along.
+    """
+
+    model_config = ConfigDict(
+        extra="allow",  # leaf args carry ``value`` outside this base shape
+        str_strip_whitespace=False,
+        validate_assignment=False,
+    )
+    op: str
+    args: list[ClaimPredicate] = Field(default_factory=list)
+
+
+def _claim_predicate_depth(node: ClaimPredicate, current: int = 1) -> int:
+    """Return the maximum nesting depth rooted at ``node``.
+
+    Depth counts op-layers: a single ClaimPredicate with no args is depth 1,
+    ``{op:and, args:[{op:leaf}]}`` is depth 2, and so on.
+    """
+    if not node.args:
+        return current
+    return max(
+        _claim_predicate_depth(arg, current + 1) for arg in node.args
+    )
+
+
 class EvidenceClaim(_RelayEnvelope):
-    """Atomic claim inside an evidence bundle (spec A.16 lines 3331-3353).
+    """Atomic claim inside an evidence bundle (spec K lines 4388-4438).
 
     VAL-W1-020: ``claim_type`` closed enum of eight kinds.
     VAL-W1-021: ``claim_digest`` canonical sha256-<hex> form; ``signature``
                 non-empty string; ``supersedes_claim_id`` nullable UUID.
     VAL-W1-053: ``schema_version`` pinned to ``relay.evidence_claim.v1``.
+
+    V3M1-F05 additions (spec K lines 4388-4438):
+        VAL-V3M1-011: ``evidence_refs: list[EvidenceRef]`` (defaults to []).
+        VAL-V3M1-012: ``claim_predicate: ClaimPredicate | None`` with
+                      recursion depth bounded at 8.
+        VAL-V3M1-013: ``actor_kind: Literal[...]`` closed enum
+                      mirroring EventLogEntry.actor_kind +
+                      ``actor_identity_hash: Sha256Hash`` required.
+        VAL-V3M1-014: ``occurred_at: datetime`` distinct from
+                      ``created_at`` (spec K line 4417).
+        VAL-V3M1-015: ``subject: ClaimSubject`` nested object;
+                      ``subject_kind`` / ``subject_id`` retained as
+                      deprecated read-only property accessors that fire
+                      a single per-process DeprecationWarning.
+        VAL-V3M1-020: ``redaction_transform_version`` preserved on the
+                      envelope across all 4 layers.
+        VAL-V3M1-021: ``namespaces: dict | None`` carrying the optional
+                      ACEF x-relay extension envelope.
     """
 
     schema_version: Literal["relay.evidence_claim.v1"]
@@ -859,15 +993,119 @@ class EvidenceClaim(_RelayEnvelope):
         "data_quality_check",
         "provider_compatibility",
     ]
-    subject_kind: str
-    subject_id: UUID
+    subject: ClaimSubject
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    claim_predicate: ClaimPredicate | None = None
     claim_digest: Sha256Hash
     redaction_transform_version: str
+    actor_kind: Literal[
+        "control_plane",
+        "gate_engine",
+        "worker",
+        "sdk",
+        "user",
+        "cron",
+    ]
+    actor_identity_hash: Sha256Hash
+    occurred_at: datetime
     manifest_commit_hash: Sha256Hash
     signer_key_id: str
     signature: NonEmptyStr
     supersedes_claim_id: UUID | None = None
+    namespaces: dict[str, Any] | None = None
     created_at: datetime
+
+    # ---------------------------------------------------------------------
+    # Back-compat construction shim (VAL-V3M1-015).
+    #
+    # Existing callers may pass the flat shape:
+    #   {"subject_kind": "run", "subject_id": "<uuid>",
+    #    "manifest_commit_hash": "sha256-..."}
+    # We absorb those keys into a nested ``subject`` dict BEFORE Pydantic's
+    # ``extra="forbid"`` rejects them. ``manifest_commit_hash`` remains a
+    # top-level required field on the envelope (preserves bundle-anchor
+    # semantics) AND is mirrored into ``subject.manifest_commit_hash`` so
+    # the spec K nested shape is satisfied even when only the flat form
+    # is provided. Callers passing both flat and nested forms must keep
+    # them consistent; we treat the nested form as authoritative.
+    # ---------------------------------------------------------------------
+    @model_validator(mode="before")
+    @classmethod
+    def _absorb_flat_subject(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        # If nested already supplied, keep it as-is.
+        if "subject" in data and isinstance(data["subject"], dict):
+            return data
+        # Build nested subject from flat keys if any are present.
+        flat_kind = data.pop("subject_kind", None) if "subject" not in data else None
+        flat_id = data.pop("subject_id", None) if "subject" not in data else None
+        if "subject" not in data and (flat_kind is not None or flat_id is not None):
+            data["subject"] = {
+                "kind": flat_kind,
+                "id": flat_id,
+                "manifest_commit_hash": data.get("manifest_commit_hash"),
+            }
+        return data
+
+    @model_validator(mode="after")
+    def _enforce_claim_predicate_depth(self) -> EvidenceClaim:
+        if self.claim_predicate is None:
+            return self
+        depth = _claim_predicate_depth(self.claim_predicate)
+        if depth > _CLAIM_PREDICATE_MAX_DEPTH:
+            raise ValueError(
+                f"claim_predicate recursion depth {depth} exceeds "
+                f"spec K bound of {_CLAIM_PREDICATE_MAX_DEPTH} "
+                f"(VAL-V3M1-012)"
+            )
+        return self
+
+    # ---------------------------------------------------------------------
+    # Back-compat read accessors (VAL-V3M1-015).
+    #
+    # Reading ``claim.subject_kind`` / ``claim.subject_id`` returns the
+    # nested-subject value and emits a single DeprecationWarning per
+    # Python process. The per-process tracker honors VAL-V3M1-023's
+    # first-occurrence-only rule to prevent CI log spam across the 14+
+    # existing call sites enumerated in VAL-V3M1-016.
+    # ---------------------------------------------------------------------
+    @property
+    def subject_kind(self) -> str:
+        _emit_flat_subject_deprecation_warning("subject_kind")
+        return self.subject.kind
+
+    @property
+    def subject_id(self) -> UUID:
+        _emit_flat_subject_deprecation_warning("subject_id")
+        return self.subject.id
+
+
+def _emit_flat_subject_deprecation_warning(attr: str) -> None:
+    """Emit the flat-subject DeprecationWarning once per Python process.
+
+    Tracker key uses a fixed sentinel (not ``attr``) so reading either
+    ``subject_kind`` or ``subject_id`` after the first access on either
+    of the two flat properties does NOT re-emit. This matches the
+    VAL-V3M1-015 evidence requirement "first-occurrence-per-process
+    only" and the VAL-V3M1-023 cross-cutting rule. Tests reset the
+    tracker via ``envelopes._FLAT_SUBJECT_DEPRECATION_EMITTED.clear()``.
+    """
+    sentinel = "evidence_claim.flat_subject"
+    if sentinel in _FLAT_SUBJECT_DEPRECATION_EMITTED:
+        return
+    _FLAT_SUBJECT_DEPRECATION_EMITTED.add(sentinel)
+    import warnings as _warnings
+
+    _warnings.warn(
+        (
+            "EvidenceClaim.subject_kind / subject_id are deprecated; "
+            "use claim.subject.kind / claim.subject.id. This message "
+            "fires once per process (VAL-V3M1-015 / VAL-V3M1-023)."
+        ),
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 class ReplayCase(_RelayEnvelope):

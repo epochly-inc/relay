@@ -1504,6 +1504,11 @@ def _base_evidence_bundle(**overrides: object) -> dict[str, object]:
 
 
 def _base_evidence_claim(**overrides: object) -> dict[str, object]:
+    # V3M1-F05 (2026-05-18): spec K shape added 3 required fields
+    # (actor_kind, actor_identity_hash, occurred_at) and restructured the
+    # subject to a nested object. The flat subject_kind / subject_id keys
+    # below ride the back-compat mode='before' validator absorption shim
+    # in EvidenceClaim per VAL-V3M1-015, so this fixture stays minimal.
     payload: dict[str, object] = {
         "schema_version": "relay.evidence_claim.v1",
         "evidence_claim_id": _new_uuid(),
@@ -1513,6 +1518,9 @@ def _base_evidence_claim(**overrides: object) -> dict[str, object]:
         "subject_id": _new_uuid(),
         "claim_digest": VALID_CLAIM_DIGEST,
         "redaction_transform_version": "relay.redaction.v1#transform-001",
+        "actor_kind": "control_plane",
+        "actor_identity_hash": VALID_ACTOR_HASH,
+        "occurred_at": "2026-05-12T00:00:00+00:00",
         "manifest_commit_hash": VALID_MANIFEST_HASH,
         "signer_key_id": "key-claim-001",
         "signature": VALID_SIGNATURE,
