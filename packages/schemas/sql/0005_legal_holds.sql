@@ -34,12 +34,31 @@
 -- enum but does not encode the transition rules (the writer service
 -- carries them).
 --
--- FK targets that may not exist yet on a fresh database (orgs, users)
--- are added conditionally via DO $$ blocks mirroring the approach in
--- 0001_actors.sql lines 67-80 and 0004_v2_canonical_tables.sql lines
--- 173-186. Running 0005 in isolation creates the tables without the
--- unresolved FKs; running it after the target tables exist absorbs the
--- FKs inline.
+-- FK TARGETS (orgs, users) AND THE §Y FK CHAIN REPAIR
+-- ---------------------------------------------------
+-- The CREATE TABLE statements below declare three inline REFERENCES to
+-- the §V identity tables orgs and users:
+--   * evidence_legal_holds.org_id             REFERENCES orgs(org_id)   NOT NULL
+--   * evidence_legal_holds.imposed_by_user_id REFERENCES users(user_id) NOT NULL
+--   * evidence_legal_holds.released_by_user_id REFERENCES users(user_id)
+-- The §V identity tables (orgs, users, ...) are intentionally NOT
+-- defined in OSS relay/; they belong in private relay-platform/ per
+-- the repository topology rules in CLAUDE.md. A clean Postgres
+-- database that applies packages/schemas/sql/*.sql in lexicographic
+-- order therefore cannot satisfy these inline FK references on its
+-- own; the chain depends on stub identity tables being available at
+-- migration time (the test helper scripts/fresh-db-migrate.sh creates
+-- minimal stubs) and on a follow-up migration dropping the FK
+-- constraints and the NOT NULL markers.
+--
+-- That follow-up migration is packages/schemas/sql/0013_v3_fk_chain_repair.sql
+-- (V3M1-F04, 2026-05-18). 0013 DROPs the auto-named FK constraints
+-- (evidence_legal_holds_{org_id,imposed_by_user_id,released_by_user_id}_fkey)
+-- and DROPs the NOT NULL markers on org_id and imposed_by_user_id.
+-- Columns remain uuid so private relay-platform/ can re-attach a FK
+-- to its own users/orgs surface without a destructive column rewrite.
+-- See the header of 0013_v3_fk_chain_repair.sql for the full 6-site
+-- catalog (this file owns 3 of the 6).
 --
 -- ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
