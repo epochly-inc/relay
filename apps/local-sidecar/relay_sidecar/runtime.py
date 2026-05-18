@@ -1252,10 +1252,17 @@ def build_runtime_app(
         """
         rid = request_id if request_id else _new_request_id()
         tid = trace_id if trace_id else _new_request_id()
+        # Audit R3 BUG-A5 (2026-05-18): the canonical ErrorEnvelope
+        # (packages/schemas/python/relay_schemas/envelopes.py:1172,
+        # ConfigDict(extra="forbid")) rejects any property not in the
+        # declared set. ``error_class`` was a sidecar-only legacy field
+        # mirroring ``code``; it is rejected by strict validators and
+        # ``code`` already conveys the same information. Removed here;
+        # tests that previously asserted on ``error_class`` now assert
+        # on ``code`` (the canonical anchor).
         env: dict[str, Any] = {
             "schema_version": "relay.error.v1",
             "code": code,
-            "error_class": code,
             "http_status": http_status,
             "message": message,
             "blocked_surface": blocked_surface,
@@ -2721,8 +2728,13 @@ def build_runtime_app(
             )
         eval_run_id = f"er-{uuid.uuid4().hex}"
         await_url = f"/v1/eval-runs/{eval_run_id}"
+        # Audit-R3 (2026-05-18): drop made-up wire-level schema_version
+        # "relay.eval_run.v1" (not in KNOWN_SCHEMA_IDS / envelopes.yaml /
+        # openapi.yaml). Wire responses no longer surface a schema_version
+        # for this endpoint; persisted storage tables in packages/evals/
+        # keep their own internal column independent of canonical envelope
+        # set.
         record = {
-            "schema_version": "relay.eval_run.v1",
             "eval_run_id": eval_run_id,
             "dataset_id": dataset_id,
             "contract_id": contract_id,
@@ -3145,8 +3157,13 @@ def build_runtime_app(
         Returns ``(None, None, None)`` when the request did NOT supply
         an idempotency key (no idempotency enforcement applies).
 
-        The lookup also checks the DB-backed table so VAL-V2M02-068
-        evidence (row in ``idempotency_records``) is observable.
+        Audit R3 BUG-A2 (2026-05-18): on a cache miss this helper also
+        queries the ``idempotency_records`` table using the SAME
+        canonical_key derivation (``_canonical_idempotency_key``) that
+        ``_store_idempotency`` uses, so replay semantics survive sidecar
+        restart. Pre-fix the writer persisted to DB but the reader only
+        consulted the in-memory map; after restart the in-memory map is
+        empty and the DB row was unreachable -- replays re-executed.
         """
         key = request.headers.get("idempotency-key", "").strip()
         if not key:
@@ -3155,6 +3172,17 @@ def build_runtime_app(
         # In-memory map: surface -> {key: {digest, status, body, headers}}
         per_surface = runtime.idempotency_store.setdefault(surface, {})
         existing = per_surface.get(key)
+        if existing is None:
+            # BUG-A2 fix: cache miss falls back to the DB-backed table
+            # using the SAME canonical_key derivation as the writer.
+            db_record = await _lookup_idempotency_db(
+                surface=surface, user_key=key
+            )
+            if db_record is not None:
+                # Hydrate the in-memory map so subsequent replays in
+                # this process avoid the DB round-trip.
+                per_surface[key] = db_record
+                existing = db_record
         if existing is not None:
             if existing["request_digest"] == digest:
                 return (
@@ -3194,6 +3222,55 @@ def build_runtime_app(
             )
         return None, key, digest
 
+    async def _lookup_idempotency_db(
+        *, surface: str, user_key: str
+    ) -> dict[str, Any] | None:
+        """Look up an idempotency record by canonical key on the reader pool.
+
+        Audit R3 BUG-A2 (2026-05-18): shared by ``_check_idempotency``.
+        Uses the SAME canonical_key derivation as ``_store_idempotency``
+        so the read/write keys are guaranteed to match. Returns the
+        same shape as the in-memory map (``request_digest``,
+        ``response_status``, ``response_body``) on hit, or None on
+        miss / when the DB is unavailable / on any read error (best-
+        effort lookup; downstream callers proceed as if cache miss so
+        the request is re-executed instead of silently failing).
+        """
+        db = runtime.database
+        if db is None:
+            return None
+        canonical_key = _canonical_idempotency_key(
+            surface=surface, user_key=user_key
+        )
+        try:
+            reader = db.acquire_reader()
+            async with reader.execute(
+                "SELECT request_digest, response_status, response_body "
+                "FROM idempotency_records WHERE idempotency_key = ?",
+                (canonical_key,),
+            ) as cur:
+                row = await cur.fetchone()
+        except Exception:  # noqa: BLE001
+            return None
+        if row is None:
+            return None
+        request_digest, response_status, response_body_text = row
+        try:
+            response_body: Any = (
+                json.loads(response_body_text)
+                if response_body_text is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            # Corrupted body in cache row -- treat as miss so the
+            # request re-executes rather than returning garbage.
+            return None
+        return {
+            "request_digest": request_digest,
+            "response_status": int(response_status),
+            "response_body": response_body,
+        }
+
     async def _store_idempotency(
         *,
         surface: str,
@@ -3214,6 +3291,25 @@ def build_runtime_app(
         ``_canonical_idempotency_key``; the original header value is
         preserved in the in-memory store keyed by ``key`` for HTTP-layer
         replay-detection symmetry.
+
+        Audit R3 BUG-A1 (2026-05-18 P0): the write is routed through
+        ``transactional_db_write_raw`` so it serializes through the SAME
+        single-writer queue (and the SAME ``_state_engine_writer_lock``)
+        as event_log_entries and compare_and_set_state. The previous
+        implementation called ``db._writer.execute(...)`` followed by
+        ``db._writer.commit()`` directly. That bypassed keystone
+        invariant #8 (the four atomic-persistence primitives) AND raced
+        the writer queue + CAS coroutines that share the same aiosqlite
+        connection -- SQLite would raise "cannot start a transaction
+        within a transaction" when CAS held a BEGIN IMMEDIATE while
+        this path issued an implicit-transaction INSERT.
+
+        The raw helper returns ``idempotent=True`` when a row already
+        exists with the same canonical_key (its UNIQUE PK collision
+        path), which matches the semantics of the previous
+        ``INSERT OR REPLACE``: the in-memory cache (above) and a 24h
+        TTL together mean the same canonical_key cannot legitimately
+        carry a different response, so re-INSERT semantics suffice.
         """
         per_surface = runtime.idempotency_store.setdefault(surface, {})
         per_surface[key] = {
@@ -3244,31 +3340,33 @@ def build_runtime_app(
             # the sentinel zero-UUID documents the "unauthenticated"
             # case explicitly.
             project_id = "00000000-0000-0000-0000-000000000000"
-            writer = db._writer
-            if writer is None:
-                return
-            await writer.execute(
-                "INSERT OR REPLACE INTO idempotency_records "
-                "(idempotency_key, schema_version, project_id, "
-                " request_digest, response_status, response_ref, "
-                " first_seen_at, expires_at, surface, response_body, "
-                " response_headers) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    canonical_key,
-                    "relay.idempotency_record.v1",
-                    project_id,
-                    digest,
-                    response_status,
-                    None,
-                    first_seen_at,
-                    expires_at,
-                    surface,
-                    body_json,
-                    "{}",
-                ),
+            row = {
+                "idempotency_key": canonical_key,
+                "schema_version": "relay.idempotency_record.v1",
+                "project_id": project_id,
+                "request_digest": digest,
+                "response_status": response_status,
+                "response_ref": None,
+                "first_seen_at": first_seen_at,
+                "expires_at": expires_at,
+                "surface": surface,
+                "response_body": body_json,
+                "response_headers": "{}",
+            }
+            # BUG-A1 fix: route through the writer queue so the write
+            # serializes with CAS / event_log / gate_decision writers
+            # under ``_state_engine_writer_lock`` (db.py:692). The
+            # ``natural_key_column`` is ``idempotency_key`` (the table's
+            # PRIMARY KEY); a UNIQUE collision is treated as idempotent
+            # (the raw helper returns the prior rowid with
+            # idempotent=True) which is exactly what we want for the
+            # idempotency cache.
+            await db.transactional_db_write_raw(
+                table="idempotency_records",
+                row=row,
+                natural_key=canonical_key,
+                natural_key_column="idempotency_key",
             )
-            await writer.commit()
         except Exception:  # noqa: BLE001
             # Best-effort: a write failure should NOT lose the in-memory
             # record; tests that probe the DB row will fail loudly which
@@ -3495,8 +3593,12 @@ def build_runtime_app(
                 headers=_rate_limit_headers_for(request),
             )
         existed = gate_id in runtime.gates
+        # Audit-R3 (2026-05-18): drop made-up wire-level schema_version
+        # "relay.gate.v1" (not in KNOWN_SCHEMA_IDS / envelopes.yaml /
+        # openapi.yaml). Gates are internal configuration objects, not a
+        # canonical persisted envelope. Wire responses no longer surface
+        # a schema_version literal for this endpoint.
         record = {
-            "schema_version": "relay.gate.v1",
             "gate_id": gate_id,
             "name": body.get("name", gate_id),
             "scope_type": body.get("scope_type", "run"),
@@ -3513,7 +3615,6 @@ def build_runtime_app(
         status = 200 if existed else 201
         resp_body = {
             "gate_id": gate_id,
-            "schema_version": "relay.gate.v1",
         }
         if idemp_key and idemp_digest:
             await _store_idempotency(

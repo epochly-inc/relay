@@ -100,7 +100,14 @@ def _register_health_routes(app: FastAPI, state: HealthState) -> None:
     async def issue_nonce(
         x_relay_bearer_digest: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        if x_relay_bearer_digest != state.bearer_token_digest:
+        # Audit R3 BUG-A4 (2026-05-18): use constant-time comparison on
+        # the bearer-digest header. The prior ``!=`` short-circuited on
+        # the first differing byte, leaking the matching-prefix length
+        # to a remote timing observer. Asymmetric with the nonce-proof
+        # check at line 172 which already used ``secrets.compare_digest``.
+        if x_relay_bearer_digest is None or not secrets.compare_digest(
+            x_relay_bearer_digest, state.bearer_token_digest
+        ):
             raise HTTPException(
                 status_code=401,
                 detail={
@@ -123,7 +130,13 @@ def _register_health_routes(app: FastAPI, state: HealthState) -> None:
         x_relay_nonce_proof: str | None = Header(default=None),
     ) -> dict[str, Any]:
         # VAL-W2-007: bearer-digest match is mandatory.
-        if x_relay_bearer_digest != state.bearer_token_digest:
+        # Audit R3 BUG-A4 (2026-05-18): constant-time comparison.
+        # Asymmetric with the nonce-proof check below (already using
+        # secrets.compare_digest at line 172); a remote timing observer
+        # could otherwise probe the bearer-digest byte-by-byte.
+        if x_relay_bearer_digest is None or not secrets.compare_digest(
+            x_relay_bearer_digest, state.bearer_token_digest
+        ):
             raise HTTPException(
                 status_code=401,
                 detail={

@@ -74,7 +74,11 @@ from .lockfile import (
     serialize_lockfile_body,
 )
 from .primitives import local_atomic_file_write
-from .process import pid_is_alive, terminate_pid
+from .process import (
+    pid_identity_matches_lockfile,
+    pid_is_alive,
+    terminate_pid,
+)
 from .recovery import recover_partial_lockfile
 
 # Bearer token entropy. 256 bits = 32 bytes -> secrets.token_urlsafe(32)
@@ -356,6 +360,44 @@ def _classify_and_act(
 
     # ZOMBIE_PORT branch (VAL-W2-010): pid alive but port unbound.
     # Terminate the lockfile-recorded pid (PID-only, never name-based).
+    #
+    # Audit R3 BUG-A3 (2026-05-18): PID-reuse race mitigation. A bare
+    # ``os.kill(pid, 0)`` liveness probe cannot distinguish the
+    # original sidecar from a same-UID process that reused the PID
+    # after the original died. Before issuing SIGTERM we verify the
+    # running PID's start time is at or before ``body.launched_at``
+    # (with a small forward tolerance for clock skew). If the PID was
+    # created AFTER the lockfile, the PID belongs to someone else and
+    # we MUST NOT terminate it -- doing so would violate CLAUDE.md
+    # banned pattern #1 (only kill PIDs we wrote into the lockfile).
+    if not pid_identity_matches_lockfile(body.pid, body.launched_at):
+        # Stale lockfile pointing at a reused PID. Clear the lockfile
+        # via the same atomic-file primitive used by STALE_PID and
+        # emit a structured warning event so an operator can see we
+        # declined to terminate. Then continue to SPAWN.
+        local_atomic_file_write(lockfile_path, b"", mode=0o600)
+        append_event(
+            "sidecar.zombie_pid_identity_mismatch",
+            scope_type="other",
+            actor_kind="control_plane",
+            payload={
+                "lockfile_pid": body.pid,
+                "lockfile_port": body.port,
+                "lockfile_launched_at": body.launched_at,
+                "reason": (
+                    "pid_start_time_after_lockfile_launched_at -- "
+                    "treating lockfile as stale, not terminating PID"
+                ),
+            },
+            home=home,
+        )
+        return _spawn_and_write(
+            lockfile_path=lockfile_path,
+            home=home,
+            runner=runner,
+            action="zombie_port_terminated_and_spawned",
+            bearer_token=bearer_token,
+        )
     terminate_pid(body.pid)
     append_event(
         "sidecar.zombie_pid_terminated",

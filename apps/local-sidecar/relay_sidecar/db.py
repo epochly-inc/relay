@@ -1215,4 +1215,14 @@ def _allowed_tables() -> Iterable[str]:
         # surface explicit and keeps keystone invariant #8 satisfied for the
         # CLI's invocation recorder.
         "cli_invocations",
+        # Audit R3 BUG-A1 (2026-05-18): the HTTP idempotency cache is
+        # persisted to ``idempotency_records`` so the replay semantics
+        # survive sidecar restart (BUG-A2). Writes are routed through
+        # ``transactional_db_write_raw`` so they serialize through the
+        # SAME single-writer queue as event_log_entries / CAS; without
+        # this, a bare ``db._writer.execute(...)`` would race
+        # compare_and_set_state's BEGIN IMMEDIATE under
+        # ``_state_engine_writer_lock`` and surface as "cannot start a
+        # transaction within a transaction".
+        "idempotency_records",
     )

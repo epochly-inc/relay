@@ -18,6 +18,7 @@ import multiprocessing as mp
 import os
 import re
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,17 @@ from relay_sidecar.lockfile import (
 from relay_sidecar.primitives import local_atomic_file_write
 from relay_sidecar.process import pid_is_alive
 from relay_sidecar.spawn import acquire_or_attach
+
+
+def _now_plus_seconds_z(delta_s: float) -> str:
+    """Return an RFC 3339 'Z' timestamp at ``now + delta_s``.
+
+    Audit R3 BUG-A3 (2026-05-18): the ZOMBIE_PORT branch now verifies
+    the PID's start_time is at or before ``launched_at + 5s``, so test
+    seed lockfiles MUST be timestamped AFTER the sentinel child starts.
+    """
+    dt = datetime.now(tz=UTC) + timedelta(seconds=delta_s)
+    return dt.isoformat().replace("+00:00", "Z")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCANNED_DIRS = (
@@ -93,10 +105,15 @@ def test_zombie_port_terminates_only_lockfile_pid(relay_home_tmp: Path) -> None:
         # unbound (use a high ephemeral that nothing on the test host is
         # listening on; portalocker test fixtures use the same approach).
         unbound_port = 50080
+        # Audit R3 BUG-A3 (2026-05-18): the seeded launched_at MUST be
+        # AT or AFTER the sentinel's start_time (within the 5s tolerance)
+        # for the identity check to accept termination. The sentinel was
+        # spawned moments ago via mp.Process.start(); +1s is safely
+        # AFTER its create_time on all tested kernels.
         zombie_body = LockfileBody(
             pid=sentinel_pid,
             port=unbound_port,
-            launched_at="2026-05-13T12:00:00Z",
+            launched_at=_now_plus_seconds_z(1.0),
             launched_by="zombie-user",
             sidecar_version="0.0.0",
             bearer_token_digest="sha256-" + "d" * 64,
