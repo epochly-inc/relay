@@ -602,12 +602,17 @@ def _run_celjs_batch(vectors: list[dict[str, Any]]) -> list[dict[str, Any]]:
             f"VAL-W17-012: cel-js runner missing at {CELJS_SUBPROCESS_RUNNER}"
         )
     payload = json.dumps({"vectors": vectors}).encode("utf-8")
+    # Pin cwd to the repo root so Node's ESM resolver finds cel-js in the
+    # hoisted workspace root node_modules/ regardless of the test's
+    # inherited cwd (some sibling tests use monkeypatch.chdir(tmp_path)
+    # which would otherwise break package resolution).
     proc = subprocess.run(
         ["node", str(CELJS_SUBPROCESS_RUNNER)],
         input=payload,
         capture_output=True,
         timeout=120,
         check=False,
+        cwd=str(REPO_ROOT),
     )
     if proc.returncode != 0:
         pytest.fail(

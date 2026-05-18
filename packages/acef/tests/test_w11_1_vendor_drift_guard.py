@@ -78,14 +78,37 @@ def _load_manifest() -> dict:
     return json.loads((package_root() / "vendor_manifest.json").read_text(encoding="utf-8"))
 
 
+def _is_vendored_file(rel_posix: str) -> bool:
+    """Filter out runtime-generated artifacts that aren't part of the vendor pin.
+
+    Vendor drift detection runs over the on-disk tree, which can accumulate
+    ``__pycache__/`` directories and ``.pyc`` files when Python imports any
+    module under ``upstream/`` during a test session. These artifacts are NOT
+    vendored content; they appear after-the-fact and would otherwise trip the
+    digest+file-count guards even though the vendored bytes are unchanged.
+    """
+    parts = rel_posix.split("/")
+    if "__pycache__" in parts:
+        return False
+    if rel_posix.endswith((".pyc", ".pyo")):
+        return False
+    if ".pytest_cache" in parts:
+        return False
+    return True
+
+
 def _compute_tree_digest(tree: Path) -> str:
     """Return the cross-platform SHA-256 over the sorted file-content stream.
 
     Recipe (identical to the one documented in vendor_manifest.json):
       h = sha256()
-      for f in sorted(tree.rglob("*")) if f.is_file():
+      for f in sorted(tree.rglob("*")) if f.is_file() and is_vendored(f):
           h.update(f"{sha256(read_bytes(f))}  {posix_relpath(f)}\\n".encode())
       return h.hexdigest()
+
+    Runtime-generated ``__pycache__``/``.pyc``/``.pytest_cache`` paths are
+    skipped via :func:`_is_vendored_file`; these are reproducible from source
+    and are not part of the vendor pin.
 
     Stable across macOS / Linux / Windows because:
       * Path.rglob enumerates files; we sort by POSIX-form relpath.
@@ -94,7 +117,11 @@ def _compute_tree_digest(tree: Path) -> str:
     """
     h = hashlib.sha256()
     files = sorted(
-        (p for p in tree.rglob("*") if p.is_file()),
+        (
+            p
+            for p in tree.rglob("*")
+            if p.is_file() and _is_vendored_file(p.relative_to(tree).as_posix())
+        ),
         key=lambda p: p.relative_to(tree).as_posix(),
     )
     for f in files:
@@ -132,8 +159,18 @@ def test_vendor_tree_digest_matches_recorded_pin() -> None:
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W11-001")
 def test_vendor_tree_file_count_matches_recorded_pin() -> None:
-    """File count under ``upstream/`` equals the value recorded in the manifest."""
-    actual_count = sum(1 for p in vendor_root().rglob("*") if p.is_file())
+    """File count under ``upstream/`` equals the value recorded in the manifest.
+
+    Runtime-generated ``__pycache__``/``.pyc``/``.pytest_cache`` artifacts are
+    excluded via :func:`_is_vendored_file` so a stray ``import`` during the
+    test session cannot accidentally bump the count above the recorded pin.
+    """
+    root = vendor_root()
+    actual_count = sum(
+        1
+        for p in root.rglob("*")
+        if p.is_file() and _is_vendored_file(p.relative_to(root).as_posix())
+    )
     assert actual_count == EXPECTED_TREE_FILE_COUNT, (
         f"vendor tree file-count drift: on-disk={actual_count} "
         f"expected={EXPECTED_TREE_FILE_COUNT}"

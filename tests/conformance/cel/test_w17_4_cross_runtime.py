@@ -187,6 +187,7 @@ def _run_ts_batch(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
         capture_output=True,
         timeout=120,
         check=False,
+        cwd=str(REPO_ROOT),
         env={**os.environ, "NODE_NO_WARNINGS": "1"},
     )
     if proc.returncode != 0:
