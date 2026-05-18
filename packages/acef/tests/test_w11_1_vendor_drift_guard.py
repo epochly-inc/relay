@@ -92,9 +92,7 @@ def _is_vendored_file(rel_posix: str) -> bool:
         return False
     if rel_posix.endswith((".pyc", ".pyo")):
         return False
-    if ".pytest_cache" in parts:
-        return False
-    return True
+    return ".pytest_cache" not in parts
 
 
 def _compute_tree_digest(tree: Path) -> str:
