@@ -87,7 +87,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, quote, urlparse
 
 from relay_contracts.canonical import jcs_canonicalize
 from relay_schemas.envelopes import ReplayFixture
@@ -239,18 +239,28 @@ def _canonicalize_query(query: str) -> str:
     ``parse_qsl(keep_blank_values=True, strict_parsing=False)`` preserves
     blank-value parameters; we then re-emit them sorted to make the key
     independent of capture-time parameter ordering.
+
+    BUG-F1 (audit-r3 P2): ``parse_qsl`` percent-decodes ``%XX`` escapes and
+    translates ``+`` to space. Re-emitting the decoded bytes verbatim would
+    cause distinct inputs to collide on the canonical form -- for example
+    ``?a=b%26c=d`` (a single pair whose value contains a literal ``&``)
+    would canonicalize to the same string as ``?a=b&c=d`` (two pairs). We
+    must therefore re-encode both names and values with ``quote(..., safe='')``
+    so the canonical form is a faithful, unambiguous rendering of the
+    parsed pairs.
     """
     if not query:
         return ""
     pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=False)
     pairs.sort()  # tuple compare: (name, value)
-    # Re-emit using urllib's quote-preserving form. We use a manual loop
-    # rather than urlencode() so each pair is rendered as plain
-    # ``name=value`` even when value is empty (urlencode emits ``name=``
-    # consistently anyway, but being explicit is cheap and obvious).
+    # Re-emit using urllib's quote with ``safe=''`` so that every reserved
+    # delimiter (``&``, ``=``, ``+``, ``%``, ...) is percent-encoded in
+    # both names and values. This makes the canonical form injective with
+    # respect to the parsed (name, value) tuples: two inputs that decode to
+    # different tuple lists cannot collide on the same canonical string.
     out_parts: list[str] = []
     for name, value in pairs:
-        out_parts.append(f"{name}={value}")
+        out_parts.append(f"{quote(name, safe='')}={quote(value, safe='')}")
     return "&".join(out_parts)
 
 
@@ -1600,6 +1610,14 @@ def order_parallel_records(
 
 CANCELLED_MID_STREAM_EVENT: Final[str] = "cancelled_mid_stream"
 
+# BUG-F3 (audit-r3 P2): structured reason label for the corruption case
+# where the recorded cancellation offset overshoots the captured stream
+# length. The wire-level surface remains ``RelayCassetteCorruptError``;
+# only the structured reason tells callers it was an overshoot specifically.
+RELAY_REPLAY_CANCELLATION_OVERSHOOT_CODE: Final[str] = (
+    "cancellation_offset_overshoots_stream"
+)
+
 
 def apply_abort_after(
     tokens: list[Any],
@@ -1607,12 +1625,26 @@ def apply_abort_after(
 ) -> tuple[list[Any], str | None]:
     """Apply the cancellation token to a recorded stream.
 
-    Returns ``(emitted_tokens, cancellation_event)``. When ``abort_after``
-    is None or the recorded ``token_offset`` is at or beyond ``len(tokens)``,
-    the full sequence is emitted and the event is None (the recording was
-    not actually truncated). When the offset is strictly less than the
-    stream length, the first ``token_offset`` tokens are emitted and the
-    event is ``"cancelled_mid_stream"``.
+    Returns ``(emitted_tokens, cancellation_event)``.
+
+    Three cases, distinguished by ``token_offset`` vs ``len(tokens)``:
+
+    * ``offset < len(tokens)`` -- mid-stream cancellation. Emit the
+      first ``offset`` tokens and synthesize a ``cancelled_mid_stream``
+      event. This is the canonical truncated-replay path.
+    * ``offset == len(tokens)`` -- boundary cancellation: the recorder
+      observed every token and then cancellation. Emit all tokens and
+      still synthesize the cancellation event so the replayed run
+      reproduces the recorded outcome at the final token boundary.
+    * ``offset > len(tokens)`` -- corruption: a valid recorder cannot
+      emit fewer tokens than its recorded cancellation offset. This
+      indicates a truncated cassette (proxy died mid-write, manual edit,
+      etc.). BUG-F3 (audit-r3 P2): the previous implementation silently
+      downgraded this to "no cancellation", masking the corruption and
+      letting a truncated recording replay as if the stream finished
+      normally. We now raise ``RelayCassetteCorruptError`` with the
+      structured reason ``cancellation_offset_overshoots_stream`` so
+      callers can distinguish overshoot from other corruption classes.
 
     Spec AC line 5457: "Cassette records the cancellation point; replay
     reproduces it by emitting an abort_after token offset."
@@ -1620,12 +1652,34 @@ def apply_abort_after(
     if abort_after is None:
         return list(tokens), None
     offset = abort_after.token_offset
-    if offset >= len(tokens):
-        # Recorded offset exceeds the captured stream length -- the
-        # original recording was not actually truncated mid-stream
-        # (likely the stream finished naturally before the offset). Emit
-        # what's there and do not synthesize a cancellation.
-        return list(tokens), None
+    if offset < 0:
+        raise RelayCassetteCorruptError(
+            f"abort_after.token_offset must be >= 0; got {offset}",
+            details={
+                "reason": RELAY_REPLAY_CANCELLATION_OVERSHOOT_CODE,
+                "token_offset": offset,
+                "stream_length": len(tokens),
+                "violation": "negative_offset",
+            },
+        )
+    if offset > len(tokens):
+        raise RelayCassetteCorruptError(
+            f"abort_after.token_offset {offset} overshoots recorded "
+            f"stream length {len(tokens)}; cassette is corrupted",
+            details={
+                "reason": RELAY_REPLAY_CANCELLATION_OVERSHOOT_CODE,
+                "token_offset": offset,
+                "stream_length": len(tokens),
+                "violation": "offset_overshoots_stream",
+            },
+        )
+    if offset == len(tokens):
+        # Boundary case: the recorder observed every token and then the
+        # cancellation. Emit all tokens AND synthesize the cancellation
+        # event so the replayed run faithfully reproduces the recorded
+        # final-boundary cancellation rather than presenting it as a
+        # clean stream completion.
+        return list(tokens), CANCELLED_MID_STREAM_EVENT
     return list(tokens[:offset]), CANCELLED_MID_STREAM_EVENT
 
 

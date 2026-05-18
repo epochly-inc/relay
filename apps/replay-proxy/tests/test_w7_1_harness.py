@@ -127,7 +127,7 @@ def test_generate_ca_writes_cert_and_key_to_session_dir(
 ) -> None:
     sd = cassette_root / "ses03aaaaaaaaaaaaaaaaaaaa"
     sd.mkdir(parents=True, exist_ok=True)
-    ca = generate_ca(session_id=sd.name, session_dir=sd)
+    ca = generate_ca(session_id=sd.name, session_dir=sd, cassette_root=cassette_root)
     assert ca.cert_path.exists()
     assert ca.key_path.exists()
     assert ca.cert_path == sd / CA_CERT_FILENAME
@@ -145,8 +145,8 @@ def test_two_sessions_produce_distinct_subject_keys_and_serials(
     sd_b = cassette_root / "ses03dddddddddddddddddddddd"
     for sd in (sd_a, sd_b):
         sd.mkdir(parents=True, exist_ok=True)
-    ca_a = generate_ca(session_id=sd_a.name, session_dir=sd_a)
-    ca_b = generate_ca(session_id=sd_b.name, session_dir=sd_b)
+    ca_a = generate_ca(session_id=sd_a.name, session_dir=sd_a, cassette_root=cassette_root)
+    ca_b = generate_ca(session_id=sd_b.name, session_dir=sd_b, cassette_root=cassette_root)
     assert ca_a.subject_key_id_hex != ca_b.subject_key_id_hex
     assert ca_a.serial_number != ca_b.serial_number
     digest_a = hashlib.sha256(ca_a.cert_path.read_bytes()).hexdigest()
@@ -182,7 +182,7 @@ def test_stop_removes_ca_cert_and_key(
 def test_remove_ca_is_idempotent(cassette_root: Path) -> None:
     sd = cassette_root / "ses04aaaaaaaaaaaaaaaaaaaa"
     sd.mkdir(parents=True, exist_ok=True)
-    ca = generate_ca(session_id=sd.name, session_dir=sd)
+    ca = generate_ca(session_id=sd.name, session_dir=sd, cassette_root=cassette_root)
     first = remove_ca(ca)
     second = remove_ca(ca)
     assert len(first) == 2
@@ -200,14 +200,26 @@ def test_generate_ca_rejects_session_dir_without_cassettes_component(
 ) -> None:
     bad = tmp_path / "tmp" / "evil"
     bad.mkdir(parents=True, exist_ok=True)
-    with pytest.raises(ValueError, match="cassettes"):
-        generate_ca(session_id="x", session_dir=bad)
+    legit_root = tmp_path / "cassettes"
+    legit_root.mkdir(parents=True, exist_ok=True)
+    # BUG-F2 (audit-r3 P2): the validator now enforces strict containment,
+    # so a session_dir that lives outside the legitimate cassette_root is
+    # rejected with the "descendant" error message regardless of whether
+    # the literal "cassettes" appears anywhere in the path.
+    with pytest.raises(ValueError, match="descendant"):
+        generate_ca(session_id="x", session_dir=bad, cassette_root=legit_root)
 
 
 @pytest.mark.fulfills("VAL-W7-005")
-def test_generate_ca_rejects_relative_session_dir() -> None:
+def test_generate_ca_rejects_relative_session_dir(tmp_path: Path) -> None:
+    legit_root = tmp_path / "cassettes"
+    legit_root.mkdir(parents=True, exist_ok=True)
     with pytest.raises(ValueError, match="absolute"):
-        generate_ca(session_id="x", session_dir=Path("relative/cassettes/x"))
+        generate_ca(
+            session_id="x",
+            session_dir=Path("relative/cassettes/x"),
+            cassette_root=legit_root,
+        )
 
 
 @pytest.mark.fulfills("VAL-W7-005")
@@ -216,7 +228,7 @@ def test_ca_file_subject_cn_contains_session_marker(
 ) -> None:
     sd = cassette_root / "ses05aaaaaaaaaaaaaaaaaaaa"
     sd.mkdir(parents=True, exist_ok=True)
-    ca = generate_ca(session_id=sd.name, session_dir=sd)
+    ca = generate_ca(session_id=sd.name, session_dir=sd, cassette_root=cassette_root)
     assert SUBJECT_CN_PREFIX in ca.subject_cn
     assert sd.name in ca.subject_cn
 

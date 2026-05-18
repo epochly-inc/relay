@@ -642,6 +642,7 @@ class HarnessSession:
                 ca = generate_ca(
                     session_id=self._config.session_id,
                     session_dir=session_dir,
+                    cassette_root=self._config.cassette_root,
                 )
             except Exception as exc:
                 raise RelayProxyStartError(

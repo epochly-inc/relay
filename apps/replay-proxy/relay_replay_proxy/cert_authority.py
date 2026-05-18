@@ -79,29 +79,43 @@ class GeneratedCA:
     not_after: datetime
 
 
-def _validate_session_dir(session_dir: Path) -> None:
-    """Reject session_dir paths that would write outside cassettes/<id>/.
+def _validate_session_dir(session_dir: Path, *, cassette_root: Path) -> None:
+    """Reject session_dir paths that would write outside cassette_root/.
 
     Per VAL-W7-005 the CA MUST NEVER land outside the per-session dir.
     The harness validates this before calling ``generate_ca`` (it
-    constructs session_dir as ``relay_home / "cassettes" / session_id``)
-    but we re-check here because the public function is callable
-    directly from tests.
+    constructs session_dir as ``cassette_root / session_id``) but we
+    re-check here because the public function is callable directly from
+    tests.
+
+    BUG-F2 (audit-r3 P2): the prior implementation rejected only paths
+    whose resolved parts did not contain the literal string
+    ``"cassettes"``. That substring check let attacker-controlled paths
+    like ``/tmp/cassettes-evil/foo/cassettes/<id>`` pass, even though
+    they live entirely outside the legitimate cassette root. The
+    corrected check requires ``session_dir`` to resolve to a descendant
+    of the resolved ``cassette_root`` -- a strict containment test that
+    cannot be spoofed by inserting a ``cassettes`` literal anywhere in
+    the path.
     """
     if not session_dir.is_absolute():
         raise ValueError(
             f"session_dir must be absolute; got {session_dir!s}"
+        )
+    if not cassette_root.is_absolute():
+        raise ValueError(
+            f"cassette_root must be absolute; got {cassette_root!s}"
         )
     # Resolve symlinks so a session_dir of "<cassettes>/<id>/../../../tmp"
     # is rejected at construction time. We accept the rare race where a
     # symlink is swapped after this check; the harness's atexit cleanup
     # walks the actual session_dir path it was given.
     resolved = session_dir.resolve(strict=False)
-    parts = resolved.parts
-    if "cassettes" not in parts:
+    resolved_root = cassette_root.resolve(strict=False)
+    if not resolved.is_relative_to(resolved_root):
         raise ValueError(
-            f"session_dir must contain a 'cassettes' path component; "
-            f"got {resolved!s}"
+            f"session_dir must be a descendant of cassette_root "
+            f"{resolved_root!s}; got {resolved!s}"
         )
 
 
@@ -109,6 +123,7 @@ def generate_ca(
     *,
     session_id: str,
     session_dir: Path,
+    cassette_root: Path,
     validity_hours: int = DEFAULT_VALIDITY_HOURS,
     not_before: datetime | None = None,
 ) -> GeneratedCA:
@@ -119,6 +134,13 @@ def generate_ca(
     ``session_dir / "ca-key.pem"`` (mode 0o600). Both go through the
     ``local_atomic_file_write`` primitive (write-tmp + fsync + rename).
 
+    ``cassette_root`` is the absolute path that ``session_dir`` MUST be a
+    descendant of (typically ``${RELAY_HOME}/cassettes``). Production
+    callers (the harness) pass ``self._config.cassette_root``. Tests
+    construct a per-test tmp cassette_root via the ``cassette_root``
+    fixture. BUG-F2 (audit-r3 P2): strict containment is enforced --
+    substring matching of the literal ``"cassettes"`` no longer suffices.
+
     Uses ECDSA-P256 (per VAL-W7-003 either RSA-2048 or ECDSA-P256 is
     acceptable; we pick P256 for speed and smaller PEM size).
 
@@ -127,7 +149,7 @@ def generate_ca(
     ``x509.random_serial_number`` upper bound). The subject key
     identifier is computed from the public key bytes per RFC 5280 4.2.1.2.
     """
-    _validate_session_dir(session_dir)
+    _validate_session_dir(session_dir, cassette_root=cassette_root)
     session_dir.mkdir(parents=True, exist_ok=True)
 
     private_key = ec.generate_private_key(ec.SECP256R1())

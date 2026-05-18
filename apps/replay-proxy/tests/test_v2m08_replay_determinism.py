@@ -33,6 +33,7 @@ import pytest
 from relay_replay_proxy.cassette_format import (
     CASSETTE_ENVELOPE_SCHEMA_VERSION,
     CASSETTE_FILENAME,
+    RELAY_REPLAY_CANCELLATION_OVERSHOOT_CODE,
     RELAY_REPLAY_PAGE_ORDER_CODE,
     REPLAY_FIXTURE_SCHEMA_VERSION,
     AbortAfter,
@@ -395,17 +396,37 @@ def test_apply_abort_after_zero_offset_emits_nothing_and_cancels() -> None:
 
 
 @pytest.mark.fulfills("VAL-V2M08-022")
-def test_apply_abort_after_beyond_stream_emits_all_and_does_not_cancel() -> None:
-    """If the recorded offset exceeds the stream length, no cancellation fires.
+def test_apply_abort_after_overshoot_raises_corruption() -> None:
+    """BUG-F3 (audit-r3 P2): recorded offset > stream length is corruption.
 
-    The cassette captured a complete stream that was shorter than the
-    recorded offset; honoring the recording means emitting what is there
-    without a synthetic cancellation event.
+    A valid recorder cannot capture a cancellation offset that exceeds
+    the recorded stream length. The previous behavior silently downgraded
+    overshoots to "no cancellation", masking truncated cassettes (e.g.
+    proxy died mid-write). The corrected behavior raises
+    ``RelayCassetteCorruptError`` so callers cannot replay a truncated
+    recording as if the stream finished normally.
     """
     tokens = ["t0", "t1"]
-    emitted, cancelled = apply_abort_after(tokens, AbortAfter(token_offset=99))
+    with pytest.raises(RelayCassetteCorruptError) as exc_info:
+        apply_abort_after(tokens, AbortAfter(token_offset=99))
+    details = exc_info.value.details
+    assert details["reason"] == RELAY_REPLAY_CANCELLATION_OVERSHOOT_CODE
+    assert details["token_offset"] == 99
+    assert details["stream_length"] == 2
+
+
+@pytest.mark.fulfills("VAL-V2M08-022")
+def test_apply_abort_after_at_boundary_emits_cancellation() -> None:
+    """BUG-F3 (audit-r3 P2): offset == len(tokens) is the boundary case.
+
+    The recorder observed every token and then the cancellation; replay
+    reproduces that by emitting all tokens AND the cancellation event.
+    Previously this case was silently downgraded to "no cancellation".
+    """
+    tokens = ["t0", "t1"]
+    emitted, cancelled = apply_abort_after(tokens, AbortAfter(token_offset=2))
     assert emitted == tokens
-    assert cancelled is None
+    assert cancelled == "cancelled_mid_stream"
 
 
 # -----------------------------------------------------------------------------
