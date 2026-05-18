@@ -26,6 +26,7 @@ import {
   verify as nodeVerify,
 } from "node:crypto";
 
+import { jcsCanonicalize } from "./canonical.js";
 import {
   RELAY_EVID_014,
   RELAY_VERIFY_ALG_MISMATCH,
@@ -114,67 +115,29 @@ export function b64uDecode(s: string): Uint8Array {
 }
 
 // ----------------------------------------------------------------------------
-// Canonical-JSON bytes (mirrors Python `canonical_json_bytes`)
+// Canonical-JSON bytes (BUG-C2: delegator to RFC 8785 JCS)
 // ----------------------------------------------------------------------------
 //
-// The Python verifier uses `json.dumps(obj, sort_keys=True,
-// separators=(",", ":"), ensure_ascii=True)` for its claim canonicalisation.
-// For byte-equality we must replicate that exact form here:
+// Cross-language parity moat: Python `verifier.py:140-166` makes
+// `canonical_json_bytes` a thin delegator to `jcs_canonicalize` so the
+// sign-side encoder used by `_payload_for_signing` and the JCS encoder
+// used elsewhere in the verifier package cannot drift apart. The
+// pre-fix TS implementation used `JSON.stringify` + `_ensureAscii`
+// (\\uXXXX escapes), which produced spec-incorrect bytes for any
+// non-ASCII string field -- different sha256 from Python for the same
+// wire bundle -> split-brain verdict.
 //
-//   1. Sort object keys lexicographically (UTF-16 code-unit order matches
-//      Python's str sort for ASCII-only keys, which the Relay claim
-//      schema enforces).
-//   2. Compact separators: "," between elements, ":" between key:value.
-//   3. ASCII-only escapes for non-ASCII code points (\uXXXX for BMP,
-//      surrogate-pair sequences for SMP).
+// Post-fix, this function is a thin delegator to `jcsCanonicalize`
+// (RFC 8785: literal UTF-8, ECMA-262 number form, sorted keys, compact
+// separators). The Python and TS verifiers MUST agree byte-for-byte on
+// every conformance-corpus case; the `w10_3_jcs_corpus` and
+// `w17_2_appendix_a` test suites enforce this on every PR.
 //
-// JSON.stringify with a sort-key replacer satisfies (1)+(2) for ASCII,
-// but does NOT escape non-ASCII -- equivalent to ensure_ascii=False.
-// We add an explicit non-ASCII escape pass to match Python's default.
-
-function _sortObjectKeys(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(_sortObjectKeys);
-  }
-  if (value !== null && typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
-    for (const k of Object.keys(obj).slice().sort()) {
-      // Defensive lookup under noUncheckedIndexedAccess.
-      const v = obj[k];
-      sorted[k] = _sortObjectKeys(v);
-    }
-    return sorted;
-  }
-  return value;
-}
-
-function _ensureAscii(s: string): string {
-  // Replace any code unit >= 0x80 with its \uXXXX escape. Surrogate pairs
-  // are emitted as two consecutive escapes (matches Python's
-  // ensure_ascii=True behavior for SMP code points).
-  let out = "";
-  for (let i = 0; i < s.length; i++) {
-    const cu = s.charCodeAt(i);
-    if (cu < 0x80) {
-      out += s.charAt(i);
-    } else {
-      out += "\\u" + cu.toString(16).padStart(4, "0");
-    }
-  }
-  return out;
-}
-
+// Kept as a named export rather than deleted because the
+// bundle_validator and transparency_log modules import it; the rename
+// to `jcsCanonicalize` is a separate cleanup pass.
 export function canonicalJsonBytes(value: unknown): Uint8Array {
-  const sorted = _sortObjectKeys(value);
-  const naive = JSON.stringify(sorted);
-  if (naive === undefined) {
-    throw new TypeError(
-      "canonicalJsonBytes: value is not JSON-encodable (undefined or function)",
-    );
-  }
-  const ascii = _ensureAscii(naive);
-  return new TextEncoder().encode(ascii);
+  return jcsCanonicalize(value);
 }
 
 // ----------------------------------------------------------------------------
@@ -702,4 +665,210 @@ function _verifyOneOverBytes(args: {
     return _check({ kid: args.kid, alg: args.alg, ok: false, reason: "signature did not verify under JWK" });
   }
   return _check({ kid: args.kid, alg: args.alg, ok: true });
+}
+
+// ----------------------------------------------------------------------------
+// Bundle-signature verification (BUG-C3 wire-shape parity with Python)
+// ----------------------------------------------------------------------------
+//
+// Per spec section L (`local_signer.py::sign_payload_ed25519` and
+// `verifier.py::verify_bundle` lines 379-560), the canonical wire shape
+// for each entry in a bundle's `signatures` array is:
+//
+//   {
+//     "alg":              "EdDSA" | "ES256" | "RS256",
+//     "kid":              "<string>",
+//     "signing_input_b64u": "<b64url(jcs_canonicalize(bundle - signatures))>",
+//     "signature_b64u":    "<b64url(raw signature)>"
+//   }
+//
+// The verifier (1) re-canonicalizes the bundle minus `signatures` to
+// recompute the expected signing-input bytes, (2) base64url-decodes the
+// producer-supplied `signing_input_b64u` and asserts byte-equality with
+// the recomputed canonical (detects bundle tampering after signing),
+// (3) verifies the raw signature against the recomputed bytes under the
+// JWK matched by `kid`.
+//
+// Backward-compatibility alias: the pre-fix TS validator emitted
+// `protected_b64u` (a different concept -- a JWS protected header). The
+// alias accepts a signature entry that supplies `protected_b64u` AS IF
+// it were `signing_input_b64u`. This is a one-release compatibility
+// bridge for any in-flight fixture; new bundles MUST use
+// `signing_input_b64u` and the contract test in
+// `audit_r3_parity.test.ts` enforces it.
+export interface BundleSignatureEntry {
+  alg?: unknown;
+  kid?: unknown;
+  signing_input_b64u?: unknown;
+  /** Legacy alias for `signing_input_b64u`; one-release back-compat only. */
+  protected_b64u?: unknown;
+  signature_b64u?: unknown;
+}
+
+export function verifyBundleSignature(args: {
+  signature: BundleSignatureEntry;
+  expectedCanonicalBytes: Uint8Array;
+  jwks: JWKS;
+  signatureIndex?: number;
+  allowedAlgs?: ReadonlySet<string>;
+}): SignatureCheck {
+  const allowed = args.allowedAlgs ?? SUPPORTED_ALGS;
+  const sig = args.signature;
+  const idxLabel =
+    typeof args.signatureIndex === "number" ? `<sig[${args.signatureIndex}]>` : "<sig>";
+
+  const kidRaw = sig.kid;
+  const algRaw = sig.alg;
+  const algStr = typeof algRaw === "string" ? algRaw : "<unknown>";
+
+  if (typeof kidRaw !== "string" || kidRaw.length === 0) {
+    return _check({
+      kid: idxLabel,
+      alg: algStr,
+      ok: false,
+      reason: "signature missing 'kid'",
+    });
+  }
+  const kid = kidRaw;
+
+  if (!allowed.has(algStr)) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason: `unsupported alg: '${algStr}'`,
+      code: RELAY_VERIFY_UNSUPPORTED_ALG,
+    });
+  }
+
+  // Alg-substitution detection (VAL-W10-011 + RFC 8725): the JWK kty
+  // MUST match the alg's expected kty.
+  const candidateJwk = _selectJwk(args.jwks, kid);
+  const expectedKty = _ktyForAlg(algStr);
+  if (candidateJwk !== null && expectedKty !== null && candidateJwk.kty !== expectedKty) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason: `alg-mismatch: alg='${algStr}' requires kty='${expectedKty}' but JWK has kty='${String(candidateJwk.kty)}'`,
+      code: RELAY_VERIFY_ALG_MISMATCH,
+    });
+  }
+
+  // Wire-field resolution: prefer the canonical `signing_input_b64u`,
+  // accept legacy `protected_b64u` as an alias only when the canonical
+  // field is absent. Mirrors Python's strict expectation while letting
+  // in-flight fixtures pass during the transition.
+  let signingInputB64u: unknown = sig.signing_input_b64u;
+  if (typeof signingInputB64u !== "string" || signingInputB64u.length === 0) {
+    if (typeof sig.protected_b64u === "string" && sig.protected_b64u.length > 0) {
+      signingInputB64u = sig.protected_b64u;
+    }
+  }
+  if (typeof signingInputB64u !== "string" || signingInputB64u.length === 0) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason: "signature missing 'signing_input_b64u'",
+    });
+  }
+
+  const signatureB64u = sig.signature_b64u;
+  if (typeof signatureB64u !== "string" || signatureB64u.length === 0) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason: "signature missing 'signature_b64u'",
+    });
+  }
+
+  let recordedSigningInput: Uint8Array;
+  try {
+    recordedSigningInput = b64uDecode(signingInputB64u);
+  } catch (exc) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason: `signing_input_b64u is not valid base64url: ${(exc as Error).message}`,
+    });
+  }
+
+  // Tamper-detection: producer's recorded canonical bytes MUST equal
+  // the verifier's recomputed canonical bytes. Python's verify_bundle
+  // (line 486) gates here.
+  const expected = args.expectedCanonicalBytes;
+  if (recordedSigningInput.length !== expected.length) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason:
+        "signing_input drift: recorded canonical bytes " +
+        "do not match recomputed payload (bundle tampered)",
+    });
+  }
+  for (let i = 0; i < expected.length; i++) {
+    if (recordedSigningInput[i] !== expected[i]) {
+      return _check({
+        kid,
+        alg: algStr,
+        ok: false,
+        reason:
+          "signing_input drift: recorded canonical bytes " +
+          "do not match recomputed payload (bundle tampered)",
+      });
+    }
+  }
+
+  if (candidateJwk === null) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason: `no JWK in trust anchor matches kid '${kid}'`,
+    });
+  }
+
+  let publicKey: import("node:crypto").KeyObject;
+  try {
+    publicKey = _loadPublicKeyFromJwk(candidateJwk);
+  } catch (exc) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason: `JWK load failed: ${(exc as Error).message}`,
+    });
+  }
+
+  let signatureBytes: Uint8Array;
+  try {
+    signatureBytes = b64uDecode(signatureB64u);
+  } catch (exc) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason: `signature_b64u is not valid base64url: ${(exc as Error).message}`,
+    });
+  }
+
+  const ok = _verifySignature({
+    alg: algStr,
+    publicKey,
+    signingInput: recordedSigningInput,
+    signature: signatureBytes,
+  });
+  if (!ok) {
+    return _check({
+      kid,
+      alg: algStr,
+      ok: false,
+      reason: "signature did not verify under JWK",
+    });
+  }
+  return _check({ kid, alg: algStr, ok: true });
 }

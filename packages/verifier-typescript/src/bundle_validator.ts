@@ -23,6 +23,7 @@
 
 import { createHash } from "node:crypto";
 
+import { checkArtifactPath } from "./bundle_paths.js";
 import { jcsCanonicalize, bundleDigest } from "./canonical.js";
 import { DEFAULT_JWKS_URL } from "./constants.js";
 import {
@@ -48,7 +49,9 @@ import {
 import {
   _selectJwk,
   canonicalJsonBytes,
+  verifyBundleSignature,
   verifyDetachedClaimSignature,
+  type BundleSignatureEntry,
   type JWK,
   type JWKS,
   type SignatureCheck,
@@ -365,7 +368,8 @@ function _verifyBundle(bundle: Record<string, unknown>, jwks: JWKS): JwsResult {
     signature_checks: [],
   };
   // Bundle-level digest is over the signature-stripped JCS canonical
-  // bytes (mirrors bundleDigest convention).
+  // bytes (mirrors bundleDigest convention and Python's
+  // `_payload_for_signing` + `canonical_json_bytes`).
   result.bundle_digest_sha256 = bundleDigest(bundle, { stripSignatures: true });
 
   const claims = bundle["claims"];
@@ -381,77 +385,68 @@ function _verifyBundle(bundle: Record<string, unknown>, jwks: JWKS): JwsResult {
     // No signatures: structure_ok stays true, signatures_ok is false.
     return result;
   }
+
+  // BUG-C3 wire-shape parity: the canonical signing payload is the
+  // bundle with `signatures` stripped. Each signature entry carries
+  // `signing_input_b64u` (b64url(jcs_canonicalize(payload))) and
+  // `signature_b64u`. This mirrors Python `verifier.py::verify_bundle`
+  // lines 366-560 exactly.
+  const stripped: Record<string, unknown> = {};
+  for (const k of Object.keys(bundle)) {
+    if (k === "signatures") continue;
+    stripped[k] = bundle[k];
+  }
+  const expectedCanonicalBytes = jcsCanonicalize(stripped);
+
   let allValid = true;
-  for (const sig of signatures) {
+  let digestOk = true;
+  let anyPresent = false;
+  for (let idx = 0; idx < signatures.length; idx++) {
+    const sig = signatures[idx];
     if (sig === null || typeof sig !== "object" || Array.isArray(sig)) {
       result.signature_checks.push({
-        kid: "<unknown>",
+        kid: `<sig[${idx}]>`,
         alg: "<unknown>",
         ok: false,
         reason: "signature entry is not an object",
         code: "",
       });
       allValid = false;
+      digestOk = false;
       continue;
     }
-    const s = sig as Record<string, unknown>;
-    // For multi-claim bundles the producer signs each claim with the
-    // detached payload-digest binding (RFC 7797). The signer's protected
-    // header carries `payload_sha256` over each claim's canonical bytes.
-    // For the bundle-level signature path we treat the bundle minus
-    // signatures as the payload.
-    const protectedB64u = s["protected_b64u"];
-    const signatureB64u = s["signature_b64u"];
-    const targetClaimIdxRaw = s["claim_index"];
-    if (typeof protectedB64u !== "string" || typeof signatureB64u !== "string") {
-      result.signature_checks.push({
-        kid: typeof s["kid"] === "string" ? (s["kid"] as string) : "<unknown>",
-        alg: typeof s["alg"] === "string" ? (s["alg"] as string) : "<unknown>",
-        ok: false,
-        reason: "signature missing 'protected_b64u' or 'signature_b64u'",
-        code: "",
-      });
-      allValid = false;
-      continue;
-    }
-    // Resolve which payload this signature binds to.
-    let claim: unknown;
-    if (typeof targetClaimIdxRaw === "number" && Number.isInteger(targetClaimIdxRaw)) {
-      const idx = targetClaimIdxRaw;
-      if (idx >= 0 && idx < claims.length) {
-        claim = claims[idx];
-      } else {
-        result.signature_checks.push({
-          kid: typeof s["kid"] === "string" ? (s["kid"] as string) : "<unknown>",
-          alg: typeof s["alg"] === "string" ? (s["alg"] as string) : "<unknown>",
-          ok: false,
-          reason: `claim_index ${idx} out of range for ${claims.length} claims`,
-          code: "",
-        });
-        allValid = false;
-        continue;
-      }
-    } else {
-      // Bundle-level binding: payload is the signature-stripped bundle.
-      const stripped: Record<string, unknown> = {};
-      for (const k of Object.keys(bundle)) {
-        if (k === "signatures") continue;
-        stripped[k] = bundle[k];
-      }
-      claim = stripped;
-    }
-    const check = verifyDetachedClaimSignature({
-      protectedB64u,
-      signatureB64u,
-      claim,
+    const check = verifyBundleSignature({
+      signature: sig as BundleSignatureEntry,
+      expectedCanonicalBytes,
       jwks,
+      signatureIndex: idx,
     });
     result.signature_checks.push(check);
-    if (!check.ok) {
+    if (check.ok) {
+      anyPresent = true;
+    } else {
       allValid = false;
+      // Python flips digest_ok=False on certain failures (missing kid,
+      // missing signing_input_b64u, signing_input drift, b64url decode
+      // failure). Conservatively flip digest_ok on any structural or
+      // signing-input failure -- the surface symptom is "the bundle's
+      // recorded canonical bytes don't equal the recomputed ones".
+      if (
+        check.reason === "signature missing 'kid'" ||
+        check.reason === "signature missing 'signing_input_b64u'" ||
+        check.reason.startsWith("signing_input drift:") ||
+        check.reason.startsWith("signing_input_b64u is not valid base64url:")
+      ) {
+        digestOk = false;
+      }
     }
   }
-  result.signatures_ok = allValid;
+  result.digest_ok = digestOk;
+  // Python's verify_bundle requires `any_signature_present` (line 563);
+  // we mirror that here -- a bundle whose signatures all failed
+  // pre-crypto checks is NOT `signatures_ok` even if `allValid` is
+  // vacuously true (empty checks).
+  result.signatures_ok = allValid && anyPresent;
   return result;
 }
 
@@ -588,6 +583,25 @@ export function validateBundle(args: {
           const declaredDigest = r["digest"];
           if (typeof artifactId !== "string") continue;
           if (typeof declaredDigest !== "string") continue;
+          // VAL-V2M08-015..017: path-traversal hardening MUST run BEFORE
+          // the caller-supplied resolver is invoked. A malicious
+          // artifact_id ("../../etc/passwd", "/etc/passwd", NFD-encoded
+          // name, etc.) reaching the resolver unfiltered would let an
+          // evidence bundle drive filesystem reads outside the session
+          // sandbox. Parity with Python bundle_validator.py:574-589.
+          const pathViolation = checkArtifactPath(artifactId);
+          if (pathViolation !== null) {
+            _appendError(output, {
+              reason: "path_violation",
+              message:
+                `claim[${ci}].evidence_refs[${ri}] artifact_id ` +
+                `${JSON.stringify(artifactId)} rejected by path screen ` +
+                `(${pathViolation.path_violation})`,
+              code: pathViolation.code,
+            });
+            output.digest_ok = false;
+            continue;
+          }
           let artifactBytes: Uint8Array | null = null;
           try {
             artifactBytes = opts.artifact_resolver(artifactId);

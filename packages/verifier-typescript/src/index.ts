@@ -34,18 +34,27 @@ export {
   b64uDecode,
   b64uEncode,
   canonicalJsonBytes,
+  verifyBundleSignature,
   verifyDetachedClaimSignature,
   verifyJwsCompact,
   verifyJwsDetached,
   verifyMultiSignatures,
 } from "./verifier.js";
 export type {
+  BundleSignatureEntry,
   JWK,
   JWKS,
   MultiSignatureAggregate,
   MultiSignatureResult,
   SignatureCheck,
 } from "./verifier.js";
+
+export {
+  MAX_ARTIFACT_PATH_BYTES,
+  RELAY_EVID_024_PATH,
+  checkArtifactPath,
+} from "./bundle_paths.js";
+export type { PathViolation } from "./bundle_paths.js";
 
 // ----------------------------------------------------------------------------
 // M06: TypeScript verifier parity surface (VAL-V2M06-001..025)
