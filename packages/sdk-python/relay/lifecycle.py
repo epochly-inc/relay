@@ -311,6 +311,10 @@ def build_gate_draft_envelope(
     manifest_commit_hash: str,
     actor_identity_hash: str,
     draft_id: str | None = None,
+    worker_id: str | None = None,
+    scope_type: str | None = None,
+    round: int | None = None,
+    evidence_refs: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Build a ``POST /v1/gates/{gate_id}/drafts`` body.
 
@@ -321,6 +325,14 @@ def build_gate_draft_envelope(
     Three-anchor handoff is enforced exactly as for the run-ingest
     envelope: missing/empty ``manifest_commit_hash`` or
     ``actor_identity_hash`` raises :class:`RelayHandoffIncomplete`.
+
+    Optional fields (``worker_id``, ``scope_type``, ``round``,
+    ``evidence_refs``) are emitted only when supplied; the control plane
+    enforces canonical ``required: true`` constraints at the wire/storage
+    layer. ``scope_id`` is always emitted and equals ``gate_id`` so the
+    envelope round-trips byte-equal to the TypeScript SDK
+    (``packages/sdk-typescript/src/lifecycle.ts::buildGateDraftEnvelope``)
+    for VAL-W4-020 cross-language parity.
     """
     gate_id = _require_non_empty_str("gate_id", gate_id)
     release_sha = _require_non_empty_str("release_sha", release_sha)
@@ -339,10 +351,11 @@ def build_gate_draft_envelope(
         actor_identity_hash=actor_identity_hash,
         manifest_commit_hash=manifest_commit_hash,
     )
-    return {
+    env: dict[str, Any] = {
         "schema_version": GATE_DRAFT_SCHEMA_VERSION,
         "draft_id": draft_id or _ulid.new_ulid(),
         "gate_id": gate_id,
+        "scope_id": gate_id,
         "release_sha": release_sha,
         "eval_run_ids": list(runs),
         "manifest_commit_hash": manifest,
@@ -351,6 +364,18 @@ def build_gate_draft_envelope(
         # (VAL-W3-016 grep guard); the gate engine writes the canonical
         # row.
     }
+    if worker_id is not None:
+        env["worker_id"] = _require_non_empty_str("worker_id", worker_id)
+    if scope_type is not None:
+        env["scope_type"] = _require_non_empty_str("scope_type", scope_type)
+    if round is not None:
+        env["round"] = int(round)
+    if evidence_refs is not None:
+        refs = list(evidence_refs)
+        for ref in refs:
+            _require_non_empty_str("evidence_ref", ref)
+        env["evidence_refs"] = refs
+    return env
 
 
 def _require_evidence_non_empty_str(name: str, value: Any) -> str:

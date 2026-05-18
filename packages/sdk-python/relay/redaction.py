@@ -527,15 +527,22 @@ def _escape_pointer_token(token: Any) -> str:
 def _to_string(value: Any) -> str:
     """Coerce a JSON-leaf value to a string for matcher consumption.
 
-    Bytes are decoded with ``errors='replace'`` so mixed-encoding OCR
-    output (VAL-W3-023) cannot smuggle a secret through an undecodable
-    byte. Bool / int / float / None are passed through ``str`` so a
-    matcher hitting a numeric leaf still works (rare but legal).
+    JSON primitives are coerced to their canonical JSON literal form so
+    cross-language redaction (Python vs TypeScript) produces byte-equal
+    HMAC digests for the same wire input: ``None``->``"null"``,
+    ``True``->``"true"``, ``False``->``"false"``. Numbers and strings
+    pass through. Bytes are decoded with ``errors='replace'`` so
+    mixed-encoding OCR output (VAL-W3-023) cannot smuggle a secret
+    through an undecodable byte.
     """
     if isinstance(value, str):
         return value
     if isinstance(value, bytes | bytearray):
         return bytes(value).decode("utf-8", errors="replace")
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
     return str(value)
 
 
