@@ -137,17 +137,25 @@ export type {
 export {
   MAX_BUNDLE_BYTES,
   MAX_BUNDLE_ENTRIES,
+  MAX_BUNDLE_SIGNATURES,
   RELAY_EVID_024,
   RELAY_EVID_040,
   RELAY_EVID_DECIDED_AT_MISSING,
+  RELAY_EVID_MISSING_TRUST_ANCHOR,
+  RELAY_EVID_SIGCOUNT_EXCEEDED,
+  TRUST_ANCHOR_CLASS_BYO,
+  TRUST_ANCHOR_CLASS_RELAY_INC,
+  TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL,
   TRUST_ANCHOR_LOCAL_DEV,
   VERIFIER_OUTPUT_SCHEMA,
   WARN_LOCAL_DEV_UNSUPPORTED,
   checkArchiveBombLimits,
+  classifyTrustAnchor,
   validateBundle,
   validateBundleWithArchiveCheck,
 } from "./bundle_validator.js";
 export type {
+  TrustAnchorClass,
   ValidateBundleOptions,
   VerifierOutputEnvelope,
 } from "./bundle_validator.js";
