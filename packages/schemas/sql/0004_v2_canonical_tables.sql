@@ -330,7 +330,13 @@ CREATE TABLE tool_call_spans (
     result_digest text,
     status text NOT NULL,
     latency_ms int,
-    marker_id uuid REFERENCES side_effect_markers(marker_id),
+    -- Audit-R3 (2026-05-18): the FK on marker_id -> side_effect_markers(
+    -- marker_id) is added by 0010_side_effects.sql via ALTER TABLE because
+    -- side_effect_markers is created in 0010 (later in lex order than 0004).
+    -- Declaring the FK inline here would fail when 0004 applies against a
+    -- fresh database. The column shape is preserved; the constraint is
+    -- deferred by exactly one migration.
+    marker_id uuid,
     parallel_index int
 );
 

@@ -470,17 +470,20 @@ class AdminActionService:
                     "terminal_round": terminal_round,
                     "new_round": new_round,
                 }
+                # Audit-R3 (2026-05-18): audit_log_entries.schema_version
+                # column was dropped (sidecar migration 0023) because
+                # relay.audit_log_entry.v1 is not a canonical envelope
+                # in envelopes.yaml / openapi.yaml / KNOWN_SCHEMA_IDS.
                 await conn.execute(
                     "INSERT INTO audit_log_entries ("
-                    "  audit_id, schema_version, project_id, scope_type, "
+                    "  audit_id, project_id, scope_type, "
                     "  scope_id, gate_id, action, actor_kind, "
                     "  actor_identity_hash, actor_role, reason, "
                     "  prior_round_id, new_round_id, "
                     "  manifest_commit_hash, payload, occurred_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         audit_id,
-                        SCHEMA_AUDIT_LOG_ENTRY,
                         self.project_id,
                         scope_type,
                         str(scope_id),
@@ -696,17 +699,18 @@ class AdminActionService:
                     "claim_digest": claim_digest,
                     "terminal_round": terminal_round,
                 }
+                # Audit-R3 (2026-05-18): audit_log_entries.schema_version
+                # column was dropped (sidecar migration 0023).
                 await conn.execute(
                     "INSERT INTO audit_log_entries ("
-                    "  audit_id, schema_version, project_id, scope_type, "
+                    "  audit_id, project_id, scope_type, "
                     "  scope_id, gate_id, action, actor_kind, "
                     "  actor_identity_hash, actor_role, reason, "
                     "  prior_round_id, new_round_id, "
                     "  manifest_commit_hash, payload, occurred_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         audit_id,
-                        SCHEMA_AUDIT_LOG_ENTRY,
                         self.project_id,
                         scope_type,
                         str(scope_id),
@@ -779,16 +783,19 @@ class AdminActionService:
                     if signature
                     else f"unsigned-local-{extension_id}"
                 )
+                # Audit-R3 (2026-05-18): evidence_x_relay_extensions.
+                # schema_version column was dropped (sidecar migration
+                # 0023) because relay.evidence_x_relay_extension.v1 is
+                # not a canonical envelope.
                 await conn.execute(
                     "INSERT INTO evidence_x_relay_extensions ("
-                    "  extension_id, schema_version, evidence_bundle_id, "
+                    "  extension_id, evidence_bundle_id, "
                     "  extension_namespace, claim_digest, payload, "
                     "  manifest_commit_hash, signer_key_id, signature, "
                     "  created_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         extension_id,
-                        SCHEMA_X_RELAY_EXTENSION,
                         str(evidence_bundle_id),
                         X_RELAY_ADMIN_TERMINATE_NS,
                         claim_digest,
@@ -835,10 +842,12 @@ async def fetch_audit_entry(
     assertions. Production callers should query directly with a typed
     DAL.
     """
+    # Audit-R3 (2026-05-18): audit_log_entries.schema_version column was
+    # dropped by sidecar migration 0023 (not a canonical envelope).
     async with (
         _borrow_gate_writer(database) as conn,
         conn.execute(
-            "SELECT audit_id, schema_version, project_id, scope_type, "
+            "SELECT audit_id, project_id, scope_type, "
             "       scope_id, gate_id, action, actor_kind, "
             "       actor_identity_hash, actor_role, reason, "
             "       prior_round_id, new_round_id, manifest_commit_hash, "
@@ -852,7 +861,6 @@ async def fetch_audit_entry(
         return None
     columns = (
         "audit_id",
-        "schema_version",
         "project_id",
         "scope_type",
         "scope_id",

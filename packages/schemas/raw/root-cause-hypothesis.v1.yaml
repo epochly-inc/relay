@@ -100,10 +100,14 @@ json_schema:
       type:
         - string
         - "null"
+      # Audit-R3 (2026-05-18): aligned with spec line 3325 +
+      # envelopes.yaml:917-921. Canonical set is
+      # {accept, reject, modify, pending}.
       enum:
         - accept
-        - modify
         - reject
+        - modify
+        - pending
         - null
     promoted_to_replay_case_id:
       type:

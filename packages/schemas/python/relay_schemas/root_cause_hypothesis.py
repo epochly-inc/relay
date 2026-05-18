@@ -74,8 +74,14 @@ HYPOTHESIS_CLASSES: frozenset[str] = frozenset(
 GENERATOR_REGEX: str = r"^heuristic\.v\d+$|^llm\.[a-z0-9-]+:v\d+$"
 
 # Closed set of reviewer_decision values at the wire layer. The DB layer
-# stores NULL or one of these three strings (VAL-V2M05-011).
-REVIEWER_DECISIONS: frozenset[str] = frozenset({"accept", "modify", "reject"})
+# stores NULL or one of these four strings (VAL-V2M05-011).
+#
+# Audit-R3 (2026-05-18): aligned to spec line 3325 + envelopes.yaml:
+# {accept, reject, modify, pending}. The prior three-value set omitted
+# 'pending' (a hypothesis awaiting review but not yet decided).
+REVIEWER_DECISIONS: frozenset[str] = frozenset(
+    {"accept", "reject", "modify", "pending"}
+)
 
 
 def _load_yaml() -> dict[str, Any]:

@@ -149,16 +149,27 @@ def fresh_sqlite() -> Iterator[sqlite3.Connection]:  # type: ignore[name-defined
 
 def _explain_sqlite_ddl_for_test() -> str:
     """Extract the CREATE TABLE root_cause_hypotheses statement from the M05
-    sidecar migration and run it standalone (no FK or trigger dependencies).
+    sidecar migration AND any later migration that rebuilds the table.
+
+    Audit-R3 (2026-05-18): migration 0023 rebuilds root_cause_hypotheses
+    with the widened reviewer_decision CHECK (adds 'pending'). The
+    production migration path applies 0017 then 0023 sequentially; this
+    helper mirrors that sequence by extracting the most recent CREATE
+    TABLE statement found in the migration files (in lex order).
     """
-    text = _SQLITE_MIGRATION.read_text(encoding="utf-8")
-    match = re.search(
-        r"CREATE\s+TABLE\s+root_cause_hypotheses[\s\S]+?\);",
-        text,
-        re.IGNORECASE,
-    )
-    assert match, "explain CREATE TABLE statement not found in 0017_explain.sql"
-    return match.group(0) + ";\n"
+    migrations_dir = _SQLITE_MIGRATION.parent
+    create_stmt: str | None = None
+    for sql_path in sorted(migrations_dir.glob("*.sql")):
+        text = sql_path.read_text(encoding="utf-8")
+        for match in re.finditer(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?root_cause_hypotheses"
+            r"[\s\S]+?\);",
+            text,
+            re.IGNORECASE,
+        ):
+            create_stmt = match.group(0)
+    assert create_stmt, "root_cause_hypotheses CREATE TABLE not found in any sidecar migration"
+    return create_stmt + ";\n"
 
 
 # ===========================================================================
@@ -554,7 +565,10 @@ def test_reviewer_decision_accepts_canonical(
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M05-011")
-@pytest.mark.parametrize("value", ["pending", "ACCEPT", "approved"])
+# Audit-R3 (2026-05-18): 'pending' moved from rejected set to accepted
+# set per spec line 3325 + envelopes.yaml. Truly-bogus values still
+# rejected.
+@pytest.mark.parametrize("value", ["ACCEPT", "approved", "rejected"])
 def test_reviewer_decision_rejects_non_canonical(
     fresh_sqlite: sqlite3.Connection, value: str
 ) -> None:

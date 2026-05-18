@@ -46,10 +46,32 @@ MIGRATIONS_DIR = (
 
 
 async def _bootstrap(db_path: Path) -> None:
-    """Apply every migration in lex order against a fresh SQLite db."""
+    """Apply every migration in lex order against a fresh SQLite db.
+
+    Audit-R3 (2026-05-18): mirror __schema_migrations tracker so any
+    subsequent _run_migrations call skips already-applied non-idempotent
+    migrations.
+    """
     async with aiosqlite.connect(str(db_path)) as conn:
+        await conn.executescript(
+            "CREATE TABLE IF NOT EXISTS __schema_migrations ("
+            "  filename   TEXT PRIMARY KEY,"
+            "  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ");"
+        )
         for sql in sorted(MIGRATIONS_DIR.glob("*.sql")):
+            filename = sql.name
+            async with conn.execute(
+                "SELECT 1 FROM __schema_migrations WHERE filename = ?",
+                (filename,),
+            ) as cur:
+                if await cur.fetchone() is not None:
+                    continue
             await conn.executescript(sql.read_text(encoding="utf-8"))
+            await conn.execute(
+                "INSERT INTO __schema_migrations (filename) VALUES (?)",
+                (filename,),
+            )
         await conn.commit()
 
 

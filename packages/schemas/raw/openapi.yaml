@@ -44,7 +44,40 @@ info:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
 
-paths: {}
+paths:
+  # Audit-R3 (2026-05-18): minimum-viable HTTP route contract entries.
+  # The sidecar runtime exposes 33+ v1 routes via FastAPI decorators in
+  # apps/local-sidecar/relay_sidecar/runtime.py. The previously-empty
+  # paths: {} declaration meant the OpenAPI contract was silent on every
+  # route shape. Fully enumerating all 33 routes here is a follow-up
+  # work-item (audit-R3 remaining-work list); this entry establishes the
+  # contract shape and the runtime/CI machinery for evaluating it. New
+  # routes added to the runtime MUST land here in the same PR.
+
+  /diagnostics/runtime:
+    get:
+      operationId: getDiagnosticsRuntime
+      summary: Read sidecar runtime diagnostics
+      description: |
+        Returns the current sidecar runtime state -- start time, uptime,
+        active connections, lock state. Documented at
+        apps/local-sidecar/relay_sidecar/runtime.py around the
+        @app.get('/diagnostics/runtime') decorator. Authenticated via
+        bearer token; no body.
+      responses:
+        '200':
+          description: Runtime diagnostics snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
 components:
   schemas:
@@ -361,7 +394,9 @@ components:
       additionalProperties: false
       description: |
         Actor identity registry. FK target for the three-anchor handoff.
-        Spec C.5.
+        Spec C.5. Audit-R3 (2026-05-18) widened the kind enum to align
+        with the sidecar 12-value operational set; envelopes.yaml is
+        the canonical reference.
       required:
         - identity_hash
         - kind
@@ -371,7 +406,21 @@ components:
           $ref: '#/components/schemas/Sha256Hash'
         kind:
           type: string
-          enum: [human, bot, worker, reviewer]
+          enum:
+            - human
+            - bot
+            - reviewer
+            - sdk
+            - machine
+            - worker
+            - gate_engine
+            - result_writer
+            - evidence_signer
+            - cron
+            - control_plane
+            - validation_worker
+            - ingest_worker
+            - replay_worker
         created_at:
           type: string
           format: date-time

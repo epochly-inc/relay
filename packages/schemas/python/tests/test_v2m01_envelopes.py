@@ -477,7 +477,13 @@ def test_tool_call_spans_postgres_ddl() -> None:
     assert "status text not null" in lowered
     assert "latency_ms int" in lowered
     assert "marker_id uuid" in lowered
-    assert "references side_effect_markers(marker_id)" in lowered
+    # Audit-R3 (2026-05-18): the FK to side_effect_markers(marker_id) is
+    # now deferred to 0010_side_effects.sql via ALTER TABLE because the
+    # FK target (side_effect_markers) is created in 0010, AFTER 0004 in
+    # lex order. Inline FK at 0004 would fail. Verify deferred form.
+    side_effects_ddl = (_SQL_DIR / "0010_side_effects.sql").read_text(encoding="utf-8").lower()
+    assert "tool_call_spans_marker_fk" in side_effects_ddl
+    assert "foreign key (marker_id) references side_effect_markers(marker_id)" in side_effects_ddl
     assert "parallel_index int" in lowered
 
 

@@ -5,7 +5,32 @@
  * Drift check: uv run python scripts/check-codegen-drift.py
  */
 
-export type paths = Record<string, never>;
+export interface paths {
+    "/diagnostics/runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read sidecar runtime diagnostics
+         * @description Returns the current sidecar runtime state -- start time, uptime,
+         *     active connections, lock state. Documented at
+         *     apps/local-sidecar/relay_sidecar/runtime.py around the
+         *     @app.get('/diagnostics/runtime') decorator. Authenticated via
+         *     bearer token; no body.
+         */
+        get: operations["getDiagnosticsRuntime"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+}
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
@@ -157,12 +182,14 @@ export interface components {
         };
         /**
          * @description Actor identity registry. FK target for the three-anchor handoff.
-         *     Spec C.5.
+         *     Spec C.5. Audit-R3 (2026-05-18) widened the kind enum to align
+         *     with the sidecar 12-value operational set; envelopes.yaml is
+         *     the canonical reference.
          */
         Actor: {
             identity_hash: components["schemas"]["Sha256Hash"];
             /** @enum {string} */
-            kind: "human" | "bot" | "worker" | "reviewer";
+            kind: "human" | "bot" | "reviewer" | "sdk" | "machine" | "worker" | "gate_engine" | "result_writer" | "evidence_signer" | "cron" | "control_plane" | "validation_worker" | "ingest_worker" | "replay_worker";
             /** Format: date-time */
             created_at: string;
             revoked_at?: string | null;
@@ -1050,4 +1077,36 @@ export interface components {
     pathItems: never;
 }
 export type $defs = Record<string, never>;
-export type operations = Record<string, never>;
+export interface operations {
+    getDiagnosticsRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runtime diagnostics snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+}

@@ -171,7 +171,9 @@ class GateRound(BaseModel):
 class Actor(BaseModel):
     """
     Actor identity registry. FK target for the three-anchor handoff.
-    Spec C.5.
+    Spec C.5. Audit-R3 (2026-05-18) widened the kind enum to align
+    with the sidecar 12-value operational set; envelopes.yaml is
+    the canonical reference.
 
     """
 
@@ -179,7 +181,22 @@ class Actor(BaseModel):
         extra="forbid",
     )
     identity_hash: Sha256Hash
-    kind: Literal["human", "bot", "worker", "reviewer"]
+    kind: Literal[
+        "human",
+        "bot",
+        "reviewer",
+        "sdk",
+        "machine",
+        "worker",
+        "gate_engine",
+        "result_writer",
+        "evidence_signer",
+        "cron",
+        "control_plane",
+        "validation_worker",
+        "ingest_worker",
+        "replay_worker",
+    ]
     created_at: AwareDatetime
     revoked_at: AwareDatetime | None = None
 

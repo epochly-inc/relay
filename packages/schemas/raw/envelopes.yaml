@@ -219,11 +219,35 @@ schemas:
       whose actor_identity_hash is missing from this table OR whose
       revoked_at is non-null MUST fail with HandoffResult(ok=False,
       reason="ACTOR_NOT_REGISTERED") (contract preamble line 912).
+
+      Audit-R3 (2026-05-18): kind enum was widened from the original
+      4-value set {human, bot, worker, reviewer} to the operational
+      12-value set used by the local-sidecar profile (test fixtures,
+      state-engine writer, ingest worker). The sidecar enum in
+      apps/local-sidecar/migrations/0006_manifest_versions.sql:44-45
+      is the empirical reference; envelopes.yaml is the canonical
+      wire-format definition aligned to it. Spec sectionA is silent
+      on the closed set; this audit fixes that ambiguity by locking
+      the wire-format enum here.
     fields:
       identity_hash:  { type: sha256_hash, required: true, primary_key: true }
       kind:
         type: enum
-        values: [human, bot, worker, reviewer]
+        values:
+          - human
+          - bot
+          - reviewer
+          - sdk
+          - machine
+          - worker
+          - gate_engine
+          - result_writer
+          - evidence_signer
+          - cron
+          - control_plane
+          - validation_worker
+          - ingest_worker
+          - replay_worker
         required: true
       created_at:     { type: timestamptz, required: true }
       revoked_at:     { type: timestamptz, required: false, nullable: true }

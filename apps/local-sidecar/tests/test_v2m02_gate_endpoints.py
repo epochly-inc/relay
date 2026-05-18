@@ -48,7 +48,10 @@ async def test_put_gate_upserts(
     assert r1.status_code == 201, r1.text
     payload = json.loads(r1.text)
     assert payload["gate_id"] == "gate-checkout"
-    assert payload["schema_version"].startswith("relay.gate.v")
+    # Audit-R3 (2026-05-18): the made-up wire-level schema_version
+    # "relay.gate.v1" was dropped from the response (not in
+    # KNOWN_SCHEMA_IDS / envelopes.yaml). Response carries gate_id only.
+    assert "schema_version" not in payload
     # Second PUT -> 200 (existing).
     r2 = await c.put(
         "/v1/gates/gate-checkout",

@@ -178,3 +178,30 @@ CREATE TABLE side_effect_proofs (
 
 CREATE INDEX side_effect_proofs_marker
     ON side_effect_proofs (marker_id);
+
+-- -----------------------------------------------------------------------------
+-- Deferred FK: tool_call_spans.marker_id -> side_effect_markers(marker_id)
+-- -----------------------------------------------------------------------------
+--
+-- Audit-R3 (2026-05-18): tool_call_spans is created in 0004_v2_canonical_
+-- tables.sql, BEFORE side_effect_markers (this migration). The inline FK
+-- declaration at 0004 would fail because the FK target does not yet
+-- exist at 0004 application time. The shape of the column is preserved
+-- in 0004; the constraint is added here, after side_effect_markers exists.
+-- Guarded with a conditional DO block so re-running the migration is a
+-- no-op (the constraint name lookup short-circuits).
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'tool_call_spans'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'tool_call_spans_marker_fk'
+    ) THEN
+        ALTER TABLE tool_call_spans
+            ADD CONSTRAINT tool_call_spans_marker_fk
+            FOREIGN KEY (marker_id) REFERENCES side_effect_markers(marker_id);
+    END IF;
+END$$;

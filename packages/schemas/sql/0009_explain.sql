@@ -59,9 +59,14 @@ CREATE TABLE root_cause_hypotheses (
     generator                  text NOT NULL
         CHECK (generator ~ '^heuristic\.v\d+$|^llm\.[a-z0-9-]+:v\d+$'),
     reviewer_email             text,
+    -- Audit-R3 (2026-05-18): align reviewer_decision enum with spec
+    -- line 3325 + envelopes.yaml:917-921 + openapi.yaml:1559-1563. The
+    -- canonical set is {accept, reject, modify, pending}. The prior
+    -- three-value set omitted 'pending' (a hypothesis awaiting review
+    -- but not yet decided).
     reviewer_decision          text
         CHECK (reviewer_decision IS NULL
-               OR reviewer_decision IN ('accept','modify','reject')),
+               OR reviewer_decision IN ('accept','reject','modify','pending')),
     promoted_to_replay_case_id uuid REFERENCES replay_cases(replay_case_id),
     schema_version             text NOT NULL DEFAULT 'relay.root_cause_hypothesis.v1'
         CHECK (schema_version = 'relay.root_cause_hypothesis.v1'),
