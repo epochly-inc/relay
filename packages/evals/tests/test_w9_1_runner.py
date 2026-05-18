@@ -119,10 +119,13 @@ def test_runner_writes_canonical_eval_run_row(
     assert summary.score == 1.0
     assert summary.manifest_commit_hash == fixed_manifest_hash
 
-    # Persisted row check
+    # Persisted row check. Audit-R4 (2026-05-18): eval_runs.schema_version
+    # column was dropped (the literal 'relay.eval_run.v1' is not in
+    # KNOWN_SCHEMA_IDS and was already absent from the wire payload). The
+    # SELECT and assertion for that column are removed here to match.
     row = eval_db.execute(
         "SELECT eval_run_id, dataset_id, agent_version, release_sha, "
-        "status, score, passed, schema_version, manifest_commit_hash, "
+        "status, score, passed, manifest_commit_hash, "
         "summary FROM eval_runs WHERE eval_run_id = ?",
         (summary.eval_run_id,),
     ).fetchone()
@@ -133,7 +136,6 @@ def test_runner_writes_canonical_eval_run_row(
     assert row["status"] == "passed"
     assert row["score"] == 1.0
     assert row["passed"] == 1
-    assert row["schema_version"] == "relay.eval_run.v1"
     assert row["manifest_commit_hash"] == fixed_manifest_hash
     summary_payload = json.loads(row["summary"])
     assert summary_payload["case_count"] == 3

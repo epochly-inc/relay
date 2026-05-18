@@ -25,14 +25,23 @@
 -- PK shape declared here.
 --
 -- Per CLAUDE.md keystone invariant #10: every persisted canonical envelope
--- carries schema_version pinned via SQL CHECK. ``gates`` declares one because
--- a canonical Gate envelope exists in envelopes.yaml + openapi.yaml + the
--- KNOWN_SCHEMA_IDS set (added by the same audit-R3 fix). runs / projects /
--- contracts do NOT carry schema_version here -- no canonical envelope exists
--- for them yet in envelopes.yaml; adding one prematurely would propagate
--- an unbacked literal across the codegen surface. When the spec promotes
--- those entities to canonical envelopes (planned for v0.3), a follow-up
--- migration adds the column with the appropriate Literal pin.
+-- carries schema_version pinned via SQL CHECK. Audit-R4 (2026-05-18): the
+-- prior audit-R3 fix pinned ``gates.schema_version`` to ``relay.gate.v1``
+-- on this canonical Postgres table, but the SAME audit-R3 batch also
+-- dropped the literal from the ``PUT /v1/gates`` wire response on the
+-- rationale that Gate is internal configuration, not a canonical persisted
+-- envelope (no entry in envelopes.yaml / openapi.yaml / KNOWN_SCHEMA_IDS).
+-- That left ``relay.gate.v1`` stranded as a DDL-only literal contradicting
+-- the wire-level decision and violating keystone #10 (engines refuse
+-- unknown schema_versions on write -- this literal was unknown to the
+-- authoritative KNOWN_SCHEMA_IDS set in
+-- packages/evals/src/relay_evals/templates/schema_match.py). Resolution:
+-- drop the column from gates. The sidecar mirror already DROPped the
+-- column in apps/local-sidecar/migrations/0023_audit_r3_schema_alignment.sql.
+-- runs / projects / contracts likewise do not carry schema_version here.
+-- When/if the spec promotes Gate to a canonical envelope, the column +
+-- KNOWN_SCHEMA_IDS + envelopes.yaml entry all land in one consistent
+-- audit batch.
 --
 -- IF NOT EXISTS is intentional: these tables may already exist in
 -- development databases where the audit fix was applied incrementally.
@@ -100,8 +109,6 @@ CREATE TABLE IF NOT EXISTS gates (
     remediation_round_cap    int NOT NULL DEFAULT 5
         CHECK (remediation_round_cap >= 1 AND remediation_round_cap <= 50),
     cascade_on_block         boolean NOT NULL DEFAULT true,
-    schema_version           text NOT NULL DEFAULT 'relay.gate.v1'
-        CHECK (schema_version = 'relay.gate.v1'),
     created_at               timestamptz NOT NULL DEFAULT now(),
     UNIQUE(project_id, name)
 );

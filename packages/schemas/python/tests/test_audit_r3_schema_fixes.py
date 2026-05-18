@@ -59,12 +59,27 @@ def test_d1_parent_tables_exist() -> None:
 
 
 @pytest.mark.plumbing
-def test_d1_gates_table_schema_version_pinned() -> None:
-    """gates carries schema_version CHECK pinning to relay.gate.v1 per
-    keystone invariant #10."""
-    text = _read(_SQL_DIR / "0000_v2_parent_tables.sql")
-    assert "schema_version" in text
-    assert "check (schema_version = 'relay.gate.v1')" in text.lower()
+def test_d1_gates_table_schema_version_dropped_audit_r4() -> None:
+    """Audit-R4 (2026-05-18): the schema_version column was removed from
+    the canonical Postgres ``gates`` table because the corresponding
+    literal ``relay.gate.v1`` is NOT in
+    :data:`relay_evals.templates.schema_match.KNOWN_SCHEMA_IDS`, NOT in
+    envelopes.yaml, and NOT in openapi.yaml -- the wire response for
+    ``PUT /v1/gates`` had already dropped it in the audit-R3 batch. The
+    stranded DDL pin contradicted that decision and violated CLAUDE.md
+    keystone #10. This test guards against regression: no future PR may
+    re-introduce a gates.schema_version CHECK pinning relay.gate.v1
+    without first adding the literal to KNOWN_SCHEMA_IDS and envelopes.
+    """
+    text = _read(_SQL_DIR / "0000_v2_parent_tables.sql").lower()
+    # The CHECK constraint must not exist.
+    assert "check (schema_version = 'relay.gate.v1')" not in text, (
+        "audit-R4 regression: gates.schema_version CHECK was re-introduced"
+    )
+    # The literal must not appear as a column DEFAULT either.
+    assert "default 'relay.gate.v1'" not in text, (
+        "audit-R4 regression: relay.gate.v1 literal re-introduced as DEFAULT"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,26 +204,65 @@ def test_d8_root_cause_hypothesis_yaml_enum() -> None:
 # ---------------------------------------------------------------------------
 
 
+# Audit-R4 (2026-05-18): the canonical Actor.kind enum is the closed
+# 14-value set below. envelopes.yaml, openapi.yaml, and the sidecar
+# SQLite CHECK (apps/local-sidecar/migrations/0006_manifest_versions.sql
+# as broadened by 0024_audit_r4_actors_kind_alignment.sql) MUST be in
+# byte-equal alignment. Any drift between the three layers is a P0
+# bug: a wire payload accepted by codegen validation but rejected by
+# sidecar INSERT (or vice versa) breaks the three-anchor handoff
+# guarantee (keystone #4) by introducing an unobservable rejection path.
+_ACTOR_KIND_CANONICAL: frozenset[str] = frozenset({
+    "human",
+    "bot",
+    "reviewer",
+    "sdk",
+    "machine",
+    "worker",
+    "gate_engine",
+    "result_writer",
+    "evidence_signer",
+    "cron",
+    "control_plane",
+    "validation_worker",
+    "ingest_worker",
+    "replay_worker",
+})
+
+
 @pytest.mark.plumbing
 def test_d9b_actor_kind_envelopes_yaml_widened() -> None:
-    """envelopes.yaml Actor.kind enum includes the operational kinds used
-    by the sidecar test fixtures (sdk, machine, gate_engine, etc.)."""
+    """envelopes.yaml Actor.kind enum equals the canonical 14-value set.
+
+    Audit-R4 hardened this from a 5-value subset assertion to full set
+    equality so any drift between envelopes.yaml and the openapi.yaml /
+    sidecar SQLite CHECK is caught at plumbing tier.
+    """
     text = _read(_RAW_DIR / "envelopes.yaml")
     data = yaml.safe_load(text)
-    kind_values = data["schemas"]["Actor"]["fields"]["kind"]["values"]
-    required = {"sdk", "machine", "gate_engine", "control_plane", "worker"}
-    missing = required - set(kind_values)
-    assert not missing, f"Actor.kind missing operational kinds: {missing}"
+    kind_values = set(data["schemas"]["Actor"]["fields"]["kind"]["values"])
+    assert kind_values == _ACTOR_KIND_CANONICAL, (
+        f"Actor.kind drift in envelopes.yaml: "
+        f"missing={_ACTOR_KIND_CANONICAL - kind_values}, "
+        f"extra={kind_values - _ACTOR_KIND_CANONICAL}"
+    )
 
 
 @pytest.mark.plumbing
 def test_d9b_actor_kind_openapi_yaml_widened() -> None:
-    """openapi.yaml Actor.kind enum matches envelopes.yaml."""
+    """openapi.yaml Actor.kind enum equals the canonical 14-value set.
+
+    Audit-R4 hardened this from a 5-value subset assertion to full set
+    equality so any drift between openapi.yaml and envelopes.yaml /
+    sidecar SQLite CHECK is caught at plumbing tier.
+    """
     text = _read(_RAW_DIR / "openapi.yaml")
     data = yaml.safe_load(text)
-    kind_values = (
+    kind_values = set(
         data["components"]["schemas"]["Actor"]["properties"]["kind"]["enum"]
     )
-    required = {"sdk", "machine", "gate_engine", "control_plane", "worker"}
-    missing = required - set(kind_values)
-    assert not missing, f"Actor.kind in openapi missing kinds: {missing}"
+    assert kind_values == _ACTOR_KIND_CANONICAL, (
+        f"Actor.kind drift in openapi.yaml: "
+        f"missing={_ACTOR_KIND_CANONICAL - kind_values}, "
+        f"extra={kind_values - _ACTOR_KIND_CANONICAL}"
+    )

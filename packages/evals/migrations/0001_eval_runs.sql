@@ -37,8 +37,20 @@
 
 CREATE TABLE IF NOT EXISTS eval_runs (
     eval_run_id TEXT PRIMARY KEY,
-    schema_version TEXT NOT NULL DEFAULT 'relay.eval_run.v1'
-        CHECK (schema_version = 'relay.eval_run.v1'),
+    -- Audit-R4 (2026-05-18): schema_version column dropped. The prior
+    -- audit-R3 fix pinned eval_runs.schema_version to 'relay.eval_run.v1',
+    -- but the same audit-R3 batch removed the literal from the
+    -- POST /v1/eval-runs wire response (apps/local-sidecar/relay_sidecar/
+    -- runtime.py:2731) on the rationale that EvalRun is an internal
+    -- aggregate row, not a canonical persisted envelope (no entry in
+    -- envelopes.yaml / openapi.yaml / KNOWN_SCHEMA_IDS). The stranded DDL
+    -- pin contradicted the wire-level decision and violated CLAUDE.md
+    -- keystone #10 (engines refuse unknown schema_versions on write;
+    -- 'relay.eval_run.v1' is unknown to the authoritative
+    -- KNOWN_SCHEMA_IDS frozenset at packages/evals/src/relay_evals/
+    -- templates/schema_match.py). eval_results retains its
+    -- schema_version pin to 'relay.eval_result.v1' because that literal
+    -- IS in KNOWN_SCHEMA_IDS.
     project_id TEXT,
     dataset_id TEXT NOT NULL,
     agent_version TEXT NOT NULL,
