@@ -1,0 +1,55 @@
+{
+  "schema_version": "relay.gate_draft_parity.v1",
+  "fixtures": [
+    {
+      "name": "minimal_required_only",
+      "inputs": {
+        "gate_id": "gate-001",
+        "release_sha": "release-sha-abc",
+        "eval_run_ids": ["run-eval-1"],
+        "manifest_commit_hash": "sha256-manifestmanifestmanifestmanifestmanifestmanifestmanifestmanife",
+        "actor_identity_hash": "sha256-actoractoractoractoractoractoractoractoractoractoractoractoractor",
+        "draft_id": "01JX0GATEDRAFT00000000000A"
+      },
+      "expected_envelope": {
+        "schema_version": "relay.gate_decision_draft.v1",
+        "draft_id": "01JX0GATEDRAFT00000000000A",
+        "gate_id": "gate-001",
+        "release_sha": "release-sha-abc",
+        "eval_run_ids": ["run-eval-1"],
+        "manifest_commit_hash": "sha256-manifestmanifestmanifestmanifestmanifestmanifestmanifestmanife",
+        "actor_identity_hash": "sha256-actoractoractoractoractoractoractoractoractoractoractoractoractor",
+        "scope_id": "gate-001"
+      }
+    },
+    {
+      "name": "full_optionals",
+      "inputs": {
+        "gate_id": "gate-002",
+        "release_sha": "release-sha-xyz",
+        "eval_run_ids": ["run-eval-1", "run-eval-2"],
+        "manifest_commit_hash": "sha256-manifestmanifestmanifestmanifestmanifestmanifestmanifestmanife",
+        "actor_identity_hash": "sha256-actoractoractoractoractoractoractoractoractoractoractoractoractor",
+        "draft_id": "01JX0GATEDRAFT00000000000B",
+        "worker_id": "worker-1",
+        "scope_type": "run",
+        "round": 3,
+        "evidence_refs": ["run-result-1", "evidence-bundle-1"]
+      },
+      "expected_envelope": {
+        "schema_version": "relay.gate_decision_draft.v1",
+        "draft_id": "01JX0GATEDRAFT00000000000B",
+        "gate_id": "gate-002",
+        "release_sha": "release-sha-xyz",
+        "eval_run_ids": ["run-eval-1", "run-eval-2"],
+        "manifest_commit_hash": "sha256-manifestmanifestmanifestmanifestmanifestmanifestmanifestmanife",
+        "actor_identity_hash": "sha256-actoractoractoractoractoractoractoractoractoractoractoractoractor",
+        "scope_id": "gate-002",
+        "worker_id": "worker-1",
+        "scope_type": "run",
+        "round": 3,
+        "evidence_refs": ["run-result-1", "evidence-bundle-1"]
+      }
+    }
+  ]
+}

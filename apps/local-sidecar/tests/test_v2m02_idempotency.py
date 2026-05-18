@@ -11,6 +11,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta
 
@@ -105,6 +106,15 @@ async def test_idempotency_key_different_digest_409(
 async def test_idempotency_row_persisted_with_24h_ttl(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
+    """Audit fix (2026-05-17 P0): the persisted row mirrors the canonical
+    Postgres shape declared at packages/schemas/sql/0002_control_plane.sql
+    lines 107-126 (PK idempotency_key ULID, request_digest sha256-<hex>,
+    first_seen_at, expires_at, schema_version pinned, project_id present).
+    The sidecar runtime compresses the client-supplied HTTP Idempotency-Key
+    header into the canonical ULID via the same derivation used at write
+    time (see ``_canonical_idempotency_key`` in
+    apps/local-sidecar/relay_sidecar/runtime.py).
+    """
     c, db_path, _app = v2m02_client
     headers = {
         **scope_header("gates:configure"),
@@ -116,21 +126,49 @@ async def test_idempotency_row_persisted_with_24h_ttl(
         headers=headers,
     )
     assert r.status_code == 201, r.text
+    # Derive the canonical idempotency_key the same way the runtime does.
+    # surface = "POST /v1/manifests" (canonical route string), user_key =
+    # "idem-row-1" -> 26-char Crockford-base32 ULID.
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    material = b"POST /v1/manifests:idem-row-1"
+    digest_bytes = hashlib.sha256(material).digest()
+    leading = int.from_bytes(digest_bytes[:17], "big") >> (136 - 130)
+    chars: list[str] = []
+    for _ in range(26):
+        chars.append(alphabet[leading & 0x1F])
+        leading >>= 5
+    canonical_key = "".join(reversed(chars))
+
     async with (
         aiosqlite.connect(str(db_path)) as conn,
         conn.execute(
-            "SELECT key, request_digest, response_status, inserted_at, "
-            "expires_at FROM idempotency_records WHERE key = ?",
-            ("idem-row-1",),
+            "SELECT idempotency_key, schema_version, project_id, "
+            "request_digest, response_status, first_seen_at, expires_at "
+            "FROM idempotency_records WHERE idempotency_key = ?",
+            (canonical_key,),
         ) as cur,
     ):
         rows = await cur.fetchall()
     assert len(rows) == 1, rows
-    key, digest, status, inserted_at_str, expires_at_str = rows[0]
-    assert key == "idem-row-1"
-    assert digest.startswith("sha256:")
+    (
+        key,
+        schema_version,
+        project_id,
+        digest,
+        status,
+        first_seen_at_str,
+        expires_at_str,
+    ) = rows[0]
+    assert key == canonical_key
+    assert schema_version == "relay.idempotency_record.v1"
+    # project_id is the sentinel zero-UUID for unauthenticated requests
+    # (canonical column is NOT NULL; the runtime supplies the sentinel
+    # when no tenant resolves).
+    assert project_id == "00000000-0000-0000-0000-000000000000"
+    # Canonical sha256 wire form is hyphen, not colon.
+    assert digest.startswith("sha256-")
     assert status == 201
-    inserted = datetime.fromisoformat(inserted_at_str.replace("Z", "+00:00"))
+    inserted = datetime.fromisoformat(first_seen_at_str.replace("Z", "+00:00"))
     expires = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
     # 24h TTL with 5-minute tolerance.
     delta = expires - inserted

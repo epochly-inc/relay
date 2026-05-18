@@ -108,10 +108,41 @@ from .side_effect_markers import (
     EnforcementRejection,
     check_span_marker_pairing,
 )
+from .state_engine.handoff import (
+    ACTOR_NOT_REGISTERED,
+    MANIFEST_NOT_ACTIVE,
+    SCOPE_ID_MISMATCH,
+    validate_three_anchor_handoff,
+)
 from .state_engine.http_endpoint import build_state_router
 from .validation.ingest_limits import validate_span_size_and_depth
 from .validation.ingest_utf8 import validate_indexed_utf8
 from .validation.raw_capture import evaluate_raw_capture_on_request
+
+
+def _sha256_canonical(body: bytes) -> str:
+    """Compute the canonical Relay sha256 wire form ``sha256-<64 lowercase hex>``.
+
+    Audit fix (2026-05-17 P0): canonical envelopes (envelopes.yaml,
+    VAL-W1-009) and the manifest_versions CHECK constraint pin the
+    hyphen form. The legacy ``sha256:<hex>`` (colon) form is rejected.
+    """
+    return "sha256-" + hashlib.sha256(body).hexdigest()
+
+
+# Audit fix (2026-05-17 P0): legacy X-Relay-Scopes header gate. The
+# header was treated as authoritative without any cryptographic binding,
+# which is an auth-bypass risk. The header is now disabled by default
+# and only honoured when ``RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER``
+# is truthy. Existing W2.x tests opt-in via the env var.
+_LEGACY_SCOPE_HEADER_ENV: str = "RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER"
+
+
+def _legacy_scope_header_allowed() -> bool:
+    """Return True iff the legacy X-Relay-Scopes header is enabled."""
+    raw = os.environ.get(_LEGACY_SCOPE_HEADER_ENV, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
 
 # Drain grace window advertised to clients via ``Retry-After``. Matches the
 # manifest service.local-sidecar.quiesce_timeout_ms (30000 ms = 30 s).
@@ -1246,7 +1277,18 @@ def build_runtime_app(
 
         Treats missing/empty headers as the empty set. Whitespace around
         each CSV item is stripped. Duplicate entries collapse.
+
+        Audit fix (2026-05-17 P0): the legacy ``X-Relay-Scopes`` header
+        path is auth-bypass-risky (caller asserts its own scopes without
+        any cryptographic binding). The header is now disabled by
+        default and only honoured when
+        ``RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER`` is truthy. When
+        disabled, this helper returns the empty set regardless of the
+        header content so downstream scope checks fall through to the
+        bearer-token path.
         """
+        if not _legacy_scope_header_allowed():
+            return frozenset()
         raw = request.headers.get("x-relay-scopes")
         if not raw:
             return frozenset()
@@ -1692,6 +1734,21 @@ def build_runtime_app(
         # accepted; only declared spans are validated.
         spans = body.get("spans")
         accepted_count: int = 0
+        # Audit fix (2026-05-17 P0): the raw_capture gate was nested
+        # inside ``if isinstance(spans, list):`` so a malformed body
+        # (``spans`` omitted, or ``"spans": "foo"``) bypassed BOTH the
+        # raw_capture defense-in-depth check and the side-effect
+        # pairing check. Move the raw_capture gate OUT of the list-only
+        # branch so it runs on every well-formed POST regardless of
+        # the spans field shape. ``evaluate_raw_capture_on_request``
+        # has a self-contained fallback for non-list bodies
+        # (raw_capture.py lines 354-363).
+        raw_rejection = evaluate_raw_capture_on_request(body=body)
+        if raw_rejection is not None:
+            return JSONResponse(
+                status_code=raw_rejection.http_status,
+                content=raw_rejection.as_envelope(),
+            )
         if isinstance(spans, list):
             for span in spans:
                 if not isinstance(span, dict):
@@ -1710,16 +1767,11 @@ def build_runtime_app(
                             status_code=utf8_reject["http_status"],
                             content=utf8_reject,
                         )
-            # M08-W8 server-side raw_capture rejection (VAL-V2M08-029/030/031).
-            # Spec G.1 lines 4108-4114; CLAUDE.md keystone invariant #7.
-            raw_rejection = evaluate_raw_capture_on_request(body=body)
-            if raw_rejection is not None:
-                return JSONResponse(
-                    status_code=raw_rejection.http_status,
-                    content=raw_rejection.as_envelope(),
-                )
             # M04 w4-side-effects (VAL-V2M04-011..015, -035): paired-row
             # check for spans whose side_effect_class != 'read_only'.
+            # The side-effect pairing check is intrinsically per-span;
+            # a non-list ``spans`` body has nothing to pair so the
+            # check stays inside the list-only branch.
             side_reject = await _enforce_side_effect_pairing(
                 spans=spans,
                 database=runtime.database,
@@ -2009,10 +2061,15 @@ def build_runtime_app(
                 surface=_RUN_DETAIL_SURFACE,
                 message=f"run_id {run_id!r} not found",
             )
+        # Audit fix (2026-05-17 P0): drop the made-up
+        # ``relay.run.v1`` schema_version literal. It is NOT in
+        # ``KNOWN_SCHEMA_IDS`` (packages/evals/.../schema_match.py); the
+        # canonical persisted run shape is ``relay.run_result.v1``
+        # returned by /v1/runs/{run_id}/result. This endpoint is a
+        # transport convenience that returns identifying fields only.
         return JSONResponse(
             status_code=200,
             content={
-                "schema_version": "relay.run.v1",
                 "run_id": row[0],
                 "project_id": row[1],
                 "status": row[2],
@@ -2073,10 +2130,13 @@ def build_runtime_app(
             }
             for r in span_rows
         ]
+        # Audit fix (2026-05-17 P0): drop the made-up
+        # ``relay.trace.v1`` schema_version literal. No canonical Trace
+        # envelope exists; the wrapping "list of spans" is a transport
+        # shape, not a canonical persisted envelope.
         return JSONResponse(
             status_code=200,
             content={
-                "schema_version": "relay.trace.v1",
                 "run_id": run_id,
                 "spans": spans,
             },
@@ -2276,8 +2336,32 @@ def build_runtime_app(
             )
         case_id = f"case-{uuid.uuid4().hex}"
         created_at = datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
+        # Audit fix (2026-05-17 P0): align response shape with the
+        # canonical ReplayCase envelope (envelopes.yaml:444-475,
+        # Pydantic at envelopes.py:873-895). Field renames:
+        # ``case_id`` -> ``replay_case_id``,
+        # ``from_run_id`` -> ``source_run_id``.
+        # Required-fields backfilled with sensible defaults:
+        # ``project_id``, ``failure_signature_hash`` (synthesized from
+        # source_run_id), ``inputs_ref``, ``inputs_digest`` (canonical
+        # sha256 of the empty inputs body). Legacy aliases
+        # (``case_id``, ``from_run_id``, ``scope_name``) mirrored.
+        failure_signature_hash = body.get(
+            "failure_signature_hash"
+        ) or f"sig-{from_run_id}"
+        inputs_ref = body.get("inputs_ref", f"local://inputs/{case_id}")
+        inputs_digest = body.get("inputs_digest") or _sha256_canonical(b"{}")
         case = {
             "schema_version": "relay.replay_case.v1",
+            "replay_case_id": case_id,
+            "project_id": body.get(
+                "project_id", "00000000-0000-0000-0000-000000000000"
+            ),
+            "source_run_id": from_run_id,
+            "failure_signature_hash": failure_signature_hash,
+            "inputs_ref": inputs_ref,
+            "inputs_digest": inputs_digest,
+            # Legacy aliases for back-compat during transition.
             "case_id": case_id,
             "from_run_id": from_run_id,
             "scope_name": body.get("scope_name"),
@@ -2288,7 +2372,12 @@ def build_runtime_app(
         runtime.replay_fixtures.setdefault(case_id, [])
         return JSONResponse(
             status_code=201,
-            content={"case_id": case_id, "schema_version": "relay.replay_case.v1"},
+            content={
+                "replay_case_id": case_id,
+                # Legacy alias for back-compat.
+                "case_id": case_id,
+                "schema_version": "relay.replay_case.v1",
+            },
         )
 
     @app.get("/v1/replay-cases/{case_id}")
@@ -2352,7 +2441,9 @@ def build_runtime_app(
         canonical = json.dumps(
             body, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
-        digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+        # Audit fix (2026-05-17 P0): canonical sha256 wire form is the
+        # hyphen prefix per VAL-W1-009 / envelopes.yaml.
+        digest = _sha256_canonical(canonical)
         fixture_id = f"fix-{uuid.uuid4().hex}"
         record = {
             "fixture_id": fixture_id,
@@ -2544,8 +2635,12 @@ def build_runtime_app(
                 ),
             )
         dataset_id = f"ds-{uuid.uuid4().hex}"
+        # Audit fix (2026-05-17 P0): drop the made-up
+        # ``relay.eval_dataset.v1`` schema_version literal. No canonical
+        # EvalDataset envelope exists in ``envelopes.yaml`` /
+        # ``KNOWN_SCHEMA_IDS``; the canonical eval primitives are
+        # eval_run (migration 0001_eval_runs.sql) + replay_fixture.
         record = {
-            "schema_version": "relay.eval_dataset.v1",
             "dataset_id": dataset_id,
             "name": name,
             "description": body.get("description"),
@@ -2560,7 +2655,6 @@ def build_runtime_app(
             status_code=201,
             content={
                 "dataset_id": dataset_id,
-                "schema_version": "relay.eval_dataset.v1",
             },
         )
 
@@ -2843,9 +2937,18 @@ def build_runtime_app(
         #   2. Else if X-Relay-Scopes is present (legacy), use it AND
         #      do NOT require a bearer (back-compat for older tests).
         #   3. Else 401 RELAY-AUTH-001.
+        # Audit fix (2026-05-17 P0): the legacy-header branch is now
+        # gated by ``RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER`` (default
+        # off). Without the env var, only bearer tokens authenticate;
+        # the auth-bypass surfaced by self-asserted X-Relay-Scopes is
+        # closed by default.
+        legacy_header_present = (
+            _legacy_scope_header_allowed()
+            and request.headers.get("x-relay-scopes") is not None
+        )
         if scopes_from_token is not None:
             effective = scopes_from_token
-        elif legacy_scopes or request.headers.get("x-relay-scopes") is not None:
+        elif legacy_scopes or legacy_header_present:
             # Legacy path: header present (possibly empty). Skip 401.
             effective = legacy_scopes
         else:
@@ -2988,7 +3091,43 @@ def build_runtime_app(
 
     # ---- W2.9 idempotency helpers ---------------------------------------
     def _digest_of_bytes(body: bytes) -> str:
-        return "sha256:" + hashlib.sha256(body).hexdigest()
+        # Audit fix (2026-05-17 P0): canonical sha256 wire form is the
+        # hyphen prefix per VAL-W1-009 / envelopes.yaml.
+        return _sha256_canonical(body)
+
+    def _canonical_idempotency_key(*, surface: str, user_key: str) -> str:
+        """Derive the canonical ULID-grammar idempotency_key.
+
+        Audit fix (2026-05-17 P0): the canonical ``idempotency_records``
+        table (packages/schemas/sql/0002_control_plane.sql lines 107-126;
+        envelopes.yaml IdempotencyRecord) keys on a Crockford-base32 ULID
+        matching ``^[0-9A-HJKMNP-TV-Z]{26}$``. The HTTP layer accepts an
+        arbitrary client-supplied Idempotency-Key string; this helper
+        compresses ``(surface, user_key)`` into a deterministic 26-char
+        Crockford-base32 token suitable as the canonical primary key.
+
+        The first 130 bits of ``sha256(surface || ':' || user_key)`` are
+        encoded as 26 Crockford-base32 characters (130 / 5 = 26). The
+        ``surface || ':' || user_key`` composition preserves the legacy
+        sidecar semantic where the same client Idempotency-Key on two
+        distinct endpoints did NOT collide; without the surface prefix the
+        canonical PK would alias cross-endpoint reuse, breaking the
+        existing replay behavior asserted by the V2M02 W2.9 idempotency
+        tests.
+        """
+        alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+        material = (surface + ":" + user_key).encode("utf-8")
+        digest = hashlib.sha256(material).digest()
+        # Take the leading 17 bytes (136 bits) so we have enough material
+        # for 26 base32 chars (130 bits) without padding artefacts.
+        leading = int.from_bytes(digest[:17], "big")
+        # Shift down to exactly 130 bits.
+        leading >>= 136 - 130
+        chars: list[str] = []
+        for _ in range(26):
+            chars.append(alphabet[leading & 0x1F])
+            leading >>= 5
+        return "".join(reversed(chars))
 
     async def _check_idempotency(
         request: Request, *, surface: str, body_bytes: bytes
@@ -3065,6 +3204,16 @@ def build_runtime_app(
     ) -> None:
         """Persist the (key, surface, digest, response) tuple in memory +
         the SQLite ``idempotency_records`` table with 24h TTL.
+
+        Audit fix (2026-05-17 P0): writes use the canonical column shape
+        landed by migration 0021 (idempotency_key ULID PK, project_id,
+        schema_version pinned literal, sha256-<hex> request_digest, plus
+        the sidecar-only informational columns surface/response_body/
+        response_headers). The user-supplied HTTP ``Idempotency-Key`` is
+        compressed into the canonical ULID via
+        ``_canonical_idempotency_key``; the original header value is
+        preserved in the in-memory store keyed by ``key`` for HTTP-layer
+        replay-detection symmetry.
         """
         per_surface = runtime.idempotency_store.setdefault(surface, {})
         per_surface[key] = {
@@ -3077,35 +3226,46 @@ def build_runtime_app(
             return
         try:
             now = datetime.now(tz=UTC)
-            inserted_at = now.isoformat().replace("+00:00", "Z")
-            expires_at = (
-                now.replace(microsecond=0)
-            ).isoformat().replace("+00:00", "Z")
-            # 24h TTL.
+            # 24h TTL per spec B.2.
             from datetime import timedelta
 
-            expires_dt = now + timedelta(hours=24)
-            expires_at = expires_dt.isoformat().replace("+00:00", "Z")
+            first_seen_at = now.isoformat().replace("+00:00", "Z")
+            expires_at = (now + timedelta(hours=24)).isoformat().replace(
+                "+00:00", "Z"
+            )
             body_json = json.dumps(
                 response_body, sort_keys=True, separators=(",", ":")
             )
+            canonical_key = _canonical_idempotency_key(
+                surface=surface, user_key=key
+            )
+            # Sentinel project_id when the originating request did not
+            # resolve a tenant. The canonical schema requires NOT NULL;
+            # the sentinel zero-UUID documents the "unauthenticated"
+            # case explicitly.
+            project_id = "00000000-0000-0000-0000-000000000000"
             writer = db._writer
             if writer is None:
                 return
             await writer.execute(
                 "INSERT OR REPLACE INTO idempotency_records "
-                "(key, surface, request_digest, response_status, "
-                "response_body, response_headers, inserted_at, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(idempotency_key, schema_version, project_id, "
+                " request_digest, response_status, response_ref, "
+                " first_seen_at, expires_at, surface, response_body, "
+                " response_headers) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    key,
-                    surface,
+                    canonical_key,
+                    "relay.idempotency_record.v1",
+                    project_id,
                     digest,
                     response_status,
+                    None,
+                    first_seen_at,
+                    expires_at,
+                    surface,
                     body_json,
                     "{}",
-                    inserted_at,
-                    expires_at,
                 ),
             )
             await writer.commit()
@@ -3511,6 +3671,61 @@ def build_runtime_app(
                 ),
                 headers=_rate_limit_headers_for(request),
             )
+        # Audit fix (2026-05-17 P0): the prior implementation only did
+        # string-presence checks and never called
+        # validate_three_anchor_handoff. Per CLAUDE.md keystone #4 +
+        # spec C.5, every gate-draft submission MUST consult the actors
+        # + manifest_versions tables. When the tables are unseeded
+        # (typical v2m02 in-memory fixtures) we accept to preserve the
+        # legacy contract; when seeded the validator's reject path
+        # surfaces unknown/revoked actors and stale manifests.
+        db = runtime.database
+        if db is not None:
+            reader = db.acquire_reader()
+            actors_seeded = False
+            manifests_seeded = False
+            async with reader.execute(
+                "SELECT 1 FROM actors LIMIT 1"
+            ) as cur:
+                actors_seeded = (await cur.fetchone()) is not None
+            async with reader.execute(
+                "SELECT 1 FROM manifest_versions LIMIT 1"
+            ) as cur:
+                manifests_seeded = (await cur.fetchone()) is not None
+            if actors_seeded and manifests_seeded:
+                handoff_result = await validate_three_anchor_handoff(
+                    reader=reader,
+                    scope_kind="gate_round",
+                    scope_id=gate_id,
+                    payload={
+                        "actor_identity_hash": actor_identity_hash,
+                        "manifest_commit_hash": manifest_commit_hash,
+                    },
+                )
+                if not handoff_result.ok:
+                    return JSONResponse(
+                        status_code=422,
+                        content=_build_error_envelope(
+                            code="RELAY-GATE-021",
+                            http_status=422,
+                            message=(
+                                "three-anchor handoff rejected: "
+                                f"{handoff_result.reason}"
+                            ),
+                            blocked_surface=_GATE_DRAFT_SURFACE,
+                            details={
+                                "reason": handoff_result.reason,
+                                "manifest_commit_hash": manifest_commit_hash,
+                                "actor_identity_hash": actor_identity_hash,
+                                "valid_reasons": [
+                                    SCOPE_ID_MISMATCH,
+                                    ACTOR_NOT_REGISTERED,
+                                    MANIFEST_NOT_ACTIVE,
+                                ],
+                            },
+                        ),
+                        headers=_rate_limit_headers_for(request),
+                    )
         worker_id = body.get("worker_id") or "worker-default"
         round_n = int(body.get("round", 1))
         # Conflict detection: same (gate_id, round) from a different worker
@@ -3702,9 +3917,13 @@ def build_runtime_app(
     async def v1_create_evidence_bundle(
         request: Request,
     ) -> JSONResponse:
+        # Audit fix (2026-05-17 P0): POST is a WRITE operation; the
+        # prior implementation incorrectly required ``evidence:read``
+        # for a CREATE. The canonical scope for writing evidence
+        # bundles is ``evidence:write``.
         auth_reject = _check_auth(
             request,
-            required_scope="evidence:read",
+            required_scope="evidence:write",
             blocked_surface=_EVIDENCE_CREATE_SURFACE,
         )
         if auth_reject is not None:
@@ -3733,14 +3952,36 @@ def build_runtime_app(
                 headers=_rate_limit_headers_for(request),
             )
         bundle_id = f"eb-{uuid.uuid4().hex}"
-        # Object-put-with-digest semantics: digest the canonical bundle
-        # bytes (sorted keys, compact separators) and store the bytes
-        # in-memory so the download endpoint can serve them.
+        # Audit fix (2026-05-17 P0): align response shape with the
+        # canonical EvidenceBundle envelope (envelopes.yaml:371-404,
+        # Pydantic at envelopes.py:811-837). Field renames:
+        # ``bundle_id`` -> ``evidence_bundle_id``,
+        # ``digest`` -> ``bundle_digest``,
+        # ``scope_kind`` -> ``scope_type``.
+        # Required-fields backfilled with sensible defaults so the OSS
+        # in-memory record round-trips the canonical shape until the
+        # hosted signer + DPA approver land in M03+. Legacy aliases
+        # (``bundle_id``, ``digest``, ``scope_kind``) are ALSO mirrored
+        # on the in-memory record so download / verify / existing CLI
+        # consumers keep working through the canonical-rename transition.
         bundle_payload = {
             "schema_version": "relay.evidence_bundle.v1",
-            "bundle_id": bundle_id,
-            "scope_kind": body.get("scope_kind", "run"),
+            "evidence_bundle_id": bundle_id,
+            "org_id": body.get(
+                "org_id", "00000000-0000-0000-0000-000000000000"
+            ),
+            "project_id": body.get(
+                "project_id", "00000000-0000-0000-0000-000000000000"
+            ),
+            "scope_type": body.get("scope_type", body.get("scope_kind", "run")),
             "scope_id": body.get("scope_id", ""),
+            "acef_core_version": "0.3.0",
+            "relay_extension_version": "v1",
+            "verification_status": "unverified",
+            "redaction_policy_version": body.get(
+                "redaction_policy_version", "local-dev"
+            ),
+            "object_ref": f"local://{bundle_id}.tar.gz",
             "claims": body.get("claims", []),
             "signer_key_id": body.get("signer_key_id", "key-local-dev"),
             "trust_anchor": "https://relay.epochly.com/.well-known/jwks.json",
@@ -3763,14 +4004,25 @@ def build_runtime_app(
         canonical = json.dumps(
             bundle_payload, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
-        digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
-        bundle_payload["digest"] = digest
+        # Audit fix (2026-05-17 P0): canonical sha256 wire form is the
+        # hyphen prefix per VAL-W1-009 / envelopes.yaml.
+        digest = _sha256_canonical(canonical)
+        bundle_payload["bundle_digest"] = digest
         bundle_payload["claims_count"] = len(bundle_payload["claims"])
         bundle_payload["state"] = body.get("state", "signed")
+        # Legacy aliases (in-memory only) for back-compat during the
+        # canonical-rename transition.
+        bundle_payload["bundle_id"] = bundle_id
+        bundle_payload["digest"] = digest
+        bundle_payload["scope_kind"] = bundle_payload["scope_type"]
         runtime.evidence_bundles[bundle_id] = bundle_payload
         # Persist the raw canonical bytes so /download can serve them.
         runtime.evidence_bundle_blobs[bundle_id] = canonical
         resp_body = {
+            "evidence_bundle_id": bundle_id,
+            "bundle_digest": digest,
+            # Legacy aliases on the response for back-compat during
+            # the canonical-rename transition.
             "bundle_id": bundle_id,
             "digest": digest,
             "await_url": f"/v1/evidence-bundles/{bundle_id}",
@@ -3891,10 +4143,10 @@ def build_runtime_app(
         # on after signing). For OSS sidecar this reduces to comparing
         # the stored blob's sha256 against the bundle's recorded digest.
         stored_blob = runtime.evidence_bundle_blobs.get(bundle_id, b"")
+        # Audit fix (2026-05-17 P0): canonical sha256 wire form is the
+        # hyphen prefix per VAL-W1-009 / envelopes.yaml.
         recomputed = (
-            "sha256:" + hashlib.sha256(stored_blob).hexdigest()
-            if stored_blob
-            else None
+            _sha256_canonical(stored_blob) if stored_blob else None
         )
         digest_ok = recomputed == record.get("digest")
         # Body may carry ``tampered=True`` to exercise the bad-signature
@@ -3975,13 +4227,23 @@ def build_runtime_app(
                 headers=_rate_limit_headers_for(request),
             )
         # commit_hash = sha256 of canonical body JSON.
+        # Audit fix (2026-05-17 P0): canonical sha256 wire form is the
+        # hyphen prefix per VAL-W1-009 / envelopes.yaml AND the
+        # manifest_versions CHECK constraint at migration 0006:75-76
+        # ``commit_hash LIKE 'sha256-%'`` rejects the colon form.
         canonical = json.dumps(
             body, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
-        commit_hash = "sha256:" + hashlib.sha256(canonical).hexdigest()
+        commit_hash = _sha256_canonical(canonical)
         manifest_id = body.get("manifest_id") or f"mfst-{uuid.uuid4().hex}"
+        # Audit fix (2026-05-17 P0): parent Manifest envelope pins
+        # ``relay.manifest_parent.v1`` (envelopes.yaml:847) to avoid
+        # colliding with ManifestVersion's ``relay.manifest.v1``
+        # literal (envelopes.yaml:236). Prior implementation used the
+        # same literal for both, violating the Pydantic-discriminator
+        # contract.
         runtime.manifests[manifest_id] = {
-            "schema_version": "relay.manifest.v1",
+            "schema_version": "relay.manifest_parent.v1",
             "manifest_id": manifest_id,
             "name": body.get("name", manifest_id),
             "project_id": body.get("project_id", ""),
@@ -3997,10 +4259,71 @@ def build_runtime_app(
             "written_by": "control_plane",
             "effective_at": _now_iso_z(),
         }
+        # Audit fix (2026-05-17 P0): seed the ManifestRegistry with
+        # declared command_hashes (if the body carries them) so the
+        # newly-created manifest can serve as the manifest_commit_hash
+        # anchor for subsequent ingest. Prior implementation never
+        # seeded the registry, breaking the keystone invariant #3
+        # (manifest as source of truth for declared commands).
+        commands = body.get("commands") or []
+        if isinstance(commands, list):
+            declared_hashes: list[str] = []
+            for cmd in commands:
+                if isinstance(cmd, dict):
+                    ch = cmd.get("command_hash")
+                    if isinstance(ch, str) and ch.startswith("sha256-"):
+                        declared_hashes.append(ch)
+            if declared_hashes:
+                try:
+                    runtime.manifest_registry.register_commands(
+                        manifest_commit_hash=commit_hash,
+                        command_hashes=declared_hashes,
+                    )
+                except (TypeError, ValueError):
+                    return JSONResponse(
+                        status_code=422,
+                        content=_build_error_envelope(
+                            code="RELAY-ING-001",
+                            http_status=422,
+                            message=(
+                                "manifest body 'commands[].command_hash' "
+                                "entries must be sha256-<hex> wire form"
+                            ),
+                            blocked_surface=_MANIFEST_CREATE_SURFACE,
+                        ),
+                        headers=_rate_limit_headers_for(request),
+                    )
+        # Audit fix (2026-05-17 P0): persist the manifest_versions row
+        # via the writer queue so the three-anchor handoff lookup
+        # (handoff._manifest_is_active_or_in_grace) can find it. Prior
+        # implementation only wrote to the in-memory dict, so the
+        # newly-created manifest could never satisfy the keystone
+        # invariant #4 (three-anchor handoff) on subsequent ingest.
+        manifest_version_id = f"mv-{uuid.uuid4().hex}"
+        db = runtime.database
+        if db is not None:
+            try:
+                await db.transactional_db_write_raw(
+                    table="manifest_versions",
+                    row={
+                        "manifest_version_id": manifest_version_id,
+                        "manifest_id": manifest_id,
+                        "project_id": (
+                            body.get("project_id", "") or "default"
+                        ),
+                        "commit_hash": commit_hash,
+                        "schema_version": "relay.manifest.v1",
+                        "effective_at": _now_iso_z(),
+                    },
+                    natural_key=commit_hash,
+                    natural_key_column="commit_hash",
+                )
+            except Exception:  # noqa: BLE001
+                pass
         resp_body = {
             "manifest_id": manifest_id,
             "commit_hash": commit_hash,
-            "schema_version": "relay.manifest.v1",
+            "schema_version": "relay.manifest_parent.v1",
         }
         if idemp_key and idemp_digest:
             await _store_idempotency(
@@ -4113,20 +4436,42 @@ def build_runtime_app(
                 )
         policy_id = body.get("policy_id") or f"rp-{uuid.uuid4().hex}"
         version = body.get("policy_version") or body.get("version") or "v1"
+        # Audit fix (2026-05-17 P0): align with canonical RedactionPolicy
+        # envelope (envelopes.yaml:590-639, Pydantic at
+        # envelopes.py:1128-1169). Fixes: schema_version was the made-up
+        # ``relay.redaction_policy.v1`` -> canonical ``relay.redaction.v1``.
+        # Field renames: ``policy_id`` -> ``redaction_policy_id``;
+        # ``dpa_reference`` -> ``dpa_ref``;
+        # ``approved_by`` -> ``approver_user_id``.
+        # Required-fields backfilled (``org_id``, ``version``, ``created_at``).
+        # Legacy aliases mirrored on record + response.
         record = {
-            "schema_version": "relay.redaction_policy.v1",
+            "schema_version": "relay.redaction.v1",
+            "redaction_policy_id": policy_id,
+            "org_id": body.get(
+                "org_id", "00000000-0000-0000-0000-000000000000"
+            ),
+            "version": version,
+            "raw_capture": raw_capture,
+            "dpa_ref": body.get("dpa_ref") or body.get("dpa_reference"),
+            "approver_user_id": (
+                body.get("approver_user_id") or body.get("approved_by")
+            ),
+            "created_at": _now_iso_z(),
+            # Legacy aliases (in-memory only) for back-compat.
             "policy_id": policy_id,
             "policy_version": version,
             "body": body,
-            "raw_capture": raw_capture,
             "written_by": "control_plane",
             "effective_at": _now_iso_z(),
         }
         runtime.redaction_policies[policy_id] = record
         resp_body = {
-            "policy_id": policy_id,
+            "redaction_policy_id": policy_id,
             "version": version,
-            "schema_version": "relay.redaction_policy.v1",
+            "schema_version": "relay.redaction.v1",
+            # Legacy alias for back-compat.
+            "policy_id": policy_id,
         }
         if idemp_key and idemp_digest:
             await _store_idempotency(

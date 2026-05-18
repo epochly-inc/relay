@@ -110,6 +110,8 @@ async def sidecar_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[tuple[httpx.AsyncClient, Path]]:
     monkeypatch.setenv("RELAY_SIDECAR_IDLE_TIMEOUT_S", "60.0")
+    # Audit fix (2026-05-17 P0): legacy X-Relay-Scopes header opt-in.
+    monkeypatch.setenv("RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", "1")
     monkeypatch.setenv("RELAY_HOME", str(tmp_path / "relay-home"))
     (tmp_path / "relay-home").mkdir(exist_ok=True)
     db_path = tmp_path / "sidecar.db"
@@ -253,14 +255,15 @@ async def test_post_replay_fixtures_uploads_and_digests(
     assert r.status_code == 201, r.text
     body = json.loads(r.text)
     assert isinstance(body["fixture_id"], str) and body["fixture_id"]
-    assert body["digest"].startswith("sha256:")
+    # Audit fix (2026-05-17 P0): hyphen wire form per VAL-W1-009.
+    assert body["digest"].startswith("sha256-")
     # Digest is sha256 of the canonicalized payload.
     expected = hashlib.sha256(
         json.dumps(fixture_body, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
         )
     ).hexdigest()
-    assert body["digest"] == f"sha256:{expected}"
+    assert body["digest"] == f"sha256-{expected}"
 
     # Unknown case_id -> 404.
     r404 = await client.post(

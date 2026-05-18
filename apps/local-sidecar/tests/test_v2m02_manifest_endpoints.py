@@ -35,8 +35,13 @@ async def test_post_manifest_upserts(
     assert r.status_code == 201, r.text
     payload = json.loads(r.text)
     assert payload["manifest_id"]
-    assert payload["commit_hash"].startswith("sha256:")
-    assert payload["schema_version"].startswith("relay.manifest.v")
+    # Audit fix (2026-05-17 P0): canonical sha256 hyphen form +
+    # manifest_versions CHECK constraint at migration 0006:75-76.
+    assert payload["commit_hash"].startswith("sha256-")
+    # Audit fix (2026-05-17 P0): parent Manifest envelope uses
+    # ``relay.manifest_parent.v1`` per envelopes.yaml:847; the
+    # ``relay.manifest.v1`` literal is reserved for ManifestVersion.
+    assert payload["schema_version"] == "relay.manifest_parent.v1"
 
 
 @pytest.mark.plumbing
@@ -74,9 +79,9 @@ async def test_get_manifest_version_returns_body(
     assert got["manifest_id"] == mid
     assert got["commit_hash"] == ch
     assert got["body"]["name"] == "m-v"
-    # 404 path: mismatched commit_hash.
+    # 404 path: mismatched commit_hash (canonical hyphen-form).
     r404 = await c.get(
-        f"/v1/manifests/{mid}/versions/sha256:notreal",
+        f"/v1/manifests/{mid}/versions/sha256-{'9' * 64}",
         headers=scope_header("runs:read"),
     )
     assert r404.status_code == 404

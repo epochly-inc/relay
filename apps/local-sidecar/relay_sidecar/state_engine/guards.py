@@ -168,8 +168,15 @@ async def _guard_valid_idempotency_key(
         return True, {}
     expected_request_hash = payload.get("request_hash")
     try:
+        # Audit fix (2026-05-17 P0): canonical column is ``request_digest``
+        # (sha256-<hex>) per packages/schemas/sql/0002_control_plane.sql
+        # lines 107-126. The legacy ``request_hash`` column never existed
+        # in the canonical schema; the prior SELECT relied on the
+        # OperationalError fallback when the column was missing, which
+        # silently masked the bug. The post-0021 sidecar schema is
+        # mirror-compatible with canonical and exposes ``request_digest``.
         async with conn.execute(
-            "SELECT request_hash, response_status FROM idempotency_records "
+            "SELECT request_digest, response_status FROM idempotency_records "
             "WHERE idempotency_key = ?",
             (key,),
         ) as cur:
@@ -179,14 +186,14 @@ async def _guard_valid_idempotency_key(
         return True, {"note": "idempotency_records table not present"}
     if row is None:
         return True, {}
-    stored_request_hash = str(row[0]) if row[0] is not None else None
+    stored_request_digest = str(row[0]) if row[0] is not None else None
     if (
         expected_request_hash is not None
-        and stored_request_hash is not None
-        and stored_request_hash != expected_request_hash
+        and stored_request_digest is not None
+        and stored_request_digest != expected_request_hash
     ):
         return False, {
-            "reason": "idempotency_key reuse with different request_hash",
+            "reason": "idempotency_key reuse with different request_digest",
             "idempotency_key": key,
         }
     return True, {}

@@ -27,6 +27,7 @@ from _v2m02_w25_helpers import (
 
 
 async def _create_bundle(c: httpx.AsyncClient) -> str:
+    # Audit fix (2026-05-17 P0): POST requires ``evidence:write``.
     r = await c.post(
         "/v1/evidence-bundles",
         json={
@@ -36,7 +37,7 @@ async def _create_bundle(c: httpx.AsyncClient) -> str:
                 {"assertion_id": "VAL-EXAMPLE-001", "result": "pass"}
             ],
         },
-        headers=scope_header("evidence:read"),
+        headers=scope_header("evidence:write"),
     )
     assert r.status_code == 201, r.text
     return json.loads(r.text)["bundle_id"]
@@ -52,15 +53,17 @@ async def test_create_evidence_bundle(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
     c, _db, _app = v2m02_client
+    # Audit fix (2026-05-17 P0): POST requires ``evidence:write``.
     r = await c.post(
         "/v1/evidence-bundles",
         json={"scope_kind": "run", "scope_id": "r1", "claims": []},
-        headers=scope_header("evidence:read"),
+        headers=scope_header("evidence:write"),
     )
     assert r.status_code == 201, r.text
     payload = json.loads(r.text)
     assert payload["bundle_id"].startswith("eb-")
-    assert payload["digest"].startswith("sha256:")
+    # Audit fix (2026-05-17 P0): hyphen wire form per VAL-W1-009.
+    assert payload["digest"].startswith("sha256-")
     assert "await_url" in payload
 
 
@@ -97,7 +100,8 @@ async def test_get_evidence_bundle_canonical(
     )
     assert r.status_code == 200, r.text
     payload = json.loads(r.text)
-    assert payload["digest"].startswith("sha256:")
+    # Audit fix (2026-05-17 P0): hyphen wire form per VAL-W1-009.
+    assert payload["digest"].startswith("sha256-")
     assert payload["signer_key_id"]
     assert payload["trust_anchor"].startswith("https://")
     assert isinstance(payload["claims_count"], int)
@@ -146,7 +150,8 @@ async def test_download_evidence_bundle(
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("application/gzip")
     assert f'filename="{bid}.tar.gz"' in r.headers["content-disposition"]
-    body_digest = "sha256:" + hashlib.sha256(r.content).hexdigest()
+    # Audit fix (2026-05-17 P0): hyphen wire form per VAL-W1-009.
+    body_digest = "sha256-" + hashlib.sha256(r.content).hexdigest()
     stored_digest = app.state.runtime.evidence_bundles[bid]["digest"]
     assert body_digest == stored_digest
 

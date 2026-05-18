@@ -32,10 +32,12 @@ async def test_missing_bearer_returns_401(
     assert json.loads(r.text)["code"] == "RELAY-AUTH-001"
     # The verify endpoint stays public.
     # Create a bundle first via authenticated path.
+    # Audit fix (2026-05-17 P0): POST /v1/evidence-bundles requires
+    # ``evidence:write`` (was incorrectly ``evidence:read``).
     r_create = await c.post(
         "/v1/evidence-bundles",
         json={"scope_kind": "run", "scope_id": "r", "claims": []},
-        headers=scope_header("evidence:read"),
+        headers=scope_header("evidence:write"),
     )
     bid = json.loads(r_create.text)["bundle_id"]
     r_verify = await c.post(f"/v1/evidence-bundles/{bid}/verify")

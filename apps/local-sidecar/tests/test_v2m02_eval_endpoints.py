@@ -61,6 +61,8 @@ async def sidecar_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[tuple[httpx.AsyncClient, Path]]:
     monkeypatch.setenv("RELAY_SIDECAR_IDLE_TIMEOUT_S", "60.0")
+    # Audit fix (2026-05-17 P0): legacy X-Relay-Scopes header opt-in.
+    monkeypatch.setenv("RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", "1")
     monkeypatch.setenv("RELAY_HOME", str(tmp_path / "relay-home"))
     (tmp_path / "relay-home").mkdir(exist_ok=True)
     db_path = tmp_path / "sidecar.db"
@@ -100,8 +102,10 @@ async def test_create_eval_dataset(
     assert r.status_code == 201, r.text
     resp = json.loads(r.text)
     assert isinstance(resp["dataset_id"], str) and resp["dataset_id"]
-    assert isinstance(resp["schema_version"], str)
-    assert resp["schema_version"].startswith("relay.eval_dataset.v")
+    # Audit fix (2026-05-17 P0): POST /v1/eval-datasets no longer
+    # returns ``relay.eval_dataset.v1`` (not in KNOWN_SCHEMA_IDS and no
+    # canonical EvalDataset envelope exists in envelopes.yaml).
+    assert "schema_version" not in resp
 
 
 # ---- VAL-V2M02-032: eval-datasets scope ----------------------------------

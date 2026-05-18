@@ -26,10 +26,38 @@ def make_health(port: int = 50095) -> HealthState:
 
 
 async def bootstrap_db(db_path: Path) -> None:
+    """Apply every migration in lex order to a fresh SQLite DB.
+
+    Audit fix (2026-05-17 P0): mirrors the production runner's
+    ``__schema_migrations`` tracker so that the subsequent FastAPI
+    lifespan startup (which calls ``SidecarDatabase.open()`` and triggers
+    another ``_run_migrations`` pass on the same DB file) sees every
+    migration already applied and skips them. Without this symmetry the
+    second pass re-runs non-idempotent migrations (e.g. 0021's
+    DROP/RENAME of ``idempotency_records``) and fails because the legacy
+    shape no longer exists after the first pass.
+    """
+    migrations_dir = Path(__file__).resolve().parents[1] / "migrations"
     async with aiosqlite.connect(str(db_path)) as conn:
-        migrations_dir = Path(__file__).resolve().parents[1] / "migrations"
+        await conn.executescript(
+            "CREATE TABLE IF NOT EXISTS __schema_migrations ("
+            "  filename   TEXT PRIMARY KEY,"
+            "  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ");"
+        )
         for sql in sorted(migrations_dir.glob("*.sql")):
+            filename = sql.name
+            async with conn.execute(
+                "SELECT 1 FROM __schema_migrations WHERE filename = ?",
+                (filename,),
+            ) as cur:
+                if await cur.fetchone() is not None:
+                    continue
             await conn.executescript(sql.read_text(encoding="utf-8"))
+            await conn.execute(
+                "INSERT INTO __schema_migrations (filename) VALUES (?)",
+                (filename,),
+            )
         await conn.commit()
 
 
@@ -50,6 +78,9 @@ async def v2m02_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[tuple[httpx.AsyncClient, Path, object]]:
     monkeypatch.setenv("RELAY_SIDECAR_IDLE_TIMEOUT_S", "60.0")
+    # Audit fix (2026-05-17 P0): legacy X-Relay-Scopes header is
+    # disabled by default in production; these W2.5+ tests opt in.
+    monkeypatch.setenv("RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", "1")
     monkeypatch.setenv("RELAY_HOME", str(tmp_path / "relay-home"))
     (tmp_path / "relay-home").mkdir(exist_ok=True)
     db_path = tmp_path / "sidecar.db"

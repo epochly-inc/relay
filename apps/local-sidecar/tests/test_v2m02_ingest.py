@@ -141,6 +141,8 @@ async def sidecar_client(
     body-shape / scope checks own the actual response.
     """
     monkeypatch.setenv("RELAY_SIDECAR_IDLE_TIMEOUT_S", "60.0")
+    # Audit fix (2026-05-17 P0): legacy X-Relay-Scopes header opt-in.
+    monkeypatch.setenv("RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", "1")
     monkeypatch.setenv("RELAY_HOME", str(tmp_path / "relay-home"))
     (tmp_path / "relay-home").mkdir(exist_ok=True)
     db_path = tmp_path / "sidecar.db"

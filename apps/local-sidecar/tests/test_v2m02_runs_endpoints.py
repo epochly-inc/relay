@@ -368,7 +368,11 @@ async def test_get_run_returns_canonical_envelope(
     assert r.status_code == 200, r.text
     body = json.loads(r.text)
     assert body["run_id"] == run_id
-    assert body["schema_version"].startswith("relay.run.v")
+    # Audit fix (2026-05-17 P0): the GET /v1/runs/{run_id} response no
+    # longer carries a made-up ``relay.run.v1`` schema_version (not in
+    # KNOWN_SCHEMA_IDS). The canonical run shape is the ``RunResult``
+    # envelope returned by /v1/runs/{run_id}/result.
+    assert "schema_version" not in body
     for required in (
         "status",
         "started_at",
