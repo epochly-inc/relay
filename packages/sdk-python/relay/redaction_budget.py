@@ -66,6 +66,15 @@ _STUCK_REGEX_THREAD_CAP: Final[int] = 32
 # within their budget. Decremented when the thread eventually finishes.
 # Guarded by ``_STUCK_REGEX_LOCK`` so increment/decrement are atomic
 # under the GIL-plus-monitor discipline.
+#
+# AUDIT-R4 BUG-H1: previously the counter could be decremented by both
+# the probe-finally and the main race-detect path when the probe
+# finished inside the race-detect window, then floored with
+# ``max(0, ...)``. That underflow defeated the admission gate. We now
+# enforce an exactly-once handoff: the per-call ``state`` dict carries
+# a ``released`` flag that exactly one of {probe, main} can set under
+# the lock; only the setter performs the decrement. The ``max(0, ...)``
+# floor is removed so any future underflow is visible (not masked).
 _STUCK_REGEX_LOCK: threading.Lock = threading.Lock()
 _STUCK_REGEX_THREADS: int = 0
 
@@ -101,11 +110,19 @@ def _evaluate_one(
     each with its own deadline.
     """
     done = threading.Event()
-    # ``state`` lets the probe thread observe whether the caller
-    # decided the budget elapsed. The probe thread decrements the
-    # process-wide stuck counter on completion iff the caller had
-    # already incremented it.
-    state = {"overran": False}
+    # ``state`` carries the exactly-once handoff flags used by the
+    # probe thread and the main thread to coordinate which side
+    # decrements ``_STUCK_REGEX_THREADS``. All reads/writes of these
+    # flags happen under ``_STUCK_REGEX_LOCK``. See the module-level
+    # comment on the counter for the AUDIT-R4 BUG-H1 fix rationale.
+    #
+    # * ``incremented`` -- main thread has bumped the process-wide
+    #   counter (timeout fired).
+    # * ``probe_done`` -- probe thread reached its ``finally`` block.
+    # * ``released`` -- exactly one side has performed the matching
+    #   decrement. Set under the lock by whichever side first
+    #   observes the other's flag.
+    state = {"incremented": False, "probe_done": False, "released": False}
     started = time.monotonic()
 
     def _run() -> None:
@@ -113,10 +130,16 @@ def _evaluate_one(
         try:
             compiled.search(text)
         finally:
+            with _STUCK_REGEX_LOCK:
+                state["probe_done"] = True
+                # If the main thread already incremented and nobody
+                # has released yet, the probe takes ownership of the
+                # decrement. Otherwise (main never incremented, or
+                # main already released) the probe does nothing.
+                if state["incremented"] and not state["released"]:
+                    _STUCK_REGEX_THREADS -= 1
+                    state["released"] = True
             done.set()
-            if state["overran"]:
-                with _STUCK_REGEX_LOCK:
-                    _STUCK_REGEX_THREADS = max(0, _STUCK_REGEX_THREADS - 1)
 
     # Daemon=True so a runaway regex thread cannot block interpreter
     # shutdown. Pre-fix code used daemon=False with a comment about
@@ -128,21 +151,29 @@ def _evaluate_one(
     completed = done.wait(timeout=budget_s)
     elapsed = time.monotonic() - started
     if not completed:
-        # Probe thread did not finish within the budget. Mark the
-        # state and bump the process-wide stuck counter so the
-        # admission gate can refuse further work once the leak
-        # budget is saturated. The probe's ``finally`` block will
-        # decrement when (eventually) the regex returns.
-        state["overran"] = True
+        # Probe thread did not finish within the budget. Under the
+        # lock, increment the process-wide stuck counter and decide
+        # who owns the matching decrement:
+        #
+        # * If the probe is already done (raced between ``done.wait``
+        #   timing out and us acquiring the lock), it could not have
+        #   decremented because ``state['incremented']`` was False at
+        #   the time its ``finally`` ran. The main thread takes
+        #   ownership and decrements immediately.
+        # * Otherwise the probe is still running; we set
+        #   ``incremented=True`` so its ``finally`` block decrements
+        #   when it finally returns. Main does NOT decrement here.
         with _STUCK_REGEX_LOCK:
             _STUCK_REGEX_THREADS += 1
-        # Race: if the regex completed between ``done.wait`` timing
-        # out and our flip of ``state['overran']``, ``_run`` already
-        # ran without decrementing. Detect that here and balance.
-        if done.is_set():
-            with _STUCK_REGEX_LOCK:
-                _STUCK_REGEX_THREADS = max(0, _STUCK_REGEX_THREADS - 1)
+            state["incremented"] = True
+            if state["probe_done"] and not state["released"]:
+                _STUCK_REGEX_THREADS -= 1
+                state["released"] = True
         return False, elapsed
+    # Probe completed inside the budget. The probe's ``finally``
+    # already ran (or is racing toward it) and observed
+    # ``state['incremented'] == False``, so it did NOT decrement.
+    # No counter activity is needed here.
     return elapsed * 1000.0 <= REDACTION_REGEX_BUDGET_MS, elapsed
 
 

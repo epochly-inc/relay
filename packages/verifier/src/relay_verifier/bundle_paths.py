@@ -9,7 +9,12 @@ artifact path that:
 * is absolute -- POSIX (``/``), Windows drive (``C:\\``), or UNC
   (``\\\\host\\share``) (``absolute_path``)
 * is not Unicode NFC (``non_nfc_name``)
-* contains invalid UTF-8 byte sequences (``invalid_utf8_name``)
+* contains invalid UTF-8 byte sequences, NUL bytes, or lone
+  surrogates (``invalid_utf8_name``)
+* is empty / leading-or-trailing whitespace
+  (``invalid_utf8_name`` fall-through bucket -- consumers branch on
+  ``code`` not on the exact discriminator)
+* exceeds 1024 UTF-8 bytes (``invalid_utf8_name``)
 
 Rejections surface under the existing :data:`RELAY-EVID-024`
 path-violation code with a structured ``path_violation`` discriminator
@@ -34,6 +39,12 @@ from typing import Any, Final
 # RELAY-EVID-024 already know to attribute "bundle integrity / path"
 # violations.
 RELAY_EVID_024: Final[str] = "RELAY-EVID-024"
+
+# Maximum permitted UTF-8 length, in bytes, of an artifact path.
+# Defends against pathological inputs that bypass downstream length
+# checks (filesystem PATH_MAX or zip header limits). Mirrors
+# ``packages/verifier-typescript/src/bundle_paths.ts::MAX_ARTIFACT_PATH_BYTES``.
+MAX_ARTIFACT_PATH_BYTES: Final[int] = 1024
 
 # Windows drive-letter prefix: a single letter followed by ":\" or ":/".
 _WIN_DRIVE_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z]:[\\/]")
@@ -113,12 +124,52 @@ def check_artifact_path(path: Any) -> dict[str, Any] | None:
 
     # Lone-surrogate / non-encodable str -> invalid_utf8_name.
     try:
-        path.encode("utf-8", errors="strict")
+        encoded = path.encode("utf-8", errors="strict")
     except UnicodeEncodeError:
         return {
             "code": RELAY_EVID_024,
             "path_violation": "invalid_utf8_name",
             "offending_path": repr(path),
+        }
+
+    # Empty / leading-or-trailing whitespace rejection (AUDIT-R4 BUG-H2
+    # parity with packages/verifier-typescript/src/bundle_paths.ts:136-149).
+    # Whitespace-bracketed paths are a path-collision attack surface
+    # ("foo.txt" vs " foo.txt" referring to the same artifact under
+    # filesystems that trim).
+    if not path or not path.strip():
+        return {
+            "code": RELAY_EVID_024,
+            "path_violation": "invalid_utf8_name",
+            "offending_path": path,
+        }
+    if path != path.strip():
+        return {
+            "code": RELAY_EVID_024,
+            "path_violation": "invalid_utf8_name",
+            "offending_path": path,
+        }
+
+    # Embedded NUL byte rejection (AUDIT-R4 BUG-H2 parity with TS:153-159).
+    # NUL bytes are a path-traversal escape under several filesystems
+    # (the C-string truncation trick).
+    if "\x00" in path:
+        return {
+            "code": RELAY_EVID_024,
+            "path_violation": "invalid_utf8_name",
+            "offending_path": path,
+        }
+
+    # UTF-8 byte length cap (AUDIT-R4 BUG-H2 parity with TS:188-194).
+    # Computed after lone-surrogate rejection so we never measure an
+    # un-encodable string. The cap defends against pathological
+    # inputs that would bypass downstream length checks (PATH_MAX,
+    # zip header limits).
+    if len(encoded) > MAX_ARTIFACT_PATH_BYTES:
+        return {
+            "code": RELAY_EVID_024,
+            "path_violation": "invalid_utf8_name",
+            "offending_path": path,
         }
 
     # Absolute paths.
@@ -152,6 +203,7 @@ def check_artifact_path(path: Any) -> dict[str, Any] | None:
 
 
 __all__ = [
+    "MAX_ARTIFACT_PATH_BYTES",
     "RELAY_EVID_024",
     "check_artifact_path",
 ]
