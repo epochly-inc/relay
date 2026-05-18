@@ -50,6 +50,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Final
 
+from .bundle_paths import check_artifact_path
 from .canonical import bundle_digest, jcs_canonicalize
 from .key_lifecycle import (
     RELAY_EVID_041,
@@ -338,10 +339,23 @@ def _append_error(
     reason: str,
     message: str,
     code: str = "",
+    **extra: Any,
 ) -> None:
+    """Append a structured error entry to ``output["errors"]``.
+
+    ``**extra`` forwards arbitrary additional discriminator keys onto
+    the error envelope (e.g., ``path_violation`` and ``offending_path``
+    emitted by the path-screen wired into :func:`validate_bundle` per
+    VAL-V2M08-015..017). Keys are written verbatim onto the dict; the
+    helper does NOT collide-check against canonical keys because the
+    canonical keys (``reason``, ``message``, ``code``) are already
+    written by name above.
+    """
     entry: dict[str, Any] = {"reason": reason, "message": message}
     if code:
         entry["code"] = code
+    for k, v in extra.items():
+        entry[k] = v
     output["errors"].append(entry)
 
 
@@ -544,6 +558,34 @@ def validate_bundle(
                 if not isinstance(artifact_id, str):
                     continue
                 if not isinstance(declared_digest, str):
+                    continue
+                # VAL-V2M08-015..017: path-traversal hardening MUST run
+                # BEFORE the caller-supplied resolver is invoked. A
+                # malicious artifact_id ("../../etc/passwd",
+                # "/etc/passwd", NFD-encoded name, etc.) reaching the
+                # resolver unfiltered would let an evidence bundle drive
+                # filesystem reads outside the session sandbox. The
+                # screen is pure (no I/O) so it is safe to run on every
+                # ref. A path violation appends a structured error,
+                # flips digest_ok to False, and skips the resolver
+                # invocation entirely for the offending id (the loop
+                # continues to subsequent refs so all violations surface
+                # in a single pass).
+                path_violation = check_artifact_path(artifact_id)
+                if path_violation is not None:
+                    _append_error(
+                        output,
+                        reason="path_violation",
+                        message=(
+                            f"claim[{ci}].evidence_refs[{ri}] artifact_id "
+                            f"{artifact_id!r} rejected by path screen "
+                            f"({path_violation['path_violation']})"
+                        ),
+                        code=path_violation["code"],
+                        path_violation=path_violation["path_violation"],
+                        offending_path=path_violation["offending_path"],
+                    )
+                    output["digest_ok"] = False
                     continue
                 try:
                     artifact_bytes = opts.artifact_resolver(artifact_id)

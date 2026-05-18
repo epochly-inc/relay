@@ -345,6 +345,27 @@ class SidecarDatabase:
             self._readers.append(r)
             self._reader_traces.append(trace)
 
+        # State-engine writer lock: pre-created here so the writer_loop
+        # task and every CAS/gate-decision/retention borrow share ONE
+        # asyncio.Lock instance. Eagerly creating here (rather than
+        # lazily on first borrow) eliminates the check-then-create race
+        # window where two callers could install two separate Lock
+        # instances and silently lose serialization. Per W2.5 (audit
+        # 2026-05-17): the writer_loop MUST take this lock around its
+        # BEGIN IMMEDIATE..COMMIT block because it shares the
+        # ``self._writer`` connection with ``compare_and_set_state``,
+        # ``GateDecisionWriter``, and the retention pass. Without the
+        # lock the writer_loop can interleave a queued INSERT between
+        # CAS's SELECT and UPDATE, surfacing as "cannot start a
+        # transaction within a transaction" (SQLite forbids nested
+        # BEGIN). Pre-existing CAS/gate/retention callers also use
+        # ``getattr(database, "_state_engine_writer_lock", None)`` with
+        # a lazy create fallback; pre-installing here keeps that pattern
+        # working AND removes the race.
+        if not hasattr(self, "_state_engine_writer_lock") or getattr(
+            self, "_state_engine_writer_lock", None
+        ) is None:
+            self._state_engine_writer_lock = asyncio.Lock()
         # Writer queue + task.
         self._queue = asyncio.Queue(maxsize=self._queue_maxsize)
         self._writer_task = asyncio.create_task(
@@ -559,11 +580,20 @@ class SidecarDatabase:
     async def _run_migrations(self) -> None:
         """Apply every .sql file under ``migrations_dir`` in lex order.
 
-        Idempotent: every migration uses ``CREATE TABLE IF NOT EXISTS``
-        / ``CREATE INDEX IF NOT EXISTS`` so re-running on startup is a
-        no-op. Future migrations that change schema will land their own
-        idempotency idiom (versioning table) -- W2.3 only needs the
-        first migration.
+        Migration tracking: the runner records each applied migration's
+        filename in the ``__schema_migrations`` table and skips any file
+        whose name is already recorded. This permits non-CREATE-IF-NOT-EXISTS
+        migrations (DROP, ALTER, RENAME) to land cleanly without re-firing
+        their destructive statements on every sidecar restart. Pre-existing
+        ``CREATE IF NOT EXISTS`` migrations remain compatible because their
+        first application records into ``__schema_migrations`` and
+        subsequent restarts skip them as no-ops.
+
+        This idiom was deferred at W2.3 when the runner shipped (see the
+        prior version's docstring); it is now installed to support the
+        2026-05-17 audit fix in 0021_idempotency_records_align.sql which
+        rebuilds the ``idempotency_records`` table to mirror the canonical
+        Postgres shape.
         """
         assert self._writer is not None  # noqa: S101
         migrations = self._migrations_dir
@@ -573,9 +603,50 @@ class SidecarDatabase:
             migrations = here.parent.parent / "migrations"
         if not migrations.is_dir():
             return
+
+        # Bootstrap the tracker table itself. Idempotent.
+        await self._writer.executescript(
+            "CREATE TABLE IF NOT EXISTS __schema_migrations ("
+            "  filename   TEXT PRIMARY KEY,"
+            "  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ");"
+        )
+
         for sql_file in sorted(migrations.glob("*.sql")):
+            filename = sql_file.name
+            # Check whether this migration was already applied.
+            async with self._writer.execute(
+                "SELECT 1 FROM __schema_migrations WHERE filename = ?",
+                (filename,),
+            ) as cur:
+                already_applied = await cur.fetchone()
+            if already_applied is not None:
+                continue
             sql_text = sql_file.read_text(encoding="utf-8")
-            await self._writer.executescript(sql_text)
+            # Atomicity: wrap the script + tracker INSERT in a single
+            # explicit transaction so that a crash mid-script rolls back
+            # the rebuild AND the tracker record together. Without this,
+            # a crash between executescript COMMIT and the tracker INSERT
+            # would leave a successfully-rebuilt schema unrecorded; the
+            # restart would re-run the script and fail (because the
+            # rebuild references legacy columns that no longer exist).
+            #
+            # Migration scripts MUST NOT issue their own BEGIN/COMMIT
+            # (SQLite raises "cannot start a transaction within a
+            # transaction"). See the comment block at the top of
+            # 0021_idempotency_records_align.sql.
+            await self._writer.execute("BEGIN")
+            try:
+                await self._writer.executescript(sql_text)
+                await self._writer.execute(
+                    "INSERT INTO __schema_migrations (filename) VALUES (?)",
+                    (filename,),
+                )
+                await self._writer.execute("COMMIT")
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    await self._writer.execute("ROLLBACK")
+                raise
         await self._writer.commit()
 
     # ---- Writer loop (private; only this coroutine touches self._writer) ----
@@ -589,6 +660,27 @@ class SidecarDatabase:
         for non-full queues); under contention the queue blocks the
         caller until a slot frees.
 
+        W2.5 lock discipline (audit 2026-05-17): each queued request's
+        ``BEGIN IMMEDIATE..COMMIT`` block runs under
+        ``self._state_engine_writer_lock`` -- the SAME asyncio.Lock that
+        ``compare_and_set_state`` (relay_sidecar/state_engine/
+        compare_and_set.py), ``GateDecisionWriter`` (packages/gate/.../
+        decision_writer.py), and the retention pass acquire. The lock
+        is required because all four code paths share
+        ``self._writer`` (one aiosqlite connection). Without the lock
+        the writer_loop could pop a request and issue ``BEGIN IMMEDIATE``
+        while CAS holds the connection mid-transaction, surfacing as
+        ``OperationalError: cannot start a transaction within a
+        transaction`` and (worse) corrupting CAS's atomicity by
+        sneaking a committed INSERT between its SELECT and UPDATE.
+
+        The lock is taken per-request rather than once outside the loop
+        so cancellation (``close()`` cancels the task) does not leave
+        the lock held: if cancellation arrives between requests we are
+        outside the ``async with`` block; if it arrives mid-request the
+        ``async with`` releases the lock during unwinding before the
+        ``CancelledError`` propagates.
+
         Cancellation: ``close()`` cancels this task; the suppressed
         CancelledError unwinds cleanly. Any in-flight request whose
         future has not yet resolved is failed in ``close()``.
@@ -597,7 +689,8 @@ class SidecarDatabase:
         while True:
             req = await self._queue.get()
             try:
-                result = await self._execute_with_retry(req)
+                async with self._state_engine_writer_lock:
+                    result = await self._execute_with_retry(req)
                 if not req.future.done():
                     req.future.set_result(result)
             except RelaySQLiteBusyExhausted as e:

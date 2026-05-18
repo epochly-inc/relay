@@ -125,16 +125,16 @@ async def _borrow_writer(
     through the queue's single-row INSERT path would lose atomicity.
 
     Instead we serialise multi-statement work through the dedicated
-    ``database._state_engine_writer_lock`` asyncio.Lock, which is created
-    lazily on first borrow. Holding the lock guarantees that no other
-    state-engine call can interleave on the same writer connection. The
-    W2.3 writer_loop is independent: it processes queue items on the SAME
-    connection but ONLY in between borrows here -- both this borrow and
-    the queue's _writer_loop hold the lock pattern (we add the lock here
-    and the queue path will need the same lock once W2.5 lands writes
-    through the state engine). For W2.4 the queue is not used by the state
-    engine (the state engine is the only canonical caller in scope), so a
-    lock around the borrow is sufficient.
+    ``database._state_engine_writer_lock`` asyncio.Lock. The lock is
+    eagerly created in :meth:`SidecarDatabase.open` (W2.5 fix per
+    2026-05-17 audit) so the writer_loop and every CAS / gate-decision /
+    retention borrow share ONE Lock instance with stable identity.
+    Holding the lock guarantees that no other writer can interleave on
+    the shared ``self._writer`` connection. The W2.3 writer_loop now
+    serializes via the same lock; safe -- BEGIN IMMEDIATE on
+    ``self._writer`` from any caller (CAS multi-stmt txn, queue-path
+    single-row INSERT, gate decision writer, retention pass) cannot
+    nest with another caller's BEGIN.
     """
     # Lazily attach the lock; the SidecarDatabase pre-dates this primitive.
     lock = getattr(database, "_state_engine_writer_lock", None)
