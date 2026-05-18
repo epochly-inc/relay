@@ -59,6 +59,11 @@ SHA40_RE: re.Pattern[str] = re.compile(r"^[a-f0-9]{40}$")
 # no second-party action equivalent of pypa/gh-action-pypi-publish here.
 SHA_PIN_REQUIRED_ACTIONS: tuple[str, ...] = (
     "slsa-framework/slsa-github-generator",
+    # gitleaks/gitleaks-action is the trust-anchor key-material
+    # secret scanner; if a future workflow refactor pulls it into
+    # the release pipeline (e.g., a pre-publish key-leak check),
+    # it MUST be SHA-pinned just like the SLSA generator.
+    "gitleaks/gitleaks-action",
 )
 
 # ---------------------------------------------------------------------------

@@ -890,11 +890,36 @@ def cmd_contract_check(
     files_checked = 0
     parse_errors: list[dict[str, Any]] = []
 
-    for fp in sorted(dir_path.rglob("*.json")):
+    # Scan both JSON and YAML contract files. The DSL design (spec
+    # D.4) supports both serializations; previously we only
+    # rglob'd *.json and silently skipped YAML files, producing
+    # false PASS reports.
+    candidates: list[Path] = []
+    for pattern in ("*.json", "*.yaml", "*.yml"):
+        candidates.extend(dir_path.rglob(pattern))
+    for fp in sorted(set(candidates)):
         files_checked += 1
+        suffix = fp.suffix.lower()
         try:
             raw = fp.read_text(encoding="utf-8")
-            doc = json.loads(raw)
+            if suffix == ".json":
+                doc = json.loads(raw)
+            else:
+                # YAML path: PyYAML is already a transitive dep
+                # (used by the release-workflow guards). Use
+                # ``safe_load`` so anchor/alias bombs and arbitrary
+                # tag invocations are refused.
+                import yaml  # local import keeps json fast path clean
+                try:
+                    doc = yaml.safe_load(raw)
+                except yaml.YAMLError as yexc:
+                    parse_errors.append({
+                        "type": "parse_error",
+                        "file": str(fp.relative_to(dir_path)),
+                        "message": f"YAML parse failed: {yexc}",
+                        "code": "RELAY-CONTRACT-PARSE-001",
+                    })
+                    continue
         except (OSError, json.JSONDecodeError) as exc:
             parse_errors.append({
                 "type": "parse_error",
@@ -906,7 +931,11 @@ def cmd_contract_check(
             parse_errors.append({
                 "type": "parse_error",
                 "file": str(fp.relative_to(dir_path)),
-                "message": "not a JSON object",
+                "message": (
+                    "not a JSON object"
+                    if suffix == ".json"
+                    else "not a YAML mapping"
+                ),
             })
             continue
         try:

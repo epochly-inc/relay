@@ -409,10 +409,53 @@ export function buildGateDraftEnvelope(args: BuildGateDraftEnvelopeArgs): GateDr
     // written_by is INTENTIONALLY absent. The SDK never writes it
     // (VAL-W4-009 grep guard); the gate engine writes the canonical row.
   };
-  if (args.workerId !== undefined) envelope.worker_id = args.workerId;
-  if (args.scopeType !== undefined) envelope.scope_type = args.scopeType;
-  if (args.round !== undefined) envelope.round = args.round;
-  if (args.evidenceRefs !== undefined) envelope.evidence_refs = Array.from(args.evidenceRefs);
+  // Optional-field validation MUST mirror the Python
+  // ``build_gate_draft_envelope`` helper (sdk-python/relay/lifecycle.py:368-376)
+  // so envelopes built by the two SDKs are byte-equal under
+  // canonical JSON. Without these checks the TS SDK would accept
+  // values the Python SDK rejects (or coerce them in a non-portable
+  // way), and a worker submitting through TS could emit an envelope
+  // that the gate engine rejects with RELAY-GATE-021 (stale handoff)
+  // or a downstream contract failure.
+  if (args.workerId !== undefined) {
+    envelope.worker_id = requireNonEmptyString("worker_id", args.workerId);
+  }
+  if (args.scopeType !== undefined) {
+    envelope.scope_type = requireNonEmptyString("scope_type", args.scopeType);
+  }
+  if (args.round !== undefined) {
+    // Python coerces ``round`` via ``int(round)``. Mirror that with a
+    // safe-integer coercion that rejects NaN/Infinity/negative values.
+    const raw = args.round as unknown;
+    const asNumber = Number(raw);
+    if (!Number.isFinite(asNumber)) {
+      throw new RelayConfigError("round must be a finite number (no NaN/Infinity)", {
+        code: RELAY_SDK_CONFIG_CODE,
+        details: { field: "round", received_type: typeof raw },
+      });
+    }
+    const coerced = Math.trunc(asNumber);
+    if (coerced < 0) {
+      throw new RelayConfigError("round must be >= 0", {
+        code: RELAY_SDK_CONFIG_CODE,
+        details: { field: "round", received: coerced },
+      });
+    }
+    envelope.round = coerced;
+  }
+  if (args.evidenceRefs !== undefined) {
+    if (!Array.isArray(args.evidenceRefs)) {
+      throw new RelayConfigError("evidence_refs must be an Array of non-empty strings", {
+        code: RELAY_SDK_CONFIG_CODE,
+        details: { field: "evidence_refs", received_type: typeof args.evidenceRefs },
+      });
+    }
+    const refs = Array.from(args.evidenceRefs);
+    for (const ref of refs) {
+      requireNonEmptyString("evidence_ref", ref);
+    }
+    envelope.evidence_refs = refs;
+  }
   return envelope;
 }
 

@@ -534,6 +534,14 @@ def _to_string(value: Any) -> str:
     pass through. Bytes are decoded with ``errors='replace'`` so
     mixed-encoding OCR output (VAL-W3-023) cannot smuggle a secret
     through an undecodable byte.
+
+    Float coercion MUST match the TypeScript redaction engine
+    (``packages/sdk-typescript/src/redaction.ts``: ``String(value)``)
+    so the same wire input produces byte-equal HMAC digests across
+    SDKs. Python's bare ``str(1.0)`` returns ``"1.0"`` while
+    ECMA-262 ``String(1.0)`` returns ``"1"``; routing floats through
+    the ECMA-262 number-to-string encoder (``_encode_number`` in
+    ``relay_contracts.canonical``) closes that divergence.
     """
     if isinstance(value, str):
         return value
@@ -543,6 +551,34 @@ def _to_string(value: Any) -> str:
         return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, float):
+        # Local import to keep ``relay_contracts`` an optional
+        # dependency at module import time. The redaction hot path
+        # is policy-publish + per-span walk, not the cold-start path.
+        try:
+            from relay_contracts.canonical import _encode_number
+        except ImportError:
+            # Fallback: hand-roll the ECMA-262 ToString(Number)
+            # whole-integer shortcut to preserve TS parity for the
+            # common case (``1.0`` -> ``"1"``).
+            import math as _math
+            if _math.isfinite(value) and value == int(value):
+                return str(int(value))
+            return str(value)
+        # Non-finite floats: mirror ECMA-262 ToString(Number) exactly
+        # so cross-language digests still match.
+        import math as _math
+        if _math.isnan(value):
+            return "NaN"
+        if _math.isinf(value):
+            return "-Infinity" if value < 0 else "Infinity"
+        try:
+            return _encode_number(value)
+        except Exception:
+            # Out-of-range floats fall back to a TS-parity repr.
+            # ECMA-262 ToString(Number) for finite values that
+            # _encode_number cannot represent is exceedingly rare.
+            return repr(value)
     return str(value)
 
 

@@ -43,6 +43,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -511,16 +512,64 @@ class SaltRegistry:
                         "predecessor_salt_ref": predecessor.salt_ref,
                     },
                 )
-        # Register the new salt (raises on duplicate ref).
-        self.put_salt(salt_ref=new_salt_ref, salt_bytes=new_salt_bytes)
+        # Build the successor state in memory and persist with a
+        # SINGLE atomic ``_commit``. Pre-fix code called
+        # ``put_salt`` (which committed) and then committed again
+        # after appending the policy_version row: a crash between
+        # those two writes would leave the registry with a salt
+        # entry that no policy_version references, violating the
+        # G.3 invariant that every active policy_version's salt is
+        # registered exactly once and never re-derived.
+        if not isinstance(new_salt_ref, str) or not new_salt_ref.strip():
+            raise RelayPolicyError(
+                "put_salt: salt_ref must be a non-empty string",
+                details={"reason": "salt_ref_missing"},
+            )
+        if new_salt_ref in self._salts:
+            raise RelayPolicyError(
+                f"put_salt: salt_ref {new_salt_ref!r} is already registered; "
+                "salts are append-only -- allocate a new ref via rotate()",
+                details={
+                    "reason": "salt_ref_duplicate",
+                    "salt_ref": new_salt_ref,
+                },
+            )
+        salt_bytes = new_salt_bytes
+        if salt_bytes is None:
+            salt_bytes = secrets.token_bytes(DEFAULT_SALT_LEN_BYTES)
+        if not isinstance(salt_bytes, bytes | bytearray):
+            raise RelayPolicyError(
+                "put_salt: salt_bytes must be bytes",
+                details={"reason": "salt_bytes_wrong_type"},
+            )
+        now = _utcnow_iso()
+        new_salt_entry = SaltEntry(
+            salt_ref=new_salt_ref,
+            salt_hex=bytes(salt_bytes).hex(),
+            created_at=now,
+        )
         successor = PolicyVersionEntry(
             policy_id=policy_id,
             policy_version=new_policy_version,
             salt_ref=new_salt_ref,
-            created_at=_utcnow_iso(),
+            created_at=now,
         )
+        # Mutate in-memory state, then commit. If ``_commit`` raises,
+        # roll back the in-memory mutations so a retried rotate()
+        # call observes the same pre-state. Predecessor entries are
+        # left untouched throughout (G.3 invariant).
+        self._salts[new_salt_ref] = new_salt_entry
         self._policy_versions.append(successor)
-        self._commit()
+        try:
+            self._commit()
+        except Exception:
+            # Roll back so the in-memory state matches what is on
+            # disk. Callers can safely retry without observing a
+            # half-applied rotation.
+            self._salts.pop(new_salt_ref, None)
+            with contextlib.suppress(ValueError):
+                self._policy_versions.remove(successor)
+            raise
         return RotationResult(predecessor=predecessor, successor=successor)
 
 

@@ -21,14 +21,48 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
-import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 from relay_schemas.root_cause_hypothesis import SCHEMA_VERSION
 
 GENERATOR_ID = "heuristic.v1"
+
+
+def _missing_now() -> str:
+    """Default ``now`` factory; raises to enforce explicit injection.
+
+    Spec AJ requires the heuristic generator to be deterministic given
+    the same inputs. A ``datetime.now`` default would silently inject
+    wall-clock entropy, defeating replay parity. Production callers
+    MUST supply a run-id-derived deterministic timestamp.
+    """
+    raise RuntimeError(
+        "HeuristicV1Generator(now=...) MUST be supplied explicitly. "
+        "Spec AJ requires deterministic heuristic.v1 output; a wall-"
+        "clock default would inject non-deterministic timestamps. "
+        "Production callers must derive ``now`` from the run's clock "
+        "(e.g., run_results.created_at) and pass it in."
+    )
+
+
+def _missing_id_factory() -> str:
+    """Default ``id_factory``; raises to enforce explicit injection.
+
+    A ``uuid.uuid4()`` default would inject non-deterministic
+    hypothesis_ids that diverge between captured and replayed runs.
+    Production callers MUST supply a run-id-derived deterministic id
+    factory (e.g., a counter seeded by ``run_id``).
+    """
+    raise RuntimeError(
+        "HeuristicV1Generator(id_factory=...) MUST be supplied "
+        "explicitly. Spec AJ requires deterministic heuristic.v1 "
+        "output; a uuid4 default would inject non-deterministic "
+        "hypothesis_ids. Production callers must derive ``id_factory`` "
+        "from a deterministic seed (e.g., run_id-namespaced uuid5 or "
+        "a counter)."
+    )
 
 
 @dataclass(frozen=True)
@@ -73,12 +107,15 @@ class HeuristicV1Generator:
     """Rule-based hypothesis generator (generator id = ``heuristic.v1``).
 
     The generator is deterministic given the same inputs (same span list,
-    same contract results, fixed ``now`` timestamp). Tests inject a fixed
-    ``now`` callable to assert reproducibility.
+    same contract results, fixed ``now`` timestamp). Production callers
+    MUST inject ``now`` and ``id_factory`` derived from a deterministic
+    seed (e.g., the run's canonical clock and a run-id-namespaced UUID
+    counter); the defaults raise ``RuntimeError`` to prevent silent
+    non-determinism from a missed injection.
     """
 
-    now: callable = field(default=lambda: datetime.now(UTC))
-    id_factory: callable = field(default=lambda: str(uuid.uuid4()))
+    now: Callable[[], Any] = field(default=_missing_now)
+    id_factory: Callable[[], str] = field(default=_missing_id_factory)
 
     def generate(
         self,

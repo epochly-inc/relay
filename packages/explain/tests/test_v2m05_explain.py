@@ -546,7 +546,9 @@ def test_confidence_check_rejects_out_of_bounds(
 def test_reviewer_decision_accepts_canonical(
     fresh_sqlite: sqlite3.Connection,
 ) -> None:
-    for v in (None, "accept", "modify", "reject"):
+    # Audit-R3 (2026-05-18): added 'pending' per spec line 3325 +
+    # envelopes.yaml. Canonical set is {accept, reject, modify, pending}.
+    for v in (None, "accept", "modify", "reject", "pending"):
         _insert(fresh_sqlite, reviewer_decision=v)
 
 
@@ -942,8 +944,18 @@ def test_pass_at_n_zero_is_rejected() -> None:
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M05-026")
 def test_quality_harness_returns_metrics_in_unit_interval() -> None:
+    # Audit R3 BUG-E5: HeuristicV1Generator no longer defaults
+    # id_factory to uuid4(). Inject a deterministic counter so the
+    # quality harness can reproduce the same hypothesis_id sequence.
+    _counter = {"n": 0}
+
+    def _deterministic_id() -> str:
+        _counter["n"] += 1
+        return f"h-{_counter['n']:08d}"
+
     gen = HeuristicV1Generator(
-        now=lambda: datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
+        now=lambda: datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC),
+        id_factory=_deterministic_id,
     )
     cases: list[GroundTruthCase] = []
     # 10 TP-eligible cases: each has a fail contract_result with
@@ -1082,8 +1094,11 @@ def test_load_code_details_includes_only_known_codes() -> None:
 
 
 @pytest.mark.plumbing
-def test_reviewer_decisions_is_three_values() -> None:
-    assert frozenset({"accept", "modify", "reject"}) == REVIEWER_DECISIONS
+def test_reviewer_decisions_is_four_values() -> None:
+    # Audit-R3 (2026-05-18): aligned to spec line 3325 + envelopes.yaml +
+    # openapi.yaml -- {accept, reject, modify, pending}. Prior 3-value
+    # set omitted 'pending'.
+    assert frozenset({"accept", "reject", "modify", "pending"}) == REVIEWER_DECISIONS
 
 
 @pytest.mark.plumbing

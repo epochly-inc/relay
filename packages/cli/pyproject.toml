@@ -70,6 +70,13 @@ dependencies = [
   # Sigstore public-good trust root per CLAUDE.md banned pattern #13;
   # do NOT change the default trust anchor in this dependency line.
   "sigstore>=3.6.0",
+  # ``rly contract check`` accepts both JSON and YAML contract files
+  # per spec D.4 DSL serialization options. PyYAML provides the safe
+  # loader path; the publish flow rejects unsafe constructors via
+  # ``yaml.safe_load``. PyYAML is also a transitive dep of
+  # ``sigstore``; pinning conservatively keeps the CLI footprint
+  # deterministic.
+  "PyYAML>=6.0,<7",
 ]
 
 [project.optional-dependencies]
