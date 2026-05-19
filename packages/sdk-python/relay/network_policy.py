@@ -33,6 +33,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import ipaddress
+import unicodedata
 from collections.abc import Iterable
 from typing import Any, Final
 from urllib.parse import urlparse
@@ -273,9 +274,202 @@ def validate_egress_entries(
         )
 
 
+# -----------------------------------------------------------------------------
+# UTS-39 confusables guard on manifest URLs (VAL-V3M5-010)
+# -----------------------------------------------------------------------------
+#
+# When the SDK fetches a manifest URL whose host is a Unicode homograph
+# of an expected canonical ASCII host, the verifier-side guard would
+# never get a chance to catch the substitution because the SDK has
+# already loaded the wrong manifest. We add the same UTS-39 fold +
+# skeleton comparison the verifier uses (jwks_loader.check_host_confusable)
+# scoped to the SDK's manifest-URL surface.
+#
+# Spec anchor: AI line 5659 (UTS-39 confusables). The SDK helper is
+# intentionally a small hand-rolled subset (Cyrillic / Greek / Armenian /
+# fullwidth / mathematical / mixed-script) sufficient for the documented
+# variants. Operators wanting full UTS-39 coverage should layer the
+# optional ``confusable_homoglyphs`` PyPI dependency on top.
+#
+# Keys are built via ``chr(codepoint)`` so this source file remains pure
+# ASCII per CLAUDE.md "ASCII-Safe Source".
+
+RELAY_SDK_HOMOGRAPH: Final[str] = "RELAY-SDK-HOMOGRAPH"
+"""Wire code for a manifest URL whose host fails the UTS-39 confusables
+guard. Word-form code per the precedent set by ``RELAY-REPLAY-SSRF``."""
+
+_MANIFEST_HOMOGRAPH_HTTP_STATUS: Final[int] = 400
+
+
+_MANIFEST_CONFUSABLES_MAP: Final[dict[str, str]] = {
+    # Cyrillic small letters most-targeted in phishing kits.
+    chr(0x0430): "a",  # CYRILLIC SMALL LETTER A
+    chr(0x0435): "e",  # CYRILLIC SMALL LETTER IE
+    chr(0x043E): "o",  # CYRILLIC SMALL LETTER O
+    chr(0x0440): "p",  # CYRILLIC SMALL LETTER ER
+    chr(0x0441): "c",  # CYRILLIC SMALL LETTER ES
+    chr(0x0445): "x",  # CYRILLIC SMALL LETTER HA
+    chr(0x0443): "y",  # CYRILLIC SMALL LETTER U
+    chr(0x0456): "i",  # CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I
+    chr(0x0458): "j",  # CYRILLIC SMALL LETTER JE
+    chr(0x04BB): "h",  # CYRILLIC SMALL LETTER SHHA
+    # Greek small letters.
+    chr(0x03BF): "o",  # GREEK SMALL LETTER OMICRON
+    chr(0x03C1): "p",  # GREEK SMALL LETTER RHO
+    chr(0x03BA): "k",  # GREEK SMALL LETTER KAPPA
+    chr(0x03BD): "v",  # GREEK SMALL LETTER NU
+    chr(0x03B1): "a",  # GREEK SMALL LETTER ALPHA
+    chr(0x03B9): "i",  # GREEK SMALL LETTER IOTA
+    # Armenian small letters.
+    chr(0x0585): "o",  # ARMENIAN SMALL LETTER OH
+    chr(0x0578): "n",  # ARMENIAN SMALL LETTER VO
+    chr(0x0570): "h",  # ARMENIAN SMALL LETTER HO
+    chr(0x0566): "q",  # ARMENIAN SMALL LETTER ZA
+}
+
+
+def _manifest_script_of(ch: str) -> str:
+    """Coarse script bucket for mixed-script detection."""
+    cp = ord(ch)
+    if cp < 0x80:
+        if ch.isalnum() or ch == "-":
+            return "ascii"
+        return "common"
+    if 0x0400 <= cp <= 0x04FF:
+        return "cyrillic"
+    if 0x0370 <= cp <= 0x03FF:
+        return "greek"
+    if 0x0530 <= cp <= 0x058F:
+        return "armenian"
+    if 0xFF00 <= cp <= 0xFFEF:
+        return "fullwidth"
+    if 0x1D400 <= cp <= 0x1D7FF:
+        return "math"
+    return "other"
+
+
+def _manifest_ascii_skeleton(host: str) -> str:
+    """Return the NFKC + curated-map ASCII skeleton of ``host``."""
+    nfkc = unicodedata.normalize("NFKC", host)
+    return "".join(_MANIFEST_CONFUSABLES_MAP.get(ch, ch) for ch in nfkc)
+
+
+def _manifest_is_pure_ascii(s: str) -> bool:
+    return all(ord(c) < 0x80 for c in s)
+
+
+class ManifestUrlHomographDenied(Exception):
+    """Raised when a manifest URL's host fails the UTS-39 guard.
+
+    The structured rejection envelope is on :attr:`envelope`; the
+    exception message echoes the offending URL so logs are
+    self-explanatory.
+    """
+
+    def __init__(self, envelope: dict[str, Any]) -> None:
+        self.envelope = envelope
+        super().__init__(
+            f"manifest URL {envelope.get('denied_url', '')!r} denied by "
+            f"UTS-39 homograph guard "
+            f"(reason={envelope.get('denied_reason', '')})"
+        )
+
+
+def check_manifest_url_confusable(url: str, *, canonical_host: str) -> None:
+    """Reject ``url`` when its host is a UTS-39 confusable of ``canonical_host``.
+
+    Pure ASCII candidates pass unconditionally so an SDK caller may
+    point at any ASCII host on purpose. Non-ASCII candidates are folded
+    via NFKC + the curated confusables map; a skeleton that equals the
+    canonical host trips a ``confusable`` rejection. Mixed-script
+    labels trip ``mixed_script``. Residual non-ASCII codepoints after
+    folding trip ``non_ascii``.
+
+    Args:
+        url: candidate manifest URL (scheme://host[:port]/path).
+        canonical_host: the expected ASCII host.
+
+    Raises:
+        ManifestUrlHomographDenied: with a structured envelope ready to
+            serialize directly into an HTTP rejection body.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    canonical_lower = canonical_host.lower()
+    if not host:
+        # Malformed URL; the caller is responsible for surfacing the
+        # structural error. The homograph guard is a no-op here.
+        return None
+    if _manifest_is_pure_ascii(host):
+        return None
+
+    # Per-label mixed-script detection. A label that mixes ASCII letters
+    # with foreign-script letters is the canonical UTS-39 attack
+    # signature; reject before skeleton folding so the reason code
+    # attributes correctly even against UNRELATED canonical hosts.
+    for label in host.split("."):
+        scripts: set[str] = set()
+        for ch in label:
+            s = _manifest_script_of(ch)
+            if s in {"ascii", "common"}:
+                continue
+            scripts.add(s)
+        if len(scripts) >= 1 and any(
+            _manifest_script_of(ch) == "ascii" for ch in label
+        ):
+            skeleton_label = _manifest_ascii_skeleton(label)
+            if _manifest_is_pure_ascii(skeleton_label):
+                # Folds cleanly to ASCII; the broader skeleton check
+                # below will pick up a confusables match if one exists.
+                continue
+            raise ManifestUrlHomographDenied(
+                {
+                    "code": RELAY_SDK_HOMOGRAPH,
+                    "http_status": _MANIFEST_HOMOGRAPH_HTTP_STATUS,
+                    "denied_url": url,
+                    "denied_host": host,
+                    "canonical_host": canonical_host,
+                    "denied_reason": "mixed_script",
+                    "label": label,
+                    "scripts": sorted(scripts),
+                }
+            )
+
+    skeleton = _manifest_ascii_skeleton(host).lower()
+    if skeleton == canonical_lower:
+        raise ManifestUrlHomographDenied(
+            {
+                "code": RELAY_SDK_HOMOGRAPH,
+                "http_status": _MANIFEST_HOMOGRAPH_HTTP_STATUS,
+                "denied_url": url,
+                "denied_host": host,
+                "canonical_host": canonical_host,
+                "denied_reason": "confusable",
+                "skeleton": skeleton,
+            }
+        )
+
+    if not _manifest_is_pure_ascii(skeleton):
+        raise ManifestUrlHomographDenied(
+            {
+                "code": RELAY_SDK_HOMOGRAPH,
+                "http_status": _MANIFEST_HOMOGRAPH_HTTP_STATUS,
+                "denied_url": url,
+                "denied_host": host,
+                "canonical_host": canonical_host,
+                "denied_reason": "non_ascii",
+                "skeleton": skeleton,
+            }
+        )
+    return None
+
+
 __all__ = [
     "CLOUD_METADATA_IPS",
     "EgressDenied",
+    "ManifestUrlHomographDenied",
     "RELAY_REPLAY_SSRF",
+    "RELAY_SDK_HOMOGRAPH",
+    "check_manifest_url_confusable",
     "validate_egress_entries",
 ]

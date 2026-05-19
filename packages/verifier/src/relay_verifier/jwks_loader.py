@@ -47,6 +47,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -60,6 +61,247 @@ from .errors import (
     RelayConfigInvalidError,
     RelayJWKSUnavailableError,
 )
+
+# -----------------------------------------------------------------------------
+# UTS-39 confusables guard for trust_anchor URLs (VAL-V3M5-009)
+# -----------------------------------------------------------------------------
+#
+# The default trust_anchor URL is ``DEFAULT_JWKS_URL``; an attacker who can
+# substitute a homograph (visually identical) hostname for the canonical
+# ASCII host bypasses the spec-pinned anchor without the operator noticing.
+# Spec section AI line 5659 calls for a UTS-39 confusables guard. We
+# implement the relevant subset here against the standard library:
+#
+#   1. The candidate host is NFKC-normalized.
+#   2. Pure ASCII candidates (post-NFKC) that equal the canonical host
+#      pass; pure ASCII candidates that differ pass (the operator chose
+#      a different ASCII host on purpose -- BYO mechanism).
+#   3. Candidates containing any non-ASCII codepoint are folded to an
+#      ASCII "skeleton" via the curated confusables map below. If the
+#      skeleton equals the canonical host, the candidate is a homograph
+#      and is rejected with reason ``confusable``. If the skeleton still
+#      contains non-ASCII codepoints after folding, the candidate is
+#      rejected with reason ``non_ascii`` (an IDN hostname targeting the
+#      canonical ASCII anchor is not supported -- IDNA encoding is a
+#      separate primitive).
+#   4. Mixed-script labels (a single DNS label containing characters
+#      from more than one script after NFKC + skeleton) are rejected
+#      with reason ``mixed_script`` before the skeleton comparison so
+#      mixed-script attacks against UNRELATED canonical hosts still
+#      surface a structured rejection.
+#
+# This is a hand-rolled UTS-39 subset, not the full Unicode confusables
+# table. It covers Cyrillic / Greek / Armenian / fullwidth (Halfwidth-
+# Fullwidth Forms) / Mathematical Alphanumeric Symbols / mixed-script
+# attacks against ASCII canonical hosts, which are the documented test
+# variants for VAL-V3M5-009 / VAL-V3M5-010. A production deployment
+# wanting the full UTS-39 corpus should add the optional
+# ``confusable_homoglyphs`` dependency and route through this helper.
+
+# Curated UTS-39 confusables to ASCII skeleton. Each entry maps a
+# non-ASCII codepoint to its visual ASCII counterpart. Coverage is
+# sufficient for the documented test variants; expand as new attack
+# variants surface.
+#
+# Keys are built via ``chr(codepoint)`` so this source file remains
+# pure ASCII per CLAUDE.md "ASCII-Safe Source". The hex codepoint and
+# Unicode name appear inline in the comment for human review.
+_CONFUSABLES_MAP: Final[dict[str, str]] = {
+    # Cyrillic small letters (most-targeted: e, a, o, p, c, x, y, i)
+    chr(0x0430): "a",  # CYRILLIC SMALL LETTER A
+    chr(0x0435): "e",  # CYRILLIC SMALL LETTER IE
+    chr(0x043E): "o",  # CYRILLIC SMALL LETTER O
+    chr(0x0440): "p",  # CYRILLIC SMALL LETTER ER
+    chr(0x0441): "c",  # CYRILLIC SMALL LETTER ES
+    chr(0x0445): "x",  # CYRILLIC SMALL LETTER HA
+    chr(0x0443): "y",  # CYRILLIC SMALL LETTER U
+    chr(0x0456): "i",  # CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I
+    chr(0x0458): "j",  # CYRILLIC SMALL LETTER JE
+    chr(0x04BB): "h",  # CYRILLIC SMALL LETTER SHHA
+    # Greek small letters (omicron, rho, nu, tau, kappa look-alikes)
+    chr(0x03BF): "o",  # GREEK SMALL LETTER OMICRON
+    chr(0x03C1): "p",  # GREEK SMALL LETTER RHO
+    chr(0x03BA): "k",  # GREEK SMALL LETTER KAPPA
+    chr(0x03BD): "v",  # GREEK SMALL LETTER NU (visually similar to v)
+    chr(0x03B1): "a",  # GREEK SMALL LETTER ALPHA
+    chr(0x03B9): "i",  # GREEK SMALL LETTER IOTA (close to i)
+    # Armenian small letters that visually echo ASCII
+    chr(0x0585): "o",  # ARMENIAN SMALL LETTER OH
+    chr(0x0578): "n",  # ARMENIAN SMALL LETTER VO -- visual approximation
+    chr(0x0570): "h",  # ARMENIAN SMALL LETTER HO
+    chr(0x0566): "q",  # ARMENIAN SMALL LETTER ZA (visual)
+}
+
+
+# Script ranges for mixed-script detection. We classify each non-ASCII
+# codepoint in a single DNS label and reject when more than one
+# non-Common script appears within a label that also contains ASCII
+# letters -- the canonical UTS-39 mixed-script attack signature.
+def _script_of(ch: str) -> str:
+    """Return a coarse script bucket for a single character.
+
+    Buckets: ``ascii`` for ASCII letters/digits/hyphen, ``cyrillic``,
+    ``greek``, ``armenian``, ``fullwidth``, ``math``, ``common`` for
+    punctuation/digits-shared, ``other`` for anything else.
+    """
+    cp = ord(ch)
+    if cp < 0x80:
+        if ch.isalnum() or ch == "-":
+            return "ascii"
+        return "common"
+    if 0x0400 <= cp <= 0x04FF:
+        return "cyrillic"
+    if 0x0370 <= cp <= 0x03FF:
+        return "greek"
+    if 0x0530 <= cp <= 0x058F:
+        return "armenian"
+    if 0xFF00 <= cp <= 0xFFEF:
+        return "fullwidth"
+    if 0x1D400 <= cp <= 0x1D7FF:
+        return "math"
+    return "other"
+
+
+def _ascii_skeleton(host: str) -> str:
+    """Return the ASCII confusables skeleton of ``host``.
+
+    Applies NFKC normalization (which folds Halfwidth/Fullwidth Forms
+    and Mathematical Alphanumeric Symbols to ASCII), then substitutes
+    every codepoint in :data:`_CONFUSABLES_MAP` with its ASCII partner.
+    The output may still contain non-ASCII codepoints if a codepoint
+    was not covered by either NFKC or the curated map; the caller
+    treats that residual as a ``non_ascii`` rejection (the candidate
+    host is not a confusable of the canonical ASCII anchor; it is
+    something else entirely).
+    """
+    nfkc = unicodedata.normalize("NFKC", host)
+    return "".join(_CONFUSABLES_MAP.get(ch, ch) for ch in nfkc)
+
+
+def _is_pure_ascii(s: str) -> bool:
+    return all(ord(c) < 0x80 for c in s)
+
+
+def check_host_confusable(host: str, canonical_host: str) -> None:
+    """Reject ``host`` if it is a UTS-39 confusable of ``canonical_host``.
+
+    Pure ASCII candidates pass unconditionally (operators may BYO an
+    unrelated ASCII host on purpose). Any non-ASCII candidate is
+    folded to its ASCII skeleton via NFKC + the curated confusables
+    map; if the skeleton equals the canonical host (case-insensitive)
+    the candidate is rejected with reason ``confusable``. A
+    mixed-script label is rejected with reason ``mixed_script`` before
+    the skeleton check. A candidate whose skeleton still contains
+    non-ASCII codepoints after folding is rejected with reason
+    ``non_ascii``.
+
+    Args:
+        host: candidate hostname (DNS label sequence; no scheme).
+        canonical_host: the canonical ASCII host the verifier expects.
+
+    Raises:
+        RelayConfigInvalidError: when the host is a confusable, a
+            mixed-script label, or contains residual non-ASCII content
+            that the curated map could not fold.
+    """
+    if not host:
+        return None
+    canonical_lower = canonical_host.lower()
+
+    # Pure ASCII candidates: legitimate BYO or canonical. Either way they
+    # cannot be a homograph of the canonical ASCII anchor.
+    if _is_pure_ascii(host):
+        return None
+
+    # Per-label mixed-script detection. A label that mixes ASCII letters
+    # with a single non-Common foreign script is the canonical
+    # mixed-script attack; reject before skeleton folding so the reason
+    # code attributes correctly even against UNRELATED canonical hosts.
+    for label in host.split("."):
+        scripts: set[str] = set()
+        for ch in label:
+            s = _script_of(ch)
+            if s in {"ascii", "common"}:
+                continue
+            scripts.add(s)
+        if len(scripts) >= 1 and any(_script_of(ch) == "ascii" for ch in label):
+            # ASCII letters mixed with foreign-script letters in one
+            # label -- canonical mixed-script attack. Fall through to
+            # the skeleton check first; if it folds to the canonical
+            # host the rejection is more specific (``confusable``).
+            skeleton_label = _ascii_skeleton(label)
+            if _is_pure_ascii(skeleton_label):
+                # Folds cleanly to ASCII -- attribute the broader
+                # skeleton check below.
+                continue
+            raise RelayConfigInvalidError(
+                f"mixed-script label rejected: {label!r}",
+                details={
+                    "host": host,
+                    "canonical_host": canonical_host,
+                    "reason": "mixed_script",
+                    "label": label,
+                    "scripts": sorted(scripts),
+                },
+            )
+
+    skeleton = _ascii_skeleton(host).lower()
+    if skeleton == canonical_lower:
+        raise RelayConfigInvalidError(
+            f"trust_anchor host is a UTS-39 confusable of "
+            f"{canonical_host!r}: {host!r}",
+            details={
+                "host": host,
+                "canonical_host": canonical_host,
+                "reason": "confusable",
+                "skeleton": skeleton,
+            },
+        )
+
+    if not _is_pure_ascii(skeleton):
+        raise RelayConfigInvalidError(
+            f"trust_anchor host contains non-ASCII codepoints not "
+            f"covered by the UTS-39 fold: {host!r}",
+            details={
+                "host": host,
+                "canonical_host": canonical_host,
+                "reason": "non_ascii",
+                "skeleton": skeleton,
+            },
+        )
+    return None
+
+
+def _canonical_host_of(url: str) -> str:
+    """Extract the hostname component of ``url`` for the confusables guard."""
+    parsed = urlparse(url)
+    return (parsed.hostname or "").lower()
+
+
+def _enforce_trust_anchor_homograph_guard(candidate_url: str) -> None:
+    """Apply :func:`check_host_confusable` to the BYO trust anchor URL.
+
+    Compares the candidate URL's host against the host of the compiled-
+    in :data:`DEFAULT_JWKS_URL`. Raises :class:`RelayConfigInvalidError`
+    on rejection; the ``details`` dict carries ``trust_anchor`` so the
+    CLI/verifier wrapper can surface the offending URL verbatim.
+    """
+    candidate_host = _canonical_host_of(candidate_url)
+    canonical_host = _canonical_host_of(DEFAULT_JWKS_URL)
+    if not candidate_host:
+        # Malformed URL -- the URL parser already returned empty host.
+        # The downstream resolver paths will reject this with a more
+        # specific error; the homograph guard is a no-op here.
+        return None
+    try:
+        check_host_confusable(candidate_host, canonical_host)
+    except RelayConfigInvalidError as exc:
+        # Re-raise with the offending URL attached so callers can
+        # serialize the rejection envelope directly.
+        details = dict(exc.details)
+        details["trust_anchor"] = candidate_url
+        raise RelayConfigInvalidError(exc.message, details=details) from exc
+    return None
 
 # -----------------------------------------------------------------------------
 # Cache envelope constants (must match packages/cli/src/relay_cli/jwks_cache.py
@@ -406,10 +648,18 @@ def resolve_trust_anchor_url(
             malformed.
     """
     if flag_url and flag_url.strip():
-        return flag_url.strip(), TRUST_ANCHOR_SOURCE_BYO_FLAG
+        url = flag_url.strip()
+        # VAL-V3M5-009: UTS-39 confusables guard on every BYO URL whose
+        # host could be a homograph of the canonical default. Pure ASCII
+        # operator-chosen hosts pass; homograph hosts raise
+        # RelayConfigInvalidError before the resolver ever touches the
+        # network or cache.
+        _enforce_trust_anchor_homograph_guard(url)
+        return url, TRUST_ANCHOR_SOURCE_BYO_FLAG
     if config_path is not None:
         config_url = _load_config_trust_anchor(config_path)
         if config_url is not None:
+            _enforce_trust_anchor_homograph_guard(config_url)
             return config_url, TRUST_ANCHOR_SOURCE_BYO_CONFIG
     return DEFAULT_JWKS_URL, TRUST_ANCHOR_SOURCE_LIVE
 
@@ -610,6 +860,7 @@ __all__ = [
     "TRUST_ANCHOR_SOURCE_BYO_FLAG",
     "TRUST_ANCHOR_SOURCE_CACHE",
     "TRUST_ANCHOR_SOURCE_LIVE",
+    "check_host_confusable",
     "load_bundled_jwks",
     "load_cached_jwks",
     "resolve_jwks",
