@@ -70,12 +70,15 @@ _POLICY_SCHEMA_VERSIONS: Final[frozenset[str]] = frozenset(
 # expected the legacy single-literal constant.
 _POLICY_SCHEMA_VERSION: Final[str] = _POLICY_SCHEMA_VERSION_PRIMARY
 
-# The closed set of matcher kinds the SDK supports. Spec G.2 lists
-# "regex" and "json_pointer"; v0.1 SDK implements "regex" end-to-end
-# and accepts "json_pointer" entries only when ``paths`` is supplied
-# (the engine walks JSON pointers in addition to regex matching on
-# string leaves). An unknown ``kind`` fails closed at load.
-_KNOWN_MATCHER_KINDS: Final[frozenset[str]] = frozenset({"regex", "json_pointer"})
+# The closed set of matcher kinds the SDK supports. Spec G.3 lists
+# "regex", "json_pointer", and "json_path"; v0.1 SDK implements
+# "regex" end-to-end, "json_pointer" (RFC 6901), and "json_path"
+# (RFC 9535 subset: ``$``, ``$.key`` dotted child access, ``$.key[N]``
+# integer array index). An unknown ``kind`` fails closed at load.
+# VAL-V3M5-018.
+_KNOWN_MATCHER_KINDS: Final[frozenset[str]] = frozenset(
+    {"regex", "json_pointer", "json_path"}
+)
 
 # The closed set of matcher actions. ``redact`` replaces the matched
 # span with the action_policy.redact.placeholder. ``hash`` replaces it
@@ -192,15 +195,113 @@ def _normalise_for_matching(value: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _jsonpath_to_pointer(selector: str) -> str:
+    """Compile a JSONPath (RFC 9535 subset) selector to an RFC 6901 pointer.
+
+    Supported subset (VAL-V3M5-018):
+
+      * ``$``                   -- the root document (returns ``""``).
+      * ``$.<key>``             -- dotted child access; key chars are
+        ``[A-Za-z_][A-Za-z0-9_-]*``. RFC 6901 escapes are applied to the
+        key (``~`` -> ``~0``, ``/`` -> ``~1``).
+      * ``$.<key>[N]``          -- non-negative integer array index.
+      * Chained combinations:    ``$.a.b[0].c[1]`` etc.
+
+    Out of scope (raises :class:`ValueError`):
+
+      * ``..`` (recursive descent), ``*`` (wildcard), ``[?(expr)]``
+        (filter), ``[start:end:step]`` (slice), bracket-notation string
+        keys ``['key']`` (the spec G.3 fixtures use only dotted form).
+
+    Returns the equivalent RFC 6901 pointer string. The empty pointer
+    ``""`` represents the document root.
+
+    Cross-runtime parity: the TypeScript redaction module ships an
+    identically-shaped parser (``packages/sdk-typescript/src/redaction.ts``)
+    so both runtimes resolve the same selector to the same pointer.
+    """
+    if not isinstance(selector, str) or not selector:
+        raise ValueError("selector MUST be a non-empty string")
+    if not selector.startswith("$"):
+        raise ValueError(f"selector MUST start with '$': {selector!r}")
+    rest = selector[1:]
+    if not rest:
+        return ""
+    parts: list[str] = []
+    i = 0
+    n = len(rest)
+    while i < n:
+        ch = rest[i]
+        if ch == ".":
+            # Dotted child access: read the key up to the next '.' or '['.
+            i += 1
+            if i >= n or rest[i] in ".[":
+                raise ValueError(
+                    f"selector has empty key after '.': {selector!r}"
+                )
+            start = i
+            while i < n and rest[i] not in ".[":
+                key_ch = rest[i]
+                # Validate the key character set up-front so we fail
+                # closed on unsupported features like wildcards.
+                if key_ch in "*?(":
+                    raise ValueError(
+                        f"selector uses unsupported feature {key_ch!r}: "
+                        f"{selector!r}"
+                    )
+                i += 1
+            key = rest[start:i]
+            if not key:
+                raise ValueError(
+                    f"selector has empty key segment: {selector!r}"
+                )
+            # Reject recursive-descent (``..``) by detecting the empty
+            # key that would result from two consecutive dots; the loop
+            # already raises above on ``rest[i] == '.'`` immediately
+            # after consuming the leading dot, so this is belt-and-
+            # braces.
+            parts.append(_escape_pointer_token(key))
+        elif ch == "[":
+            # Integer array index: ``[N]`` where N >= 0.
+            i += 1
+            start = i
+            while i < n and rest[i].isdigit():
+                i += 1
+            if i == start or i >= n or rest[i] != "]":
+                raise ValueError(
+                    f"selector has malformed array index: {selector!r}"
+                )
+            index_token = rest[start:i]
+            i += 1  # consume ']'
+            parts.append(index_token)
+        else:
+            raise ValueError(
+                f"selector has unexpected character {ch!r} at position "
+                f"{i + 1}: {selector!r}"
+            )
+    return "/" + "/".join(parts) if parts else ""
+
+
 @dataclass(frozen=True)
 class _CompiledMatcher:
-    """A single matcher prepared for engine consumption."""
+    """A single matcher prepared for engine consumption.
+
+    ``json_paths`` holds the raw selector strings as authored by the policy:
+    RFC 6901 JSON Pointers for ``kind='json_pointer'`` (``/foo/bar``) or
+    RFC 9535 JSONPath subset for ``kind='json_path'`` (``$.foo.bar``). The
+    engine resolves the pointer form for the current leaf and compares it
+    against the matcher's compiled pointer form (``json_pointers``) below.
+    """
 
     id: str
     kind: str
     action: str
     pattern: re.Pattern[str] | None
     json_paths: tuple[str, ...]
+    # JSONPath selectors compiled to their equivalent RFC 6901 JSON Pointer
+    # form so leaf evaluation can reuse the same pointer-matching path used
+    # by json_pointer matchers. Empty for non-pointer/non-path matcher kinds.
+    json_pointers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -373,6 +474,7 @@ class RedactionPolicy:
                 )
             pattern: re.Pattern[str] | None = None
             json_paths: tuple[str, ...] = ()
+            json_pointers: tuple[str, ...] = ()
             if kind == "regex":
                 raw_pattern = raw.get("pattern")
                 if not isinstance(raw_pattern, str) or not raw_pattern:
@@ -403,6 +505,41 @@ class RedactionPolicy:
                         details={"reason": "json_paths_missing", "index": idx},
                     )
                 json_paths = tuple(raw_paths)
+            elif kind == "json_path":
+                # VAL-V3M5-018. JSONPath selectors (RFC 9535 subset). The
+                # SDK ships a minimal native parser to keep the redaction
+                # path dep-free and deterministic across both runtimes;
+                # the supported subset is documented at
+                # :func:`_jsonpath_to_pointer`.
+                raw_paths = raw.get("paths")
+                if (
+                    not isinstance(raw_paths, list)
+                    or not raw_paths
+                    or not all(
+                        isinstance(p, str) and p for p in raw_paths
+                    )
+                ):
+                    raise RelayPolicyError(
+                        f"json_path matcher #{idx} MUST have a non-empty "
+                        "list of string paths",
+                        details={"reason": "json_paths_missing", "index": idx},
+                    )
+                try:
+                    pointers = tuple(
+                        _jsonpath_to_pointer(p) for p in raw_paths
+                    )
+                except ValueError as exc:
+                    raise RelayPolicyError(
+                        f"json_path matcher #{idx} has an unsupported "
+                        f"selector: {exc}",
+                        details={
+                            "reason": "json_path_unsupported",
+                            "index": idx,
+                            "error": str(exc),
+                        },
+                    ) from exc
+                json_paths = tuple(raw_paths)
+                json_pointers = pointers
             compiled.append(
                 _CompiledMatcher(
                     id=matcher_id,
@@ -410,6 +547,7 @@ class RedactionPolicy:
                     action=str(action),
                     pattern=pattern,
                     json_paths=json_paths,
+                    json_pointers=json_pointers,
                 )
             )
         # action_policy block.
@@ -807,7 +945,15 @@ class RedactionEngine:
     def _find_json_pointer_match(
         self, pointer: str
     ) -> _CompiledMatcher | None:
-        """Return the first json_pointer matcher whose paths include ``pointer``.
+        """Return the first pointer-style matcher whose paths include ``pointer``.
+
+        Two matcher kinds participate in pointer-level evaluation:
+
+          * ``json_pointer`` (RFC 6901) -- raw pointers stored in
+            ``matcher.json_paths``.
+          * ``json_path`` (RFC 9535 subset, VAL-V3M5-018) -- selectors
+            compiled to RFC 6901 pointer form at policy load and stored
+            in ``matcher.json_pointers``.
 
         Matchers are evaluated in declaration order; the first hit
         wins. ``pointer`` is the empty string at the root and never
@@ -817,9 +963,9 @@ class RedactionEngine:
         if not pointer:
             return None
         for matcher in self._policy.matchers:
-            if matcher.kind != "json_pointer":
-                continue
-            if pointer in matcher.json_paths:
+            if matcher.kind == "json_pointer" and pointer in matcher.json_paths:
+                return matcher
+            if matcher.kind == "json_path" and pointer in matcher.json_pointers:
                 return matcher
         return None
 

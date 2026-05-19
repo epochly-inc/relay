@@ -77,7 +77,16 @@ import {
 const POLICY_SCHEMA_VERSION_PRIMARY = "relay.redaction.v1";
 const POLICY_SCHEMA_VERSION_ALIAS = "relay.redaction_policy.v1";
 
-const KNOWN_MATCHER_KINDS: ReadonlySet<string> = new Set(["regex", "json_pointer"]);
+// Spec G.3 lists "regex", "json_pointer", and "json_path"; v0.1 SDK
+// implements "regex" end-to-end, "json_pointer" (RFC 6901), and
+// "json_path" (RFC 9535 subset: ``$``, ``$.key`` dotted child access,
+// ``$.key[N]`` integer array index). An unknown ``kind`` fails closed
+// at load. VAL-V3M5-018.
+const KNOWN_MATCHER_KINDS: ReadonlySet<string> = new Set([
+  "regex",
+  "json_pointer",
+  "json_path",
+]);
 const KNOWN_ACTIONS: ReadonlySet<string> = new Set(["redact", "hash", "drop"]);
 
 /**
@@ -201,10 +210,19 @@ function normaliseForMatching(value: string): string {
  */
 interface CompiledMatcher {
   readonly id: string;
-  readonly kind: "regex" | "json_pointer";
+  readonly kind: "regex" | "json_pointer" | "json_path";
   readonly action: "redact" | "hash" | "drop";
   readonly pattern: RegExp | null;
+  // Raw pointer / selector strings as authored in the policy. For
+  // ``json_pointer`` matchers these are RFC 6901 pointers; for
+  // ``json_path`` matchers these are the JSONPath selectors before
+  // compilation. Empty for ``regex``.
   readonly jsonPaths: ReadonlyArray<string>;
+  // JSONPath selectors compiled to their equivalent RFC 6901 JSON
+  // Pointer form so leaf evaluation can reuse the same pointer-matching
+  // path used by json_pointer matchers. Empty for non-pointer/non-path
+  // matcher kinds. VAL-V3M5-018.
+  readonly jsonPointers: ReadonlyArray<string>;
 }
 
 /**
@@ -422,6 +440,7 @@ export function loadRedactionPolicy(body: unknown): RedactionPolicyImpl {
     }
     let pattern: RegExp | null = null;
     let jsonPaths: ReadonlyArray<string> = [];
+    let jsonPointers: ReadonlyArray<string> = [];
     if (kind === "regex") {
       const rawPattern = m["pattern"];
       if (typeof rawPattern !== "string" || rawPattern === "") {
@@ -466,13 +485,54 @@ export function loadRedactionPolicy(body: unknown): RedactionPolicyImpl {
         );
       }
       jsonPaths = Object.freeze([...(rawPaths as string[])]);
+    } else if (kind === "json_path") {
+      // VAL-V3M5-018. JSONPath selectors (RFC 9535 subset). The SDK
+      // ships a minimal native parser to keep the redaction path
+      // dep-free and deterministic across both runtimes; the supported
+      // subset is documented at :func:`jsonPathToPointer`.
+      const rawPaths = m["paths"];
+      if (
+        !Array.isArray(rawPaths) ||
+        rawPaths.length === 0 ||
+        !rawPaths.every((p) => typeof p === "string" && p !== "")
+      ) {
+        throw new RelayRedactionPolicyError(
+          `json_path matcher #${idx} MUST have a non-empty list of string paths`,
+          {
+            code: RELAY_SDK_POLICY_INVALID_CODE,
+            details: { reason: "json_paths_missing", index: idx },
+          },
+        );
+      }
+      const compiledPointers: string[] = [];
+      for (const sel of rawPaths as string[]) {
+        try {
+          compiledPointers.push(jsonPathToPointer(sel));
+        } catch (exc) {
+          throw new RelayRedactionPolicyError(
+            `json_path matcher #${idx} has an unsupported selector: ${exc instanceof Error ? exc.message : String(exc)}`,
+            {
+              code: RELAY_SDK_POLICY_INVALID_CODE,
+              details: {
+                reason: "json_path_unsupported",
+                index: idx,
+                error: exc instanceof Error ? exc.message : String(exc),
+              },
+              cause: exc,
+            },
+          );
+        }
+      }
+      jsonPaths = Object.freeze([...(rawPaths as string[])]);
+      jsonPointers = Object.freeze(compiledPointers);
     }
     compiled.push({
       id: matcherId,
-      kind: kind as "regex" | "json_pointer",
+      kind: kind as "regex" | "json_pointer" | "json_path",
       action: action as "redact" | "hash" | "drop",
       pattern,
       jsonPaths,
+      jsonPointers,
     });
   }
 
@@ -649,6 +709,97 @@ function sha256HexBytes(value: Uint8Array): string {
  */
 function escapePointerToken(token: string): string {
   return token.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
+/**
+ * Compile a JSONPath (RFC 9535 subset) selector to an RFC 6901 pointer.
+ *
+ * Supported subset (VAL-V3M5-018):
+ *
+ *   * ``$``                   -- the root document (returns ``""``).
+ *   * ``$.<key>``             -- dotted child access; key chars are
+ *     ``[A-Za-z_][A-Za-z0-9_-]*``. RFC 6901 escapes are applied to the
+ *     key (``~`` -> ``~0``, ``/`` -> ``~1``).
+ *   * ``$.<key>[N]``          -- non-negative integer array index.
+ *   * Chained combinations:    ``$.a.b[0].c[1]`` etc.
+ *
+ * Out of scope (throws :class:`Error`):
+ *
+ *   * ``..`` (recursive descent), ``*`` (wildcard), ``[?(expr)]``
+ *     (filter), ``[start:end:step]`` (slice), bracket-notation string
+ *     keys ``['key']`` (the spec G.3 fixtures use only dotted form).
+ *
+ * Returns the equivalent RFC 6901 pointer string. The empty pointer
+ * ``""`` represents the document root.
+ *
+ * Cross-runtime parity: the Python redaction module ships an
+ * identically-shaped parser
+ * (``packages/sdk-python/relay/redaction.py:_jsonpath_to_pointer``) so
+ * both runtimes resolve the same selector to the same pointer.
+ */
+function jsonPathToPointer(selector: string): string {
+  if (typeof selector !== "string" || selector.length === 0) {
+    throw new Error("selector MUST be a non-empty string");
+  }
+  if (!selector.startsWith("$")) {
+    throw new Error(`selector MUST start with '$': ${JSON.stringify(selector)}`);
+  }
+  const rest = selector.slice(1);
+  if (rest.length === 0) return "";
+  const parts: string[] = [];
+  let i = 0;
+  const n = rest.length;
+  while (i < n) {
+    const ch = rest[i];
+    if (ch === ".") {
+      // Dotted child access: read the key up to the next '.' or '['.
+      i += 1;
+      if (i >= n || rest[i] === "." || rest[i] === "[") {
+        throw new Error(
+          `selector has empty key after '.': ${JSON.stringify(selector)}`,
+        );
+      }
+      const start = i;
+      while (i < n && rest[i] !== "." && rest[i] !== "[") {
+        const keyCh = rest[i];
+        if (keyCh === "*" || keyCh === "?" || keyCh === "(") {
+          throw new Error(
+            `selector uses unsupported feature ${JSON.stringify(keyCh)}: ${JSON.stringify(selector)}`,
+          );
+        }
+        i += 1;
+      }
+      const key = rest.slice(start, i);
+      if (key.length === 0) {
+        throw new Error(
+          `selector has empty key segment: ${JSON.stringify(selector)}`,
+        );
+      }
+      parts.push(escapePointerToken(key));
+    } else if (ch === "[") {
+      // Integer array index: ``[N]`` where N >= 0.
+      i += 1;
+      const indexStart = i;
+      while (i < n) {
+        const digitCh = rest[i];
+        if (digitCh === undefined || digitCh < "0" || digitCh > "9") break;
+        i += 1;
+      }
+      if (i === indexStart || i >= n || rest[i] !== "]") {
+        throw new Error(
+          `selector has malformed array index: ${JSON.stringify(selector)}`,
+        );
+      }
+      const indexToken = rest.slice(indexStart, i);
+      i += 1; // consume ']'
+      parts.push(indexToken);
+    } else {
+      throw new Error(
+        `selector has unexpected character ${JSON.stringify(ch)} at position ${i + 1}: ${JSON.stringify(selector)}`,
+      );
+    }
+  }
+  return parts.length > 0 ? "/" + parts.join("/") : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -876,16 +1027,29 @@ export class RedactionEngine {
   }
 
   /**
-   * Return the first json_pointer matcher whose ``jsonPaths`` includes
-   * ``pointer``. Matchers are evaluated in declaration order. The root
-   * pointer (empty string) never matches: matchers declare leaf paths
-   * like ``/user/email``, not the document root.
+   * Return the first pointer-style matcher whose declared selector
+   * resolves to ``pointer``.
+   *
+   * Two matcher kinds participate in pointer-level evaluation:
+   *
+   *   * ``json_pointer`` (RFC 6901) -- raw pointers stored in
+   *     ``matcher.jsonPaths``.
+   *   * ``json_path`` (RFC 9535 subset, VAL-V3M5-018) -- selectors
+   *     compiled to RFC 6901 pointer form at policy load and stored in
+   *     ``matcher.jsonPointers``.
+   *
+   * Matchers are evaluated in declaration order. The root pointer
+   * (empty string) never matches: matchers declare leaf paths like
+   * ``/user/email``, not the document root.
    */
   private findJsonPointerMatch(pointer: string): CompiledMatcher | null {
     if (pointer.length === 0) return null;
     for (const matcher of this._policy.matchers) {
-      if (matcher.kind !== "json_pointer") continue;
-      if (matcher.jsonPaths.includes(pointer)) return matcher;
+      if (matcher.kind === "json_pointer") {
+        if (matcher.jsonPaths.includes(pointer)) return matcher;
+      } else if (matcher.kind === "json_path") {
+        if (matcher.jsonPointers.includes(pointer)) return matcher;
+      }
     }
     return null;
   }
