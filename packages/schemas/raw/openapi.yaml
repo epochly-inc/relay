@@ -1211,6 +1211,202 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  # =========================================================================
+  # V3 M2 F02 hosted-only 501 stubs (VAL-V3M2-004, VAL-V3M2-005)
+  # =========================================================================
+  # [OUT-OF-SCOPE-PRIVATE] These 5 routes belong to the private
+  # ``relay-platform`` hosted control plane. The OSS sidecar exposes
+  # them only as 501 stubs returning RELAY-HOSTED-ONLY with
+  # blocked_surface=hosted_control_plane. Implementing the actual
+  # hosted logic in OSS is a P0 boundary violation per CLAUDE.md
+  # "Repository topology" and .ops boundaries.md DEFERRED item #3.
+
+  /v1/evidence-bundles/{bundle_id}/assess:
+    post:
+      operationId: hostedAssessEvidenceBundle
+      summary: 'Assess an evidence bundle [OUT-OF-SCOPE-PRIVATE]'
+      description: |
+        [OUT-OF-SCOPE-PRIVATE] Hosted-only: triggers a compliance
+        assessment run against an evidence bundle. The OSS sidecar
+        returns 501 with RELAY-HOSTED-ONLY; this endpoint is provided
+        by the hosted Relay control plane.
+      parameters:
+        - in: path
+          name: bundle_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+            assessment accepted and queued; assessment_bundle_id
+            returned. The OSS sidecar never returns this status; it
+            always returns 501 below.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '501':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+            provided by hosted Relay control plane.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/assessment-bundles/{bundle_id}:
+    get:
+      operationId: hostedGetAssessmentBundle
+      summary: 'Get an assessment bundle [OUT-OF-SCOPE-PRIVATE]'
+      description: |
+        [OUT-OF-SCOPE-PRIVATE] Hosted-only: retrieves an assessment
+        bundle produced by the hosted compliance assessor. The OSS
+        sidecar returns 501 with RELAY-HOSTED-ONLY.
+      parameters:
+        - in: path
+          name: bundle_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+            assessment bundle envelope. The OSS sidecar never returns
+            this status; it always returns 501 below.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '501':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+            provided by hosted Relay control plane.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/assessment-bundles/{bundle_id}/gaps:
+    get:
+      operationId: hostedGetAssessmentBundleGaps
+      summary: 'Get an assessment bundle gap list [OUT-OF-SCOPE-PRIVATE]'
+      description: |
+        [OUT-OF-SCOPE-PRIVATE] Hosted-only: returns the structured
+        gap list for an assessment bundle (which assertions failed,
+        which evidence is missing). The OSS sidecar returns 501 with
+        RELAY-HOSTED-ONLY.
+      parameters:
+        - in: path
+          name: bundle_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+            gap list envelope. The OSS sidecar never returns this
+            status; it always returns 501 below.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '501':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+            provided by hosted Relay control plane.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/projects/{project_id}/compliance/readiness:
+    get:
+      operationId: hostedGetProjectComplianceReadiness
+      summary: 'Get project compliance readiness [OUT-OF-SCOPE-PRIVATE]'
+      description: |
+        [OUT-OF-SCOPE-PRIVATE] Hosted-only: aggregates compliance
+        readiness signals across the project's evidence bundles and
+        active compliance packs. The OSS sidecar returns 501 with
+        RELAY-HOSTED-ONLY.
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+            project compliance readiness envelope. The OSS sidecar
+            never returns this status; it always returns 501 below.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '501':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+            provided by hosted Relay control plane.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/orgs/{org_id}/usage:
+    get:
+      operationId: hostedGetOrgUsage
+      summary: 'Get org usage metering [OUT-OF-SCOPE-PRIVATE]'
+      description: |
+        [OUT-OF-SCOPE-PRIVATE] Hosted-only: returns billing-grade
+        usage metering for an org. The OSS sidecar returns 501 with
+        RELAY-HOSTED-ONLY (no metering surface in OSS).
+      parameters:
+        - in: path
+          name: org_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+            org usage metering envelope. The OSS sidecar never returns
+            this status; it always returns 501 below.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '501':
+          description: |
+            [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+            provided by hosted Relay control plane.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   schemas:
 

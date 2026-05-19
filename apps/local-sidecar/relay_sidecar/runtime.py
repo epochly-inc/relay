@@ -4812,6 +4812,99 @@ def build_runtime_app(
             headers=_rate_limit_headers_for(request),
         )
 
+    # =====================================================================
+    # V3 M2 F02 hosted-only assessment/compliance/usage 501 stubs
+    # (VAL-V3M2-004, VAL-V3M2-005)
+    # =====================================================================
+    # [OUT-OF-SCOPE-PRIVATE] The 5 routes below belong to the private
+    # ``relay-platform`` hosted control plane (.ops boundaries.md
+    # DEFERRED item #3). The OSS sidecar exposes them only as 501 stubs
+    # so SDK callers see a deterministic ``RELAY-HOSTED-ONLY`` envelope
+    # rather than a 404 (which would falsely suggest a missing or
+    # renamed route). Implementing the actual hosted logic in the OSS
+    # tree is a P0 boundary violation per CLAUDE.md "Repository
+    # topology" + "DEFERRED items".
+    #
+    # Per VAL-V3M2-005 the envelope MUST carry:
+    #   code            = "RELAY-HOSTED-ONLY"
+    #   http_status     = 501
+    #   blocked_surface = "hosted_control_plane"
+
+    _HOSTED_ONLY_MESSAGE: str = (
+        "This endpoint is provided by the hosted Relay control plane; "
+        "not available in OSS sidecar."
+    )
+
+    @app.post("/v1/evidence-bundles/{bundle_id}/assess")
+    async def v1_evidence_bundle_assess(
+        bundle_id: str, request: Request
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=501,
+            content=_build_error_envelope(
+                code="RELAY-HOSTED-ONLY",
+                http_status=501,
+                blocked_surface="hosted_control_plane",
+                message=_HOSTED_ONLY_MESSAGE,
+            ),
+        )
+
+    @app.get("/v1/assessment-bundles/{bundle_id}")
+    async def v1_assessment_bundle_get(
+        bundle_id: str, request: Request
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=501,
+            content=_build_error_envelope(
+                code="RELAY-HOSTED-ONLY",
+                http_status=501,
+                blocked_surface="hosted_control_plane",
+                message=_HOSTED_ONLY_MESSAGE,
+            ),
+        )
+
+    @app.get("/v1/assessment-bundles/{bundle_id}/gaps")
+    async def v1_assessment_bundle_gaps(
+        bundle_id: str, request: Request
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=501,
+            content=_build_error_envelope(
+                code="RELAY-HOSTED-ONLY",
+                http_status=501,
+                blocked_surface="hosted_control_plane",
+                message=_HOSTED_ONLY_MESSAGE,
+            ),
+        )
+
+    @app.get("/v1/projects/{project_id}/compliance/readiness")
+    async def v1_project_compliance_readiness(
+        project_id: str, request: Request
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=501,
+            content=_build_error_envelope(
+                code="RELAY-HOSTED-ONLY",
+                http_status=501,
+                blocked_surface="hosted_control_plane",
+                message=_HOSTED_ONLY_MESSAGE,
+            ),
+        )
+
+    @app.get("/v1/orgs/{org_id}/usage")
+    async def v1_org_usage(
+        org_id: str, request: Request
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=501,
+            content=_build_error_envelope(
+                code="RELAY-HOSTED-ONLY",
+                http_status=501,
+                blocked_surface="hosted_control_plane",
+                message=_HOSTED_ONLY_MESSAGE,
+            ),
+        )
+
     @app.get("/diagnostics/quiesce")
     async def diagnostics_quiesce() -> dict[str, Any]:
         """Return current quiesce state: in-flight count, idle event,
