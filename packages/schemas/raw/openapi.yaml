@@ -45,14 +45,47 @@ info:
     url: https://www.apache.org/licenses/LICENSE-2.0
 
 paths:
-  # Audit-R3 (2026-05-18): minimum-viable HTTP route contract entries.
-  # The sidecar runtime exposes 33+ v1 routes via FastAPI decorators in
-  # apps/local-sidecar/relay_sidecar/runtime.py. The previously-empty
-  # paths: {} declaration meant the OpenAPI contract was silent on every
-  # route shape. Fully enumerating all 33 routes here is a follow-up
-  # work-item (audit-R3 remaining-work list); this entry establishes the
-  # contract shape and the runtime/CI machinery for evaluating it. New
-  # routes added to the runtime MUST land here in the same PR.
+  # Audit-V3M2 (2026-05-18): enumeration of every /v1 and /diagnostics
+  # route registered by the sidecar runtime
+  # (apps/local-sidecar/relay_sidecar/runtime.py + the routers it
+  # include_router()s, currently the state_engine HTTP boundary at
+  # apps/local-sidecar/relay_sidecar/state_engine/http_endpoint.py).
+  #
+  # scripts/check-openapi-route-coverage.py asserts set-equality between
+  # the FastAPI registration and this paths: block (VAL-V3M2-001),
+  # operation shape (summary + responses 2xx+4xx + requestBody for
+  # mutating verbs, VAL-V3M2-002), and operationId uniqueness across
+  # the document (VAL-V3M2-003). New routes added to the sidecar MUST
+  # land here in the same PR or CI rejects.
+  #
+  # Most response payloads carry the canonical ErrorEnvelope on the
+  # failure path (spec B.4) and an opaque object on the success path.
+  # Tightening the success schemas to per-route component refs is
+  # tracked outside this audit milestone.
+
+  /diagnostics/sqlite:
+    get:
+      operationId: getDiagnosticsSqlite
+      summary: Read sidecar SQLite journal_mode + busy_timeout
+      description: |
+        VAL-W2-014 diagnostic. Opens a short-lived aiosqlite connection
+        and reports PRAGMA journal_mode + PRAGMA busy_timeout. Used to
+        prove WAL mode is in effect after lifespan startup. Bearer-token
+        authenticated; no body.
+      responses:
+        '200':
+          description: SQLite diagnostics snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /diagnostics/runtime:
     get:
@@ -74,6 +107,1105 @@ paths:
                 additionalProperties: true
         '401':
           description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /diagnostics/quiesce:
+    get:
+      operationId: getDiagnosticsQuiesce
+      summary: Read sidecar quiesce / draining state
+      description: |
+        Reports whether the runtime is currently draining for shutdown.
+        Used by external supervisors to confirm SIGTERM has been
+        observed and the in-flight tracker is unwinding.
+      responses:
+        '200':
+          description: Quiesce-state snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /diagnostics/db:
+    get:
+      operationId: getDiagnosticsDb
+      summary: Read sidecar database connectivity diagnostics
+      description: |
+        Reports the active SidecarDatabase wiring (path, lock state,
+        migration head). Used by self-test and ops smoke checks.
+      responses:
+        '200':
+          description: Database diagnostics snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/ingest:
+    post:
+      operationId: postV1Ingest
+      summary: Generic ingest probe endpoint
+      description: |
+        W2.6 placeholder ingest endpoint participating in the in-flight
+        tracker so drain-path tests (VAL-W2-044) can exercise the
+        draining handshake. Full ingest envelope validation lands in
+        the typed ingest routes below.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Ingest probe accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: Sidecar draining; retry after the indicated window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/ingest/runs:
+    post:
+      operationId: postV1IngestRuns
+      summary: Ingest a run-lifecycle envelope
+      description: |
+        Submits a run lifecycle envelope (Run / RunResult-draft / etc).
+        Canonical control plane writes the eventual run_result row.
+        Spec B; envelope kinds defined in components.schemas.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Run lifecycle envelope accepted for processing.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Validation failure or stale three-anchor handoff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/ingest/spans:batch:
+    post:
+      operationId: postV1IngestSpansBatch
+      summary: Batch-ingest spans
+      description: |
+        Batch span submission. Enforces the §AI.1 per-envelope 256 KiB
+        size cap and nesting depth <= 16 (RELAY-ING-041). Spec B.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Span batch accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Validation failure (oversize, deep, or malformed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/ingest/contract-results:batch:
+    post:
+      operationId: postV1IngestContractResultsBatch
+      summary: Batch-ingest contract evaluation results
+      description: |
+        Batch submission of ContractResult envelopes produced by the
+        contract engine. Spec A.6, B. Canonical control plane resolves
+        the join to run_results.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Contract-result batch accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/projects/{project_id}/runs:
+    get:
+      operationId: listProjectRuns
+      summary: List runs for a project
+      description: |
+        Paginated list of runs scoped to a single project. Cursor is
+        signed + TTL'd per §B.3 (VAL-V3M2-009).
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: A paginated page of runs with a next_cursor field.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid cursor or query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/runs/{run_id}:
+    get:
+      operationId: getRun
+      summary: Read a single run
+      description: Fetch the Run envelope by id.
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Run envelope.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Run not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/runs/{run_id}/trace:
+    get:
+      operationId: getRunTrace
+      summary: Read the span trace for a run
+      description: |
+        Paginated trace of spans bound to the run. Cursor is signed +
+        TTL'd per §B.3.
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Page of spans + next_cursor.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Run not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/runs/{run_id}/result:
+    get:
+      operationId: getRunResult
+      summary: Read the canonical run_result for a run
+      description: |
+        Returns the run_result row (control-plane-authored, spec A.1).
+        404 until the result-writer has resolved the run.
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Canonical RunResult envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResult'
+        '404':
+          description: Run or run_result not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/runs/{run_id}/explain:
+    get:
+      operationId: getRunExplain
+      summary: Read explain output (root-cause hypotheses) for a run
+      description: |
+        Returns ranked root-cause hypotheses associated with the run.
+        Hypotheses are generator-versioned (spec §AJ).
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Explain result payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Run not found or no explain output yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/replay-cases:
+    post:
+      operationId: createReplayCase
+      summary: Create a replay case
+      description: Submits a ReplayCase envelope. Spec A.8.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayCase'
+      responses:
+        '201':
+          description: Replay case created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayCase'
+        '400':
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/replay-cases/{case_id}:
+    get:
+      operationId: getReplayCase
+      summary: Read a replay case by id
+      parameters:
+        - in: path
+          name: case_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ReplayCase envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayCase'
+        '404':
+          description: Replay case not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/replay-cases/{case_id}/fixtures:
+    post:
+      operationId: addReplayFixture
+      summary: Attach a replay fixture to a replay case
+      description: |
+        Appends a ReplayFixture to the case. Spec A.8, §E. Fixture
+        side_effect_class governs whether the fixture is replayable.
+      parameters:
+        - in: path
+          name: case_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayFixture'
+      responses:
+        '201':
+          description: Fixture attached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayFixture'
+        '400':
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: Replay case not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/replay-cases/{case_id}/run:
+    post:
+      operationId: runReplayCase
+      summary: Execute a replay case
+      description: |
+        Enqueues an execution of the replay case. Cassette mode is
+        default; live mode requires explicit annotation. Spec §E.
+      parameters:
+        - in: path
+          name: case_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Replay execution enqueued.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Validation failure or policy violation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: Replay case not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/replay-results/{result_id}:
+    get:
+      operationId: getReplayResult
+      summary: Read a replay execution result
+      parameters:
+        - in: path
+          name: result_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ReplayResult envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayResult'
+        '404':
+          description: Replay result not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/eval-datasets:
+    post:
+      operationId: createEvalDataset
+      summary: Create an eval dataset
+      description: Registers a dataset for use by eval runs. Spec §AM.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '201':
+          description: Eval dataset created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/eval-runs:
+    post:
+      operationId: createEvalRun
+      summary: Create an eval run
+      description: |
+        Enqueues an eval run against a dataset. Spec §AM. The control
+        plane writes the eval_run scope_state transitions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Eval run enqueued.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/eval-runs/{eval_run_id}:
+    get:
+      operationId: getEvalRun
+      summary: Read an eval run
+      parameters:
+        - in: path
+          name: eval_run_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Eval run envelope.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Eval run not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/gates/{gate_id}:
+    put:
+      operationId: putGate
+      summary: Upsert a gate definition
+      description: |
+        Creates or replaces the gate-definition row at gate_id. Spec
+        A.5. Backed by the gate-engine writer; not gate_decisions.
+      parameters:
+        - in: path
+          name: gate_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Gate definition upserted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/gate-policies/{policy_id}:
+    put:
+      operationId: putGatePolicy
+      summary: Upsert a gate policy version
+      description: |
+        Creates or replaces a gate-policy version. Spec A.5
+        (VAL-V2M01-001). New versions become effective at the
+        declared effective_at boundary.
+      parameters:
+        - in: path
+          name: policy_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GatePolicy'
+      responses:
+        '200':
+          description: Gate policy upserted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatePolicy'
+        '400':
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/gates/{gate_id}/drafts:
+    post:
+      operationId: submitGateDecisionDraft
+      summary: Submit a gate decision draft
+      description: |
+        Submits a GateDecisionDraft. Spec A.3. NOT authoritative; the
+        state engine resolves at most one draft per (gate, scope,
+        round) into a canonical gate_decision row written by the
+        gate-engine service (keystone #1).
+      parameters:
+        - in: path
+          name: gate_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateDecisionDraft'
+      responses:
+        '202':
+          description: Draft accepted for resolution.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateDecisionDraft'
+        '400':
+          description: Validation failure or stale three-anchor handoff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: Conflicting in-flight draft for the same (scope, round).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/gate-decisions/{decision_id}:
+    get:
+      operationId: getGateDecision
+      summary: Read a canonical gate decision
+      parameters:
+        - in: path
+          name: decision_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Canonical GateDecision envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateDecision'
+        '404':
+          description: Gate decision not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/gates/{gate_id}/rounds:
+    get:
+      operationId: listGateRounds
+      summary: List gate rounds for a gate
+      description: |
+        Paginated list of GateRound rows for a single gate. Cursor is
+        signed + TTL'd per §B.3 (VAL-V3M2-009).
+      parameters:
+        - in: path
+          name: gate_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Page of gate rounds with next_cursor.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/evidence-bundles:
+    post:
+      operationId: createEvidenceBundle
+      summary: Create a signed evidence bundle
+      description: |
+        Creates an evidence bundle row + signed bundle artifact. Spec
+        §K. Hosted bundles must be signed by the control-plane
+        evidence-signer service.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvidenceBundle'
+      responses:
+        '201':
+          description: Evidence bundle created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceBundle'
+        '400':
+          description: Validation failure or missing claim binding.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/evidence-bundles/{bundle_id}:
+    get:
+      operationId: getEvidenceBundle
+      summary: Read an evidence bundle row
+      parameters:
+        - in: path
+          name: bundle_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Evidence bundle envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceBundle'
+        '404':
+          description: Bundle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/evidence-bundles/{bundle_id}/download:
+    get:
+      operationId: downloadEvidenceBundle
+      summary: Download a signed evidence bundle artifact
+      description: |
+        Streams the signed bundle blob. Subject to legal-hold and
+        redaction-tombstone semantics (spec Y).
+      parameters:
+        - in: path
+          name: bundle_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Bundle artifact bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Bundle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '410':
+          description: Bundle tombstoned or under legal hold and not retrievable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/evidence-bundles/{bundle_id}/verify:
+    post:
+      operationId: verifyEvidenceBundle
+      summary: Verify a signed evidence bundle
+      description: |
+        Runs the verifier against the bundle artifact. Returns the
+        verification verdict + signer trust path (control_plane,
+        local_dev, or unknown). Spec §K rule line 4427.
+      parameters:
+        - in: path
+          name: bundle_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Verification verdict payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Verification failed (tampered, missing artifact, etc).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: Bundle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/manifests:
+    post:
+      operationId: createManifestVersion
+      summary: Submit a new manifest version
+      description: |
+        Submits a manifest version. commit_hash is the canonical
+        sha256 wire form. Spec §F. The manifest is the source of
+        truth for commands, ports, and side-effect policy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManifestVersion'
+      responses:
+        '201':
+          description: Manifest version recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManifestVersion'
+        '400':
+          description: Validation failure or signature mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/manifests/{manifest_id}/versions/{commit_hash}:
+    get:
+      operationId: getManifestVersion
+      summary: Read a specific manifest version
+      parameters:
+        - in: path
+          name: manifest_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: commit_hash
+          required: true
+          schema:
+            $ref: '#/components/schemas/Sha256Hash'
+      responses:
+        '200':
+          description: ManifestVersion envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManifestVersion'
+        '404':
+          description: Manifest or version not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/redaction-policies:
+    post:
+      operationId: createRedactionPolicy
+      summary: Publish a new redaction-policy version
+      description: |
+        Publishes a redaction policy. Each regex matcher must clear
+        the 50ms ReDoS budget (VAL-V3M5-001). raw_capture=true
+        additionally requires a signed DPA + org-admin approver
+        (CLAUDE.md keystone #7).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedactionPolicy'
+      responses:
+        '201':
+          description: Redaction policy published.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedactionPolicy'
+        '400':
+          description: Validation failure, ReDoS-budget exceeded, or DPA missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/redaction-policies/{policy_id}:
+    get:
+      operationId: getRedactionPolicy
+      summary: Read a redaction policy version
+      parameters:
+        - in: path
+          name: policy_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: RedactionPolicy envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedactionPolicy'
+        '404':
+          description: Policy not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/auth/tokens:
+    post:
+      operationId: createAuthToken
+      summary: Create an auth token
+      description: |
+        Issues a bearer token scoped to the calling principal. Token
+        material is returned ONCE in the response body; subsequent
+        reads expose only the token row metadata.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '201':
+          description: Token issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: Caller not authorised to mint tokens.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/auth/tokens/{token_id}:
+    delete:
+      operationId: revokeAuthToken
+      summary: Revoke an auth token
+      description: |
+        Marks the token row as revoked. Revocation propagates to
+        subsequent authn checks on the next request.
+      parameters:
+        - in: path
+          name: token_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Token revoked.
+        '404':
+          description: Token not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /v1/state/transition:
+    post:
+      operationId: postV1StateTransition
+      summary: Apply a state-engine transition
+      description: |
+        State-engine HTTP boundary. Validates the three-anchor
+        handoff (scope_id, actor_identity_hash, manifest_commit_hash;
+        keystone #4) BEFORE forwarding to compare_and_set_state.
+        Stale or cross-project handoffs are rejected with the
+        appropriate GUARD_FAILED code (e.g. RELAY-GATE-021).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Transition applied; canonical scope_state updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Malformed body, missing anchors, or invalid transition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: Stale three-anchor handoff or guard failure.
           content:
             application/json:
               schema:
