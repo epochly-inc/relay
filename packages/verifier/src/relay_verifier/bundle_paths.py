@@ -30,8 +30,12 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import errno
+import os
 import re
+import stat
 import unicodedata
+from pathlib import Path
 from typing import Any, Final
 
 # Re-use the existing path-traversal code from bundle_validator. This
@@ -202,8 +206,238 @@ def check_artifact_path(path: Any) -> dict[str, Any] | None:
     return None
 
 
+# --------------------------------------------------------------------------
+# VAL-V3M5-013: cross-platform symlink-safe bundle/manifest reads.
+# --------------------------------------------------------------------------
+#
+# Spec anchor: AI line 5663 (path-traversal + TOCTOU hardening).
+#
+# The OSS bundle verifier reads on-disk bundle/manifest files from caller-
+# supplied paths. ``pathlib.Path.read_bytes()`` (and the underlying
+# ``open(...).read()``) silently follows symlinks at the final path
+# component, opening a TOCTOU window:
+#
+#   1. Verifier observes path P as a regular file.
+#   2. Attacker swaps P for a symlink pointing off-tree (e.g. /etc/passwd
+#      or a sibling tenant's bundle).
+#   3. Verifier dereferences the symlink and reads attacker-chosen content
+#      under the bundle's authority. The resulting signature/digest check
+#      then either validates content the verifier never approved, or
+#      leaks file existence as an oracle.
+#
+# The fix is a cross-platform helper that refuses to dereference a
+# symlink at the FINAL path component. Symlinks on intermediate
+# components are out of scope: defending against those requires
+# ``openat2(..., RESOLVE_NO_SYMLINKS)`` (Linux 5.6+) or per-segment
+# ``O_NOFOLLOW`` walks, which is not portable. Callers must pass paths
+# under directories they themselves created or validated.
+#
+# POSIX:   ``os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)``.
+#          Kernel refuses the open with ``ELOOP`` (some BSDs: ``EMLINK``)
+#          if the final component is a symlink. Atomic: there is no
+#          stat-then-open TOCTOU because the check is in the open syscall.
+#
+# Windows: No ``O_NOFOLLOW`` equivalent. Use ``os.lstat`` and reject if
+#          ``stat.S_ISLNK(mode)`` is True OR
+#          ``st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT`` is set.
+#          The Windows path is NOT atomic against a TOCTOU swap between
+#          the lstat and the subsequent open; this is a known Windows
+#          limitation and documented for the §AI CI matrix.
+
+# Windows reparse-point attribute (defined in winnt.h; mirrored by Python's
+# ``stat`` module as ``FILE_ATTRIBUTE_REPARSE_POINT`` on Windows builds).
+# Defined as a module-level constant so the POSIX branch can reference the
+# symbol without a Windows-only import.
+_FILE_ATTRIBUTE_REPARSE_POINT: Final[int] = 0x0400
+
+
+class SymlinkRejectedError(OSError):
+    """Raised when a path is rejected because the final component is a symlink.
+
+    The exception is a subclass of :class:`OSError` so callers that catch
+    broad filesystem errors still see it, but a structured
+    :attr:`envelope` is also exposed for callers that branch on the
+    wire-stable ``RELAY-EVID-024`` / ``path_violation`` discriminator.
+    """
+
+    def __init__(self, offending_path: str, reason: str) -> None:
+        super().__init__(f"symlink rejected at {offending_path!r}: {reason}")
+        self.offending_path: Final[str] = offending_path
+        self.reason: Final[str] = reason
+
+    @property
+    def envelope(self) -> dict[str, Any]:
+        """Structured rejection envelope matching ``check_artifact_path``.
+
+        Wire-stable shape. Downstream tooling MUST branch on
+        ``code`` + ``path_violation`` and not on the exception type
+        alone (the type may evolve; the envelope keys do not).
+        """
+        return {
+            "code": RELAY_EVID_024,
+            "path_violation": "symlink_unsafe",
+            "offending_path": self.offending_path,
+            "reason": self.reason,
+        }
+
+
+def _is_symlink_errno(err: OSError) -> bool:
+    """Return True if ``err.errno`` indicates a symlink-at-final-component.
+
+    On Linux ``O_NOFOLLOW`` returns ``ELOOP``. Historical BSDs (and some
+    legacy filesystems) return ``EMLINK`` for the same condition. The
+    helper accepts both so we do not silently mis-classify the reject
+    under exotic POSIX variants.
+    """
+    return err.errno in (errno.ELOOP, errno.EMLINK)
+
+
+def read_bytes_symlink_safe(path: Path) -> bytes:
+    """Read ``path`` as bytes, refusing to dereference final-component symlinks.
+
+    Cross-platform contract:
+
+    * **POSIX** (``os.name != "nt"``): uses
+      ``os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)``. If
+      the final component is a symlink, the kernel raises ``OSError``
+      with ``errno`` set to ``ELOOP`` (or ``EMLINK`` on some BSDs);
+      this is translated into :class:`SymlinkRejectedError`. The check
+      is atomic with the open: there is no stat-then-open TOCTOU
+      window.
+    * **Windows** (``os.name == "nt"``): uses ``os.lstat`` to inspect
+      the path WITHOUT dereferencing, then rejects if either
+      ``stat.S_ISLNK(mode)`` is True (Windows symlinks) or
+      ``st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT`` is set
+      (junction points, mount points, OneDrive cloud files, WSL
+      symlinks, and other reparse-point variants). The Windows path
+      is NOT atomic; a swap between the ``lstat`` and the subsequent
+      ``open`` would not be caught. This is a documented Windows
+      limitation; in practice the Windows OSS deployment runs the
+      verifier against a directory the same process just wrote to,
+      narrowing the attacker window.
+
+    The helper is the single chokepoint for bundle/manifest filesystem
+    reads in the verifier. Callers MUST route every persistent-on-disk
+    read for caller-supplied paths through this function. Use of
+    :meth:`pathlib.Path.read_bytes` or :func:`builtins.open` on a
+    caller-supplied bundle/manifest path is a §AI banned pattern.
+
+    Parameters
+    ----------
+    path:
+        Filesystem path to read. Must point at a regular file under a
+        directory the caller has either created or validated. Symlinks
+        on intermediate path components are out of scope.
+
+    Returns
+    -------
+    bytes
+        The full file contents.
+
+    Raises
+    ------
+    SymlinkRejectedError
+        The final path component is a symlink (POSIX) or a reparse
+        point (Windows). The exception carries the wire-stable
+        ``RELAY-EVID-024`` / ``path_violation = "symlink_unsafe"``
+        envelope via :attr:`SymlinkRejectedError.envelope`.
+    FileNotFoundError
+        ``path`` does not exist and is not a symlink. ``ENOENT`` on a
+        plain non-existent path is NOT classified as a symlink reject
+        (avoids an information-leak oracle).
+    OSError
+        Other filesystem errors (``EISDIR`` for directories, ``EACCES``
+        for permission errors, etc.) propagate unchanged.
+    """
+    fspath = os.fspath(path)
+
+    if os.name == "nt":
+        # Windows: no O_NOFOLLOW. Inspect with lstat (does not follow),
+        # then read via Path.read_bytes if and only if the entry is a
+        # plain regular file.
+        try:
+            st = os.lstat(fspath)
+        except FileNotFoundError:
+            raise
+        mode = st.st_mode
+        if stat.S_ISLNK(mode):
+            raise SymlinkRejectedError(
+                offending_path=fspath,
+                reason="windows-symlink-rejected",
+            )
+        # Reparse points (junctions, mount points, OneDrive cloud files,
+        # WSL symlinks) carry FILE_ATTRIBUTE_REPARSE_POINT. The
+        # attribute may be absent on non-NTFS filesystems; guard with
+        # getattr.
+        attrs = getattr(st, "st_file_attributes", 0)
+        if attrs & _FILE_ATTRIBUTE_REPARSE_POINT:
+            raise SymlinkRejectedError(
+                offending_path=fspath,
+                reason="windows-reparse-point-rejected",
+            )
+        # Cleared the lstat-based check; fall through to a plain read.
+        # The Windows path is non-atomic: a swap between this point and
+        # the read below would not be caught. Documented limitation.
+        return Path(fspath).read_bytes()
+
+    # POSIX path. O_NOFOLLOW is the atomic check.
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    # O_CLOEXEC is best-effort: not all POSIX platforms expose it as a
+    # flag (notably very old macOS). Add it when available so a forked
+    # child cannot inherit the bundle descriptor.
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    flags |= cloexec
+
+    try:
+        fd = os.open(fspath, flags)
+    except OSError as exc:
+        if _is_symlink_errno(exc):
+            raise SymlinkRejectedError(
+                offending_path=fspath,
+                reason=f"posix-o-nofollow:errno={errno.errorcode.get(exc.errno, exc.errno)}",
+            ) from exc
+        # ENOENT on a plain non-existent path -> FileNotFoundError.
+        # EISDIR / EACCES / etc. -> bubble unchanged.
+        raise
+
+    try:
+        # Defensive: even after O_NOFOLLOW succeeded, fstat the open fd
+        # and refuse to read anything that is not a regular file. This
+        # closes the (theoretical) corner case where a POSIX exotic
+        # opens a device or FIFO at the final component without
+        # tripping O_NOFOLLOW.
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            if stat.S_ISDIR(st.st_mode):
+                raise IsADirectoryError(
+                    errno.EISDIR,
+                    os.strerror(errno.EISDIR),
+                    fspath,
+                )
+            raise OSError(
+                errno.EINVAL,
+                f"refusing to read non-regular file mode={oct(st.st_mode)}",
+                fspath,
+            )
+
+        # Read in chunks until EOF. Bundle/manifest files are small
+        # (a few MB at most) but a single os.read may short-read on
+        # large files; loop to drain.
+        chunks: list[bytes] = []
+        while True:
+            block = os.read(fd, 1 << 20)  # 1 MiB
+            if not block:
+                break
+            chunks.append(block)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 __all__ = [
     "MAX_ARTIFACT_PATH_BYTES",
     "RELAY_EVID_024",
+    "SymlinkRejectedError",
     "check_artifact_path",
+    "read_bytes_symlink_safe",
 ]
