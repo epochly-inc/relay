@@ -1965,6 +1965,13 @@ def build_runtime_app(
           - ``has_more`` is True iff a subsequent page exists.
         Sort order is ``(decided_at DESC, run_id ASC)`` for stable paging.
         """
+        # V3M5 F03 (VAL-V3M5-008): reject RTL-override / zero-width / BOM
+        # in the inbound project_id BEFORE any hashing / canonical lookup.
+        id_reject = _validate_id_field(
+            project_id, "project_id", blocked_surface=_RUN_LIST_SURFACE
+        )
+        if id_reject is not None:
+            return id_reject
         scope_reject = _check_required_scope(
             request, required="runs:read", blocked_surface=_RUN_LIST_SURFACE
         )
@@ -2056,6 +2063,12 @@ def build_runtime_app(
         manifest/actor anchors; the hosted control plane projects this
         from the runs table directly.
         """
+        # V3M5 F03 (VAL-V3M5-008): reject banned code points in run_id.
+        id_reject = _validate_id_field(
+            run_id, "run_id", blocked_surface=_RUN_DETAIL_SURFACE
+        )
+        if id_reject is not None:
+            return id_reject
         scope_reject = _check_required_scope(
             request, required="runs:read", blocked_surface=_RUN_DETAIL_SURFACE
         )
@@ -2117,6 +2130,12 @@ def build_runtime_app(
         final page; a tampered cursor returns 400 RELAY-PAGE-001 per
         VAL-V3M2-009.
         """
+        # V3M5 F03 (VAL-V3M5-008): reject banned code points in run_id.
+        id_reject = _validate_id_field(
+            run_id, "run_id", blocked_surface=_RUN_TRACE_SURFACE
+        )
+        if id_reject is not None:
+            return id_reject
         scope_reject = _check_required_scope(
             request, required="runs:read", blocked_surface=_RUN_TRACE_SURFACE
         )
@@ -2217,6 +2236,12 @@ def build_runtime_app(
         ``written_by_control_plane`` CHECK constraint on the table; this
         handler is read-only.
         """
+        # V3M5 F03 (VAL-V3M5-008): reject banned code points in run_id.
+        id_reject = _validate_id_field(
+            run_id, "run_id", blocked_surface=_RUN_RESULT_SURFACE
+        )
+        if id_reject is not None:
+            return id_reject
         scope_reject = _check_required_scope(
             request, required="runs:read", blocked_surface=_RUN_RESULT_SURFACE
         )
@@ -2284,6 +2309,12 @@ def build_runtime_app(
         100, caps at 500. A tampered cursor returns 400 RELAY-PAGE-001
         per VAL-V3M2-009.
         """
+        # V3M5 F03 (VAL-V3M5-008): reject banned code points in run_id.
+        id_reject = _validate_id_field(
+            run_id, "run_id", blocked_surface=_RUN_EXPLAIN_SURFACE
+        )
+        if id_reject is not None:
+            return id_reject
         scope_reject = _check_required_scope(
             request,
             required="runs:read",
@@ -3223,6 +3254,68 @@ def build_runtime_app(
     # request cost is a single re.fullmatch.
     _ULID_GRAMMAR_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 
+    # V3 M05 F03 (spec section AI adversarial guards; VAL-V3M5-008):
+    # Inbound HTTP ID fields (Idempotency-Key, run_id, gate_id, project_id)
+    # MUST be validated to reject U+202E (RIGHT-TO-LEFT OVERRIDE),
+    # U+200B (ZERO WIDTH SPACE), U+200C (ZERO WIDTH NON-JOINER),
+    # U+200D (ZERO WIDTH JOINER), and U+FEFF (BOM) BEFORE any hashing or
+    # canonical processing. These visually-invisible-or-misleading code
+    # points are the classic vehicles for smuggling a divergent wire form
+    # past naive string-equality checks (e.g. an attacker presents
+    # ``run-XYZ`` that *renders* as ``run-XYZ`` but whose byte content
+    # contains an embedded U+202E flipping the apparent reading order).
+    # Idempotency-Key is independently covered by ``_ULID_GRAMMAR_RE``
+    # above (which excludes every non-ASCII code point); this guard is
+    # the SAME contract for path parameters where the ULID grammar does
+    # not apply (run_id / gate_id / project_id are free-form identifiers
+    # in the sidecar, not necessarily ULID-shaped).
+    _BANNED_ID_CODEPOINTS: frozenset[str] = frozenset(
+        {
+            "‮",  # RIGHT-TO-LEFT OVERRIDE
+            "​",  # ZERO WIDTH SPACE
+            "‌",  # ZERO WIDTH NON-JOINER
+            "‍",  # ZERO WIDTH JOINER
+            "﻿",  # ZERO WIDTH NO-BREAK SPACE / BOM
+        }
+    )
+
+    def _validate_id_field(
+        value: str, field_name: str, *, blocked_surface: str
+    ) -> JSONResponse | None:
+        """Reject an HTTP-boundary ID containing any banned code point.
+
+        Returns None on accept (value contains no banned code point), or
+        a 400 ``RELAY-ID-INVALID`` JSONResponse when ``value`` contains
+        one of ``_BANNED_ID_CODEPOINTS``. The check is a single-pass
+        membership scan over the string; the cost is O(len(value)) and
+        runs BEFORE any hashing or canonical processing per VAL-V3M5-008.
+
+        The envelope ``details`` record the offending ``field`` and the
+        first banned code point observed (as ``U+XXXX`` hex) so callers
+        can pinpoint the violation without re-encoding the raw bytes.
+        """
+        for ch in value:
+            if ch in _BANNED_ID_CODEPOINTS:
+                return JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-ID-INVALID",
+                        http_status=400,
+                        message=(
+                            f"ID field {field_name!r} contains a banned "
+                            f"code point (U+{ord(ch):04X}); inbound IDs "
+                            "MUST NOT carry RTL-override / zero-width / "
+                            "BOM characters"
+                        ),
+                        blocked_surface=blocked_surface,
+                        details={
+                            "field": field_name,
+                            "banned_codepoint": f"U+{ord(ch):04X}",
+                        },
+                    ),
+                )
+        return None
+
     def _canonical_idempotency_key(*, surface: str, user_key: str) -> str:
         """Derive the canonical ULID-grammar idempotency_key.
 
@@ -3716,6 +3809,13 @@ def build_runtime_app(
 
     @app.put("/v1/gates/{gate_id}")
     async def v1_put_gate(gate_id: str, request: Request) -> JSONResponse:
+        # V3M5 F03 (VAL-V3M5-008): reject banned code points in gate_id
+        # BEFORE auth, idempotency hashing, and body parsing.
+        id_reject = _validate_id_field(
+            gate_id, "gate_id", blocked_surface=_GATE_CONFIGURE_SURFACE
+        )
+        if id_reject is not None:
+            return id_reject
         auth_reject = _check_auth(
             request,
             required_scope="gates:configure",
@@ -3858,6 +3958,13 @@ def build_runtime_app(
     async def v1_post_gate_draft(
         gate_id: str, request: Request
     ) -> JSONResponse:
+        # V3M5 F03 (VAL-V3M5-008): reject banned code points in gate_id
+        # BEFORE auth, idempotency hashing, and body parsing.
+        id_reject = _validate_id_field(
+            gate_id, "gate_id", blocked_surface=_GATE_DRAFT_SURFACE
+        )
+        if id_reject is not None:
+            return id_reject
         auth_reject = _check_auth(
             request,
             required_scope="gates:execute",
@@ -4100,6 +4207,12 @@ def build_runtime_app(
         limit: int = 100,
         cursor: str | None = None,
     ) -> JSONResponse:
+        # V3M5 F03 (VAL-V3M5-008): reject banned code points in gate_id.
+        id_reject = _validate_id_field(
+            gate_id, "gate_id", blocked_surface=_GATE_ROUNDS_SURFACE
+        )
+        if id_reject is not None:
+            return id_reject
         auth_reject = _check_auth(
             request,
             required_scope="gates:configure",
