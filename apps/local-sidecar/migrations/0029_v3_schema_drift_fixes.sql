@@ -176,3 +176,27 @@ DROP TABLE gate_rounds__pre_v3m1_f08;
 -- (ix_gate_rounds_scope from 0009:141-142).
 CREATE INDEX IF NOT EXISTS ix_gate_rounds_scope
     ON gate_rounds(scope_type, scope_id, round);
+
+-- Step 6: re-create the gate_rounds_scope_state_paired_check trigger
+-- (SR-M1-001 fix; 2026-05-18).
+--
+-- SQLite drops every trigger attached to a table when the table is
+-- dropped. Step 4 above dropped gate_rounds__pre_v3m1_f08, taking the
+-- BEFORE INSERT paired-row trigger originally created by
+-- apps/local-sidecar/migrations/0016_scope_state_extension.sql lines
+-- 168-178 with it. Spec section W (line 5112) requires the paired
+-- scope_state row to be DB-enforced on every scope-creating INSERT, so
+-- we re-attach the trigger verbatim from 0016 to the new gate_rounds
+-- table. Body and RAISE message are byte-for-byte identical to the
+-- 0016 definition to keep the cross-tier invariant text stable.
+DROP TRIGGER IF EXISTS gate_rounds_scope_state_paired_check;
+CREATE TRIGGER gate_rounds_scope_state_paired_check
+BEFORE INSERT ON gate_rounds
+FOR EACH ROW
+WHEN NOT EXISTS (
+    SELECT 1 FROM scope_state
+    WHERE scope_kind = 'gate_round' AND scope_id = NEW.gate_round_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'RELAY-STATE-002: gate_rounds row inserted without matching scope_state(scope_kind=gate_round, scope_id=NEW.gate_round_id); spec section W requires the paired scope_state row in the same transaction');
+END;

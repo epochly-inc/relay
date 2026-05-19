@@ -3877,7 +3877,7 @@ def build_runtime_app(
                 "gate_round_id": gate_round_id,
                 "gate_id": gate_id,
                 "round": round_n,
-                "initiated_by": "submission",
+                "initiated_by": "control_plane",
                 "opened_at": _now_iso_z(),
                 "closed_at": None,
                 "written_by": "control_plane",
