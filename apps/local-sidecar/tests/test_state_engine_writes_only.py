@@ -195,6 +195,22 @@ _PERMITTED_GATE_ADMIN_ACTIONS_FILE = (
     / "admin_actions.py"
 )
 
+# Documented V3M4-F03 exception: the reviewer SLA aging helper at
+# ``packages/explain/src/relay_explain/sla.py`` writes the
+# ``explain.reviewer_sla_breached`` event_log_entries row when an
+# unreviewed hypothesis exceeds 14 business days. This is a documented
+# side-write outside compare_and_set_state; the event row is a
+# notification, not a state-transition. Same exception pattern as the
+# gate engine W8.2/W8.3/W8.4 admin-action paths. See VAL-V3M4-012.
+_PERMITTED_EXPLAIN_SLA_FILE = (
+    _REPO_ROOT
+    / "packages"
+    / "explain"
+    / "src"
+    / "relay_explain"
+    / "sla.py"
+)
+
 # Documented W5.5 exception: the verify-self plumbing tests embed
 # ``INSERT INTO run_results`` literals in synthetic fixture trees so
 # the verify-self command's control-plane-write-only checker can be
@@ -282,6 +298,12 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # transitions (VAL-W8-035/036/037). See
             # _PERMITTED_GATE_ADMIN_ACTIONS_FILE.
             if path == _PERMITTED_GATE_ADMIN_ACTIONS_FILE:
+                continue
+            # Documented V3M4-F03 exception: SLA aging helper writes
+            # explain.reviewer_sla_breached event_log_entries rows when
+            # an unreviewed hypothesis exceeds 14 business days (VAL-V3M4-012).
+            # See _PERMITTED_EXPLAIN_SLA_FILE.
+            if path == _PERMITTED_EXPLAIN_SLA_FILE:
                 continue
             text = path.read_text(encoding="utf-8")
             for line_no, line in enumerate(text.splitlines(), start=1):
@@ -385,6 +407,11 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         # _PERMITTED_GATE_ADMIN_ACTIONS_FILE.
         "/packages/gate/src/relay_gate_engine/admin_actions.py:"
     )
+    explain_sla_marker = (
+        # V3M4-F03 explain.reviewer_sla_breached event-emission exception.
+        # See _PERMITTED_EXPLAIN_SLA_FILE.
+        "/packages/explain/src/relay_explain/sla.py:"
+    )
     for line in result.stdout.splitlines():
         if state_engine_marker in line:
             continue
@@ -403,6 +430,8 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         if gate_circuit_breaker_marker in line:
             continue
         if gate_admin_actions_marker in line:
+            continue
+        if explain_sla_marker in line:
             continue
         offending_lines.append(line)
     assert not offending_lines, (
