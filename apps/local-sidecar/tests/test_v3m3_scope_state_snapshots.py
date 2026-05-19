@@ -332,3 +332,131 @@ def test_sidecar_migration_exists() -> None:
     assert "scope_state_snapshots" in body
     assert "PRIMARY KEY" in body
     assert "CREATE INDEX" in body
+
+
+# -----------------------------------------------------------------------------
+# V3M3-SR-R1-001 (P1): scope_state_snapshots CHECK enumeration must include
+# the ``gate`` scope_kind that m3-f05 added to ``scope_state``. Without this
+# extension the daily snapshot helper rolls the txn back on CHECK violation
+# the first time a ``gate`` row exists in scope_state.
+# -----------------------------------------------------------------------------
+
+_PG_MIGRATION_GATE_EXTENSION = (
+    _REPO_ROOT
+    / "packages"
+    / "schemas"
+    / "sql"
+    / "0022_v3_snapshot_gate_scope_check_extension.sql"
+)
+_SIDECAR_MIGRATION_GATE_EXTENSION = (
+    _REPO_ROOT
+    / "apps"
+    / "local-sidecar"
+    / "migrations"
+    / "0033_v3_snapshot_gate_scope_check_extension.sql"
+)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M3-012")
+@pytest.mark.asyncio
+async def test_write_daily_snapshot_admits_gate_scope_kind(
+    tmp_path: Path, relay_home_tmp: Path
+) -> None:
+    """SR-M3-R1-001 (P1): m3-f05 added ``gate`` to the ``scope_state``
+    scope_kind enumeration but the ``scope_state_snapshots`` CHECK was not
+    synced. Seeding a ``gate`` scope_state row and invoking
+    ``write_daily_snapshot`` MUST succeed and write the snapshot row,
+    instead of aborting the txn with a CHECK constraint violation.
+    """
+    db = SidecarDatabase(db_path=tmp_path / "sidecar.db", reader_count=1)
+    await db.open()
+    try:
+        project_id = str(uuid.uuid4())
+        gate_scope_id = str(uuid.uuid4())
+        await init_scope(
+            database=db,
+            scope_kind="gate",
+            scope_id=gate_scope_id,
+            project_id=project_id,
+        )
+
+        snapshot_at = datetime(2026, 5, 19, 0, 5, tzinfo=UTC)
+        written = await write_daily_snapshot(db, now=snapshot_at)
+        assert written == 1, written
+
+        reader = db.acquire_reader()
+        async with reader.execute(
+            "SELECT scope_kind, scope_id, state, epoch, snapshot_date "
+            "FROM scope_state_snapshots "
+            "WHERE snapshot_date = ?",
+            ("2026-05-19",),
+        ) as cur:
+            rows = await cur.fetchall()
+        assert len(rows) == 1, rows
+        (scope_kind, scope_id, state, epoch, snap_date) = rows[0]
+        assert scope_kind == "gate", scope_kind
+        assert scope_id == gate_scope_id, scope_id
+        # gate's canonical initial state per spec section AD line 5471.
+        assert state == "open", state
+        assert epoch == 0, epoch
+        assert snap_date == "2026-05-19", snap_date
+    finally:
+        await db.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M3-011")
+def test_pg_migration_0022_extends_snapshots_check_to_gate() -> None:
+    """PG migration 0022 MUST extend the scope_state_snapshots CHECK to
+    admit the ``gate`` scope_kind (DROP + re-ADD pattern).
+    """
+    assert _PG_MIGRATION_GATE_EXTENSION.is_file(), _PG_MIGRATION_GATE_EXTENSION
+    body = _PG_MIGRATION_GATE_EXTENSION.read_text(encoding="utf-8")
+    assert "scope_state_snapshots" in body
+    assert "DROP CONSTRAINT" in body
+    assert "ADD CONSTRAINT" in body
+    assert "'gate'" in body
+    # The new CHECK MUST enumerate all 7 kinds.
+    for kind in (
+        "'run'",
+        "'replay_case'",
+        "'gate_round'",
+        "'evidence_bundle'",
+        "'eval_run'",
+        "'release'",
+        "'gate'",
+    ):
+        assert kind in body, kind
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M3-011")
+def test_sidecar_migration_0033_rebuilds_snapshots_check_to_gate() -> None:
+    """Sidecar migration 0033 MUST rebuild the SQLite scope_state_snapshots
+    CHECK to admit ``gate`` (SQLite has no ALTER TABLE DROP CONSTRAINT).
+    """
+    assert (
+        _SIDECAR_MIGRATION_GATE_EXTENSION.is_file()
+    ), _SIDECAR_MIGRATION_GATE_EXTENSION
+    body = _SIDECAR_MIGRATION_GATE_EXTENSION.read_text(encoding="utf-8")
+    assert "scope_state_snapshots" in body
+    assert "CREATE TABLE" in body
+    # Data preservation: copy-then-rename pattern.
+    assert "INSERT INTO" in body
+    assert "DROP TABLE" in body
+    assert "RENAME TO scope_state_snapshots" in body
+    # Index recreation for snapshot_date.
+    assert "CREATE INDEX" in body
+    assert "snapshot_date" in body
+    # All 7 scope_kinds present in the rebuilt CHECK.
+    for kind in (
+        "'run'",
+        "'replay_case'",
+        "'gate_round'",
+        "'evidence_bundle'",
+        "'eval_run'",
+        "'release'",
+        "'gate'",
+    ):
+        assert kind in body, kind
