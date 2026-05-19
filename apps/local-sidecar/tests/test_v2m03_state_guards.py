@@ -224,7 +224,18 @@ def _seed_actor_and_manifest(
     commit_hash: str,
     actor_kind: str = "sdk",
     revoked: bool = False,
-) -> None:
+    project_id: str | None = None,
+) -> str:
+    """Seed an actor + manifest row; returns the manifest's project_id.
+
+    Per VAL-V3M3-001, the manifest registry is now scoped by
+    ``(project_id, commit_hash)``. Callers that want the seeded manifest
+    to validate for a specific scope must pass ``project_id=<scope's
+    project_id>``. When ``project_id`` is None a fresh uuid is generated;
+    this is fine for negative-path tests (cross-project mismatch) but
+    happy-path tests must thread the scope's project_id.
+    """
+    effective_project_id = project_id or str(uuid.uuid4())
     now = _now_z()
     conn = sqlite3.connect(str(db_path))
     try:
@@ -242,7 +253,7 @@ def _seed_actor_and_manifest(
             (
                 str(uuid.uuid4()),
                 str(uuid.uuid4()),
-                str(uuid.uuid4()),
+                effective_project_id,
                 commit_hash,
                 now,
             ),
@@ -250,6 +261,7 @@ def _seed_actor_and_manifest(
         conn.commit()
     finally:
         conn.close()
+    return effective_project_id
 
 
 @pytest.mark.plumbing
@@ -339,13 +351,17 @@ async def test_ingest_run_received_guards_all_satisfied(tmp_path) -> None:
         await db.open()
         identity_hash = "sha256-" + "a" * 64
         commit_hash = "sha256-" + "b" * 64
+        project_id = str(uuid.uuid4())
+        # Per VAL-V3M3-001 the manifest registry is project-scoped; seed
+        # the manifest_versions row under the same project_id as the
+        # scope so the per-project guard succeeds.
         _seed_actor_and_manifest(
             tmp_path / "sidecar.db",
             identity_hash=identity_hash,
             commit_hash=commit_hash,
+            project_id=project_id,
         )
         scope_id = str(uuid.uuid4())
-        project_id = str(uuid.uuid4())
         await init_scope(
             database=db,
             scope_kind="run",

@@ -55,7 +55,15 @@ def _seed_registries(
     *,
     identity_hash: str,
     manifest_hashes: list[str],
+    project_id: str | None = None,
 ) -> None:
+    """Seed actors + manifest_versions rows.
+
+    Per VAL-V3M3-001 the manifest registry is now project-scoped. Callers
+    that pair these rows with a specific scope must pass the scope's
+    ``project_id``; otherwise each seeded manifest row gets its own
+    random project_id (legacy/negative-path semantics).
+    """
     now = _now_z()
     conn = sqlite3.connect(str(db_path))
     try:
@@ -74,7 +82,7 @@ def _seed_registries(
                 (
                     str(uuid.uuid4()),
                     str(uuid.uuid4()),
-                    str(uuid.uuid4()),
+                    project_id or str(uuid.uuid4()),
                     h,
                     now,
                 ),
@@ -110,13 +118,16 @@ def test_stale_manifest_hash_returns_context_not_rehydrated(tmp_path) -> None:
         identity_hash = "sha256-" + "a" * 64
         manifest_a = "sha256-" + "b" * 64
         manifest_b = "sha256-" + "c" * 64
+        scope_id = str(uuid.uuid4())
+        project_id = str(uuid.uuid4())
+        # Per VAL-V3M3-001 the manifest registry is project-scoped; seed
+        # both manifest rows under the scope's project_id.
         _seed_registries(
             tmp_path / "sidecar.db",
             identity_hash=identity_hash,
             manifest_hashes=[manifest_a, manifest_b],
+            project_id=project_id,
         )
-        scope_id = str(uuid.uuid4())
-        project_id = str(uuid.uuid4())
         _seed_scope(
             tmp_path / "sidecar.db", scope_id=scope_id, project_id=project_id
         )
@@ -177,13 +188,15 @@ def test_same_manifest_hash_proceeds(tmp_path) -> None:
     with TestClient(app) as client:
         identity_hash = "sha256-" + "a" * 64
         manifest_a = "sha256-" + "b" * 64
+        scope_id = str(uuid.uuid4())
+        project_id = str(uuid.uuid4())
+        # Per VAL-V3M3-001 the manifest registry is project-scoped.
         _seed_registries(
             tmp_path / "sidecar.db",
             identity_hash=identity_hash,
             manifest_hashes=[manifest_a],
+            project_id=project_id,
         )
-        scope_id = str(uuid.uuid4())
-        project_id = str(uuid.uuid4())
         _seed_scope(
             tmp_path / "sidecar.db", scope_id=scope_id, project_id=project_id
         )

@@ -124,14 +124,21 @@ def _seed_scope_at_state(
 
 
 def _seed_actor_and_manifest(
-    db_path: Path, *, identity_hash: str, commit_hash: str
+    db_path: Path,
+    *,
+    identity_hash: str,
+    commit_hash: str,
+    project_id: str | None = None,
 ) -> None:
     """Seed actors + manifest_versions rows so the three-anchor handoff
-    guard (VAL-V2M03-024..030) can validate against a real registry.
+    guard (VAL-V2M03-024..030, VAL-V3M3-001) can validate against a real
+    registry.
 
     Used by `test_every_yaml_transition_executes` for the
     gate_round.open -> draft.submitted row whose guard is
-    `three_anchor_handoff_valid` (spec C.5).
+    `three_anchor_handoff_valid` (spec C.5). Per VAL-V3M3-001 the manifest
+    lookup is project-scoped; the caller must pass ``project_id`` matching
+    the scope's project_id so the guard binds the same key.
     """
     import sqlite3 as _sqlite3
 
@@ -153,7 +160,7 @@ def _seed_actor_and_manifest(
             (
                 str(uuid.uuid4()),
                 str(uuid.uuid4()),
-                str(uuid.uuid4()),
+                project_id or str(uuid.uuid4()),
                 commit_hash,
                 now,
             ),
@@ -197,14 +204,19 @@ async def test_every_yaml_transition_executes(tmp_path, transition) -> None:
             transition["scope_kind"] == "gate_round"
             and transition["event"] == "draft.submitted"
         ):
+            # Per VAL-V3M3-001 the manifest registry is project-scoped;
+            # seed the manifest_versions row under the scope's project_id
+            # so the three-anchor handoff guard's per-project lookup hits.
             _seed_actor_and_manifest(
                 tmp_path / "sidecar.db",
                 identity_hash=identity_hash,
                 commit_hash=commit_hash,
+                project_id=project_id,
             )
             handoff_payload: dict = {
                 "actor_identity_hash": identity_hash,
                 "manifest_commit_hash": commit_hash,
+                "project_id": project_id,
             }
         else:
             handoff_payload = {}

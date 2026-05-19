@@ -208,10 +208,18 @@ async def _guard_valid_manifest_commit_hash(
 ) -> tuple[bool, dict[str, Any]]:
     """`run.pending -> run.captured` manifest commit anchor validation.
 
-    Spec C.3 line 3657: "valid manifest_commit_hash". Lenient default:
-    when ``manifest_commit_hash`` is not supplied at the CAS boundary,
-    the guard passes (no anchor was claimed). When supplied, the hash
-    MUST resolve to an active or in-grace ``manifest_versions`` row.
+    Spec C.3 line 3657 + spec C.5 line 3748: "valid manifest_commit_hash"
+    scoped per project. Lenient default: when ``manifest_commit_hash`` is
+    not supplied at the CAS boundary, the guard passes (no anchor was
+    claimed). When supplied, the hash MUST resolve to an active or
+    in-grace ``manifest_versions`` row FOR THE CURRENT SCOPE'S PROJECT
+    (VAL-V3M3-001 -- a leaked hash from project A must not validate for
+    project B).
+
+    The project_id is read from ``scope_state`` for the active scope
+    (project_id is set at ``init_scope`` time and never mutates). When
+    ``scope_state`` lacks a row (legacy bootstrap), the guard falls back
+    to commit_hash-only lookup with a structured note.
     """
     if manifest_commit_hash is None:
         return True, {}
@@ -222,18 +230,46 @@ async def _guard_valid_manifest_commit_hash(
             "reason": "manifest_commit_hash not in canonical sha256-<hex> wire form",
             "field": "manifest_commit_hash",
         }
+    # Resolve project_id for this scope (spec C.5 line 3748 per-project
+    # scoping). Reads from the same writer txn -- no isolation surprises.
+    project_id: str | None = None
     try:
         async with conn.execute(
-            "SELECT effective_until, grace_window_seconds "
-            "FROM manifest_versions WHERE commit_hash = ?",
-            (manifest_commit_hash,),
+            "SELECT project_id FROM scope_state "
+            "WHERE scope_kind = ? AND scope_id = ?",
+            (scope_kind, scope_id),
         ) as cur:
-            rows = await cur.fetchall()
+            row = await cur.fetchone()
+        if row is not None and isinstance(row[0], str) and row[0]:
+            project_id = row[0]
+    except aiosqlite.OperationalError:
+        # scope_state absent in stripped fixtures -> lenient fall-through.
+        project_id = None
+
+    try:
+        if project_id is not None:
+            async with conn.execute(
+                "SELECT effective_until, grace_window_seconds "
+                "FROM manifest_versions "
+                "WHERE project_id = ? AND commit_hash = ?",
+                (project_id, manifest_commit_hash),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with conn.execute(
+                "SELECT effective_until, grace_window_seconds "
+                "FROM manifest_versions WHERE commit_hash = ?",
+                (manifest_commit_hash,),
+            ) as cur:
+                rows = await cur.fetchall()
     except aiosqlite.OperationalError:
         # Table absent -> lenient pass.
         return True, {"note": "manifest_versions table not present"}
     if not rows:
-        # No registry rows at all -> lenient: registry not initialised yet.
+        # No match. Distinguish three cases for a clean audit signal:
+        #   (a) empty registry -> lenient bootstrap.
+        #   (b) hash exists for ANOTHER project -> per-project mismatch.
+        #   (c) hash absent entirely -> generic not-in-registry.
         async with conn.execute(
             "SELECT COUNT(*) FROM manifest_versions"
         ) as cur:
@@ -241,6 +277,21 @@ async def _guard_valid_manifest_commit_hash(
         total = int(count_row[0]) if count_row is not None else 0
         if total == 0:
             return True, {"note": "manifest registry empty (legacy bootstrap)"}
+        if project_id is not None:
+            async with conn.execute(
+                "SELECT 1 FROM manifest_versions WHERE commit_hash = ? LIMIT 1",
+                (manifest_commit_hash,),
+            ) as cur:
+                cross = await cur.fetchone()
+            if cross is not None:
+                return False, {
+                    "reason": (
+                        "manifest_commit_hash registered for a different "
+                        "project; per-project scope mismatch"
+                    ),
+                    "field": "manifest_commit_hash",
+                    "project_id": project_id,
+                }
         return False, {
             "reason": "manifest_commit_hash not in registry",
             "field": "manifest_commit_hash",
@@ -437,6 +488,13 @@ async def _guard_three_anchor_handoff_valid(
     ``actor_identity_hash`` and ``manifest_commit_hash`` (and, for run
     scope, ``run_id``). The conn IS the writer connection but the handoff
     validator only SELECTs, so it is safe to reuse it as a reader.
+
+    Per spec C.5 line 3748 + VAL-V3M3-001, the manifest anchor is scoped
+    per (project_id, commit_hash). If the payload omits ``project_id``,
+    the guard reads it from ``scope_state`` (single source of truth set
+    at ``init_scope`` time) and injects it into the enriched payload so
+    every state-engine path enforces per-project scoping even when
+    callers have not been migrated to include project_id in payload.
     """
     enriched_payload = dict(payload)
     if (
@@ -444,6 +502,22 @@ async def _guard_three_anchor_handoff_valid(
         and manifest_commit_hash is not None
     ):
         enriched_payload["manifest_commit_hash"] = manifest_commit_hash
+    payload_project_id = enriched_payload.get("project_id")
+    if not (isinstance(payload_project_id, str) and payload_project_id):
+        try:
+            async with conn.execute(
+                "SELECT project_id FROM scope_state "
+                "WHERE scope_kind = ? AND scope_id = ?",
+                (scope_kind, scope_id),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is not None and isinstance(row[0], str) and row[0]:
+                enriched_payload["project_id"] = row[0]
+        except aiosqlite.OperationalError:
+            # scope_state absent -> validator falls back to commit_hash-only
+            # legacy lookup. No structural concern: the test path that
+            # hits this branch is the legacy bootstrap path.
+            pass
     result: HandoffResult = await validate_three_anchor_handoff(
         reader=conn,
         scope_kind=scope_kind,

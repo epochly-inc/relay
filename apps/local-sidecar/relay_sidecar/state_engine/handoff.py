@@ -82,6 +82,7 @@ async def _actor_is_active(
 async def _manifest_is_active_or_in_grace(
     reader: aiosqlite.Connection,
     *,
+    project_id: str | None = None,
     manifest_commit_hash: str,
     now: datetime,
 ) -> bool:
@@ -91,17 +92,30 @@ async def _manifest_is_active_or_in_grace(
     when ``effective_until IS NOT NULL`` AND
     ``now <= effective_until + grace_window_seconds``.
 
-    The lookup matches by ``commit_hash`` only (the OSS local sidecar does
-    not yet scope manifests per-project for the handoff check). The hosted
-    Postgres profile will tighten this to ``(project_id, commit_hash)`` per
-    spec C.5 line 3748.
+    Per spec C.5 line 3748 + VAL-V3M3-001/002/003, the lookup binds both
+    ``project_id`` AND ``commit_hash`` when ``project_id`` is supplied so
+    that a manifest_commit_hash that leaked from project A cannot validate
+    for project B. When ``project_id`` is None (legacy callers that omit
+    the tenant anchor) the lookup falls back to commit_hash-only; the
+    state-engine guard layer always resolves project_id from
+    ``scope_state`` and forwards it, so production paths never reach the
+    lenient branch.
     """
-    async with reader.execute(
-        "SELECT effective_until, grace_window_seconds "
-        "FROM manifest_versions WHERE commit_hash = ?",
-        (manifest_commit_hash,),
-    ) as cur:
-        rows = await cur.fetchall()
+    if project_id is not None:
+        async with reader.execute(
+            "SELECT effective_until, grace_window_seconds "
+            "FROM manifest_versions "
+            "WHERE project_id = ? AND commit_hash = ?",
+            (project_id, manifest_commit_hash),
+        ) as cur:
+            rows = await cur.fetchall()
+    else:
+        async with reader.execute(
+            "SELECT effective_until, grace_window_seconds "
+            "FROM manifest_versions WHERE commit_hash = ?",
+            (manifest_commit_hash,),
+        ) as cur:
+            rows = await cur.fetchall()
     if not rows:
         return False
     for row in rows:
@@ -185,8 +199,22 @@ async def validate_three_anchor_handoff(
         return HandoffResult(ok=False, reason=MANIFEST_NOT_ACTIVE)
     if not manifest_commit_hash.startswith("sha256-"):
         return HandoffResult(ok=False, reason=MANIFEST_NOT_ACTIVE)
+    # Per spec C.5 line 3748, the manifest lookup binds
+    # (project_id, commit_hash) when project_id is present in payload --
+    # a leaked hash from project A MUST NOT validate for project B
+    # (VAL-V3M3-001). When project_id is absent, the leaf primitive falls
+    # back to commit_hash-only; the state-engine guard layer injects
+    # project_id from scope_state on every CAS path so production paths
+    # never reach the lenient branch.
+    payload_project_id = payload.get("project_id")
+    project_id_for_lookup: str | None = (
+        payload_project_id
+        if isinstance(payload_project_id, str) and payload_project_id
+        else None
+    )
     if not await _manifest_is_active_or_in_grace(
         reader,
+        project_id=project_id_for_lookup,
         manifest_commit_hash=manifest_commit_hash,
         now=now_utc,
     ):
