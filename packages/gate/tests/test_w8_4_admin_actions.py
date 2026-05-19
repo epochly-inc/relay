@@ -1,8 +1,13 @@
 """W8.4 plumbing tests: admin.reopen and admin.terminate transitions.
 
 Covers VAL-W8-035, VAL-W8-036, VAL-W8-037. Drives the real migration
-0011 schema (``audit_log_entries``, ``evidence_x_relay_extensions``,
+0011 schema (``admin_override_audit``, ``evidence_x_relay_extensions``,
 ``gate_stalled_state``) end-to-end via :class:`AdminActionService`.
+
+V3M1-F03 (2026-05-18) renamed the gate-admin override audit table
+from its historical name to ``admin_override_audit`` (sidecar
+migration 0026) to free the canonical §V hosted name; query sites
+below have been updated.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -83,7 +88,7 @@ async def test_reopen_rejects_member_role(tmp_path: Path) -> None:
         # Defense in depth: zero audit rows written.
         rows = await fetch_all(
             wf.database,
-            "SELECT audit_id FROM audit_log_entries WHERE scope_id = ?",
+            "SELECT audit_id FROM admin_override_audit WHERE scope_id = ?",
             (wf.scope_id,),
         )
         assert rows == []
@@ -178,7 +183,7 @@ async def test_reopen_admin_opens_new_round(
 async def test_reopen_audit_row_has_four_required_fields(
     tmp_path: Path,
 ) -> None:
-    """audit_log_entries row contains reason, actor identity, prior
+    """admin_override_audit row contains reason, actor identity, prior
     round id, new round id."""
     f = await setup_circuit_breaker_fixture(tmp_path)
     try:
@@ -263,7 +268,7 @@ async def test_reopen_rejects_empty_reason(tmp_path: Path) -> None:
         # No audit row written.
         rows = await fetch_all(
             wf.database,
-            "SELECT audit_id FROM audit_log_entries WHERE scope_id = ?",
+            "SELECT audit_id FROM admin_override_audit WHERE scope_id = ?",
             (wf.scope_id,),
         )
         assert rows == []
@@ -444,7 +449,7 @@ async def test_terminate_writes_x_relay_extension_claim(
         assert sr[0] is not None
         assert sr[1] == STALLED_REASON_ADMIN_TERMINATED
 
-        # audit_log_entries row was written.
+        # admin_override_audit row was written.
         audit = await fetch_audit_entry(
             wf.database, audit_id=result.audit_id
         )
@@ -657,7 +662,7 @@ async def test_reopen_followed_by_assert_not_stalled_is_silent(
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W8-036")
 @pytest.mark.asyncio
-async def test_audit_log_entries_reopen_reason_check_constraint(
+async def test_admin_override_audit_reopen_reason_check_constraint(
     tmp_path: Path,
 ) -> None:
     """SQL-layer CHECK rejects direct INSERT of admin.reopen with empty
@@ -671,7 +676,7 @@ async def test_audit_log_entries_reopen_reason_check_constraint(
         async with aiosqlite.connect(str(wf.database.db_path)) as conn:
             with pytest.raises(aiosqlite.IntegrityError) as excinfo:
                 await conn.execute(
-                    "INSERT INTO audit_log_entries ("
+                    "INSERT INTO admin_override_audit ("
                     "  audit_id, scope_type, scope_id, gate_id, "
                     "  action, actor_kind, actor_identity_hash, "
                     "  actor_role, reason, manifest_commit_hash, "
@@ -693,7 +698,7 @@ async def test_audit_log_entries_reopen_reason_check_constraint(
                 )
                 await conn.commit()
             assert (
-                "audit_log_entries_reopen_reason_required" in str(excinfo.value)
+                "admin_override_audit_reopen_reason_required" in str(excinfo.value)
                 or "CHECK constraint failed" in str(excinfo.value)
             )
     finally:

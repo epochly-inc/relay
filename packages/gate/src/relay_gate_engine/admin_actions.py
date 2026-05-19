@@ -6,7 +6,7 @@ transitions in spec section AD lines 5471-5488:
   - ``admin.reopen``    (gate.stalled -> gate.open, new round opens)
                         Required actor role: ``org_owner`` or ``org_admin``.
                         Required input: non-empty reason (<= 2 KiB).
-                        Side effects: writes one ``audit_log_entries``
+                        Side effects: writes one ``admin_override_audit``
                         row, one ``event_log_entries`` row, one new
                         ``gate_rounds`` row, UPDATEs the
                         ``gate_stalled_state`` row to set
@@ -14,7 +14,7 @@ transitions in spec section AD lines 5471-5488:
 
   - ``admin.terminate`` (gate.stalled -> gate.terminal)
                         Required actor role: ``org_owner`` or ``org_admin``.
-                        Side effects: writes one ``audit_log_entries``
+                        Side effects: writes one ``admin_override_audit``
                         row, one ``event_log_entries`` row, one
                         ``evidence_x_relay_extensions`` row with
                         ``extension_namespace='x-relay/admin-terminate'``,
@@ -36,9 +36,11 @@ Per CLAUDE.md keystone #4, every admin action carries the three-anchor
 handoff: actor_identity_hash + manifest_commit_hash + scope_id. The audit
 row records all three.
 
-Per contract gap #4 (``audit_log_entries`` not in §A schemas we have),
-this module is the canonical writer for the table introduced in
-migration 0011. Per contract gap #6 (canonical x-relay/admin-terminate
+Per contract gap #4 (the gate-admin override audit table is not in §A
+schemas we have), this module is the canonical writer for the table
+introduced in migration 0011 (renamed to ``admin_override_audit`` by
+V3M1-F03 migration 0026 to free the canonical §V hosted name). Per
+contract gap #6 (canonical x-relay/admin-terminate
 claim shape unspecified), the OSS profile records the generic shape
 ``{extension_namespace, payload, claim_digest, signature}``; W11 ACEF
 wire format will tighten the schema.
@@ -79,10 +81,10 @@ from .signed_decision import (
 #: (VAL-W8-035, spec AD lines 5479-5480).
 ADMIN_ROLES: Final[frozenset[str]] = frozenset({"org_owner", "org_admin"})
 
-#: ``audit_log_entries.action`` value for the reopen path.
+#: ``admin_override_audit.action`` value for the reopen path.
 AUDIT_ACTION_REOPEN: Final[str] = "admin.reopen"
 
-#: ``audit_log_entries.action`` value for the terminate path.
+#: ``admin_override_audit.action`` value for the terminate path.
 AUDIT_ACTION_TERMINATE: Final[str] = "admin.terminate"
 
 #: ``event_log_entries.event_type`` written on the reopen transition
@@ -98,7 +100,9 @@ EVENT_ADMIN_TERMINATE: Final[str] = "admin.terminate"
 X_RELAY_ADMIN_TERMINATE_NS: Final[str] = "x-relay/admin-terminate"
 
 #: Maximum admit reason length (VAL-W8-036). Mirrors migration 0011
-#: ``audit_log_entries_reason_max`` CHECK.
+#: ``admin_override_audit_reason_max`` CHECK (V3M1-F03 migration 0026
+#: renamed both the table and the CHECK from the historical name to
+#: free the canonical §V hosted name).
 MAX_REASON_BYTES: Final[int] = 2048
 
 #: ``gate_rounds.initiated_by`` value for an admin-reopen new round.
@@ -107,7 +111,11 @@ INITIATED_BY_ADMIN_OVERRIDE: Final[str] = "admin_override"
 #: ``gate_rounds.schema_version`` -- mirrors the W8.2 writer constant.
 SCHEMA_GATE_ROUND: Final[str] = "relay.gate_round.v1"
 
-#: ``audit_log_entries.schema_version`` -- matches migration 0011 DEFAULT.
+#: Historical ``schema_version`` literal for the gate-admin override
+#: audit envelope. Audit-R3 dropped the schema_version column from the
+#: sidecar mirror (migration 0023) because the envelope is not in
+#: envelopes.yaml / KNOWN_SCHEMA_IDS; the constant is retained for
+#: backwards-compatible imports.
 SCHEMA_AUDIT_LOG_ENTRY: Final[str] = "relay.audit_log_entry.v1"
 
 #: ``evidence_x_relay_extensions.schema_version`` -- matches migration 0011 DEFAULT.
@@ -141,7 +149,7 @@ class ReopenResult:
     """Outcome of one :meth:`AdminActionService.reopen` call.
 
     Attributes:
-        audit_id: UUID of the appended ``audit_log_entries`` row.
+        audit_id: UUID of the appended ``admin_override_audit`` row.
         event_id: UUID of the appended ``event_log_entries`` row.
         new_gate_round_id: UUID of the new ``gate_rounds`` row opened
             by the admin transition (VAL-W8-035: "a new round opens").
@@ -165,7 +173,7 @@ class TerminateResult:
     """Outcome of one :meth:`AdminActionService.terminate` call.
 
     Attributes:
-        audit_id: UUID of the appended ``audit_log_entries`` row.
+        audit_id: UUID of the appended ``admin_override_audit`` row.
         event_id: UUID of the appended ``event_log_entries`` row.
         extension_id: UUID of the
             ``evidence_x_relay_extensions`` row carrying the
@@ -359,7 +367,7 @@ class AdminActionService:
           2. INSERT one gate_rounds row with
              ``initiated_by='admin_override'`` and
              ``restart_predecessor=prior_round_id``.
-          3. INSERT one audit_log_entries row with the reopen action,
+          3. INSERT one admin_override_audit row with the reopen action,
              the reason, the prior round id, the new round id.
           4. INSERT one event_log_entries row with
              ``event_type='admin.reopen'``.
@@ -462,7 +470,7 @@ class AdminActionService:
                     ),
                 )
 
-                # 3. INSERT audit_log_entries row.
+                # 3. INSERT admin_override_audit row.
                 audit_payload = {
                     "reason": reason,
                     "prior_round_id": prior_round_id,
@@ -470,12 +478,15 @@ class AdminActionService:
                     "terminal_round": terminal_round,
                     "new_round": new_round,
                 }
-                # Audit-R3 (2026-05-18): audit_log_entries.schema_version
+                # Audit-R3 (2026-05-18): the audit table's schema_version
                 # column was dropped (sidecar migration 0023) because
                 # relay.audit_log_entry.v1 is not a canonical envelope
                 # in envelopes.yaml / openapi.yaml / KNOWN_SCHEMA_IDS.
+                # V3M1-F03 (2026-05-18): table renamed from the historical
+                # name to admin_override_audit (migration 0026) to free
+                # the canonical §V hosted name.
                 await conn.execute(
-                    "INSERT INTO audit_log_entries ("
+                    "INSERT INTO admin_override_audit ("
                     "  audit_id, project_id, scope_type, "
                     "  scope_id, gate_id, action, actor_kind, "
                     "  actor_identity_hash, actor_role, reason, "
@@ -593,7 +604,7 @@ class AdminActionService:
         Side effects (all in ONE BEGIN IMMEDIATE..COMMIT block):
           1. UPDATE gate_stalled_state SET terminated_at = now(),
              reason = 'admin_terminated'.
-          2. INSERT one audit_log_entries row.
+          2. INSERT one admin_override_audit row.
           3. INSERT one event_log_entries row with
              ``event_type='admin.terminate'``.
           4. INSERT one evidence_x_relay_extensions row referencing
@@ -692,17 +703,19 @@ class AdminActionService:
                     ),
                 )
 
-                # 2. INSERT audit_log_entries.
+                # 2. INSERT admin_override_audit.
                 audit_payload = {
                     "evidence_bundle_id": str(evidence_bundle_id),
                     "extension_id": extension_id,
                     "claim_digest": claim_digest,
                     "terminal_round": terminal_round,
                 }
-                # Audit-R3 (2026-05-18): audit_log_entries.schema_version
+                # Audit-R3 (2026-05-18): the audit table's schema_version
                 # column was dropped (sidecar migration 0023).
+                # V3M1-F03 (2026-05-18): table renamed to
+                # admin_override_audit (migration 0026).
                 await conn.execute(
-                    "INSERT INTO audit_log_entries ("
+                    "INSERT INTO admin_override_audit ("
                     "  audit_id, project_id, scope_type, "
                     "  scope_id, gate_id, action, actor_kind, "
                     "  actor_identity_hash, actor_role, reason, "
@@ -836,14 +849,16 @@ async def fetch_audit_entry(
     *,
     audit_id: str,
 ) -> Mapping[str, Any] | None:
-    """Return one ``audit_log_entries`` row by id, or ``None``.
+    """Return one ``admin_override_audit`` row by id, or ``None``.
 
     Returned mapping carries the column names as keys for ease of test
     assertions. Production callers should query directly with a typed
     DAL.
     """
-    # Audit-R3 (2026-05-18): audit_log_entries.schema_version column was
+    # Audit-R3 (2026-05-18): the audit table's schema_version column was
     # dropped by sidecar migration 0023 (not a canonical envelope).
+    # V3M1-F03 (2026-05-18): table renamed to admin_override_audit
+    # (migration 0026) to free the canonical §V hosted name.
     async with (
         _borrow_gate_writer(database) as conn,
         conn.execute(
@@ -852,7 +867,7 @@ async def fetch_audit_entry(
             "       actor_identity_hash, actor_role, reason, "
             "       prior_round_id, new_round_id, manifest_commit_hash, "
             "       payload, occurred_at "
-            "FROM audit_log_entries WHERE audit_id = ?",
+            "FROM admin_override_audit WHERE audit_id = ?",
             (str(audit_id),),
         ) as cur,
     ):
