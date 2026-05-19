@@ -57,7 +57,7 @@ from ..exit_codes import (
     EXIT_CLI_USAGE,
     EXIT_SUCCESS,
 )
-from ..output import emit_json
+from ..output import emit_human, emit_json, should_emit_json
 
 # -----------------------------------------------------------------------------
 # Schema-version constants (one per stdout JSON envelope shape)
@@ -255,6 +255,16 @@ def _cmd_start(
         "--home",
         help="Override RELAY_HOME (test seam).",
     ),
+    json_flag: bool = typer.Option(
+        False,
+        "--json",
+        help=(
+            "Emit a single JSON object on stdout with "
+            "schema_version=relay.cli.sidecar_start.v1 (VAL-V3M2-010). "
+            "Without --json, output is the default JSON-on-pipe / "
+            "human-on-TTY contract."
+        ),
+    ),
 ) -> None:
     """``rly sidecar start`` -- attach if running, else spawn (VAL-W5-011)."""
     base_home = Path(home).expanduser() if home else relay_home()
@@ -276,7 +286,12 @@ def _cmd_start(
         "sidecar_version": body.sidecar_version,
         "lockfile_path": str(resolve_lockfile_path(base_home)),
     }
-    emit_json(payload)
+    if should_emit_json(force_json=json_flag):
+        emit_json(payload)
+    else:
+        emit_human(
+            f"sidecar {wire_action} pid={body.pid} port={body.port} version={body.sidecar_version}"
+        )
     raise typer.Exit(code=EXIT_SUCCESS)
 
 
@@ -320,6 +335,16 @@ def _cmd_status(
         "--home",
         help="Override RELAY_HOME (test seam).",
     ),
+    json_flag: bool = typer.Option(
+        False,
+        "--json",
+        help=(
+            "Emit a single JSON object on stdout with "
+            "schema_version=relay.cli.sidecar_status.v1 (VAL-V3M2-010). "
+            "Without --json, output is the default JSON-on-pipe / "
+            "human-on-TTY contract."
+        ),
+    ),
 ) -> None:
     """``rly sidecar status`` -- four-state classifier outcome (VAL-W5-012)."""
     base_home = Path(home).expanduser() if home else relay_home()
@@ -349,7 +374,16 @@ def _cmd_status(
         "uptime_seconds": uptime_seconds,
         "lockfile_path": str(lockfile_path),
     }
-    emit_json(payload)
+    if should_emit_json(force_json=json_flag):
+        emit_json(payload)
+    else:
+        if body is None:
+            emit_human(f"sidecar state={state}")
+        else:
+            emit_human(
+                f"sidecar state={state} pid={body.pid} "
+                f"port={body.port} version={body.sidecar_version}"
+            )
     raise typer.Exit(code=exit_code)
 
 
@@ -369,11 +403,22 @@ def _cmd_stop(
         "--timeout",
         help="Seconds to wait for graceful exit before SIGKILL (POSIX).",
     ),
+    json_flag: bool = typer.Option(
+        False,
+        "--json",
+        help=(
+            "Emit a single JSON object on stdout with "
+            "schema_version=relay.cli.sidecar_stop.v1 (VAL-V3M2-010). "
+            "Without --json, output is the default JSON-on-pipe / "
+            "human-on-TTY contract."
+        ),
+    ),
 ) -> None:
     """``rly sidecar stop`` -- PID-only termination (VAL-W5-013)."""
     base_home = Path(home).expanduser() if home else relay_home()
     lockfile_path = resolve_lockfile_path(base_home)
     body = _read_lockfile_body(lockfile_path)
+    emit_as_json = should_emit_json(force_json=json_flag)
     if body is None:
         # No lockfile or malformed: nothing to stop. Surface a structured
         # "no-op" result; exit 0 because absence of a sidecar is the
@@ -385,7 +430,10 @@ def _cmd_stop(
             "port": None,
             "lockfile_path": str(lockfile_path),
         }
-        emit_json(payload)
+        if emit_as_json:
+            emit_json(payload)
+        else:
+            emit_human("sidecar action=noop (no lockfile)")
         raise typer.Exit(code=EXIT_SUCCESS)
 
     pid = body.pid
@@ -397,20 +445,31 @@ def _cmd_stop(
             "port": body.port,
             "lockfile_path": str(lockfile_path),
         }
-        emit_json(payload)
+        if emit_as_json:
+            emit_json(payload)
+        else:
+            emit_human(
+                f"sidecar action=already_stopped pid={pid} port={body.port}"
+            )
         raise typer.Exit(code=EXIT_SUCCESS)
 
     # PID-only termination via the sanctioned helper. Name-based termination
     # utilities (CLAUDE.md banned pattern #1) are forbidden in this module.
     success = terminate_pid(pid, timeout_s=float(quiesce_timeout_seconds))
+    action = "stopped" if success else "stop_failed"
     payload = {
         "schema_version": SIDECAR_STOP_SCHEMA,
-        "action": "stopped" if success else "stop_failed",
+        "action": action,
         "pid": pid,
         "port": body.port,
         "lockfile_path": str(lockfile_path),
     }
-    emit_json(payload)
+    if emit_as_json:
+        emit_json(payload)
+    else:
+        emit_human(
+            f"sidecar action={action} pid={pid} port={body.port}"
+        )
     raise typer.Exit(code=EXIT_SUCCESS if success else EXIT_4XX_BLOCK)
 
 
