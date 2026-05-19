@@ -1018,9 +1018,23 @@ def test_quality_harness_returns_metrics_in_unit_interval() -> None:
     assert report.true_negatives == 10
     assert report.false_positives == 0
     assert report.false_negatives == 0
+    # VAL-V3M4-001: per_class breakdown replaces the old aggregated-only
+    # shape. The aggregated scalars MUST still report precision/recall=1.0
+    # and FPR=0.0 (the heuristic emits schema_contract_drift with
+    # confidence 0.85 for every schema_drift failure and stays silent on
+    # clean cases). The per_class["schema_contract_drift"] bucket carries
+    # the same numbers and the harness records 10 supporting cases.
     assert report.precision == 1.0
     assert report.recall == 1.0
     assert report.false_positive_rate == 0.0
+    drift_metrics = report.per_class["schema_contract_drift"]
+    assert drift_metrics.precision == 1.0
+    assert drift_metrics.recall == 1.0
+    assert drift_metrics.fpr == 0.0
+    assert drift_metrics.support_count == 10
+    # No P0-class criterion violations: this corpus contains no P0
+    # failure-class labels, so criteria_failed must be empty.
+    assert report.criteria_failed == []
 
 
 # ===========================================================================
