@@ -162,3 +162,51 @@ scope_kinds:
         actor: cron
         event_log_type: evidence.superseded
         guards: [retention_window_elapsed_and_no_legal_hold]
+
+  # ---------------------------------------------------------------------------
+  # gate (spec section AD lines 5468-5488)
+  # ---------------------------------------------------------------------------
+  #
+  # Spec section AD line 5471 declares the gate scope's lifecycle:
+  #     gate: open -> draft_received -> evaluating -> decision_written
+  #           -> restarted -> ... -> stalled | terminal
+  #
+  # The gate_round scope (above) tracks the per-round lifecycle of a
+  # single remediation round. The gate scope is the higher-level
+  # circuit-breaker scope (one row per gates.gate_id) whose stalled
+  # state encodes "remediation cap exceeded" or "admin paused" per
+  # spec section AD line 5488. Only the three transitions enumerated in
+  # the spec section AD table (lines 5474-5485) are valid for the gate
+  # scope; the earlier open -> draft_received -> evaluating ->
+  # decision_written -> restarted progression remains owned by the
+  # gate_round scope (line 108-141 above) per CLAUDE.md keystone
+  # invariant #1 (one canonical writer per scope kind).
+  #
+  # Guards:
+  #   round_cap_exceeded                -- VAL-W8-030/032 cap predicate
+  #   admin_role_org_owner_or_admin     -- spec section AD lines 5479-5480
+  #                                       guard column ("actor.role IN
+  #                                       ('org_owner','org_admin')")
+
+  gate:
+    initial_state: open
+    terminal_states: [terminal]
+    transitions:
+      - from: restarted
+        event: round.cap_exceeded
+        to: stalled
+        actor: gate_engine
+        event_log_type: gate.stalled
+        guards: [round_cap_exceeded]
+      - from: stalled
+        event: admin.reopen
+        to: open
+        actor: admin
+        event_log_type: gate.reopened
+        guards: [admin_role_org_owner_or_admin]
+      - from: stalled
+        event: admin.terminate
+        to: terminal
+        actor: admin
+        event_log_type: gate.terminated
+        guards: [admin_role_org_owner_or_admin]

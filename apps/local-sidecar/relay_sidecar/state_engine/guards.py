@@ -824,6 +824,101 @@ async def _guard_retention_window_elapsed_and_no_legal_hold(
     return True, {}
 
 
+# --- V3M3-F05 guards: gate scope circuit-breaker transitions ----------------
+#
+# Spec section AD lines 5474-5485 enumerates three transitions on the gate
+# scope. Two of them require named guards from the canonical registry:
+#
+#   - round_cap_exceeded               (restarted -> round.cap_exceeded -> stalled)
+#   - admin_role_org_owner_or_admin    (stalled  -> admin.reopen/terminate)
+#
+# Both guards follow the lenient default: when the payload omits the
+# enforcement field, the guard PASSES so legacy callers (and the
+# circuit-breaker's internal trip path that does NOT replay the predicate
+# in payload form) remain operational. When the payload supplies an
+# explicit field, the guard becomes STRICT. The state-engine writer is
+# the only path that evaluates these guards; the circuit breaker computes
+# the cap-exceeded predicate locally via ``CircuitBreaker.would_exceed_
+# cap`` before invoking the transition, so the guard is defense-in-depth.
+
+
+async def _guard_round_cap_exceeded(
+    conn: aiosqlite.Connection,
+    scope_kind: str,
+    scope_id: str,
+    payload: dict[str, Any],
+    manifest_commit_hash: str | None,
+) -> tuple[bool, dict[str, Any]]:
+    """`gate.restarted -> stalled`: ``current_round + 1 > remediation_round_cap``.
+
+    Spec section AD lines 5478 names the guard column as
+    ``current_round + 1 > gate.remediation_round_cap``. The pure predicate
+    lives at
+    ``packages/gate/src/relay_gate_engine/circuit_breaker.py:CircuitBreaker.
+    would_exceed_cap`` and the circuit breaker only invokes this transition
+    after that predicate returns True; this guard re-validates the
+    invariant on the writer connection to prevent any caller from
+    short-circuiting the breaker.
+
+    Lenient: when ``current_round`` and/or ``remediation_round_cap`` are
+    not present in the payload, the guard PASSES (CB has already
+    validated; payload is informational). When both are present, FAIL if
+    ``current_round + 1 <= remediation_round_cap`` (would not have
+    exceeded the cap; the transition should not fire).
+    """
+    current_round = payload.get("current_round")
+    remediation_round_cap = payload.get("remediation_round_cap")
+    if current_round is None or remediation_round_cap is None:
+        return True, {}
+    try:
+        cr = int(current_round)
+        cap = int(remediation_round_cap)
+    except (TypeError, ValueError):
+        return False, {
+            "reason": "current_round/remediation_round_cap not integers",
+            "current_round": current_round,
+            "remediation_round_cap": remediation_round_cap,
+        }
+    if cr + 1 > cap:
+        return True, {}
+    return False, {
+        "reason": "round cap not exceeded; transition not authorized",
+        "current_round": cr,
+        "remediation_round_cap": cap,
+    }
+
+
+async def _guard_admin_role_org_owner_or_admin(
+    conn: aiosqlite.Connection,
+    scope_kind: str,
+    scope_id: str,
+    payload: dict[str, Any],
+    manifest_commit_hash: str | None,
+) -> tuple[bool, dict[str, Any]]:
+    """`gate.stalled -> open/terminal`: admin actor role check.
+
+    Spec section AD lines 5479-5480 require ``actor.role IN
+    ('org_owner', 'org_admin')`` on the ``admin.reopen`` and
+    ``admin.terminate`` transitions.
+
+    Lenient: when the payload omits ``actor_role``, the guard PASSES
+    (the role attestation lives in the org-membership table whose
+    canonical home is private ``relay-platform``; the OSS sidecar
+    enforces the role at the HTTP/CLI envelope boundary, not in the
+    state engine). When the payload supplies ``actor_role``, FAIL unless
+    it is one of {``org_owner``, ``org_admin``}.
+    """
+    actor_role = payload.get("actor_role")
+    if actor_role is None:
+        return True, {}
+    if actor_role in {"org_owner", "org_admin"}:
+        return True, {}
+    return False, {
+        "reason": "actor_role not in {org_owner, org_admin}",
+        "actor_role": actor_role,
+    }
+
+
 # --- Registry seeding (run at import) ---------------------------------------
 
 _BUILTIN_GUARDS: tuple[tuple[str, GuardCheckFn], ...] = (
@@ -853,6 +948,9 @@ _BUILTIN_GUARDS: tuple[tuple[str, GuardCheckFn], ...] = (
         "retention_window_elapsed_and_no_legal_hold",
         _guard_retention_window_elapsed_and_no_legal_hold,
     ),
+    # V3M3-F05 (gate scope; spec section AD lines 5468-5488).
+    ("round_cap_exceeded", _guard_round_cap_exceeded),
+    ("admin_role_org_owner_or_admin", _guard_admin_role_org_owner_or_admin),
 )
 
 for _name, _fn in _BUILTIN_GUARDS:

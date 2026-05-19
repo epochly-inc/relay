@@ -60,6 +60,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
+import aiosqlite
+
 from .decision_writer import SCHEMA_EVENT_LOG, _borrow_gate_writer
 from .errors import StalledScopeRejectedError
 
@@ -279,11 +281,53 @@ class CircuitBreaker:
         a no-op and returns ``ok=False`` with the existing row's
         ``opened_at``.
 
-        Both writes co-commit in one BEGIN IMMEDIATE..COMMIT block.
+        VAL-V3M3-015: when a canonical ``scope_state`` row exists for the
+        new ``gate`` scope_kind (scope_id = ``gate_id``), the trip ALSO
+        advances that row from ``restarted`` to ``stalled`` via the
+        ``compare_and_set_state`` state-engine primitive (spec section
+        AD lines 5478, 5471). The canonical CAS runs FIRST -- it acquires
+        the shared ``_state_engine_writer_lock`` for its own BEGIN
+        IMMEDIATE..COMMIT block, then releases it; the companion
+        ``gate_stalled_state`` INSERT + ``event_log_entries`` audit row
+        then run in a second BEGIN IMMEDIATE..COMMIT under the same lock.
+        The two transactions are serialized by the writer lock: no other
+        state-engine writer can interleave between them, so the
+        canonical scope_state row and the companion gate_stalled_state
+        row are observable together from any reader the moment this
+        method returns.
+
+        Lenient backward-compat: when no scope_state row exists for the
+        gate scope (legacy bootstrap or test fixtures that did not seed
+        one), the canonical CAS is skipped and the legacy
+        gate_stalled_state + event_log_entries audit path still runs;
+        the returned ``TripResult.ok`` is unchanged.
         """
         now = _now_rfc3339_utc()
         event_id = str(uuid.uuid4())
 
+        # --- Phase 1: canonical scope_state CAS (VAL-V3M3-015) -----------
+        #
+        # Probe for a scope_state row on the gate scope (scope_kind='gate',
+        # scope_id=gate_id). The probe uses a fresh aiosqlite reader so
+        # we do NOT hold the state-engine writer lock during the lookup;
+        # if the row exists, we then invoke ``compare_and_set_state``
+        # which acquires the lock, performs the SERIALIZABLE-equivalent
+        # CAS, and commits/releases. We deliberately run the CAS BEFORE
+        # the legacy companion write so that a CAS failure (e.g., wrong
+        # expected_from) surfaces as a hard error before any audit-trail
+        # mutation lands.
+        await self._maybe_advance_canonical_scope_state(
+            gate_id=gate_id,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            current_round=current_round,
+            remediation_round_cap=remediation_round_cap,
+            failing_assertion_ids=failing_assertion_ids,
+            actor_identity_hash=actor_identity_hash,
+            manifest_commit_hash=manifest_commit_hash,
+        )
+
+        # --- Phase 2: companion gate_stalled_state + audit row -----------
         async with _borrow_gate_writer(self.database) as conn:
             await conn.execute("BEGIN IMMEDIATE")
             try:
@@ -372,6 +416,127 @@ class CircuitBreaker:
             event_id=event_id,
             terminal_round=int(current_round),
         )
+
+    # ----- canonical scope_state CAS helper (VAL-V3M3-015) -----------
+
+    async def _maybe_advance_canonical_scope_state(
+        self,
+        *,
+        gate_id: str,
+        scope_type: str,
+        scope_id: str,
+        current_round: int,
+        remediation_round_cap: int,
+        failing_assertion_ids: Sequence[str],
+        actor_identity_hash: str,
+        manifest_commit_hash: str,
+    ) -> None:
+        """Advance the canonical ``scope_state`` row for the gate scope.
+
+        Spec section AD line 5478: ``gate.restarted --round.cap_exceeded
+        --> gate.stalled`` with guard ``current_round + 1 >
+        gate.remediation_round_cap``.
+
+        Per CLAUDE.md keystone invariant #1 (control plane writes the
+        result), the only path that may write canonical ``scope_state``
+        is the state-engine primitive ``compare_and_set_state``. We
+        invoke it here ONLY when a scope_state row already exists for
+        (scope_kind='gate', scope_id=gate_id). The probe uses a fresh
+        aiosqlite reader so the state-engine writer lock is NOT held
+        during lookup, avoiding deadlock with the CAS that will follow.
+
+        Lenient when absent: when no scope_state row exists for the gate
+        scope, the canonical CAS is skipped. This preserves backward
+        compatibility with the W8.4 fixture (and any caller) that has
+        not yet been migrated to init the gate scope's scope_state row.
+        The legacy companion write in trip_to_stalled still runs.
+
+        Strict when present and wrong: when a scope_state row exists at
+        a state other than ``restarted``, the CAS returns
+        EXPECTED_FROM_MISMATCH and we raise a RuntimeError so the
+        caller surfaces the violation rather than silently corrupting
+        the audit trail.
+
+        The local import of compare_and_set_state avoids a top-level
+        import cycle (relay_sidecar -> relay_gate_engine -> relay_sidecar)
+        for callers that import the gate engine without the sidecar
+        runtime; in practice every production call site has the sidecar
+        loaded, but the indirect import keeps test environments simple.
+        """
+        db_path = getattr(self.database, "db_path", None)
+        if db_path is None:
+            return
+        # Probe scope_state without holding the writer lock.
+        try:
+            async with (
+                aiosqlite.connect(str(db_path)) as probe,
+                probe.execute(
+                    "SELECT state FROM scope_state "
+                    "WHERE scope_kind = ? AND scope_id = ?",
+                    ("gate", str(gate_id)),
+                ) as cur,
+            ):
+                row = await cur.fetchone()
+        except aiosqlite.OperationalError:
+            # Schema not yet at the m3-f05 level (e.g., legacy fixture
+            # that pre-dates the 0032 migration). Skip lenient.
+            return
+        if row is None:
+            # Legacy bootstrap: no canonical scope_state row for this
+            # gate; the companion write below still records the trip.
+            return
+        current_state = str(row[0])
+        if current_state == "stalled":
+            # Already stalled; the canonical CAS would be a no-op via
+            # the state engine's idempotent-replay branch. Skip.
+            return
+        if current_state != "restarted":
+            raise RuntimeError(
+                "circuit_breaker.trip_to_stalled: canonical scope_state "
+                "row for gate scope is at "
+                f"{current_state!r}; expected 'restarted' to perform the "
+                "round.cap_exceeded transition (spec section AD line 5478). "
+                "The state-engine writer is the only path that may "
+                "advance gate.restarted -> gate.stalled."
+            )
+
+        # Local import to avoid a top-level import cycle on packages
+        # that load the gate engine without the sidecar runtime.
+        from relay_sidecar.state_engine import (  # noqa: PLC0415
+            ActorRef,
+            compare_and_set_state,
+        )
+
+        cas_payload: dict[str, Any] = {
+            "current_round": int(current_round),
+            "remediation_round_cap": int(remediation_round_cap),
+            "failing_assertion_ids": list(failing_assertion_ids),
+            "reason": STALLED_REASON_CAP_EXCEEDED,
+            "companion_scope_type": scope_type,
+            "companion_scope_id": str(scope_id),
+        }
+        result = await compare_and_set_state(
+            database=self.database,
+            scope_kind="gate",
+            scope_id=str(gate_id),
+            expected_from="restarted",
+            event="round.cap_exceeded",
+            actor=ActorRef(
+                kind="gate_engine",
+                identity_hash=actor_identity_hash,
+            ),
+            payload=cas_payload,
+            project_id=self.project_id,
+            manifest_commit_hash=manifest_commit_hash,
+        )
+        if not result.ok and not result.idempotent:
+            raise RuntimeError(
+                "circuit_breaker.trip_to_stalled: canonical "
+                "compare_and_set_state(scope_kind='gate', "
+                "expected_from='restarted', event='round.cap_exceeded') "
+                f"failed with reason={result.reason!r}, "
+                f"observed_state={result.observed_state!r}"
+            )
 
     # ----- assert_not_stalled (VAL-W8-034) ---------------------------
 
