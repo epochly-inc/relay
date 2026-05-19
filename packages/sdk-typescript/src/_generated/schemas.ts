@@ -774,6 +774,119 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/evidence-bundles/{bundle_id}/assess": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assess an evidence bundle [OUT-OF-SCOPE-PRIVATE]
+         * @description [OUT-OF-SCOPE-PRIVATE] Hosted-only: triggers a compliance
+         *     assessment run against an evidence bundle. The OSS sidecar
+         *     returns 501 with RELAY-HOSTED-ONLY; this endpoint is provided
+         *     by the hosted Relay control plane.
+         */
+        post: operations["hostedAssessEvidenceBundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/assessment-bundles/{bundle_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an assessment bundle [OUT-OF-SCOPE-PRIVATE]
+         * @description [OUT-OF-SCOPE-PRIVATE] Hosted-only: retrieves an assessment
+         *     bundle produced by the hosted compliance assessor. The OSS
+         *     sidecar returns 501 with RELAY-HOSTED-ONLY.
+         */
+        get: operations["hostedGetAssessmentBundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/assessment-bundles/{bundle_id}/gaps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an assessment bundle gap list [OUT-OF-SCOPE-PRIVATE]
+         * @description [OUT-OF-SCOPE-PRIVATE] Hosted-only: returns the structured
+         *     gap list for an assessment bundle (which assertions failed,
+         *     which evidence is missing). The OSS sidecar returns 501 with
+         *     RELAY-HOSTED-ONLY.
+         */
+        get: operations["hostedGetAssessmentBundleGaps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/compliance/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get project compliance readiness [OUT-OF-SCOPE-PRIVATE]
+         * @description [OUT-OF-SCOPE-PRIVATE] Hosted-only: aggregates compliance
+         *     readiness signals across the project's evidence bundles and
+         *     active compliance packs. The OSS sidecar returns 501 with
+         *     RELAY-HOSTED-ONLY.
+         */
+        get: operations["hostedGetProjectComplianceReadiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/{org_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get org usage metering [OUT-OF-SCOPE-PRIVATE]
+         * @description [OUT-OF-SCOPE-PRIVATE] Hosted-only: returns billing-grade
+         *     usage metering for an org. The OSS sidecar returns 501 with
+         *     RELAY-HOSTED-ONLY (no metering surface in OSS).
+         */
+        get: operations["hostedGetOrgUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3169,6 +3282,213 @@ export interface operations {
             };
             /** @description Stale three-anchor handoff or guard failure. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    hostedAssessEvidenceBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bundle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+             *     assessment accepted and queued; assessment_bundle_id
+             *     returned. The OSS sidecar never returns this status; it
+             *     always returns 501 below.
+             */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+             *     provided by hosted Relay control plane.
+             */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    hostedGetAssessmentBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bundle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+             *     assessment bundle envelope. The OSS sidecar never returns
+             *     this status; it always returns 501 below.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+             *     provided by hosted Relay control plane.
+             */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    hostedGetAssessmentBundleGaps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bundle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+             *     gap list envelope. The OSS sidecar never returns this
+             *     status; it always returns 501 below.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+             *     provided by hosted Relay control plane.
+             */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    hostedGetProjectComplianceReadiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+             *     project compliance readiness envelope. The OSS sidecar
+             *     never returns this status; it always returns 501 below.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+             *     provided by hosted Relay control plane.
+             */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    hostedGetOrgUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] (hosted-only behavior, documentary):
+             *     org usage metering envelope. The OSS sidecar never returns
+             *     this status; it always returns 501 below.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /**
+             * @description [OUT-OF-SCOPE-PRIVATE] Not available in OSS sidecar;
+             *     provided by hosted Relay control plane.
+             */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };
