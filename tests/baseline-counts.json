@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.0.0",
+  "asOf": "2026-05-19",
+  "fulfills": "VAL-V3M5-023",
+  "spec": "epochly-replay-spec.md sec AM.6",
+  "notes": "Per-package plumbing-tier passing-test counts. Recorded by m5-f12-baseline-counts-gate after relay-v0.3-audit-resolution M1-M4 sealed. No PR may reduce any per-package passing count below these baselines; scripts/check-baseline-counts.py enforces. Update procedure: when a feature legitimately removes a test (deletion or rewrite), the baseline entry is decremented in the same commit and the commit message explains why.",
+  "perPackage": {
+    "packages/sdk-python/tests": 281,
+    "packages/contracts/tests": 121,
+    "packages/verifier/tests": 198,
+    "packages/gate/tests": 166,
+    "packages/cli/tests": 244,
+    "packages/evals/tests": 83,
+    "packages/explain/tests": 145,
+    "packages/acef/tests": 227,
+    "packages/schemas/python/tests": 700,
+    "packages/replay-sandbox-protocol/tests": 19,
+    "apps/local-sidecar/tests": 532,
+    "apps/replay-proxy/tests": 169,
+    "tests": 585
+  },
+  "totalPlumbing": 3470
+}
