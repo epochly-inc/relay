@@ -179,20 +179,21 @@ describe("VAL-V2M06-022 bundle_validator.ts orchestrator + constants", () => {
 });
 
 // ============================================================================
-// VAL-V2M06-002: TSA_CRYPTO_IMPLEMENTED — TS fail-closes; Python now real-crypto
+// VAL-V2M06-002: TSA_CRYPTO_IMPLEMENTED runtime posture (now real-crypto in both)
 // ============================================================================
 //
 // Python flipped TSA_CRYPTO_IMPLEMENTED to True in v0.2 M09 w9-2 (commit
-// 2031152) wiring rfc3161-client + asn1crypto. The TypeScript port at M06 w6
-// stayed fail-closed (TSA_CRYPTO_IMPLEMENTED = false) because porting the full
-// RFC 3161 ASN.1 stack to TS is a separate work item. Both behaviors are
-// correct: Python actively verifies; TS refuses to claim verification rather
-// than lie. The cross-language acceptance gate is "does the runtime ever
-// report outcome=ok without verifying?" — both runtimes pass that gate (Python
-// via real crypto, TS via fail-closed).
+// 2031152) wiring rfc3161-client + asn1crypto. The TypeScript port stayed
+// fail-closed (TSA_CRYPTO_IMPLEMENTED = false) at M06 w6 because porting the
+// full RFC 3161 ASN.1 stack to TS was a separate work item. Per
+// relay-v0.3-audit-resolution M5/F5.7 (VAL-V3M5-014) the TS verifier is now
+// also real-crypto using @peculiar/asn1-tsp + @peculiar/asn1-cms +
+// @peculiar/asn1-x509 for decode and node:crypto for chain + SignerInfo
+// signature verification. Both runtimes now actively verify; the cross-
+// language acceptance gate is preserved.
 describe("VAL-V2M06-002 TSA_CRYPTO_IMPLEMENTED runtime posture", () => {
-  test("TS stays fail-closed (false) until ASN.1 port lands", () => {
-    expect(TSA_CRYPTO_IMPLEMENTED).toBe(false);
+  test("TS now real-crypto (true) per V3M5 F5.7", () => {
+    expect(TSA_CRYPTO_IMPLEMENTED).toBe(true);
   });
   test("Python now real-crypto (true) per M09 w9-2", () => {
     const py = pyJson<{ py: boolean }>(
@@ -206,11 +207,19 @@ sys.stdout.write(json.dumps({'py': bool(f)}))
 });
 
 // ============================================================================
-// VAL-V2M06-003: validateTsaToken fail-closes when crypto flag is false
+// VAL-V2M06-003: validateTsaToken rejects token missing tsr_der_b64u
 // ============================================================================
-
-describe("VAL-V2M06-003 validateTsaToken fail-closes when flag is false", () => {
-  test("structural-pass token returns outcome=invalid with TSA-crypto prefix", () => {
+//
+// Prior to V3M5 F5.7 the TS verifier fail-closed with a "TSA cryptographic
+// signature verification" reason prefix when structural checks passed but the
+// crypto path was un-ported. Post-V3M5 the crypto path is real; a token that
+// passes the dict-level message_imprint + gen_time checks but lacks the
+// base64url-encoded TimeStampResp DER payload (``tsr_der_b64u``) is now
+// rejected with the structured reason ``"tsr_der_missing"`` matching Python's
+// validate_tsa_token. Parity holds: TS and Python both reject the same
+// degenerate token shape with the same RELAY-EVID-031 wire code.
+describe("VAL-V2M06-003 validateTsaToken rejects token missing tsr_der_b64u", () => {
+  test("structural-pass token without tsr_der_b64u => outcome=invalid, reason=tsr_der_missing", () => {
     const token = {
       version: 1,
       message_imprint: {
@@ -228,7 +237,8 @@ describe("VAL-V2M06-003 validateTsaToken fail-closes when flag is false", () => 
       chainCerts: null,
     });
     expect(r.outcome).toBe("invalid");
-    expect(r.reason.startsWith("TSA cryptographic signature verification")).toBe(true);
+    expect(r.reason).toBe("tsr_der_missing");
+    expect(r.code).toBe("RELAY-EVID-031");
   });
 });
 
@@ -297,9 +307,12 @@ sys.stdout.write(json.dumps({'v': v}))
         expect(r.outcome).toBe("skew");
         expect(r.code).toBe("RELAY-EVID-038");
       } else {
-        // Within tolerance: fail-closed reason but skew_seconds matches.
+        // Within tolerance the skew check passes; post-V3M5 the next gate
+        // is the real-crypto path which rejects this stub token (no
+        // tsr_der_b64u) with structured reason "tsr_der_missing". The
+        // skew_seconds field still echoes the parsed delta.
         expect(r.outcome).toBe("invalid");
-        expect(r.reason.startsWith("TSA cryptographic signature verification")).toBe(true);
+        expect(r.reason).toBe("tsr_der_missing");
         expect(r.skew_seconds).toBe(skew);
       }
     });

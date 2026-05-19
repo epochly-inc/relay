@@ -9,21 +9,24 @@
 // `genTime` MUST be within +/-300 s of the bundle's `decided_at`;
 // outside the window raises `RELAY-EVID-038`.
 //
-// FAIL-CLOSED: per CLAUDE.md keystone invariant #2 the module's
-// `validateTsaToken` MUST NOT report `outcome="ok"` based on a
-// presence-only check. Until the CMS SignerInfo signature in the RFC
-// 3161 TimeStampResp is cryptographically verified against the bundled
-// TSA cert chain, the function fail-closes via TSA_CRYPTO_IMPLEMENTED
-// (currently `false`). Flipping the flag to `true` without wiring real
-// verification is a P1 keystone-invariant regression. Mirrors
-// packages/verifier/src/relay_verifier/tsa.py:104-112.
+// Per relay-v0.3-audit-resolution M5/F5.7 (VAL-V3M5-014..017) this module
+// performs real RFC 3161 ``TimeStampResp`` verification using
+// @peculiar/asn1-tsp + @peculiar/asn1-cms + @peculiar/asn1-x509 to decode
+// the DER, and node:crypto for chain verify + CMS SignerInfo signature
+// verify. This matches the Python verifier's real-crypto posture
+// (TSA_CRYPTO_IMPLEMENTED=True since v0.2 M09 w9-2).
 //
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { X509Certificate, createPublicKey } from "node:crypto";
+import { X509Certificate, verify as cryptoVerify } from "node:crypto";
+
+import { AsnParser, AsnSerializer } from "@peculiar/asn1-schema";
+import { TimeStampResp, TSTInfo } from "@peculiar/asn1-tsp";
+import { SignedData, EncapsulatedContentInfo } from "@peculiar/asn1-cms";
+import { Certificate as Asn1Certificate } from "@peculiar/asn1-x509";
 
 // Single source +/-300 s skew bound per spec section L.5 line 4479 + AB
 // line 5690. Shared with key_lifecycle.ts.
@@ -48,15 +51,17 @@ export const TSA_CHAIN_FILENAME = "tsa-chain.pem" as const;
 export const MIN_RSA_BITS = 2048;
 
 /**
- * Cryptographic TSA signature verification feature flag. MUST remain
- * `false` until `validateTsaToken` verifies the CMS SignerInfo signature
- * in the RFC 3161 TimeStampResp against the bundled TSA cert chain.
+ * Cryptographic TSA signature verification feature flag. Set to ``true``
+ * in v0.3 M5/F5.7 (VAL-V3M5-014) once the @peculiar/asn1-tsp +
+ * @peculiar/asn1-cms decode + node:crypto verify path landed.
  *
- * With the flag at `false`, the function fail-closes when a token is
- * present; flipping it to `true` without wiring real verification is a
- * P1 keystone-invariant regression guarded by m06_tsa_failclosed.test.ts.
+ * Flipping it back to ``false`` without removing the real verifier below
+ * is a no-op for tests; flipping it to ``true`` without wiring real
+ * verification is a P1 keystone-invariant regression.
+ *
+ * Mirrors packages/verifier/src/relay_verifier/tsa.py::TSA_CRYPTO_IMPLEMENTED.
  */
-export const TSA_CRYPTO_IMPLEMENTED = false;
+export const TSA_CRYPTO_IMPLEMENTED = true;
 
 // ----------------------------------------------------------------------------
 // Result types
@@ -65,7 +70,7 @@ export const TSA_CRYPTO_IMPLEMENTED = false;
 export interface TSAValidationResult {
   /** One of: "ok", "invalid", "missing", "skew". */
   outcome: "ok" | "invalid" | "missing" | "skew";
-  /** Human-readable detail; "" on ok. */
+  /** Human-readable detail or structured tag; "" on ok. */
   reason: string;
   /** Wire code on reject paths (RELAY-EVID-031 / RELAY-EVID-038); "" otherwise. */
   code: string;
@@ -117,6 +122,16 @@ function _absSecondsDelta(a: Date, b: Date): number {
   return Math.abs(Math.trunc((a.getTime() - b.getTime()) / 1000));
 }
 
+function _b64uDecode(s: string): Buffer {
+  // base64url -> base64 (restore '+', '/', and '=' padding) and decode.
+  let b64 = s.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = (-b64.length) % 4;
+  if (pad > 0) {
+    b64 += "=".repeat(pad);
+  }
+  return Buffer.from(b64, "base64");
+}
+
 // ----------------------------------------------------------------------------
 // TSA token validation
 // ----------------------------------------------------------------------------
@@ -130,6 +145,7 @@ export interface TsaToken {
   tsa_signature_alg?: unknown;
   tsa_signer_cert_subject?: unknown;
   tsa_signature_b64u?: unknown;
+  tsr_der_b64u?: unknown;
   [key: string]: unknown;
 }
 
@@ -143,28 +159,468 @@ function _newResult(): TSAValidationResult {
   };
 }
 
+// ----------------------------------------------------------------------------
+// Real RFC 3161 TimeStampResp verification (mirrors Python's
+// _verify_cryptographic_signature in tsa.py).
+// ----------------------------------------------------------------------------
+
+/**
+ * Mapping from OID -> (node algorithm name, signature shape). Limited to
+ * the OIDs the Python TSA fixture builder and well-behaved real TSAs use
+ * (ECDSA-SHA256, RSA-SHA256, Ed25519). Unknown OIDs cause a
+ * tsa_signature_invalid rejection.
+ */
+const SIG_ALG_BY_OID: Record<string, { hash: string | null; isEcdsa: boolean }> = {
+  // ecdsa-with-SHA256
+  "1.2.840.10045.4.3.2": { hash: "sha256", isEcdsa: true },
+  // ecdsa-with-SHA384
+  "1.2.840.10045.4.3.3": { hash: "sha384", isEcdsa: true },
+  // ecdsa-with-SHA512
+  "1.2.840.10045.4.3.4": { hash: "sha512", isEcdsa: true },
+  // sha256WithRSAEncryption
+  "1.2.840.113549.1.1.11": { hash: "sha256", isEcdsa: false },
+  // sha384WithRSAEncryption
+  "1.2.840.113549.1.1.12": { hash: "sha384", isEcdsa: false },
+  // sha512WithRSAEncryption
+  "1.2.840.113549.1.1.13": { hash: "sha512", isEcdsa: false },
+  // Ed25519: no separate hash function; algorithm is identifier-only.
+  "1.3.101.112": { hash: null, isEcdsa: false },
+};
+
+/** Convert ArrayBuffer / ArrayBufferView to a Node Buffer (zero-copy view). */
+function _toBuffer(b: ArrayBuffer | ArrayBufferView): Buffer {
+  if (b instanceof ArrayBuffer) {
+    return Buffer.from(b);
+  }
+  return Buffer.from(b.buffer, b.byteOffset, b.byteLength);
+}
+
+function _findIdCtTstInfoOid(_: string): boolean {
+  // id-ct-TSTInfo OID is "1.2.840.113549.1.9.16.1.4".
+  return _ === "1.2.840.113549.1.9.16.1.4";
+}
+
+interface VerifyOutcome {
+  ok: boolean;
+  reason: string;
+}
+
+/**
+ * Decode + verify a real RFC 3161 ``TimeStampResp`` DER blob against the
+ * bundle binding digest and the supplied trust roots.
+ *
+ * Mirrors ``packages/verifier/src/relay_verifier/tsa.py::_verify_cryptographic_signature``.
+ *
+ * Returns:
+ *   * `{ ok: true, reason: "" }` on success.
+ *   * `{ ok: false, reason: "tsr_decode_failed: <type>" }` when the DER is
+ *     not a parseable TimeStampResp.
+ *   * `{ ok: false, reason: "message_imprint_mismatch" }` when the
+ *     embedded MessageImprint does not match the bundle digest.
+ *   * `{ ok: false, reason: "tsa_cert_chain_unknown_root" }` when the
+ *     embedded leaf cert does not chain to any supplied trust root.
+ *   * `{ ok: false, reason: "tsa_signature_invalid" }` when the chain
+ *     built successfully but the SignedData SignerInfo signature did not
+ *     verify over signed_attrs.
+ */
+function _verifyCryptographicSignature(args: {
+  tsrDer: Buffer;
+  bundleDigestBytes: Buffer;
+  trustRoots: X509Certificate[];
+}): VerifyOutcome {
+  const { tsrDer, bundleDigestBytes, trustRoots } = args;
+  if (trustRoots.length === 0) {
+    return { ok: false, reason: "tsa_cert_chain_unknown_root" };
+  }
+
+  // 1. Decode the TimeStampResp.
+  let tsr: TimeStampResp;
+  try {
+    tsr = AsnParser.parse(tsrDer, TimeStampResp);
+  } catch (exc) {
+    return { ok: false, reason: `tsr_decode_failed: ${(exc as Error).name}` };
+  }
+
+  // 2. PKIStatus must indicate granted (== 0) or grantedWithMods (== 1).
+  // PKIStatus is encoded as an INTEGER; the @peculiar/asn1-tsp class
+  // exposes the parsed enum on `tsr.status.status` as a numeric value.
+  const statusVal = tsr.status?.status;
+  if (typeof statusVal === "number" && statusVal !== 0 && statusVal !== 1) {
+    return { ok: false, reason: `tsr_status_${statusVal}` };
+  }
+
+  // 3. TimeStampToken (ContentInfo wrapping SignedData).
+  const tst = tsr.timeStampToken;
+  if (!tst) {
+    return { ok: false, reason: "tsr_decode_failed: TimeStampToken absent" };
+  }
+  // tst.content is the ANY-typed inner -- DER bytes of the SignedData.
+  let sd: SignedData;
+  try {
+    sd = AsnParser.parse(tst.content, SignedData);
+  } catch (exc) {
+    return { ok: false, reason: `tsr_decode_failed: SignedData ${(exc as Error).name}` };
+  }
+
+  // 4. Encapsulated content must be TSTInfo (OID id-ct-TSTInfo).
+  const eci: EncapsulatedContentInfo = sd.encapContentInfo;
+  if (!_findIdCtTstInfoOid(eci.eContentType)) {
+    return { ok: false, reason: `tsr_decode_failed: unexpected eContentType ${eci.eContentType}` };
+  }
+
+  // 5. SignerInfos: exactly one signer per RFC 3161 sec 2.4.2.
+  if (sd.signerInfos.length !== 1) {
+    return { ok: false, reason: "tsr_decode_failed: expected exactly one SignerInfo" };
+  }
+  const signerInfo = sd.signerInfos[0];
+  if (signerInfo === undefined) {
+    return { ok: false, reason: "tsr_decode_failed: SignerInfo[0] undefined" };
+  }
+
+  // 6. Re-encode each certificate in SignedData.certificates back to DER
+  // so we can construct node:crypto X509Certificate instances. Match the
+  // SignerIdentifier (issuerAndSerialNumber) to find the leaf.
+  const leafCert = _resolveSignerCert(sd, signerInfo);
+  if (leafCert === null) {
+    return { ok: false, reason: "tsr_decode_failed: signer cert not in SignedData.certificates" };
+  }
+
+  // 7. Verify the leaf chains to one of trustRoots. Per RFC 3161, the
+  // chain is leaf -> ... -> root; here we only embed leaf + root for the
+  // test fixture. checkIssued(parent) + parent.verify(parent.publicKey)
+  // covers the single-hop case; if the leaf is itself self-signed (root)
+  // we still require it to appear in trustRoots.
+  const chainOk = _verifyLeafChainsToTrustRoots(leafCert, trustRoots);
+  if (!chainOk) {
+    return { ok: false, reason: "tsa_cert_chain_unknown_root" };
+  }
+
+  // 8. Verify CMS SignerInfo signature over signed_attrs.
+  // RFC 5652 sec 5.4: when signedAttrs is present, the to-be-signed bytes
+  // are the DER encoding of `SignedAttributes` (SET OF Attribute) under
+  // the universal SET tag (0x31), NOT under the IMPLICIT [0] tag (0xA0)
+  // that appears on the wire. @peculiar/asn1-cms does not populate
+  // ``signedAttrsRaw`` for the IMPLICIT-tagged SET in TimeStampToken
+  // SignerInfos, so we reconstruct the canonical DER from the parsed
+  // attribute objects (which preserve the on-wire DER SET ordering).
+  if (!signerInfo.signedAttrs || signerInfo.signedAttrs.length === 0) {
+    // RFC 3161 sec 2.4.2 mandates signedAttrs; absence is malformed.
+    return { ok: false, reason: "tsr_decode_failed: missing signedAttrs" };
+  }
+  let tbsBytes: Buffer;
+  try {
+    tbsBytes = _encodeSignedAttrsAsSet(signerInfo.signedAttrs);
+  } catch (exc) {
+    return { ok: false, reason: `tsr_decode_failed: signedAttrs re-encode: ${(exc as Error).name}` };
+  }
+
+  // 9. Verify message_digest signed-attribute against actual TSTInfo digest.
+  // The signed_attrs message_digest MUST equal SHA-256(eContent bytes).
+  // The @peculiar/asn1-cms parser stores eContent as OctetString (.single)
+  // with the raw DER of TSTInfo inside.
+  const tstInfoDer = _extractTstInfoDer(eci);
+  if (tstInfoDer === null) {
+    return { ok: false, reason: "tsr_decode_failed: eContent absent" };
+  }
+  const expectedTstInfoDigest = require("node:crypto")
+    .createHash("sha256")
+    .update(tstInfoDer)
+    .digest();
+  const messageDigestAttrVal = _extractSignedAttrValue(
+    signerInfo.signedAttrs,
+    "1.2.840.113549.1.9.4", // id-messageDigest
+  );
+  if (messageDigestAttrVal === null) {
+    return { ok: false, reason: "tsr_decode_failed: signedAttrs missing message_digest" };
+  }
+  // The attribute value is itself an ASN.1 OCTET STRING; strip the
+  // 2-byte header (tag 0x04 + length) so we have the raw digest bytes.
+  const declaredDigest = _decodeAttrOctetString(messageDigestAttrVal);
+  if (declaredDigest === null || !declaredDigest.equals(expectedTstInfoDigest)) {
+    return { ok: false, reason: "tsa_signature_invalid" };
+  }
+
+  // 10. Decode TSTInfo's embedded MessageImprint and cross-check the
+  // bundle digest. The Python verifier delegates to rfc3161_client.verify
+  // which does this check; we do it explicitly.
+  const miOk = _verifyMessageImprint(tstInfoDer, bundleDigestBytes);
+  if (!miOk) {
+    return { ok: false, reason: "message_imprint_mismatch" };
+  }
+
+  // 11. Verify the SignerInfo signature using the leaf's public key.
+  const sigAlgOid = signerInfo.signatureAlgorithm.algorithm;
+  const algInfo = SIG_ALG_BY_OID[sigAlgOid];
+  if (!algInfo) {
+    return { ok: false, reason: `tsa_signature_invalid (alg ${sigAlgOid})` };
+  }
+  const signatureBytes = Buffer.from(signerInfo.signature.buffer);
+  const publicKey = leafCert.publicKey;
+  let verified: boolean;
+  try {
+    verified = cryptoVerify(
+      algInfo.hash,
+      tbsBytes,
+      { key: publicKey, dsaEncoding: "der" },
+      signatureBytes,
+    );
+  } catch {
+    return { ok: false, reason: "tsa_signature_invalid" };
+  }
+  if (!verified) {
+    return { ok: false, reason: "tsa_signature_invalid" };
+  }
+
+  return { ok: true, reason: "" };
+}
+
+function _resolveSignerCert(sd: SignedData, signerInfo: import("@peculiar/asn1-cms").SignerInfo): X509Certificate | null {
+  if (!sd.certificates) {
+    return null;
+  }
+  const ias = signerInfo.sid?.issuerAndSerialNumber;
+  if (!ias) {
+    // RFC 5652 also permits subjectKeyIdentifier. The Python fixture
+    // builder always uses IssuerAndSerialNumber; matching that path here.
+    return null;
+  }
+  const wantSerial = Buffer.from(ias.serialNumber);
+  // Re-serialize the wanted issuer Name to DER so we can byte-compare.
+  let wantIssuerDer: Buffer;
+  try {
+    wantIssuerDer = Buffer.from(AsnSerializer.serialize(ias.issuer));
+  } catch {
+    return null;
+  }
+  for (const choice of sd.certificates) {
+    const c = choice.certificate;
+    if (!c) continue;
+    // Compare serial number bytes and issuer DER.
+    let candidateIssuerDer: Buffer;
+    try {
+      candidateIssuerDer = Buffer.from(AsnSerializer.serialize(c.tbsCertificate.issuer));
+    } catch {
+      continue;
+    }
+    if (!candidateIssuerDer.equals(wantIssuerDer)) {
+      continue;
+    }
+    const candSerial = Buffer.from(c.tbsCertificate.serialNumber);
+    if (!_equalIntegerBytes(candSerial, wantSerial)) {
+      continue;
+    }
+    // Re-encode the whole Certificate to DER, then hand to X509Certificate.
+    try {
+      const certDer = Buffer.from(AsnSerializer.serialize(c));
+      return new X509Certificate(certDer);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Compare two ASN.1 INTEGER byte-encodings ignoring leading-zero padding.
+ * INTEGER is big-endian two's-complement; positive serials may carry a
+ * leading 0x00 to disambiguate from negative.
+ */
+function _equalIntegerBytes(a: Buffer, b: Buffer): boolean {
+  const aTrim = _trimIntLeadingZero(a);
+  const bTrim = _trimIntLeadingZero(b);
+  return aTrim.equals(bTrim);
+}
+
+function _trimIntLeadingZero(b: Buffer): Buffer {
+  if (b.length > 1 && b[0] === 0x00 && (b[1] !== undefined && b[1] < 0x80)) {
+    return b.subarray(1);
+  }
+  return b;
+}
+
+function _verifyLeafChainsToTrustRoots(
+  leaf: X509Certificate,
+  trustRoots: X509Certificate[],
+): boolean {
+  // Single-hop chain: leaf -> root in trustRoots. The Python fixture
+  // builder produces exactly this shape (root issues leaf directly).
+  // node:crypto.X509Certificate.publicKey is already a KeyObject of type
+  // "public"; pass it directly to .verify() (do NOT wrap in
+  // createPublicKey() which expects a private key input).
+  for (const root of trustRoots) {
+    try {
+      // checkIssued: does leaf claim to be issued by root (issuer == root.subject)?
+      if (!leaf.checkIssued(root)) continue;
+      // verify: does the leaf's signature verify under root's public key?
+      if (leaf.verify(root.publicKey)) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  // Self-signed leaf? Accept if the leaf itself is one of the trust roots.
+  for (const root of trustRoots) {
+    if (leaf.raw.equals(root.raw)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function _extractTstInfoDer(eci: EncapsulatedContentInfo): Buffer | null {
+  if (!eci.eContent) return null;
+  if (eci.eContent.single) {
+    // OctetString instance: content is at byteOffset/byteLength within
+    // .buffer (the parser may hand back a view onto a larger buffer).
+    const s = eci.eContent.single;
+    return Buffer.from(s.buffer, s.byteOffset, s.byteLength);
+  }
+  if (eci.eContent.any) {
+    return Buffer.from(eci.eContent.any);
+  }
+  return null;
+}
+
+/**
+ * Re-encode a parsed ``SignedAttributes`` (Attribute[]) under the
+ * universal SET tag (0x31) per RFC 5652 sec 5.4. Returns the canonical
+ * DER bytes the TSA signed over.
+ *
+ * Each Attribute is serialized individually via AsnSerializer.serialize
+ * (producing a DER SEQUENCE), then the children are sorted lex-byte-wise
+ * (DER SET canonical ordering) and concatenated under the SET wrapper.
+ */
+function _encodeSignedAttrsAsSet(
+  signedAttrs: import("@peculiar/asn1-cms").SignedAttributes,
+): Buffer {
+  const children: Buffer[] = [];
+  for (const attr of signedAttrs) {
+    const der = Buffer.from(AsnSerializer.serialize(attr));
+    children.push(der);
+  }
+  // DER SET canonical order: lex-byte-wise ascending.
+  children.sort(Buffer.compare);
+  const body = Buffer.concat(children);
+  return Buffer.concat([Buffer.from([0x31]), _encodeDerLength(body.byteLength), body]);
+}
+
+/** Encode a length in DER short or long form. */
+function _encodeDerLength(n: number): Buffer {
+  if (n < 0) throw new Error(`negative length: ${n}`);
+  if (n < 0x80) {
+    return Buffer.from([n]);
+  }
+  // Long form: leading byte 0x80 | numOctets, then big-endian length.
+  const octets: number[] = [];
+  let m = n;
+  while (m > 0) {
+    octets.unshift(m & 0xff);
+    m = m >>> 8;
+  }
+  if (octets.length > 0x7e) {
+    throw new Error(`length too large for DER long form: ${n}`);
+  }
+  return Buffer.from([0x80 | octets.length, ...octets]);
+}
+
+function _extractSignedAttrValue(
+  signedAttrs: import("@peculiar/asn1-cms").SignedAttributes | undefined,
+  oid: string,
+): ArrayBuffer | null {
+  if (!signedAttrs) return null;
+  for (const attr of signedAttrs) {
+    if (attr.attrType === oid) {
+      const values = attr.attrValues;
+      if (values && values.length > 0 && values[0]) {
+        return values[0];
+      }
+    }
+  }
+  return null;
+}
+
+function _decodeAttrOctetString(val: ArrayBuffer): Buffer | null {
+  // Attribute values for message_digest are DER-encoded OCTET STRINGs:
+  // 0x04 <len> <bytes>. Strip the 2- or 3-byte header.
+  const buf = Buffer.from(val);
+  if (buf.length < 2 || buf[0] !== 0x04) {
+    return null;
+  }
+  const lenByte = buf[1];
+  if (lenByte === undefined) return null;
+  let headerLen: number;
+  let contentLen: number;
+  if (lenByte < 0x80) {
+    headerLen = 2;
+    contentLen = lenByte;
+  } else {
+    const lengthOfLength = lenByte & 0x7f;
+    if (lengthOfLength < 1 || lengthOfLength > 4) return null;
+    if (buf.length < 2 + lengthOfLength) return null;
+    headerLen = 2 + lengthOfLength;
+    contentLen = 0;
+    for (let i = 0; i < lengthOfLength; i++) {
+      const b = buf[2 + i];
+      if (b === undefined) return null;
+      contentLen = (contentLen << 8) | b;
+    }
+  }
+  if (buf.length !== headerLen + contentLen) return null;
+  return buf.subarray(headerLen, headerLen + contentLen);
+}
+
+function _verifyMessageImprint(
+  tstInfoDer: Buffer,
+  bundleDigestBytes: Buffer,
+): boolean {
+  // Re-parse TSTInfo to extract MessageImprint.hashedMessage bytes.
+  // TSTInfo is statically imported at the top of the file so the
+  // @peculiar/asn1-schema decorator metadata is registered before
+  // AsnParser.parse runs (lazy CJS require from inside this ESM file
+  // produced "Cannot get schema for 'TSTInfo' target").
+  try {
+    const tstInfo = AsnParser.parse(tstInfoDer, TSTInfo);
+    const hm = tstInfo.messageImprint.hashedMessage;
+    // OctetString-derived view: respect byteOffset/byteLength so we
+    // don't read adjacent buffer bytes when the parser handed us a
+    // sub-slice of a larger ArrayBuffer.
+    const declared = Buffer.from(hm.buffer, hm.byteOffset, hm.byteLength);
+    return declared.equals(bundleDigestBytes);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Validate a parsed RFC 3161 TSTInfo token against the bundle.
  *
- * Mirrors `packages/verifier/src/relay_verifier/tsa.py:195-354`. Failure
- * modes:
+ * Mirrors `packages/verifier/src/relay_verifier/tsa.py::validate_tsa_token`.
+ * Failure modes:
  *   - token null/undefined -> outcome="missing", code=RELAY-EVID-031
- *   - message_imprint mismatch / malformed -> outcome="invalid"
+ *   - message_imprint dict-level mismatch / malformed -> outcome="invalid"
  *   - gen_time outside +/-300s -> outcome="skew", code=RELAY-EVID-038
  *   - unparseable gen_time / decided_at -> outcome="invalid"
- *   - missing tsa_signature_b64u -> outcome="invalid"
- *   - signer subject not in chainCerts -> outcome="invalid"
- *   - structural checks pass BUT TSA_CRYPTO_IMPLEMENTED is false ->
- *     outcome="invalid" with reason starting "TSA cryptographic signature
- *     verification" (fail-closed; VAL-V2M06-003).
+ *   - missing tsr_der_b64u -> outcome="invalid", reason="tsr_der_missing"
+ *   - tsr_der decode fails -> outcome="invalid", reason="tsr_decode_failed: ..."
+ *   - chain unknown root -> outcome="invalid", reason="tsa_cert_chain_unknown_root"
+ *   - signature invalid -> outcome="invalid", reason="tsa_signature_invalid"
  */
 export function validateTsaToken(args: {
   token: TsaToken | null | undefined;
   bundleDigestHex: string;
   decidedAt: string;
   chainCerts?: X509Certificate[] | null;
+  /**
+   * Test-injection seam: additional PEM-encoded trust roots to merge with
+   * ``chainCerts``. Production callers leave this undefined; tests pass
+   * an ephemeral root generated by the fixture builder (see
+   * packages/verifier/tests/conftest_w10_4.py). Mirrors the Python
+   * ``extra_trusted_roots_pem`` parameter.
+   */
+  extraTrustedRootsPem?: Uint8Array | Buffer | null;
 }): TSAValidationResult {
-  const { token, bundleDigestHex, decidedAt, chainCerts } = args;
+  const { token, bundleDigestHex, decidedAt, chainCerts, extraTrustedRootsPem } = args;
   const result = _newResult();
 
   if (token === null || token === undefined) {
@@ -185,6 +641,7 @@ export function validateTsaToken(args: {
   if (msgImprint === null || typeof msgImprint !== "object" || Array.isArray(msgImprint)) {
     result.outcome = "invalid";
     result.reason = "TSA token missing or malformed 'message_imprint'";
+    result.code = RELAY_EVID_031;
     return result;
   }
   const mi = msgImprint as Record<string, unknown>;
@@ -193,13 +650,13 @@ export function validateTsaToken(args: {
   if (declaredAlg !== "sha256") {
     result.outcome = "invalid";
     result.reason = `TSA message_imprint must use sha256, got ${JSON.stringify(declaredAlg)}`;
+    result.code = RELAY_EVID_031;
     return result;
   }
   if (declaredDigest !== bundleDigestHex) {
     result.outcome = "invalid";
-    result.reason =
-      `TSA message_imprint digest does not match recomputed bundle ` +
-      `digest (declared=${JSON.stringify(declaredDigest)}, recomputed=${JSON.stringify(bundleDigestHex)})`;
+    result.reason = "message_imprint_mismatch";
+    result.code = RELAY_EVID_031;
     return result;
   }
 
@@ -208,6 +665,7 @@ export function validateTsaToken(args: {
   if (typeof genTimeRaw !== "string" || genTimeRaw.length === 0) {
     result.outcome = "invalid";
     result.reason = "TSA token missing 'gen_time'";
+    result.code = RELAY_EVID_031;
     return result;
   }
   result.gen_time = genTimeRaw;
@@ -217,6 +675,7 @@ export function validateTsaToken(args: {
   } catch (exc) {
     result.outcome = "invalid";
     result.reason = `TSA gen_time unparsable: ${(exc as Error).message}`;
+    result.code = RELAY_EVID_031;
     return result;
   }
   let decided: Date;
@@ -225,6 +684,7 @@ export function validateTsaToken(args: {
   } catch (exc) {
     result.outcome = "invalid";
     result.reason = `bundle decided_at unparsable: ${(exc as Error).message}`;
+    result.code = RELAY_EVID_031;
     return result;
   }
   const skew = _absSecondsDelta(genTime, decided);
@@ -238,49 +698,64 @@ export function validateTsaToken(args: {
     return result;
   }
 
-  // 3. TSA signature presence (structural pre-check; full crypto verify
-  // gated on TSA_CRYPTO_IMPLEMENTED below).
-  const tsaSig = token.tsa_signature_b64u;
-  if (typeof tsaSig !== "string" || tsaSig.length === 0) {
+  // 3. Cryptographic TSA verification (VAL-V3M5-014..017).
+  const tsrB64u = token.tsr_der_b64u;
+  if (typeof tsrB64u !== "string" || tsrB64u.length === 0) {
     result.outcome = "invalid";
-    result.reason = "TSA token missing 'tsa_signature_b64u'";
+    result.reason = "tsr_der_missing";
+    result.code = RELAY_EVID_031;
+    return result;
+  }
+  let tsrDer: Buffer;
+  try {
+    tsrDer = _b64uDecode(tsrB64u);
+  } catch (exc) {
+    result.outcome = "invalid";
+    result.reason = `tsr_der_b64u_decode_failed: ${(exc as Error).message}`;
+    result.code = RELAY_EVID_031;
     return result;
   }
 
-  // 4. Subject membership in chain (VAL-W10-026 structural pre-check).
-  if (chainCerts && chainCerts.length > 0) {
-    const signerSubject = token.tsa_signer_cert_subject;
-    if (typeof signerSubject !== "string" || signerSubject.length === 0) {
-      result.outcome = "invalid";
-      result.reason = "TSA token missing 'tsa_signer_cert_subject'";
-      return result;
-    }
-    const chainSubjects = new Set<string>(chainCerts.map((c) => c.subject));
-    if (!chainSubjects.has(signerSubject)) {
-      result.outcome = "invalid";
-      result.reason =
-        `TSA signer subject ${JSON.stringify(signerSubject)} not present in bundled ` +
-        `trust chain (${chainCerts.length} certs checked)`;
-      return result;
-    }
+  // Assemble trust roots: bundled chain + caller-provided extras.
+  const trustRoots: X509Certificate[] = [];
+  if (chainCerts) {
+    for (const c of chainCerts) trustRoots.push(c);
   }
-
-  // 5. Cryptographic TSA signature verification (FAIL-CLOSED).
-  // Mirrors packages/verifier/src/relay_verifier/tsa.py:336-347.
-  if (!TSA_CRYPTO_IMPLEMENTED) {
+  if (extraTrustedRootsPem && extraTrustedRootsPem.byteLength > 0) {
+    let extras: X509Certificate[];
+    try {
+      extras = loadTsaChainPemBytes(extraTrustedRootsPem);
+    } catch (exc) {
+      result.outcome = "invalid";
+      result.reason = `extra_trusted_roots_pem_parse_failed: ${(exc as Error).message}`;
+      result.code = RELAY_EVID_031;
+      return result;
+    }
+    for (const c of extras) trustRoots.push(c);
+  }
+  if (trustRoots.length === 0) {
     result.outcome = "invalid";
-    result.reason =
-      "TSA cryptographic signature verification is not implemented " +
-      "in this build; refusing to claim outcome='ok'. The structural " +
-      "checks (message_imprint match, gen_time within window, " +
-      "signer-subject membership) passed, but the CMS SignerInfo " +
-      "signature in the RFC 3161 token has not been verified " +
-      "against the TSA cert chain. Tracking issue: P1 verifier " +
-      "crypto gap.";
+    result.reason = "tsa_no_trust_roots_available";
+    result.code = RELAY_EVID_031;
     return result;
   }
 
-  // Unreachable while the flag is false.
+  // The message_imprint check above already confirmed
+  // declared_digest == bundleDigestHex; the bytes the TSA signed are the
+  // bundle binding digest.
+  const bundleDigestBytes = Buffer.from(bundleDigestHex, "hex");
+  const verify = _verifyCryptographicSignature({
+    tsrDer,
+    bundleDigestBytes,
+    trustRoots,
+  });
+  if (!verify.ok) {
+    result.outcome = "invalid";
+    result.reason = verify.reason;
+    result.code = RELAY_EVID_031;
+    return result;
+  }
+
   result.outcome = "ok";
   return result;
 }
@@ -481,7 +956,7 @@ function _toIsoZ(d: Date): string {
   return d.toISOString();
 }
 
-// Side-effect: silence "createPublicKey unused" lint when bundlers
-// tree-shake. (createPublicKey is reserved for the M09 crypto wiring
-// rewrite; keeping the import documents the future flip site.)
-void createPublicKey;
+// Side-effect: keep Asn1Certificate import live for tooling that
+// tree-shakes unused names. The class is referenced via SignedData's
+// CertificateChoices member but TS does not pick it up structurally.
+void Asn1Certificate;
