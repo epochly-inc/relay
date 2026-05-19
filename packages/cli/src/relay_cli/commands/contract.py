@@ -624,7 +624,9 @@ def _emit_publish_result(
         "total_active_assertions": int(total_active_assertions),
         "jwks_log": list(log_lines),
     }
-    line = json.dumps(envelope, separators=(",", ":"), ensure_ascii=True)
+    line = json.dumps(
+        envelope, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
 

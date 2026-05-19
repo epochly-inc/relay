@@ -990,7 +990,13 @@ def cmd_verify_install(
     }
 
     sys.stdout.write(
-        json.dumps(envelope, separators=(",", ":"), ensure_ascii=True) + "\n"
+        json.dumps(
+            envelope,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
     )
     sys.stdout.flush()
 

@@ -89,7 +89,9 @@ def emit_json(payload: dict[str, Any]) -> None:
     A trailing newline ensures line-oriented consumers (``jq -c``,
     ``grep``) see a complete record.
     """
-    line = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    line = json.dumps(
+        payload, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
 

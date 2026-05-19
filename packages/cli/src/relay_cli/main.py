@@ -144,7 +144,12 @@ class _RelayTyperGroup(typer.core.TyperGroup):
                 subcommands=_build_subcommands_payload(self),
                 exit_codes=list(_EXIT_CODE_HELP_ROWS),
             )
-            return json.dumps(envelope, separators=(",", ":"), ensure_ascii=True)
+            return json.dumps(
+                envelope,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
         return super().get_help(ctx)
 
 
@@ -165,7 +170,12 @@ class _RelayTyperCommand(typer.core.TyperCommand):
                 subcommands=[],  # leaves have no subcommands
                 exit_codes=list(_EXIT_CODE_HELP_ROWS),
             )
-            return json.dumps(envelope, separators=(",", ":"), ensure_ascii=True)
+            return json.dumps(
+                envelope,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
         return super().get_help(ctx)
 
 

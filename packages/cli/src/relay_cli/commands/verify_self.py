@@ -248,7 +248,13 @@ def cmd_verify_self(
             "code": RELAY_CLI_VERIFY_SELF_NO_TREE,
         }
         stdout_bytes = (
-            json.dumps(envelope, separators=(",", ":"), ensure_ascii=True) + "\n"
+            json.dumps(
+                envelope,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            + "\n"
         ).encode("utf-8")
         sys.stdout.buffer.write(stdout_bytes)
         sys.stdout.flush()
@@ -295,7 +301,10 @@ def cmd_verify_self(
     # ----- Step 2: serialize stdout JSON -----
     stdout_bytes = (
         json.dumps(
-            runner_dict, separators=(",", ":"), ensure_ascii=True
+            runner_dict,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
         )
         + "\n"
     ).encode("utf-8")

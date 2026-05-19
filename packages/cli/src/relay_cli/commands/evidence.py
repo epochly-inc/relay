@@ -171,7 +171,13 @@ def _emit_trust_anchor_override_warning(url: str) -> None:
         ),
     }
     sys.stderr.write(
-        json.dumps(warn, separators=(",", ":"), ensure_ascii=True) + "\n"
+        json.dumps(
+            warn,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
     )
     sys.stderr.flush()
 

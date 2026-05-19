@@ -234,7 +234,9 @@ def emit_envelope(envelope: dict[str, Any]) -> None:
     invoking ``sys.exit`` itself. The separation keeps the envelope-emit
     pure and unit-testable without a SystemExit teardown.
     """
-    line = json.dumps(envelope, separators=(",", ":"), ensure_ascii=True)
+    line = json.dumps(
+        envelope, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
     sys.stderr.write(line + "\n")
     sys.stderr.flush()
 
