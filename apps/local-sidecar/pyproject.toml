@@ -56,6 +56,11 @@ dependencies = [
   # Schemas package: the W1 EventLogEntry Pydantic model is reused by the
   # local JSONL event log writer (spec H.5 "local-only event log").
   "epochly-relay-schemas",
+  # SDK package: the server-side ReDoS budget enforcement at
+  # POST /v1/redaction-policies reuses ``relay.redaction_budget.
+  # evaluate_matcher_budget`` rather than duplicating the 50 ms
+  # wall-clock budget logic (VAL-V3M5-004, spec AI line 5665).
+  "epochly-relay",
   # W2.5: zstandard compression for the rolling event-log archive
   # (VAL-W2-040). Pinned with a conservative upper bound to keep the wire
   # format stable across patch releases.
@@ -82,3 +87,4 @@ include = [
 
 [tool.uv.sources]
 epochly-relay-schemas = { workspace = true }
+epochly-relay = { workspace = true }

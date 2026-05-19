@@ -80,6 +80,17 @@ from typing import Any
 import aiosqlite
 import httpx
 from fastapi import FastAPI, Request
+
+# Server-side ReDoS budget enforcement at POST /v1/redaction-policies
+# (VAL-V3M5-001/002/004, spec AI line 5665). Reuse the sdk-python
+# evaluator rather than duplicating the 50 ms wall-clock budget logic
+# in the sidecar (no-duplicate-implementation guard in
+# test_audit_v3_redos_publish::test_v3m5_archive_bomb_cap_regression_lock).
+from relay.redaction_budget import (
+    REDACTION_REGEX_BUDGET_MS,
+    RelayBudgetExceededError,
+    evaluate_matcher_budget,
+)
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -4683,6 +4694,132 @@ def build_runtime_app(
                     ),
                     headers=_rate_limit_headers_for(request),
                 )
+        # Server-side ReDoS budget gate (VAL-V3M5-001/002/004; spec AI
+        # line 5665). Every ``regex`` matcher in the candidate policy is
+        # evaluated against two adversarial sentinels (1 KiB and 64 KiB
+        # total bytes); a matcher whose wall-clock latency exceeds the
+        # 50 ms per-input budget on either sentinel rejects publish
+        # with HTTP 400 RELAY-REDACT-014. The budget evaluator is
+        # imported from the sdk-python module
+        # (relay.redaction_budget.evaluate_matcher_budget); no
+        # duplicate budget logic lives in the sidecar (single source of
+        # truth for the 50 ms budget constant). The 1 KiB sentinel is
+        # evaluated first so an obvious adversarial pattern is rejected
+        # before the more expensive 64 KiB run.
+        #
+        # Sentinel construction: a length-bounded ReDoS-triggering
+        # prefix (``'a' * 22 + '!'``, ~100 ms catastrophic backtrack on
+        # patterns like ``^(a+)+$``) padded to exactly N bytes with
+        # filler that the engine never reaches because the prefix
+        # mismatch forces an early failure. Total byte count is
+        # exactly N so the wire field ``sentinel_bytes`` reports the
+        # declared sentinel size.
+        #
+        # Why not ``'a' * N`` or ``'a' * (N-1) + '!'``? Python's
+        # ``re`` engine holds the GIL for the duration of a single
+        # regex match (with only coarse-grained release points).
+        # A pattern such as ``^(a+)+$`` against an N=1024 input that
+        # mismatches at the end runs in O(2^N) and never returns,
+        # so the evaluator's 50 ms ``done.wait`` cannot wake the
+        # main thread. A length-22 backtrack prefix completes in
+        # well under a second while still exceeding the 50 ms budget,
+        # so the publish handler stays responsive.
+        _SENTINEL_REDOS_PREFIX = "a" * 22 + "!"
+        _SENTINEL_1KIB = _SENTINEL_REDOS_PREFIX + "x" * (1024 - len(_SENTINEL_REDOS_PREFIX))
+        _SENTINEL_64KIB = _SENTINEL_REDOS_PREFIX + "x" * (
+            64 * 1024 - len(_SENTINEL_REDOS_PREFIX)
+        )
+        matchers = body.get("matchers")
+        if isinstance(matchers, list):
+            for matcher in matchers:
+                if not isinstance(matcher, dict):
+                    continue
+                if matcher.get("kind") != "regex":
+                    continue
+                pattern = matcher.get("pattern")
+                if not isinstance(pattern, str) or not pattern:
+                    continue
+                matcher_id = str(
+                    matcher.get("matcher_id")
+                    or matcher.get("id")
+                    or "unnamed-regex"
+                )
+                for sentinel_bytes, sentinel in (
+                    (1024, _SENTINEL_1KIB),
+                    (65536, _SENTINEL_64KIB),
+                ):
+                    try:
+                        rejection = evaluate_matcher_budget(
+                            matcher_id=matcher_id,
+                            pattern=pattern,
+                            stress_inputs=[sentinel],
+                        )
+                    except RelayBudgetExceededError as exc:
+                        # Stuck-thread cap saturated. Fail closed; we
+                        # cannot safely launch more probe threads. The
+                        # publish is rejected with the same envelope
+                        # code so the caller surface is uniform.
+                        return JSONResponse(
+                            status_code=400,
+                            content=_build_error_envelope(
+                                code="RELAY-REDACT-014",
+                                http_status=400,
+                                message=(
+                                    "redaction policy publish refused: "
+                                    "regex probe thread pool saturated "
+                                    f"({exc!s})"
+                                ),
+                                blocked_surface=(
+                                    _REDACTION_POLICY_CREATE_SURFACE
+                                ),
+                                details={
+                                    "matcher_id": matcher_id,
+                                    "sentinel_bytes": sentinel_bytes,
+                                    "measured_ms": float(
+                                        REDACTION_REGEX_BUDGET_MS
+                                    ),
+                                    "reason": "thread_pool_saturated",
+                                },
+                            ),
+                            headers=_rate_limit_headers_for(request),
+                        )
+                    if rejection is not None:
+                        # Over-budget matcher. Surface the wire fields
+                        # documented in the evaluator (matcher_id,
+                        # measured_ms) plus the sentinel size that
+                        # tripped the budget so the policy author can
+                        # diagnose the offending pattern.
+                        return JSONResponse(
+                            status_code=400,
+                            content=_build_error_envelope(
+                                code="RELAY-REDACT-014",
+                                http_status=400,
+                                message=(
+                                    f"redaction matcher {matcher_id!r} "
+                                    f"exceeded the "
+                                    f"{REDACTION_REGEX_BUDGET_MS} ms "
+                                    f"per-input ReDoS regex budget on "
+                                    f"the {sentinel_bytes}-byte "
+                                    "sentinel; revise the pattern."
+                                ),
+                                blocked_surface=(
+                                    _REDACTION_POLICY_CREATE_SURFACE
+                                ),
+                                details={
+                                    "matcher_id": matcher_id,
+                                    "measured_ms": float(
+                                        rejection.get(
+                                            "measured_ms", 0.0
+                                        )
+                                    ),
+                                    "sentinel_bytes": sentinel_bytes,
+                                    "budget_ms": (
+                                        REDACTION_REGEX_BUDGET_MS
+                                    ),
+                                },
+                            ),
+                            headers=_rate_limit_headers_for(request),
+                        )
         policy_id = body.get("policy_id") or f"rp-{uuid.uuid4().hex}"
         version = body.get("policy_version") or body.get("version") or "v1"
         # Audit fix (2026-05-17 P0): align with canonical RedactionPolicy

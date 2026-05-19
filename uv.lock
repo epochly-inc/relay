@@ -956,6 +956,7 @@ version = "0.0.0"
 source = { editable = "apps/local-sidecar" }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "epochly-relay" },
     { name = "epochly-relay-schemas" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -975,6 +976,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20,<0.22" },
+    { name = "epochly-relay", editable = "packages/sdk-python" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
     { name = "fastapi", specifier = ">=0.115,<0.117" },
     { name = "httpx", specifier = ">=0.27,<0.29" },
