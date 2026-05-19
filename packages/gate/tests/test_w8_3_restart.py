@@ -74,7 +74,7 @@ async def test_restart_creates_new_gate_rounds_row(tmp_path: Path) -> None:
             ("run", wf.scope_id),
         )
         assert len(rows) == 2
-        assert rows[0] == (f.prior_round, "submission", None)
+        assert rows[0] == (f.prior_round, "control_plane", None)
         # The new row has the canonical fields.
         new_round_row, new_initiated, new_predecessor = rows[1]
         assert new_round_row == f.prior_round + 1

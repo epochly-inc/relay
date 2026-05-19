@@ -37,7 +37,7 @@ async def seed_gate_round(
     scope_type: str,
     scope_id: str,
     round_: int,
-    initiated_by: str = "submission",
+    initiated_by: str = "control_plane",
     restart_predecessor: str | None = None,
     gate_decision_id: str | None = None,
     project_id: str = "00000000-0000-0000-0000-000000000000",
@@ -143,7 +143,7 @@ async def setup_restart_fixture(
 ) -> RestartFixture:
     """Build a W8.3 fixture: writer + coordinator + a seeded prior round.
 
-    The prior round is seeded as ``round=1, initiated_by='submission'`` so
+    The prior round is seeded as ``round=1, initiated_by='control_plane'`` so
     a restart will open ``round=2, initiated_by='remediation'``.
     """
     wf = await setup_writer_fixture(tmp_path)

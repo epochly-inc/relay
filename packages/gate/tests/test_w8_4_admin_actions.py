@@ -32,7 +32,7 @@ from relay_gate_engine import (
     AUDIT_ACTION_TERMINATE,
     EVENT_ADMIN_REOPEN,
     EVENT_ADMIN_TERMINATE,
-    INITIATED_BY_ADMIN_OVERRIDE,
+    INITIATED_BY_REMEDIATION,
     MAX_REASON_BYTES,
     STALLED_REASON_ADMIN_TERMINATED,
     STALLED_REASON_CAP_EXCEEDED,
@@ -145,7 +145,7 @@ async def test_reopen_admin_opens_new_round(
         assert result.new_round == 6
         assert result.prior_round_id == prior_round_id
 
-        # New gate_rounds row exists at round 6 with initiated_by='admin_override'.
+        # New gate_rounds row exists at round 6 with initiated_by='remediation'.
         rows = await fetch_all(
             wf.database,
             "SELECT round, initiated_by, restart_predecessor "
@@ -155,7 +155,7 @@ async def test_reopen_admin_opens_new_round(
         rounds_by_num = {int(r[0]): (r[1], r[2]) for r in rows}
         assert 5 in rounds_by_num
         assert 6 in rounds_by_num
-        assert rounds_by_num[6][0] == INITIATED_BY_ADMIN_OVERRIDE
+        assert rounds_by_num[6][0] == INITIATED_BY_REMEDIATION
         assert rounds_by_num[6][1] == prior_round_id
 
         # gate_stalled_state.reopened_at populated.
