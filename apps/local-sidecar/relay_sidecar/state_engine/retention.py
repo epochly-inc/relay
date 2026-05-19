@@ -36,9 +36,10 @@ import contextlib
 import hashlib
 import json
 import os
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -394,13 +395,179 @@ async def run_retention_pass(
         )
 
 
+# =============================================================================
+# V3M3-F04: spec AP.5.b scope_state_snapshots daily helper + retention sweep.
+#
+# write_daily_snapshot(now): writes one row per active scope_state row to
+# scope_state_snapshots, keyed on the UTC calendar date of ``now``. The PK
+# (snapshot_date, scope_kind, scope_id) absorbs idempotent re-runs via
+# INSERT ... ON CONFLICT DO NOTHING.
+#
+# prune_old_scope_state_snapshots(retention_days=90): deletes rows whose
+# snapshot_date is strictly older than (today - retention_days). Default 90
+# matches the spec AP.5.b operational retention discussion.
+#
+# Both helpers go through the shared _state_engine_writer_lock so they
+# serialise against canonical state-engine writes. They are co-located in
+# this module because they are state-engine-adjacent retention passes.
+# =============================================================================
+
+# Default retention window (spec AP.5.b: 90 days for forensic/audit reads).
+DEFAULT_SCOPE_STATE_SNAPSHOT_RETENTION_DAYS: int = 90
+
+
+async def write_daily_snapshot(
+    database: SidecarDatabase,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Write one snapshot row per active scope_state row for the UTC date of ``now``.
+
+    Per spec AP.5.b (lines 6347-6390): a daily cron job freezes the current
+    ``scope_state`` per project and writes the (state, epoch) of every
+    active scope at the snapshot date. The PK
+    ``(snapshot_date, scope_kind, scope_id)`` is the idempotency anchor:
+    re-running the helper for the same date after a crash is a no-op.
+
+    Args:
+        database: Open SidecarDatabase.
+        now: Snapshot wall clock (defaults to ``datetime.now(tz=UTC)``).
+            Only the UTC calendar date is used as the snapshot_date.
+
+    Returns:
+        The count of rows NEWLY inserted (idempotent re-runs return 0).
+    """
+    snapshot_ts = now if now is not None else datetime.now(tz=UTC)
+    snapshot_date = snapshot_ts.astimezone(UTC).date().isoformat()
+
+    lock = getattr(database, "_state_engine_writer_lock", None)
+    if lock is None:
+        import asyncio as _asyncio
+
+        lock = _asyncio.Lock()
+        database._state_engine_writer_lock = lock
+
+    async with lock:
+        conn = database._writer
+        if conn is None:
+            raise RuntimeError(
+                "write_daily_snapshot: SidecarDatabase is not open"
+            )
+
+        # Read every active scope_state row. The state engine is the only
+        # writer of scope_state (CLAUDE.md keystone #1); a stable SELECT
+        # without locking matches the canonical reader pattern.
+        async with conn.execute(
+            "SELECT scope_kind, scope_id, state, epoch FROM scope_state"
+        ) as cur:
+            rows = await cur.fetchall()
+
+        if not rows:
+            return 0
+
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            inserted = 0
+            for scope_kind, scope_id, state, epoch in rows:
+                # ON CONFLICT DO NOTHING absorbs idempotent re-runs. The
+                # changes() pragma reports per-statement row counts; we
+                # accumulate the delta to compute "newly inserted".
+                snapshot_id = str(uuid.uuid4())
+                async with conn.execute(
+                    "INSERT INTO scope_state_snapshots "
+                    "(snapshot_id, snapshot_date, scope_kind, scope_id, "
+                    " state, epoch) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(snapshot_date, scope_kind, scope_id) "
+                    "DO NOTHING",
+                    (
+                        snapshot_id,
+                        snapshot_date,
+                        scope_kind,
+                        scope_id,
+                        state,
+                        int(epoch),
+                    ),
+                ) as ins:
+                    inserted += ins.rowcount if ins.rowcount and ins.rowcount > 0 else 0
+            await conn.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await conn.execute("ROLLBACK")
+            raise
+
+        return inserted
+
+
+async def prune_old_scope_state_snapshots(
+    database: SidecarDatabase,
+    *,
+    retention_days: int = DEFAULT_SCOPE_STATE_SNAPSHOT_RETENTION_DAYS,
+    today: date | None = None,
+) -> int:
+    """Delete scope_state_snapshots rows older than ``today - retention_days``.
+
+    Per spec AP.5.b: the 90-day forensic / audit retention window is the
+    OSS default. The sweep is gated by the ``ix_scope_state_snapshots_snapshot_date``
+    btree index so it is O(log N + matches) instead of a full scan.
+
+    Args:
+        database: Open SidecarDatabase.
+        retention_days: Strictly-older-than window (default 90).
+        today: Reference "today" (defaults to ``datetime.now(tz=UTC).date()``).
+            The cutoff is ``today - retention_days``; rows whose
+            ``snapshot_date < cutoff`` are deleted.
+
+    Returns:
+        The count of deleted rows.
+    """
+    if retention_days < 0:
+        raise ValueError(
+            f"retention_days must be non-negative; got {retention_days!r}"
+        )
+    reference_today = today if today is not None else datetime.now(tz=UTC).date()
+    cutoff = (reference_today - timedelta(days=retention_days)).isoformat()
+
+    lock = getattr(database, "_state_engine_writer_lock", None)
+    if lock is None:
+        import asyncio as _asyncio
+
+        lock = _asyncio.Lock()
+        database._state_engine_writer_lock = lock
+
+    async with lock:
+        conn = database._writer
+        if conn is None:
+            raise RuntimeError(
+                "prune_old_scope_state_snapshots: SidecarDatabase is not open"
+            )
+
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            async with conn.execute(
+                "DELETE FROM scope_state_snapshots WHERE snapshot_date < ?",
+                (cutoff,),
+            ) as cur:
+                deleted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            await conn.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await conn.execute("ROLLBACK")
+            raise
+
+        return deleted
+
+
 __all__ = [
     "DEFAULT_EVENT_LOG_MAX_BYTES",
+    "DEFAULT_SCOPE_STATE_SNAPSHOT_RETENTION_DAYS",
     "ROLE_RETENTION_ARCHIVE",
     "ROLE_STATE_ENGINE",
     "RetentionResult",
     "archive_dir",
     "event_log_max_bytes",
+    "prune_old_scope_state_snapshots",
     "run_retention_pass",
     "set_sidecar_role",
+    "write_daily_snapshot",
 ]
