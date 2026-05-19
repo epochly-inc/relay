@@ -211,6 +211,27 @@ _PERMITTED_EXPLAIN_SLA_FILE = (
     / "sla.py"
 )
 
+# Documented V3M4-F02 exception: the generator auto-disable helper at
+# ``packages/explain/src/relay_explain/heuristic.py::auto_disable_generator``
+# writes the ``generator.auto_disabled`` event_log_entries row atomically
+# alongside the generator_disabled INSERT when the quality harness
+# detects a P0-class threshold violation (VAL-V3M4-007). Same exception
+# pattern as the V3M4-F03 sla.py path: the event row is a notification
+# (event_kind='', event_type='generator.auto_disabled'), not a canonical
+# state-transition. Per CLAUDE.md keystone invariant #8 the two writes
+# co-commit in one BEGIN IMMEDIATE..COMMIT block; routing through
+# compare_and_set_state would be wrong here because there is no scope
+# state to transition (the canonical control-plane invariant applies to
+# run_results / gate_decisions / scope_state, not to generator_disabled).
+_PERMITTED_EXPLAIN_HEURISTIC_FILE = (
+    _REPO_ROOT
+    / "packages"
+    / "explain"
+    / "src"
+    / "relay_explain"
+    / "heuristic.py"
+)
+
 # Documented W5.5 exception: the verify-self plumbing tests embed
 # ``INSERT INTO run_results`` literals in synthetic fixture trees so
 # the verify-self command's control-plane-write-only checker can be
@@ -304,6 +325,14 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # an unreviewed hypothesis exceeds 14 business days (VAL-V3M4-012).
             # See _PERMITTED_EXPLAIN_SLA_FILE.
             if path == _PERMITTED_EXPLAIN_SLA_FILE:
+                continue
+            # Documented V3M4-F02 exception: the heuristic generator's
+            # auto_disable_generator() helper writes the
+            # generator.auto_disabled event_log_entries row atomically
+            # alongside the generator_disabled INSERT when the quality
+            # harness detects a P0-class threshold violation (VAL-V3M4-007).
+            # See _PERMITTED_EXPLAIN_HEURISTIC_FILE.
+            if path == _PERMITTED_EXPLAIN_HEURISTIC_FILE:
                 continue
             text = path.read_text(encoding="utf-8")
             for line_no, line in enumerate(text.splitlines(), start=1):
@@ -412,6 +441,11 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         # See _PERMITTED_EXPLAIN_SLA_FILE.
         "/packages/explain/src/relay_explain/sla.py:"
     )
+    explain_heuristic_marker = (
+        # V3M4-F02 generator.auto_disabled event-emission exception.
+        # See _PERMITTED_EXPLAIN_HEURISTIC_FILE.
+        "/packages/explain/src/relay_explain/heuristic.py:"
+    )
     for line in result.stdout.splitlines():
         if state_engine_marker in line:
             continue
@@ -432,6 +466,8 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         if gate_admin_actions_marker in line:
             continue
         if explain_sla_marker in line:
+            continue
+        if explain_heuristic_marker in line:
             continue
         offending_lines.append(line)
     assert not offending_lines, (

@@ -327,16 +327,144 @@ class InMemoryHypothesisStore:
         self.events.append(entry)
 
 
+# ---------------------------------------------------------------------------
+# Promotion threshold (VAL-V3M4-009).
+#
+# Per spec AJ, a hypothesis is promoted to a replay_case ONLY after
+# reviewer_decision == 'accept'. Confidence alone is not sufficient. The
+# function below is the canonical promotion entry point consumed by the
+# sidecar's HTTP route handler (apps/local-sidecar -> packages/explain/
+# api.py) AND by any non-HTTP caller that needs the same gate.
+#
+# The HTTP route at api.py::_promote already enforces the same check and
+# returns HTTP 422; this function is the storage-agnostic equivalent that
+# raises a typed exception instead of an HTTP response, so callers above
+# the HTTP boundary (e.g. a CLI batch promoter, a test harness, the
+# canonical promotion-from-batch-review path) can branch on the
+# exception type.
+# ---------------------------------------------------------------------------
+
+
+class PromotionDeniedError(Exception):
+    """Raised when ``promote_hypothesis_to_replay_case`` is invoked on a
+    hypothesis whose ``reviewer_decision`` is not ``'accept'``.
+
+    Carries ``hypothesis_id`` and ``reviewer_decision`` so the caller can
+    surface a structured error envelope without re-querying the row.
+    """
+
+    def __init__(
+        self,
+        *,
+        hypothesis_id: str,
+        reviewer_decision: str | None,
+    ) -> None:
+        super().__init__(
+            f"hypothesis {hypothesis_id!r} cannot be promoted: "
+            f"reviewer_decision={reviewer_decision!r}; "
+            "promotion threshold requires 'accept' "
+            "(spec AJ reviewer-accepted threshold)"
+        )
+        self.hypothesis_id = hypothesis_id
+        self.reviewer_decision = reviewer_decision
+
+
+class HypothesisNotFoundError(Exception):
+    """Raised when ``promote_hypothesis_to_replay_case`` cannot find the
+    source hypothesis row."""
+
+    def __init__(self, hypothesis_id: str) -> None:
+        super().__init__(
+            f"hypothesis {hypothesis_id!r} not found"
+        )
+        self.hypothesis_id = hypothesis_id
+
+
+# Local protocol mirror of api.PromotionService to avoid a circular import.
+# api.py imports HypothesisRecord from engine.py; we cannot import
+# PromotionService from api.py here without circularity. The Protocol is
+# structurally identical, so any object implementing api.PromotionService
+# satisfies _PromotionLike at static type-check time too.
+class _PromotionLike(Protocol):
+    def get_hypothesis(self, hypothesis_id: str) -> HypothesisRecord | None: ...
+
+    def create_replay_case(
+        self, *, hypothesis: HypothesisRecord
+    ) -> str: ...
+
+    def mark_promoted(
+        self, *, hypothesis_id: str, replay_case_id: str
+    ) -> None: ...
+
+    def get_replay_case(self, replay_case_id: str) -> dict[str, Any] | None: ...
+
+
+def promote_hypothesis_to_replay_case(
+    service: _PromotionLike,
+    *,
+    hypothesis_id: str,
+) -> str:
+    """Promote an accepted hypothesis into a new replay_case.
+
+    Enforces VAL-V3M4-009: ``reviewer_decision`` MUST equal ``'accept'``.
+    Any other value (``None`` / ``'modify'`` / ``'reject'`` / ``'pending'``)
+    raises :class:`PromotionDeniedError`. Confidence alone is not
+    sufficient.
+
+    Returns the ``replay_case_id`` (existing one if the hypothesis was
+    already promoted; newly created one otherwise). The source row is
+    marked ``promoted_to_replay_case_id`` so a subsequent call is
+    idempotent.
+
+    Raises:
+      - :class:`HypothesisNotFoundError`: source row missing.
+      - :class:`PromotionDeniedError`: reviewer_decision != 'accept'.
+    """
+    record = service.get_hypothesis(hypothesis_id)
+    if record is None:
+        raise HypothesisNotFoundError(hypothesis_id)
+    if record.reviewer_decision != "accept":
+        raise PromotionDeniedError(
+            hypothesis_id=hypothesis_id,
+            reviewer_decision=record.reviewer_decision,
+        )
+    if record.promoted_to_replay_case_id is not None:
+        # Idempotent: the row was already promoted in a prior call.
+        return record.promoted_to_replay_case_id
+    replay_case_id = service.create_replay_case(hypothesis=record)
+    service.mark_promoted(
+        hypothesis_id=hypothesis_id,
+        replay_case_id=replay_case_id,
+    )
+    return replay_case_id
+
+
+# ---------------------------------------------------------------------------
+# Re-export the in-memory promotion service so callers can construct it
+# via ``from relay_explain.engine import InMemoryPromotionService``.
+# The canonical definition lives in relay_explain.api; we import-and-
+# re-export here as a convenience surface (and because the V3M4-F02
+# unit tests import it alongside the new PromotionDeniedError + helper).
+# This is a one-way re-export: relay_explain.api remains the owner of
+# the dataclass; engine.py only forwards the name.
+# ---------------------------------------------------------------------------
+
+from relay_explain.api import InMemoryPromotionService  # noqa: E402
+
 __all__ = [
     "DuplicateHypothesis",
     "ExplainEngine",
+    "HypothesisNotFoundError",
     "HypothesisRecord",
     "HypothesisStore",
     "IngestResult",
     "InMemoryHypothesisStore",
+    "InMemoryPromotionService",
+    "PromotionDeniedError",
     "SpanNotOnRunError",
     "_EventLogEntry",
     "canonical_evidence_refs_digest",
     "new_hypothesis_id",
     "now_rfc3339",
+    "promote_hypothesis_to_replay_case",
 ]
