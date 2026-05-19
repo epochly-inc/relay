@@ -172,6 +172,24 @@ envelope:
         the W10.1 loader trace so an auditor can attribute the verdict to
         the JWKS provenance.
 
+    signer_role:
+      type: string
+      enum: [control_plane, local_dev, unknown]
+      description: >-
+        VAL-V3M1-018. Attribution of the bundle's signer to one of three
+        trust paths, derived ONLY from the bundle's declared
+        `trust_anchor` (via `trust_anchor_class`), never from the JWKS
+        the verifier is configured with. Per spec K rule line 4427 ("The
+        signer can only be the control-plane evidence-signer service for
+        hosted bundles. Local OSS bundles can be signed with a local
+        key; the verifier reports the trust path."). Mapping:
+          * trust_anchor_class=relay_inc       -> control_plane
+          * trust_anchor_class=untrusted_local -> local_dev
+          * trust_anchor_class=byo  | ""       -> unknown
+        The no-auto-promotion guarantee mirrors VAL-V2M08-044: a
+        local_dev bundle stays signer_role='local_dev' even when the
+        verifier is running under the Relay-Inc default anchor.
+
     signer_key_revoked:
       type: boolean
       description: >-

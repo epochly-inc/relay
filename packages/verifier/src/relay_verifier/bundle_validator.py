@@ -158,6 +158,51 @@ TRUST_ANCHOR_CLASS_RELAY_INC: Final[str] = "relay_inc"
 TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL: Final[str] = "untrusted_local"
 TRUST_ANCHOR_CLASS_BYO: Final[str] = "byo"
 
+# V3M1-F07: signer_role enum (VAL-V3M1-018; spec K line 4427).
+#
+# Per spec K rule line 4427 ("The signer can only be the control-plane
+# evidence-signer service for hosted bundles. Local OSS bundles can be
+# signed with a local key; the verifier reports the trust path.") the
+# verifier MUST surface a signer_role classification on every output so
+# auditors can attribute the bundle to one of three trust paths.
+#
+# The classification derives ONLY from the bundle's declared trust_anchor
+# value (mirroring the trust_anchor_class derivation rule for VAL-V2M08-044),
+# never from the JWKS the verifier is configured with: a local_dev bundle
+# stays signer_role='local_dev' even when the verifier is running under the
+# Relay-Inc default anchor. This is the load-bearing no-auto-promotion
+# guarantee.
+SIGNER_ROLE_CONTROL_PLANE: Final[str] = "control_plane"
+"""Bundle declares the Relay-Inc default trust_anchor URL; the bundle's
+signer is attributable to the control-plane evidence-signer service."""
+
+SIGNER_ROLE_LOCAL_DEV: Final[str] = "local_dev"
+"""Bundle declares ``trust_anchor: 'local_dev'``; the bundle's signer is
+the OSS local-dev signer. Auditors treat these bundles as informational
+only -- they are NOT acceptable evidence for audit."""
+
+SIGNER_ROLE_UNKNOWN: Final[str] = "unknown"
+"""Bundle's declared trust_anchor classifies as BYO (third-party anchor)
+or is missing entirely. The verifier cannot attribute the bundle to
+either trust path; consumers branching on signer_role see this default
+rather than an empty string."""
+
+# V3M1-F07: namespace-key closed-set rejection (VAL-V3M1-022; spec K
+# lines 4421-4423).
+#
+# Each claim's ``namespaces`` dict is restricted to the closed set
+# {x-relay} (extensible only via spec amendment). Any other top-level
+# key (e.g. ``x-attacker``) triggers a structured rejection with the
+# code below. Empty or absent ``namespaces`` is accepted (the field is
+# optional per spec K line 4421-4423).
+RELAY_EVID_NAMESPACE_UNKNOWN: Final[str] = "RELAY-EVID-NAMESPACE-UNKNOWN"
+"""Code surfaced when a claim's ``namespaces`` dict contains a key
+outside the closed set ``{x-relay}`` (VAL-V3M1-022)."""
+
+# V3M1-F07: closed set of allowed top-level keys on EvidenceClaim.namespaces.
+# Adding a new key here is a spec amendment, not a routine PR.
+_ALLOWED_NAMESPACE_KEYS: Final[frozenset[str]] = frozenset({"x-relay"})
+
 # Default trust-anchor URL is owned by constants.py; the validator does
 # not paste the literal here (CLAUDE.md banned pattern #13 + VAL-W10-001
 # source-grep guard).
@@ -272,6 +317,10 @@ def _new_output() -> dict[str, Any]:
         # structural error via RELAY-EVID-MISSING-TRUST-ANCHOR).
         "trust_anchor_class": "",
         "trust_anchor_source": "",
+        # V3M1-F07 (VAL-V3M1-018): signer attribution path derived from the
+        # bundle's declared trust_anchor field. Defaults to 'unknown' so
+        # consumers branching on this field never see an empty string.
+        "signer_role": SIGNER_ROLE_UNKNOWN,
         "signer_key_revoked": False,
         "signer_key_revoked_at": None,
         "subject_resolution": SUBJECT_RESOLUTION_UNKNOWN,
@@ -318,6 +367,31 @@ def classify_trust_anchor(trust_anchor_value: Any) -> str:
     ):
         return TRUST_ANCHOR_CLASS_RELAY_INC
     return TRUST_ANCHOR_CLASS_BYO
+
+
+def _classify_signer_role(trust_anchor_class: str) -> str:
+    """Return the signer_role classification for a trust_anchor_class.
+
+    Pure mapping (no I/O, no side effects). The mapping derives ONLY from
+    the bundle-declared trust_anchor_class, never from the JWKS URL the
+    verifier is configured with -- this preserves the no-auto-promotion
+    guarantee of VAL-V2M08-044: a local_dev bundle stays
+    ``signer_role='local_dev'`` even when the verifier is running under
+    the Relay-Inc default anchor.
+
+    Inputs and outputs:
+      * :data:`TRUST_ANCHOR_CLASS_RELAY_INC`       -> :data:`SIGNER_ROLE_CONTROL_PLANE`
+      * :data:`TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL` -> :data:`SIGNER_ROLE_LOCAL_DEV`
+      * :data:`TRUST_ANCHOR_CLASS_BYO`             -> :data:`SIGNER_ROLE_UNKNOWN`
+      * ``""`` (missing/non-string anchor)         -> :data:`SIGNER_ROLE_UNKNOWN`
+      * any other string                           -> :data:`SIGNER_ROLE_UNKNOWN`
+        (fail-safe default for unrecognised classifications)
+    """
+    if trust_anchor_class == TRUST_ANCHOR_CLASS_RELAY_INC:
+        return SIGNER_ROLE_CONTROL_PLANE
+    if trust_anchor_class == TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL:
+        return SIGNER_ROLE_LOCAL_DEV
+    return SIGNER_ROLE_UNKNOWN
 
 
 def _append_warning(
@@ -450,6 +524,17 @@ def validate_bundle(
     # with. local_dev stays untrusted_local even if the verifier is
     # running under the Relay-Inc default anchor.
     output["trust_anchor_class"] = classify_trust_anchor(trust_anchor)
+
+    # --- Signer-role classification (VAL-V3M1-018) ---------------------------
+    # Per spec K rule line 4427 the verifier surfaces a signer_role on
+    # every output. The classification derives ONLY from the bundle's
+    # declared trust_anchor (via trust_anchor_class), never from the
+    # JWKS the verifier is configured with: a local_dev bundle stays
+    # signer_role='local_dev' even when the verifier is running under
+    # the Relay-Inc default anchor (no-auto-promotion guarantee). This
+    # is computed BEFORE the signature-count cap so the field is
+    # populated even on the over-cap early-return path.
+    output["signer_role"] = _classify_signer_role(output["trust_anchor_class"])
 
     # --- Missing-trust_anchor rejection (VAL-V2M08-043) ----------------------
     # Fail-closed when the bundle declares no trust_anchor (or declares
@@ -616,6 +701,101 @@ def validate_bundle(
                         code=RELAY_EVID_014,
                     )
                     output["digest_ok"] = False
+
+    # --- Namespace closed-set check (VAL-V3M1-022) ---------------------------
+    # Per spec K lines 4421-4423 the ``namespaces`` field on each claim is
+    # restricted to the closed set {x-relay}. A claim carrying any other
+    # top-level key (e.g. ``x-attacker``) is rejected with structured
+    # code RELAY-EVID-NAMESPACE-UNKNOWN. Empty / absent ``namespaces`` is
+    # accepted (the field is optional per the spec).
+    #
+    # --- Evidence-ref manifest binding (VAL-V3M1-019) ------------------------
+    # Per spec K rule line 4428 ("A claim cannot reference an artifact
+    # whose digest is not present in the bundle's manifest.") the
+    # verifier checks that every ``evidence_refs[].digest`` resolves to
+    # an entry in the bundle's top-level ``manifest`` list. When the
+    # bundle declares no ``manifest`` the check is SKIPPED (preserves
+    # back-compat for legacy bundles that predate this rule); when the
+    # manifest is declared, any claim digest absent from it triggers
+    # structured error ``evidence_ref_artifact_missing_from_manifest``.
+    #
+    # The manifest may be a list of dicts each carrying a ``digest`` key
+    # (preferred per spec K example at line 4393-4399) OR a list of
+    # bare digest strings (defensive accept). Heterogeneous entries are
+    # tolerated -- unparseable entries are simply not contributed to the
+    # allowed set. Computing the set once outside the per-claim loop
+    # keeps the check O(N + M) instead of O(N * M).
+    if jws_result.structure_ok:
+        manifest_field = bundle.get("manifest")
+        if isinstance(manifest_field, list):
+            manifest_digests: set[str] = set()
+            for entry in manifest_field:
+                if isinstance(entry, dict):
+                    entry_digest = entry.get("digest")
+                    if isinstance(entry_digest, str) and entry_digest:
+                        manifest_digests.add(entry_digest)
+                elif isinstance(entry, str) and entry:
+                    manifest_digests.add(entry)
+        else:
+            manifest_digests = set()
+            manifest_field = None  # mark "no manifest" for skip semantics
+
+        claims = bundle.get("claims") or []
+        if isinstance(claims, list):
+            for ci, claim in enumerate(claims):
+                if not isinstance(claim, dict):
+                    continue
+
+                # --- (a) namespace closed-set check ---
+                ns = claim.get("namespaces")
+                if isinstance(ns, dict) and ns:
+                    unknown_keys = sorted(
+                        k for k in ns
+                        if not isinstance(k, str) or k not in _ALLOWED_NAMESPACE_KEYS
+                    )
+                    if unknown_keys:
+                        _append_error(
+                            output,
+                            reason="claim_namespace_unknown",
+                            message=(
+                                f"claim[{ci}].namespaces contains key(s) "
+                                f"outside the closed set "
+                                f"{sorted(_ALLOWED_NAMESPACE_KEYS)!r}: "
+                                f"{unknown_keys!r}"
+                            ),
+                            code=RELAY_EVID_NAMESPACE_UNKNOWN,
+                        )
+
+                # --- (b) manifest binding (only when manifest declared) ---
+                if manifest_field is None:
+                    continue
+                refs = claim.get("evidence_refs")
+                if not isinstance(refs, list):
+                    continue
+                for ri, ref in enumerate(refs):
+                    if not isinstance(ref, dict):
+                        continue
+                    ref_digest = ref.get("digest")
+                    if not isinstance(ref_digest, str) or not ref_digest:
+                        # The spec K example shows refs that carry
+                        # ``value`` instead of ``digest`` (e.g. exit_code
+                        # references). Those refs are not subject to the
+                        # manifest-binding rule -- only digest-bearing
+                        # refs are.
+                        continue
+                    if ref_digest not in manifest_digests:
+                        _append_error(
+                            output,
+                            reason="evidence_ref_artifact_missing_from_manifest",
+                            message=(
+                                f"claim[{ci}].evidence_refs[{ri}] digest "
+                                f"{ref_digest!r} is not present in the "
+                                f"bundle's manifest (spec K line 4428); "
+                                f"manifest contains "
+                                f"{len(manifest_digests)} digest(s)"
+                            ),
+                            code=RELAY_EVID_014,
+                        )
 
     # --- Merkle root check (VAL-W10-024) -------------------------------------
     declared_merkle = bundle.get("merkle_root_hex")
@@ -966,7 +1146,11 @@ __all__ = [
     "RELAY_EVID_041",
     "RELAY_EVID_042",
     "RELAY_EVID_MISSING_TRUST_ANCHOR",
+    "RELAY_EVID_NAMESPACE_UNKNOWN",
     "RELAY_EVID_SIGCOUNT_EXCEEDED",
+    "SIGNER_ROLE_CONTROL_PLANE",
+    "SIGNER_ROLE_LOCAL_DEV",
+    "SIGNER_ROLE_UNKNOWN",
     "TRUST_ANCHOR_CLASS_BYO",
     "TRUST_ANCHOR_CLASS_RELAY_INC",
     "TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL",
