@@ -29,12 +29,16 @@ from relay_contracts.canonical import (
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M5-005")
 def test_canonical_rejects_non_bmp_key() -> None:
     """An object key containing a supplementary-plane codepoint raises.
 
     The codepoint U+1F600 (GRINNING FACE) is in the supplementary plane.
     Per Fix 5, encoding ``{"a<U+1F600>": 1}`` MUST raise
     ``CanonicalEncodingError`` carrying ``code='RELAY-CANON-NON-BMP-KEY'``.
+
+    V3 audit-resolution VAL-V3M5-005: this is the canonical assertion that
+    Python JCS rejects non-BMP object keys at the JCS encoder entry.
     """
     bad_key = "a" + chr(0x1F600)
     with pytest.raises(CanonicalEncodingError) as excinfo:
@@ -43,6 +47,7 @@ def test_canonical_rejects_non_bmp_key() -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M5-005")
 def test_canonical_bmp_only_key_works() -> None:
     """BMP-only keys (incl. non-ASCII like 'cafe-e-acute') still encode.
 
@@ -58,6 +63,7 @@ def test_canonical_bmp_only_key_works() -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M5-005")
 def test_canonical_rejects_non_bmp_nested_key() -> None:
     """The check is recursive: nested object keys are also screened.
 
@@ -69,6 +75,7 @@ def test_canonical_rejects_non_bmp_nested_key() -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M5-005")
 def test_canonical_non_bmp_value_in_string_is_allowed() -> None:
     """The screen applies to KEYS only; non-BMP values inside a string
     value are still encoded literally per RFC 8785 string-escaping rules.

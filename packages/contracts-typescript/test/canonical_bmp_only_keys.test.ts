@@ -1,3 +1,7 @@
+// VAL-V3M5-006 (V3 audit-resolution m5-f02): TypeScript JCS encoder MUST
+// reject non-BMP object keys with CanonicalEncodingError. This file is
+// the canonical evidence anchor for the assertion.
+//
 // Round-3 P1 fix #5: TypeScript JCS encoder MUST reject non-BMP object keys.
 //
 // Python sorts dict keys by codepoint; JS sorts object keys by UTF-16
@@ -24,7 +28,7 @@ import {
   jcsCanonicalize,
 } from "../src/canonical.js";
 
-describe("Round-3 P1 fix #5: BMP-only object keys (TS mirror)", () => {
+describe("VAL-V3M5-006 / Round-3 P1 fix #5: BMP-only object keys (TS mirror)", () => {
   test("rejects an object key containing a supplementary-plane codepoint", () => {
     // U+1F600 (GRINNING FACE) is in the supplementary plane.
     const badKey = "a" + String.fromCodePoint(0x1f600);
