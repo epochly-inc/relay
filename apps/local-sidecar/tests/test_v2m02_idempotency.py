@@ -29,9 +29,12 @@ async def test_idempotency_key_replay_identical(
 ) -> None:
     c, _db, _app = v2m02_client
     body = {"name": "g", "scope_type": "run"}
+    # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
+    # ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$ (spec B.6 line 3517);
+    # non-ULID test keys are rejected with 400 + RELAY-IDEMPOTENCY-014.
     headers = {
         **scope_header("gates:configure"),
-        "Idempotency-Key": "idem-key-AAA",
+        "Idempotency-Key": "01HZX9F8K7M3N4P5Q6R7S8T9V0",
     }
     r1 = await c.put("/v1/gates/gate-idem-1", json=body, headers=headers)
     assert r1.status_code in (200, 201), r1.text
@@ -59,12 +62,17 @@ async def test_idempotency_key_body_on_ingest_runs(
     # manifest_commit_hash. The key field is the body-level
     # idempotency_key on the manifest-only legacy path; the legacy
     # response also short-circuits to 200 + {accepted: True, ...}.
+    # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
+    # ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$ (spec B.6 line 3517). The
+    # body-level idempotency_key field carries a body-only token (no
+    # header-grammar enforcement applies on the body) and is left
+    # unchanged from the legacy fixture.
     body = {
         "manifest_commit_hash": "sha256-" + ("0" * 64),
         "command_hash": "sha256-" + ("1" * 64),
         "idempotency_key": "idem-body-1",
     }
-    headers = {"Idempotency-Key": "idem-body-1"}
+    headers = {"Idempotency-Key": "01HZX9F8K7M3N4P5Q6R7S8T9V1"}
     r1 = await c.post("/v1/ingest/runs", json=body, headers=headers)
     r2 = await c.post("/v1/ingest/runs", json=body, headers=headers)
     # The runs ingest endpoint enforces manifest anchors so both calls
@@ -81,9 +89,11 @@ async def test_idempotency_key_different_digest_409(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
     c, _db, _app = v2m02_client
+    # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
+    # ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$ (spec B.6 line 3517).
     headers = {
         **scope_header("gates:configure"),
-        "Idempotency-Key": "idem-conflict-1",
+        "Idempotency-Key": "01HZX9F8K7M3N4P5Q6R7S8T9V2",
     }
     r1 = await c.post(
         "/v1/manifests",
@@ -116,9 +126,12 @@ async def test_idempotency_row_persisted_with_24h_ttl(
     apps/local-sidecar/relay_sidecar/runtime.py).
     """
     c, db_path, _app = v2m02_client
+    # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
+    # ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$ (spec B.6 line 3517).
+    user_key = "01HZX9F8K7M3N4P5Q6R7S8T9V3"
     headers = {
         **scope_header("gates:configure"),
-        "Idempotency-Key": "idem-row-1",
+        "Idempotency-Key": user_key,
     }
     r = await c.post(
         "/v1/manifests",
@@ -128,9 +141,10 @@ async def test_idempotency_row_persisted_with_24h_ttl(
     assert r.status_code == 201, r.text
     # Derive the canonical idempotency_key the same way the runtime does.
     # surface = "POST /v1/manifests" (canonical route string), user_key =
-    # "idem-row-1" -> 26-char Crockford-base32 ULID.
+    # the 26-char ULID above -> a different 26-char Crockford-base32 ULID
+    # (the canonical compression of surface||':'||user_key).
     alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-    material = b"POST /v1/manifests:idem-row-1"
+    material = b"POST /v1/manifests:" + user_key.encode("ascii")
     digest_bytes = hashlib.sha256(material).digest()
     leading = int.from_bytes(digest_bytes[:17], "big") >> (136 - 130)
     chars: list[str] = []

@@ -68,6 +68,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -3201,6 +3202,16 @@ def build_runtime_app(
         # hyphen prefix per VAL-W1-009 / envelopes.yaml.
         return _sha256_canonical(body)
 
+    # V3M2 F03 (spec section B.6 line 3517): an inbound HTTP request
+    # whose Idempotency-Key header is set MUST match the Crockford-
+    # base32 ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$. Crockford excludes
+    # the visually-ambiguous I, L, O, U letters. Validation MUST run
+    # BEFORE any canonical hashing (VAL-V3M2-007) so an invalid input
+    # never reaches _canonical_idempotency_key. The pattern is module-
+    # local (compiled once per build_runtime_app call) so the per-
+    # request cost is a single re.fullmatch.
+    _ULID_GRAMMAR_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+
     def _canonical_idempotency_key(*, surface: str, user_key: str) -> str:
         """Derive the canonical ULID-grammar idempotency_key.
 
@@ -3258,10 +3269,55 @@ def build_runtime_app(
         restart. Pre-fix the writer persisted to DB but the reader only
         consulted the in-memory map; after restart the in-memory map is
         empty and the DB row was unreachable -- replays re-executed.
+
+        V3M2 F03 (spec section B.6 line 3517; VAL-V3M2-006, VAL-V3M2-007):
+        when the ``Idempotency-Key`` header is PRESENT we first enforce
+        the Crockford-base32 ULID grammar ``^[0-9A-HJKMNP-TV-Z]{26}$``
+        BEFORE any canonical hashing (``_canonical_idempotency_key``)
+        runs. A present-but-invalid header returns 400 +
+        RELAY-IDEMPOTENCY-014 so callers cannot smuggle non-ULID keys
+        into the canonical idempotency table (whose primary key is a
+        ULID by schema constraint). An ABSENT header (``None``) still
+        bypasses idempotency enforcement entirely, preserving the legacy
+        "header is optional" contract.
         """
-        key = request.headers.get("idempotency-key", "").strip()
-        if not key:
+        # Raw header lookup BEFORE strip/normalisation: a present-but-
+        # empty header (Idempotency-Key: "") is treated as present-and-
+        # invalid (12-case matrix item 1 in VAL-V3M2-006). Missing
+        # header (header dict returns None) continues to bypass.
+        raw_key = request.headers.get("idempotency-key")
+        if raw_key is None:
             return None, None, None
+        # Grammar validation runs BEFORE _canonical_idempotency_key
+        # (VAL-V3M2-007). Uses re.fullmatch so an embedded newline
+        # cannot bypass the anchors via re.match's $-before-newline
+        # behavior.
+        if _ULID_GRAMMAR_RE.fullmatch(raw_key) is None:
+            return (
+                JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-IDEMPOTENCY-014",
+                        http_status=400,
+                        message=(
+                            "Idempotency-Key header does not match the "
+                            "canonical Crockford-base32 ULID grammar "
+                            "^[0-9A-HJKMNP-TV-Z]{26}$ (spec B.6)"
+                        ),
+                        blocked_surface=surface,
+                        details={
+                            "header_length": len(raw_key),
+                            "expected_pattern": (
+                                "^[0-9A-HJKMNP-TV-Z]{26}$"
+                            ),
+                        },
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                ),
+                None,
+                None,
+            )
+        key = raw_key
         digest = _digest_of_bytes(body_bytes)
         # In-memory map: surface -> {key: {digest, status, body, headers}}
         per_surface = runtime.idempotency_store.setdefault(surface, {})

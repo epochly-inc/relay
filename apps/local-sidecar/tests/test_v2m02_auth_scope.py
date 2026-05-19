@@ -127,10 +127,13 @@ async def test_auth_check_before_idempotency(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
     c, _db, app = v2m02_client
+    # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
+    # ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$ (spec B.6 line 3517).
+    auth_key = "01HZX9F8K7M3N4P5Q6R7S8T9V4"
     # Establish an idempotency record with proper scope first.
     headers_ok = {
         **scope_header("gates:configure"),
-        "Idempotency-Key": "idem-auth-1",
+        "Idempotency-Key": auth_key,
     }
     r1 = await c.post(
         "/v1/manifests", json={"name": "m"}, headers=headers_ok
@@ -144,7 +147,7 @@ async def test_auth_check_before_idempotency(
     }
     headers_bad = {
         "Authorization": "Bearer no-scope",
-        "Idempotency-Key": "idem-auth-1",
+        "Idempotency-Key": auth_key,
     }
     r2 = await c.post(
         "/v1/manifests", json={"name": "m"}, headers=headers_bad

@@ -72,9 +72,11 @@ async def test_rate_limit_headers_on_non_2xx(
     for h in ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"):
         assert h in r422.headers
     # 409 path: idempotency conflict.
+    # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
+    # ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$ (spec B.6 line 3517).
     headers409 = {
         **scope_header("gates:configure"),
-        "Idempotency-Key": "k-409",
+        "Idempotency-Key": "01HZX9F8K7M3N4P5Q6R7S8T9V5",
     }
     r1 = await c.post(
         "/v1/manifests", json={"name": "a"}, headers=headers409

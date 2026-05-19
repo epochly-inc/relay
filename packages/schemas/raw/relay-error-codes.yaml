@@ -147,6 +147,15 @@ codes:
   - RELAY-GATE-051
   - RELAY-GATE-061
   - RELAY-IDEMPOTENCY-001
+  # V3M2 F03 idempotency hardening (spec B.6 line 3517):
+  #   014 - Idempotency-Key header does NOT match the canonical
+  #         Crockford-base32 ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$.
+  #         Crockford-base32 excludes the visually-ambiguous letters
+  #         I, L, O, U. The validation runs BEFORE any canonical
+  #         hashing so an invalid key never reaches the idempotency
+  #         table (whose PK is a ULID by schema constraint).
+  #         Returned with HTTP 400. VAL-V3M2-006, VAL-V3M2-007.
+  - RELAY-IDEMPOTENCY-014
   - RELAY-ING-001
   - RELAY-ING-014
   - RELAY-ING-021

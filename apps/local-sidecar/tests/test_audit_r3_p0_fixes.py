@@ -293,7 +293,15 @@ async def test_bug_a2_check_idempotency_consults_db_on_cache_miss(
         return "".join(reversed(chars))
 
     surface = "PUT /v1/gates/{gate_id}"
-    user_key = "test-restart-replay-key-XYZ"
+    # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
+    # ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$ (spec B.6 line 3517) so the
+    # runtime accepts the header before computing canonical_key. The
+    # legacy non-ULID fixture value is replaced with a canonical ULID;
+    # the test continues to exercise the BUG-A2 cache-miss DB fallback
+    # path identically because canonical_key is derived from
+    # surface+user_key (any ULID-shaped user_key works as the test
+    # input here).
+    user_key = "01HZX9F8K7M3N4P5Q6R7S8T9V6"
     canonical_key = _canonical_key(surface, user_key)
 
     # Compute the digest the runtime would compute on the request body.
