@@ -32,6 +32,11 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from relay_schemas.error_codes import RelayErrorCode
+from relay_schemas.manifest import (
+    MAX_YAML_DEPTH,
+    YamlDepthExceededError,
+    safe_load_yaml,
+)
 
 from .canonical import jcs_canonicalize
 
@@ -275,9 +280,12 @@ def parse_contract(doc: Mapping[str, Any]) -> ParsedContract:
 
 __all__ = [
     "KNOWN_SCHEMA_VERSIONS",
+    "MAX_YAML_DEPTH",
     "VALID_LIFECYCLES",
     "VALID_SEVERITIES",
     "ContractParseError",
     "ParsedContract",
+    "YamlDepthExceededError",
     "parse_contract",
+    "safe_load_yaml",
 ]

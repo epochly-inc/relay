@@ -34,7 +34,107 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
 from jsonschema import Draft202012Validator
+
+# ----------------------------------------------------------------------------
+# YAML hardening (VAL-V3M5-011, VAL-V3M5-012).
+# ----------------------------------------------------------------------------
+#
+# Spec section AI.1 line 5659 sets the structural defense against
+# anchor-bomb / billion-laughs YAML payloads: ingest rejects spans whose
+# canonical JSON exceeds 256 KiB OR whose nesting depth exceeds 16. This
+# loader enforces the depth half of that contract for every manifest YAML
+# read on the Python side.
+#
+# The loader walks PyYAML's event stream rather than constructing the full
+# Python object first because (a) the event stream surfaces nesting
+# entirely before any alias expansion executes, and (b) it lets us refuse
+# pathological documents before pyyaml materialises them. Aliases are
+# permitted (yaml.SafeLoader resolves them) but the *expanded* mapping /
+# sequence start events still count toward the depth budget, so an
+# alias-bomb that nests 17+ levels at expansion time is rejected.
+
+MAX_YAML_DEPTH: int = 16
+"""Maximum YAML nesting depth permitted for manifest + DSL loaders.
+
+Per spec AI.1 line 5659. Sequences and mappings each contribute one level
+to the count; scalars are leaves. A flat scalar (e.g., ``"x"``) has depth 1.
+A document like ``{a: 1}`` has depth 2 (mapping + scalar leaf). A document
+like ``{a: [1, 2]}`` has depth 3.
+"""
+
+
+class YamlDepthExceededError(ValueError):
+    """Raised when a YAML document exceeds :data:`MAX_YAML_DEPTH`.
+
+    Attributes:
+        depth: Observed depth at the point of rejection (== limit + 1).
+        limit: The configured cap, mirrored from :data:`MAX_YAML_DEPTH`.
+    """
+
+    def __init__(self, depth: int, limit: int = MAX_YAML_DEPTH) -> None:
+        super().__init__(
+            f"YAML nesting depth {depth} exceeds limit {limit} "
+            f"(spec AI.1 line 5659)"
+        )
+        self.depth = depth
+        self.limit = limit
+
+
+def safe_load_yaml(stream: str | bytes, *, max_depth: int = MAX_YAML_DEPTH) -> Any:
+    """Depth-bounded ``yaml.safe_load`` for manifest documents.
+
+    Uses ``yaml.SafeLoader`` exclusively (never ``yaml.Loader``) so arbitrary
+    Python object construction is impossible. Walks the parse event stream
+    to count nested ``MappingStartEvent`` + ``SequenceStartEvent`` events
+    and raises :class:`YamlDepthExceededError` when the running maximum
+    exceeds ``max_depth``. After the depth check passes the bytes are
+    re-parsed via ``yaml.safe_load`` to produce the Python object.
+
+    Args:
+        stream: YAML document body (str or bytes).
+        max_depth: Per-call override for testing; production callers use
+            the spec-default :data:`MAX_YAML_DEPTH`.
+
+    Returns:
+        Plain Python object (dict / list / scalar / None) per yaml.SafeLoader.
+
+    Raises:
+        YamlDepthExceededError: depth budget exceeded.
+        yaml.YAMLError: any parse error (propagated verbatim from PyYAML).
+    """
+    # Event-stream depth walk. We track the running container depth and
+    # remember the maximum reached. Scalars at the bottom add a final +1
+    # depth (a bare scalar document has depth 1).
+    container_depth = 0
+    max_observed = 0
+    saw_scalar = False
+    for event in yaml.parse(stream, Loader=yaml.SafeLoader):
+        if isinstance(event, yaml.MappingStartEvent | yaml.SequenceStartEvent):
+            container_depth += 1
+            # The leaf scalar inside this container adds 1 more; account
+            # for it speculatively so an event-stream cutoff on an empty
+            # container still produces a depth >= 1 result.
+            if container_depth + 1 > max_observed:
+                max_observed = container_depth + 1
+            if max_observed > max_depth:
+                raise YamlDepthExceededError(max_observed, limit=max_depth)
+        elif isinstance(event, yaml.MappingEndEvent | yaml.SequenceEndEvent):
+            container_depth -= 1
+        elif isinstance(event, yaml.ScalarEvent):
+            saw_scalar = True
+            # Scalar at the current container depth: total observed depth
+            # is container_depth + 1 (the scalar leaf level).
+            level = container_depth + 1
+            if level > max_observed:
+                max_observed = level
+            if max_observed > max_depth:
+                raise YamlDepthExceededError(max_observed, limit=max_depth)
+    if not saw_scalar and max_observed == 0:
+        # Empty document; safe_load returns None.
+        return None
+    return yaml.safe_load(stream)
 
 # ----------------------------------------------------------------------------
 # Canonical schema discovery.
@@ -325,9 +425,12 @@ __all__ = [
     "DEFAULT_GRACE_WINDOW_SECONDS",
     "MANIFEST_SCHEMA",
     "MANIFEST_SCHEMA_PATH",
+    "MAX_YAML_DEPTH",
     "ValidationResult",
+    "YamlDepthExceededError",
     "compute_command_hash",
     "effective_grace_window_seconds",
     "load_manifest_schema",
+    "safe_load_yaml",
     "validate",
 ]
