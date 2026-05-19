@@ -106,7 +106,12 @@ X_RELAY_ADMIN_TERMINATE_NS: Final[str] = "x-relay/admin-terminate"
 MAX_REASON_BYTES: Final[int] = 2048
 
 #: ``gate_rounds.initiated_by`` value for an admin-reopen new round.
-INITIATED_BY_ADMIN_OVERRIDE: Final[str] = "admin_override"
+#: Per spec §A.4 the enum is restricted to {control_plane, cron, user,
+#: remediation}. An admin reopen IS a remediation, so the wire value is
+#: "remediation" (data migration 0016_v3_schema_drift_fixes.sql maps
+#: legacy "admin_override" rows to "remediation"). Constant name retained
+#: for backwards-compatible imports.
+INITIATED_BY_ADMIN_OVERRIDE: Final[str] = "remediation"
 
 #: ``gate_rounds.schema_version`` -- mirrors the W8.2 writer constant.
 SCHEMA_GATE_ROUND: Final[str] = "relay.gate_round.v1"
@@ -365,7 +370,8 @@ class AdminActionService:
           1. UPDATE gate_stalled_state SET reopened_at = now()
              WHERE (scope_type, scope_id) matches.
           2. INSERT one gate_rounds row with
-             ``initiated_by='admin_override'`` and
+             ``initiated_by='remediation'`` (per §A.4 enum; admin reopen
+             is a remediation action) and
              ``restart_predecessor=prior_round_id``.
           3. INSERT one admin_override_audit row with the reopen action,
              the reason, the prior round id, the new round id.

@@ -764,7 +764,7 @@ class GateDecisionWriter:
                             inputs.scope_type,
                             str(inputs.scope_id),
                             int(inputs.round_),
-                            "submission",
+                            "control_plane",
                             gate_decision_id,
                             decided_at,
                             decided_at,
