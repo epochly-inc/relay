@@ -1027,8 +1027,86 @@ def iter_known_applies_to_fields() -> Iterable[str]:
     return iter(DEFAULT_APPLIES_TO_FIELDS)
 
 
+# ---------------------------------------------------------------------------
+# Hosted default policy (VAL-V3M5-019, spec G.8)
+# ---------------------------------------------------------------------------
+# The canonical default policy hosted Relay applies when a project does not
+# author its own. The constant is byte-equal to the YAML fixture at
+# ``packages/schemas/raw/redaction-policy.default.v1.yaml`` when serialised
+# via ``yaml.safe_dump(HOSTED_DEFAULT_POLICY, sort_keys=False)``. Default-deny
+# on raw_capture per CLAUDE.md keystone #7.
+#
+# Matcher set:
+#   - json_pointer ``/messages/*/content/text``: prompt content path used by
+#     chat-completion-style payloads. RFC 6901 treats ``*`` as a literal
+#     reference token; the path is reserved for future wildcard expansion.
+#   - json_pointer ``/output/text``: agent output path.
+#   - regex ``(?i)password``: field-value pattern.
+#   - regex ``(?i)api[_-]?key``: field-value pattern.
+#   - regex ``(?i)secret``: field-value pattern.
+#   - regex ``(?i)token``: field-value pattern.
+HOSTED_DEFAULT_POLICY: Final[dict[str, Any]] = {
+    "schema_version": "relay.redaction.v1",
+    "policy_version": "hosted-default.v1",
+    "raw_capture": False,
+    "dpa_ref": None,
+    "approver_user_id": None,
+    "matchers": [
+        {
+            "id": "prompt-content",
+            "kind": "json_pointer",
+            "paths": ["/messages/*/content/text"],
+            "action": "redact",
+        },
+        {
+            "id": "output-content",
+            "kind": "json_pointer",
+            "paths": ["/output/text"],
+            "action": "redact",
+        },
+        {
+            "id": "password-field",
+            "kind": "regex",
+            "pattern": "(?i)password",
+            "action": "redact",
+        },
+        {
+            "id": "api-key-field",
+            "kind": "regex",
+            "pattern": "(?i)api[_-]?key",
+            "action": "redact",
+        },
+        {
+            "id": "secret-field",
+            "kind": "regex",
+            "pattern": "(?i)secret",
+            "action": "redact",
+        },
+        {
+            "id": "token-field",
+            "kind": "regex",
+            "pattern": "(?i)token",
+            "action": "redact",
+        },
+    ],
+    "action_policy": {
+        "hash": {
+            "algorithm": "hmac-sha256",
+            "salt_ref": "hosted_default_salt",
+        },
+        "redact": {
+            "placeholder": "<redacted>",
+        },
+        "drop": {
+            "placeholder": None,
+        },
+    },
+}
+
+
 __all__ = [
     "DEFAULT_APPLIES_TO_FIELDS",
+    "HOSTED_DEFAULT_POLICY",
     "RedactionEngine",
     "RedactionPolicy",
     "SaltProvider",
