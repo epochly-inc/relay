@@ -703,6 +703,58 @@ async def compare_and_set_state(
                     "state_transition",
                 ),
             )
+
+            # Spec AP.5.c (lines 6391-6398): every successful transition
+            # ALSO emits exactly one row of
+            # ``event_type='<scope_kind>.transition'`` carrying
+            # ``payload.from_state / to_state / epoch_after``. The m3-f03
+            # temporal-query SQL function filters on the ``.transition``
+            # suffix to reconstruct scope state at an arbitrary
+            # ``ingest_sequence``. This row is emitted INSIDE the same
+            # BEGIN IMMEDIATE..COMMIT transaction as the action event so
+            # both rows commit (or neither commits) atomically; failed
+            # transitions (every early return above) never reach this
+            # point so no summary row is written on the failure path.
+            #
+            # ``event_kind`` is deliberately distinct from
+            # ``'state_transition'`` so:
+            #   - the idempotency probe at _was_event_already_applied
+            #     (filters event_kind='state_transition') keeps reading
+            #     exactly one row per applied event, and
+            #   - the context-reinjection guard at
+            #     http_endpoint.py:_first_manifest_hash_for_scope (also
+            #     filters event_kind='state_transition') keeps returning
+            #     the canonical first transition row's manifest hash.
+            summary_event_id = str(uuid.uuid4())
+            summary_payload = {
+                "from_state": expected_from,
+                "to_state": transition.to_state,
+                "epoch_after": new_epoch,
+            }
+            await conn.execute(
+                "INSERT INTO event_log_entries ("
+                "  event_id, schema_version, project_id, scope_type, "
+                "  scope_id, event_type, actor_kind, actor_id, "
+                "  manifest_commit_hash, payload, occurred_at, "
+                "  ingest_sequence, event_kind"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    summary_event_id,
+                    "relay.event_log_entry.v1",
+                    project_id_eff,
+                    scope_kind,
+                    scope_id,
+                    f"{scope_kind}.transition",
+                    actor.kind,
+                    actor.identity_hash,
+                    manifest_commit_hash,
+                    json.dumps(summary_payload, sort_keys=True, separators=(",", ":")),
+                    now,
+                    next_seq + 1,
+                    "state_transition_summary",
+                ),
+            )
+
             await conn.execute("COMMIT")
             return StateTransitionResult(
                 ok=True,
