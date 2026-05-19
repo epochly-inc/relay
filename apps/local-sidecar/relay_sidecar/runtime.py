@@ -2089,18 +2089,52 @@ def build_runtime_app(
 
     @app.get("/v1/runs/{run_id}/trace")
     async def v1_get_run_trace(
-        run_id: str, request: Request
+        run_id: str,
+        request: Request,
+        limit: int = 100,
+        cursor: str | None = None,
     ) -> JSONResponse:
-        """Run trace (VAL-V2M02-015, VAL-V2M02-016).
+        """Run trace (VAL-V2M02-015, VAL-V2M02-016, VAL-V3M2-008/009).
 
         Returns spans ordered by ``started_at`` with parent_span_id
         references intact. Unknown run_id (no row in run_results) is 404.
+
+        V3 M02 F04: paginated via the same HMAC-signed TTL cursor
+        primitive used by the runs + gate-rounds endpoints. ``limit``
+        defaults to 100, caps at 500. ``next_cursor`` is None on the
+        final page; a tampered cursor returns 400 RELAY-PAGE-001 per
+        VAL-V3M2-009.
         """
         scope_reject = _check_required_scope(
             request, required="runs:read", blocked_surface=_RUN_TRACE_SURFACE
         )
         if scope_reject is not None:
             return scope_reject
+        effective_limit = max(1, min(int(limit), 500))
+        offset = 0
+        if cursor is not None:
+            payload, err = _verify_cursor_ttl(cursor)
+            if err == "expired":
+                return JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-PAGE-EXPIRED",
+                        http_status=400,
+                        message="cursor expired (1h TTL exceeded)",
+                        blocked_surface=_RUN_TRACE_SURFACE,
+                    ),
+                )
+            if payload is None or payload.get("run_id") != run_id:
+                return JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-PAGE-001",
+                        http_status=400,
+                        message="cursor signature invalid (tampered)",
+                        blocked_surface=_RUN_TRACE_SURFACE,
+                    ),
+                )
+            offset = int(payload.get("offset", 0))
         db = runtime.database
         if db is None:
             return _not_found(
@@ -2117,13 +2151,17 @@ def build_runtime_app(
                 surface=_RUN_TRACE_SURFACE,
                 message=f"run_id {run_id!r} not found",
             )
+        # Over-fetch by one to detect has_more.
         async with reader.execute(
             "SELECT span_id, parent_span_id, span_type, name, status, "
             "started_at, ended_at, error_class FROM spans "
-            "WHERE run_id = ? ORDER BY started_at ASC, span_id ASC",
-            (run_id,),
+            "WHERE run_id = ? ORDER BY started_at ASC, span_id ASC "
+            "LIMIT ? OFFSET ?",
+            (run_id, effective_limit + 1, offset),
         ) as cur:
             span_rows = await cur.fetchall()
+        has_more = len(span_rows) > effective_limit
+        page_rows = span_rows[:effective_limit]
         spans = [
             {
                 "span_id": r[0],
@@ -2135,8 +2173,13 @@ def build_runtime_app(
                 "ended_at": r[6],
                 "error_class": r[7],
             }
-            for r in span_rows
+            for r in page_rows
         ]
+        next_cursor: str | None = None
+        if has_more:
+            next_cursor = _sign_cursor_ttl(
+                {"run_id": run_id, "offset": offset + effective_limit}
+            )
         # Audit fix (2026-05-17 P0): drop the made-up
         # ``relay.trace.v1`` schema_version literal. No canonical Trace
         # envelope exists; the wrapping "list of spans" is a transport
@@ -2146,6 +2189,8 @@ def build_runtime_app(
             content={
                 "run_id": run_id,
                 "spans": spans,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
             },
         )
 
@@ -2209,14 +2254,23 @@ def build_runtime_app(
 
     @app.get("/v1/runs/{run_id}/explain")
     async def v1_get_run_explain(
-        run_id: str, request: Request
+        run_id: str,
+        request: Request,
+        limit: int = 100,
+        cursor: str | None = None,
     ) -> JSONResponse:
-        """Root cause hypotheses (VAL-V2M02-019, VAL-V2M02-020).
+        """Root cause hypotheses (VAL-V2M02-019, VAL-V2M02-020,
+        VAL-V3M2-008/009).
 
         The generator implementation lands in M05; M02 ships the route
         serving whatever rows M05 produces. Returns an empty list for
         runs with no hypotheses (NOT 404 -- the spec is explicit on
         this), 404 only if the run itself is unknown.
+
+        V3 M02 F04: paginated via the same HMAC-signed TTL cursor
+        primitive used by runs + gate-rounds. ``limit`` defaults to
+        100, caps at 500. A tampered cursor returns 400 RELAY-PAGE-001
+        per VAL-V3M2-009.
         """
         scope_reject = _check_required_scope(
             request,
@@ -2225,6 +2279,31 @@ def build_runtime_app(
         )
         if scope_reject is not None:
             return scope_reject
+        effective_limit = max(1, min(int(limit), 500))
+        offset = 0
+        if cursor is not None:
+            payload, err = _verify_cursor_ttl(cursor)
+            if err == "expired":
+                return JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-PAGE-EXPIRED",
+                        http_status=400,
+                        message="cursor expired (1h TTL exceeded)",
+                        blocked_surface=_RUN_EXPLAIN_SURFACE,
+                    ),
+                )
+            if payload is None or payload.get("run_id") != run_id:
+                return JSONResponse(
+                    status_code=400,
+                    content=_build_error_envelope(
+                        code="RELAY-PAGE-001",
+                        http_status=400,
+                        message="cursor signature invalid (tampered)",
+                        blocked_surface=_RUN_EXPLAIN_SURFACE,
+                    ),
+                )
+            offset = int(payload.get("offset", 0))
         db = runtime.database
         if db is None:
             return _not_found(
@@ -2241,14 +2320,18 @@ def build_runtime_app(
                 surface=_RUN_EXPLAIN_SURFACE,
                 message=f"run_id {run_id!r} not found",
             )
+        # Over-fetch by one to detect has_more.
         async with reader.execute(
             "SELECT hypothesis_id, run_id, span_id, hypothesis_class, "
             "confidence, evidence_refs, evidence_refs_digest, generator, "
             "created_at FROM root_cause_hypotheses "
-            "WHERE run_id = ? ORDER BY created_at ASC, hypothesis_id ASC",
-            (run_id,),
+            "WHERE run_id = ? ORDER BY created_at ASC, hypothesis_id ASC "
+            "LIMIT ? OFFSET ?",
+            (run_id, effective_limit + 1, offset),
         ) as cur:
             rows = await cur.fetchall()
+        has_more = len(rows) > effective_limit
+        page_rows = rows[:effective_limit]
         hypotheses = [
             {
                 "schema_version": "relay.root_cause_hypothesis.v1",
@@ -2262,10 +2345,21 @@ def build_runtime_app(
                 "generator": r[7],
                 "created_at": r[8],
             }
-            for r in rows
+            for r in page_rows
         ]
+        next_cursor: str | None = None
+        if has_more:
+            next_cursor = _sign_cursor_ttl(
+                {"run_id": run_id, "offset": offset + effective_limit}
+            )
         return JSONResponse(
-            status_code=200, content={"run_id": run_id, "hypotheses": hypotheses}
+            status_code=200,
+            content={
+                "run_id": run_id,
+                "hypotheses": hypotheses,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+            },
         )
 
     # ----------------------------------------------------------------------
