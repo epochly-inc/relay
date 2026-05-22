@@ -1,0 +1,115 @@
+# Relay v0.1 OSS -- Documentation build + GitHub Pages publish (VAL-DOCS-M4-005).
+#
+# Builds the MkDocs Material site on every PR (preview artifact) and deploys
+# to GitHub Pages on merge to main at https://epochly-inc.github.io/relay/.
+#
+# Triggers are path-scoped so unrelated source changes do not rebuild docs.
+#
+# Permissions follow the GitHub Pages requirement set:
+#   contents: read   - checkout
+#   pages: write     - publish to GitHub Pages
+#   id-token: write  - OIDC token for actions/deploy-pages
+#
+# Concurrency: the 'pages' group prevents overlapping deploys. We do NOT
+# cancel in-progress deploys, because cancelling mid-publish can leave the
+# Pages environment in a half-deployed state.
+#
+# Action pins (match repo convention; cf. tier-budgets.yml,
+# conformance-release-block.yml):
+#   actions/checkout@v4
+#   actions/setup-python@v5
+#   actions/configure-pages@v5
+#   actions/upload-pages-artifact@v3
+#   actions/deploy-pages@v4
+#
+# Spec citations:
+#   - plan.md Wave 4 deliverable 38 (publish infrastructure)
+#   - contract VAL-DOCS-M4-005 (build + deploy to GH Pages)
+#   - CLAUDE.md banned pattern #9 (no banned product copy in CI output)
+
+name: "docs"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the docs site. Runs on every PR (preview artifact) and on push to
+  # main (artifact consumed by the deploy job below).
+  # ---------------------------------------------------------------------------
+  build:
+    name: "build mkdocs site"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: "checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "install uv"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: "install docs deps"
+        run: uv sync --extra docs --all-packages
+
+      - name: "build docs (strict)"
+        run: uv run mkdocs build --strict
+
+      - name: "configure pages"
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+
+      - name: "upload pages artifact"
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "site/"
+
+  # ---------------------------------------------------------------------------
+  # Deploy the built artifact to GitHub Pages. Only runs on push to main; PR
+  # builds stop at the artifact-upload step so contributors get a preview
+  # without publishing.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: "deploy to github pages"
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: "github-pages"
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: "deploy to github pages"
+        id: deployment
+        uses: actions/deploy-pages@v4
