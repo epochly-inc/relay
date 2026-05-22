@@ -23,8 +23,26 @@ distribution surface produced by the CLI release pipeline:
   8. PyInstaller spec ``datas=`` entries (when present in
      ``packages/cli/src/sidecar_install/build/relay-sidecar.spec``)
 
+VAL-DOCS-M1-014 (relay-docs-v1 operation) formalizes the docs/**/*.md
+surface and tightens its scope:
+
+  * ``docs/internal/**/*.md`` is excluded. Internal-only docs discuss
+    the banned-copy policy itself and may quote tokens in meta context
+    (see ``docs/internal/milestone-test-map.md`` referencing "the
+    forbidden product-claim tokens" wording).
+  * ``docs/release/**/*.md`` is excluded. Operational runbooks may need
+    to reference compliance language during incident-response narrative.
+  * The ``compliant`` / ``certified`` regex uses word boundaries.
+    STRICT policy decision: ``\\bcompliant\\b`` matches the bare token
+    AND matches inside hyphenated compounds like ``non-compliant``
+    because ``-`` is a non-word character in Python regex. Pages that
+    genuinely need "non-compliant" must rephrase ("fails the compliance
+    check") or move under ``docs/internal/`` which is excluded from this
+    surface. The conservative path was chosen so legitimate banned-token
+    usage cannot hide behind a hyphen.
+
 Per surface the lint runs the regex
-``r"compliant|certified|AI[. ]Act[. -]approved|guaranteed[. ]AI[. ]Act"``
+``r"\\bcompliant\\b|\\bcertified\\b|AI[. ]Act[. -]approved|guaranteed[. ]AI[. ]Act"``
 case-insensitive and asserts zero matches. The aggregator exits 0 only
 when every surface passes.
 
@@ -45,12 +63,21 @@ from pathlib import Path
 # Repo root -- this script lives at <repo>/scripts/.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Banned-token regex per VAL-W5-009 / VAL-W5-009b. The pattern is
-# deliberately loose on the separator characters between "AI", "Act",
-# and "approved"/"compliance" so variants like "AI.Act-approved" or
-# "AI Act approved" all match. Case-insensitive.
+# Banned-token regex per VAL-W5-009 / VAL-W5-009b + VAL-DOCS-M1-014. The
+# pattern is deliberately loose on the separator characters between "AI",
+# "Act", and "approved"/"compliance" so variants like "AI.Act-approved"
+# or "AI Act approved" all match. Case-insensitive.
+#
+# Word-boundary policy on `compliant` and `certified` (VAL-DOCS-M1-014):
+# STRICT. `\bcompliant\b` matches the bare token, and ALSO matches inside
+# hyphenated compounds like `non-compliant` because `-` is a non-word
+# character in Python regex (so `\b` sits between `-` and `c`). Pages
+# that genuinely need the word "non-compliant" must rephrase ("fails
+# the compliance check") or live under `docs/internal/` which is
+# excluded from the public-docs surface. The conservative path is
+# chosen so legitimate banned-token usage cannot hide behind a hyphen.
 BANNED_REGEX = re.compile(
-    r"compliant|certified|AI[. ]Act[. \-]approved|guaranteed[. ]AI[. ]Act",
+    r"\bcompliant\b|\bcertified\b|AI[. ]Act[. \-]approved|guaranteed[. ]AI[. ]Act",
     re.IGNORECASE,
 )
 
@@ -97,10 +124,19 @@ SURFACES: list[dict[str, object]] = [
         "excludes": [],
     },
     {
+        # VAL-DOCS-M1-014 (relay-docs-v1): scan every published markdown
+        # page under docs/**/*.md for banned product copy (CLAUDE.md
+        # banned pattern #9; spec section J.5). Exclusions:
+        #   - docs/internal/**: internal-only docs may discuss the
+        #     banned-copy policy itself or reference counsel-grade
+        #     material; lint policy excludes this subtree.
+        #   - docs/release/**: operational runbooks may need to
+        #     reference compliance language during incident-response
+        #     narrative.
         "label": "public-docs",
         "root": "docs",
         "includes": ["**/*.md"],
-        "excludes": [],
+        "excludes": ["internal/**", "release/**"],
     },
     {
         "label": "github-release-notes",
