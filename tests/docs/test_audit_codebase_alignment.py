@@ -222,6 +222,44 @@ def test_layer2_run_bash_without_rly_is_syntax_only(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_run_bash_incidental_rly_text_is_syntax_only(tmp_path: Path) -> None:
+    """Incidental ``rly`` text in a run block does not make the block execute."""
+    body = (
+        "# Title\n\n"
+        "```bash run\n"
+        "# rly replay run\n"
+        "echo 'rly replay run'\n"
+        "cat <<EOF\n"
+        "rly replay run\n"
+        "EOF\n"
+        "exit 42\n"
+        "```\n"
+    )
+    page = _make_page(tmp_path, "docs/getting-started/incidental-rly.md", body)
+    cp = _run(["--files", str(page), "--layers", "2", "--json"])
+    payload = json.loads(cp.stdout)
+    p0 = [f for f in payload["findings"] if f["severity"] == "P0"]
+    assert cp.returncode == 0, f"expected exit 0, got {cp.returncode}: {payload}"
+    assert not p0, f"expected no P0 findings, got: {p0}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_bash_run_filter_executes_only_allowed_commands() -> None:
+    """The run filter excludes unrelated and compound shell commands."""
+    audit = _load_audit_module()
+    commands = audit._bash_run_commands(
+        "# rly replay run\n"
+        "echo 'rly replay run'\n"
+        "rly replay run && curl https://example.invalid\n"
+        "uv run rly replay run\n"
+        "exit 42\n"
+    )
+    assert commands == ["uv run rly replay run"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
 def test_layer2_positive_valid_python(tmp_path: Path) -> None:
     """A python fenced block doing only ``print`` parses + imports cleanly."""
     body = (
@@ -341,6 +379,22 @@ def test_layer4_accepts_val_spec_footer(tmp_path: Path) -> None:
     p0 = [f for f in payload["findings"] if f["severity"] == "P0"]
     assert cp.returncode == 0, f"expected exit 0, got {cp.returncode}: {payload}"
     assert not p0, f"expected no P0 findings, got: {p0}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer4_rejects_val_spec_footer_outside_cli_reference(tmp_path: Path) -> None:
+    """Hand-written docs must cite spec sections instead of VAL assertions."""
+    page = _make_page(
+        tmp_path,
+        "docs/getting-started/valspec.md",
+        "# Title\n\nBody.\n\nSpec: VAL-BOGUS-999\n",
+    )
+    cp = _run(["--files", str(page), "--layers", "4", "--json"])
+    assert cp.returncode == 1, f"expected exit 1, got {cp.returncode}: {cp.stdout}"
+    payload = json.loads(cp.stdout)
+    msgs = " | ".join(f.get("message", "") for f in payload["findings"])
+    assert "missing or malformed Spec footer" in msgs, f"expected footer finding, got: {payload}"
 
 
 @pytest.mark.plumbing

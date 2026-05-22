@@ -34,6 +34,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -105,6 +106,28 @@ VAL_SPEC_FOOTER_RE = re.compile(
     re.MULTILINE,
 )
 SPEC_LINE_RE = re.compile(r"^Spec:.*$", re.MULTILINE)
+BASH_HEREDOC_RE = re.compile(
+    r"(?<!<)<<-?(?!<)\s*(?P<quote>['\"]?)(?P<delim>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?P=quote)"
+)
+BASH_CONTROL_TOKENS = {
+    "&",
+    "&&",
+    "(",
+    ")",
+    ";",
+    ";;",
+    "<",
+    "<<",
+    "<<-",
+    "<<<",
+    "<>",
+    ">",
+    ">|",
+    ">>",
+    "|",
+    "||",
+}
 
 # Layer 1 token extractors.
 FILEPATH_RE = re.compile(r"`((?:packages|apps|services|scripts|tests)/[^`\s]+)`")
@@ -217,6 +240,10 @@ def _rel(path: Path) -> str:
         return path.as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def _is_generated_cli_reference_doc(rel: str) -> bool:
+    return "/docs/reference/cli/" in f"/{rel}"
 
 
 # ---------------------------------------------------------------------------
@@ -719,25 +746,7 @@ def _python_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]
     return (False, f"import-check failed: {cp.stderr.strip()[:400]}")
 
 
-def _bash_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]:
-    """Syntax-check or execute a bash snippet."""
-    run = "run" in tags
-    if run and ("rly " in block or "rly\n" in block):
-        wrapped = "set -euo pipefail\n" + block
-        try:
-            cp = subprocess.run(
-                ["bash", "-c", wrapped],
-                capture_output=True,
-                text=True,
-                cwd=str(tmp_cwd),
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, OSError) as e:
-            return (False, f"bash execution error: {e}")
-        if cp.returncode == 0:
-            return (True, "")
-        return (False, f"bash execution failed: {cp.stderr.strip()[:400]}")
-    # Syntax-only check.
+def _bash_syntax_check(block: str) -> tuple[bool, str]:
     try:
         cp = subprocess.run(
             ["bash", "-n"],
@@ -751,6 +760,73 @@ def _bash_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]:
     if cp.returncode == 0:
         return (True, "")
     return (False, f"bash syntax error: {cp.stderr.strip()[:400]}")
+
+
+def _bash_run_command(line: str) -> str | None:
+    command = line.strip()
+    if command.startswith("$ "):
+        command = command[2:].lstrip()
+    if command.endswith("\\"):
+        return None
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    if not tokens or any(token in BASH_CONTROL_TOKENS for token in tokens):
+        return None
+    if tokens[0] == "rly" or tokens[:3] == ["uv", "run", "rly"]:
+        return shlex.join(tokens)
+    return None
+
+
+def _bash_run_commands(block: str) -> list[str]:
+    commands: list[str] = []
+    heredoc_delim: str | None = None
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if heredoc_delim:
+            if line == heredoc_delim:
+                heredoc_delim = None
+            continue
+        if not line or line.startswith("#"):
+            continue
+        heredoc = BASH_HEREDOC_RE.search(line)
+        if heredoc:
+            heredoc_delim = heredoc.group("delim")
+            continue
+        command = _bash_run_command(line)
+        if command:
+            commands.append(command)
+    return commands
+
+
+def _bash_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]:
+    """Syntax-check or execute a bash snippet."""
+    run = "run" in tags
+    if run:
+        ok, detail = _bash_syntax_check(block)
+        if not ok:
+            return (ok, detail)
+        commands = _bash_run_commands(block)
+        if not commands:
+            return (True, "")
+        for command in commands:
+            try:
+                cp = subprocess.run(
+                    shlex.split(command),
+                    capture_output=True,
+                    text=True,
+                    cwd=str(tmp_cwd),
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                return (False, f"bash execution error: {e}")
+            if cp.returncode != 0:
+                return (False, f"bash execution failed: {cp.stderr.strip()[:400]}")
+        return (True, "")
+    return _bash_syntax_check(block)
 
 
 def _yaml_check(block: str, state: AuditState) -> tuple[bool, str]:
@@ -859,7 +935,8 @@ def _layer2(path: Path, body: str, state: AuditState) -> None:
 def _layer4(path: Path, body: str, state: AuditState) -> None:
     rel = _rel(path)
     matches = list(SPEC_FOOTER_RE.finditer(body))
-    val_matches = list(VAL_SPEC_FOOTER_RE.finditer(body))
+    generated_cli_reference = _is_generated_cli_reference_doc(rel)
+    val_matches = list(VAL_SPEC_FOOTER_RE.finditer(body)) if generated_cli_reference else []
     if not matches and not val_matches:
         spec_line = SPEC_LINE_RE.search(body)
         line = (
@@ -867,6 +944,9 @@ def _layer4(path: Path, body: str, state: AuditState) -> None:
             if spec_line
             else max(1, len(body.splitlines()))
         )
+        expected = f"Spec: {SECTION_SIGN}<SECTION>[, {SECTION_SIGN}<SECTION>...]"
+        if generated_cli_reference:
+            expected += " or Spec: VAL-..."
         state.findings.append(
             Finding(
                 layer=4,
@@ -874,10 +954,7 @@ def _layer4(path: Path, body: str, state: AuditState) -> None:
                 file=rel,
                 line=line,
                 message="missing or malformed Spec footer",
-                expected=(
-                    f"Spec: {SECTION_SIGN}<SECTION>[, {SECTION_SIGN}<SECTION>...] "
-                    "or Spec: VAL-..."
-                ),
+                expected=expected,
                 actual=spec_line.group(0) if spec_line else "missing",
             )
         )
