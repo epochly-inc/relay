@@ -87,4 +87,9 @@ script will list it as a known cross-wave reference.
 
 ---
 
-Spec: see [planning/epochly-replay-spec.md](https://github.com/epochly-inc/relay) for the authoritative product spec.
+The authoritative product spec lives at `planning/epochly-replay-spec.md` in
+the workspace parent repository (`epochly-inc/relay-workspace`, private).
+This landing page derives from §S (P0/P1/P2 placement) and §AO.4 (default
+trust anchor).
+
+Spec: §S, §AO.4

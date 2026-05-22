@@ -434,6 +434,83 @@ def test_wave1_empty_tree_passes() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer1_skips_usage_skeleton_placeholders(tmp_path: Path) -> None:
+    """CLI usage-skeleton lines (``[OPTIONS]``/``[ARGS]...``) are not real
+    invocations and must not produce P0 findings.
+
+    The generated CLI reference pages reproduce help-output usage lines such
+    as ``rly contract [OPTIONS] COMMAND [ARGS]...``. These are placeholders,
+    not commands; the live ``rly`` rejects them because the chain is not
+    resolvable. The audit must skip these without recording a P0.
+    """
+    body = (
+        "# `rly contract`\n\n"
+        "> Generated from packages/cli/src/relay_cli/main.py. Do not edit by hand.\n\n"
+        "## Usage\n\n"
+        "```\n"
+        "rly contract [OPTIONS] COMMAND [ARGS]...\n"
+        "```\n\n"
+        "Spec: VAL-DOCS-M1-008\n"
+    )
+    page = _make_page(tmp_path, "docs/reference/cli/contract.md", body)
+    cp = _run(["--files", str(page), "--layers", "1", "--json"])
+    payload = json.loads(cp.stdout)
+    p0 = [f for f in payload["findings"] if f["severity"] == "P0"]
+    assert cp.returncode == 0, (
+        f"usage-skeleton placeholder must not P0, got rc={cp.returncode}: {payload}"
+    )
+    assert not p0, f"expected no P0 findings from usage skeleton, got: {p0}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer1_strips_trailing_punctuation_from_routes(tmp_path: Path) -> None:
+    """HTTP route extraction strips trailing ``[,.;]+`` before openapi lookup.
+
+    Without the strip, ``POST /v1/gates/{gate_id}/drafts,`` (sentence-comma)
+    is recorded as path ``/v1/gates/{gate_id}/drafts,`` and the openapi
+    lookup misses. The route exists in openapi.yaml as
+    ``/v1/gates/{gate_id}/drafts`` -- a single comma at sentence end must
+    not turn it into a P0.
+    """
+    body = (
+        "# Title\n\n"
+        "Submits a draft via POST /v1/gates/{gate_id}/drafts, polls await_url.\n\n"
+        "Spec: §B.1\n"
+    )
+    page = _make_page(tmp_path, "docs/reference/cli/gate.md", body)
+    cp = _run(["--files", str(page), "--layers", "1", "--json"])
+    payload = json.loads(cp.stdout)
+    p0 = [
+        f
+        for f in payload["findings"]
+        if f["severity"] == "P0"
+        and "HTTP route" in f.get("message", "")
+    ]
+    assert not p0, (
+        f"trailing-comma route must not P0 (path exists in openapi.yaml), got: {p0}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_docs_index_footer_passes_layer4() -> None:
+    """``docs/index.md`` carries a valid Layer 4 ``Spec:`` footer."""
+    index_path = REPO_ROOT / "docs" / "index.md"
+    assert index_path.is_file(), f"docs/index.md missing: {index_path}"
+    cp = _run(["--files", str(index_path), "--layers", "4", "--json"])
+    payload = json.loads(cp.stdout)
+    p0 = [
+        f
+        for f in payload["findings"]
+        if f["severity"] == "P0"
+        and "Spec footer" in f.get("message", "")
+    ]
+    assert not p0, f"docs/index.md must have a valid Spec footer, got: {p0}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
 def test_strict_promotes_unverifiable_to_p1(tmp_path: Path) -> None:
     """A P2-class ``unverifiable`` finding is promoted to P1 under ``--strict``.
 

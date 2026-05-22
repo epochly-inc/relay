@@ -500,14 +500,41 @@ def _verify_identifier_via_rg(symbol: str, current_page: Path) -> bool:
         return False
 
 
+def _is_usage_skeleton(cmd: str) -> bool:
+    """Return True when ``cmd`` is a help-output usage skeleton, not a real
+    invocation.
+
+    Generated CLI reference pages reproduce lines like
+    ``rly contract [OPTIONS] COMMAND [ARGS]...``. The tokens ``[OPTIONS]``
+    and ``[ARGS]...`` are placeholders emitted by the CLI's help formatter
+    -- they are not part of any concrete invocation a user would type. The
+    audit must skip these without recording a finding (P0 or otherwise),
+    since asking the live ``rly`` to resolve the chain always rejects.
+
+    Detection is conservative: presence of ``[OPTIONS]`` or ``[ARGS]...``
+    on the same line as the ``rly`` token is sufficient. Argument
+    placeholders like ``<run_id>`` or ``RUN_ID`` are NOT classified as
+    usage skeletons -- those are real invocation shapes with substitutable
+    arguments.
+    """
+    return "[OPTIONS]" in cmd or "[ARGS]..." in cmd
+
+
 def _verify_cli(cmd: str) -> tuple[str, str]:
     """Return ``(status, detail)`` where status is one of:
-    ``"ok"``, ``"miss"``, ``"unverifiable"``.
+    ``"ok"``, ``"miss"``, ``"unverifiable"``, ``"skip"``.
 
     Only subcommand-level validation is performed today (the
     ``--dry-run-parse-only`` flag does not exist on the live CLI).
     Flag-level drift cannot be detected and is recorded as unverifiable.
+
+    Returns ``"skip"`` for usage-skeleton placeholder lines (containing
+    ``[OPTIONS]`` or ``[ARGS]...``); the caller records no finding.
     """
+    # Skip help-output usage skeletons before any further parsing.
+    if _is_usage_skeleton(cmd):
+        return ("skip", "usage-skeleton placeholder line (contains [OPTIONS] or [ARGS]...)")
+
     # Strip leading ``$ `` shell prompt + any leading ``rly`` token.
     parts = cmd.strip().split()
     if not parts or parts[0] != "rly":
@@ -555,12 +582,39 @@ def _verify_error_code(code: str, state: AuditState) -> bool:
     return code in _load_error_codes(state)
 
 
+_PATH_PARAM_RE = re.compile(r"\{[^/{}]*\}|<[^/<>]*>")
+
+
+def _normalize_path_template(path: str) -> str:
+    """Normalize a path template for openapi lookup.
+
+    Doc prose and generated CLI help reference routes using parameter
+    names that may not match the openapi.yaml spelling -- for example
+    ``GET /v1/eval-runs/{id}`` in prose vs ``/v1/eval-runs/{eval_run_id}``
+    in openapi.yaml, or ``<id>`` brackets instead of ``{id}``. The route
+    template identity is the path STRUCTURE, not the parameter names.
+
+    This helper rewrites any ``{name}`` or ``<name>`` segment to a single
+    ``{}`` placeholder so that two path templates differing only in
+    parameter names compare equal.
+    """
+    return _PATH_PARAM_RE.sub("{}", path)
+
+
 def _verify_http_route(method: str, path: str, state: AuditState) -> bool:
     paths = _load_openapi_paths(state)
+    # Exact-match fast path (preserves existing behavior).
     methods = paths.get(path)
-    if methods is None:
-        return False
-    return method.upper() in methods
+    if methods is not None:
+        return method.upper() in methods
+    # Fallback: normalize parameter names for both captured + openapi paths,
+    # then match by structural identity. This makes ``GET /v1/foo/{id}`` in
+    # prose match openapi's ``GET /v1/foo/{specific_name}``.
+    normalized_captured = _normalize_path_template(path)
+    for openapi_path, openapi_methods in paths.items():
+        if _normalize_path_template(openapi_path) == normalized_captured:
+            return method.upper() in openapi_methods
+    return False
 
 
 def _verify_spec_section(section_id: str, state: AuditState) -> bool:
@@ -659,6 +713,12 @@ def _layer1(path: Path, body: str, state: AuditState) -> None:
     for m in HTTP_ROUTE_RE.finditer(body):
         method = m.group(1)
         path_ = m.group(2)
+        # Strip trailing sentence punctuation (``.``, ``,``, ``;``, ``)``)
+        # that the line-bounded regex captured as part of the path. The
+        # canonical openapi paths never end in punctuation, so this
+        # normalisation preserves correct identification of the real route
+        # without losing line-number fidelity.
+        path_ = path_.rstrip(".,;)")
         line = body.count("\n", 0, m.start()) + 1
         if not _verify_http_route(method, path_, state):
             state.findings.append(
