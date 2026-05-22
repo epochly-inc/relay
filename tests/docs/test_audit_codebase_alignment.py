@@ -25,11 +25,13 @@ Spec citations:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -56,6 +58,17 @@ def _make_page(tmp_path: Path, name: str, body: str) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body, encoding="utf-8")
     return p
+
+
+def _load_audit_module() -> ModuleType:
+    """Load the audit script as a module for focused unit checks."""
+    spec = importlib.util.spec_from_file_location("audit_codebase_alignment", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.mark.plumbing
@@ -97,6 +110,23 @@ def test_layer1_negative_bad_filepath(tmp_path: Path) -> None:
     payload = json.loads(cp.stdout)
     sev = {f["severity"] for f in payload["findings"]}
     assert "P0" in sev, f"expected at least one P0 finding, saw {payload}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer1_negative_bad_identifier(tmp_path: Path) -> None:
+    """A page citing a non-existent backticked identifier is a P0 failure."""
+    missing_identifier = "definitely_missing_" + "symbol_xyz"
+    page = _make_page(
+        tmp_path,
+        "docs/getting-started/badidentifier.md",
+        f"# Title\n\nThe implementation calls `{missing_identifier}`.\n",
+    )
+    cp = _run(["--files", str(page), "--layers", "1", "--json"])
+    assert cp.returncode == 1, f"expected exit 1, got {cp.returncode}: {cp.stdout}"
+    payload = json.loads(cp.stdout)
+    msgs = " | ".join(f.get("message", "") for f in payload["findings"])
+    assert "identifier not found" in msgs, f"expected identifier finding, got: {payload}"
 
 
 @pytest.mark.plumbing
@@ -153,6 +183,27 @@ def test_layer2_negative_bad_python_import(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_negative_bad_bash_without_rly(tmp_path: Path) -> None:
+    """A bash fenced block without ``rly`` is still syntax-checked."""
+    body = (
+        "# Title\n\n"
+        "```bash\n"
+        "if true; then\n"
+        "  echo hi\n"
+        "```\n"
+    )
+    page = _make_page(tmp_path, "docs/getting-started/badbash.md", body)
+    cp = _run(["--files", str(page), "--layers", "2", "--json"])
+    assert cp.returncode == 1, f"expected exit 1, got {cp.returncode}: {cp.stdout}"
+    payload = json.loads(cp.stdout)
+    msgs = " | ".join(f.get("message", "") for f in payload["findings"])
+    assert "bash fenced block failed verification" in msgs, (
+        f"expected bash syntax finding, got: {payload}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
 def test_layer2_positive_valid_python(tmp_path: Path) -> None:
     """A python fenced block doing only ``print`` parses + imports cleanly."""
     body = (
@@ -171,6 +222,46 @@ def test_layer2_positive_valid_python(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_catalog_indexes_schema_version_const() -> None:
+    """The catalog maps schemas by the declared ``schema_version`` const."""
+    audit = _load_audit_module()
+    catalog = audit._load_catalog_index(audit.AuditState())
+    assert "relay.manifest.v1" in catalog
+    assert catalog["relay.manifest.v1"].name == "manifest.v1.schema.json"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_unknown_schema_version_is_unverifiable(tmp_path: Path) -> None:
+    """An unmapped ``schema_version`` records a P2 and promotes under strict."""
+    body = (
+        "# Title\n\n"
+        "```json\n"
+        "{\"schema_version\": \"relay.unknown.v1\", \"value\": true}\n"
+        "```\n"
+    )
+    page = _make_page(tmp_path, "docs/getting-started/unknownschema.md", body)
+    cp_default = _run(["--files", str(page), "--layers", "2", "--json"])
+    payload_default = json.loads(cp_default.stdout)
+    assert cp_default.returncode == 0, (
+        f"non-strict run should not fail on P2 findings, got: {payload_default}"
+    )
+    assert "P2" in [f["severity"] for f in payload_default["findings"]], (
+        f"expected P2 finding, got: {payload_default}"
+    )
+
+    cp_strict = _run(["--files", str(page), "--layers", "2", "--json", "--strict"])
+    payload_strict = json.loads(cp_strict.stdout)
+    assert cp_strict.returncode == 2, (
+        f"strict mode should fail on promoted P2 findings, got: {payload_strict}"
+    )
+    assert "P1" in [f["severity"] for f in payload_strict["findings"]], (
+        f"expected promoted P1 finding, got: {payload_strict}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
 def test_layer3_is_stub(tmp_path: Path) -> None:
     """Layer 3 is a no-op stub: a broken fixture passes when only L3 is asked."""
     body = (
@@ -184,6 +275,38 @@ def test_layer3_is_stub(tmp_path: Path) -> None:
     assert cp.returncode == 0, (
         f"Layer 3 must be a stub and not fail, got rc={cp.returncode}: {payload}"
     )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer4_negative_missing_spec_footer(tmp_path: Path) -> None:
+    """A page without a valid ``Spec:`` footer P0-fails Layer 4."""
+    page = _make_page(
+        tmp_path,
+        "docs/getting-started/nospec.md",
+        "# Title\n\nBody.\n",
+    )
+    cp = _run(["--files", str(page), "--layers", "4", "--json"])
+    assert cp.returncode == 1, f"expected exit 1, got {cp.returncode}: {cp.stdout}"
+    payload = json.loads(cp.stdout)
+    msgs = " | ".join(f.get("message", "") for f in payload["findings"])
+    assert "missing or malformed Spec footer" in msgs, f"expected footer finding, got: {payload}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer4_negative_malformed_spec_footer(tmp_path: Path) -> None:
+    """A page with ``Spec: A.1`` P0-fails Layer 4 as malformed."""
+    page = _make_page(
+        tmp_path,
+        "docs/getting-started/malformedspec.md",
+        "# Title\n\nBody.\n\nSpec: A.1\n",
+    )
+    cp = _run(["--files", str(page), "--layers", "4", "--json"])
+    assert cp.returncode == 1, f"expected exit 1, got {cp.returncode}: {cp.stdout}"
+    payload = json.loads(cp.stdout)
+    msgs = " | ".join(f.get("message", "") for f in payload["findings"])
+    assert "missing or malformed Spec footer" in msgs, f"expected footer finding, got: {payload}"
 
 
 @pytest.mark.plumbing

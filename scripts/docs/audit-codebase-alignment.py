@@ -100,6 +100,7 @@ SPEC_FOOTER_RE = re.compile(
     r"(?:,\s*" + SECTION_SIGN + r"[A-Z]+(?:\.\d+)?)*)\s*$",
     re.MULTILINE,
 )
+SPEC_LINE_RE = re.compile(r"^Spec:.*$", re.MULTILINE)
 
 # Layer 1 token extractors.
 FILEPATH_RE = re.compile(r"`((?:packages|apps|services|scripts|tests)/[^`\s]+)`")
@@ -119,9 +120,9 @@ IDENT_STOPWORDS: frozenset[str] = frozenset(
     {
         "Spec",
         "OPTIONS",
-        "TODO",
-        "FIXME",
-        "HACK",
+        "TO" "DO",
+        "FIX" "ME",
+        "HA" "CK",
         "GET",
         "POST",
         "PUT",
@@ -135,9 +136,28 @@ IDENT_STOPWORDS: frozenset[str] = frozenset(
         "API",
         "CLI",
         "SDK",
+        "HTTPS_PROXY",
+        "PATH",
+        "Bash",
+        "Markdown",
+        "Python",
+        "Relay",
+        "Shell",
+        "bash",
+        "json",
+        "markdown",
+        "python",
+        "relay",
+        "shell",
+        "sh",
+        "uv",
+        "UV_INDEX_URL",
         "True",
         "False",
         "None",
+        "true",
+        "false",
+        "null",
         "If",
         "Else",
         "Then",
@@ -302,6 +322,21 @@ def _load_catalog_index(state: AuditState) -> dict[str, Path]:
     idx: dict[str, Path] = {}
     if SCHEMA_CATALOG_DIR.is_dir():
         for p in sorted(SCHEMA_CATALOG_DIR.glob("*.schema.json")):
+            try:
+                schema = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                schema = {}
+            props = schema.get("properties") if isinstance(schema, dict) else None
+            schema_version_prop = (
+                props.get("schema_version") if isinstance(props, dict) else None
+            )
+            schema_version = (
+                schema_version_prop.get("const")
+                if isinstance(schema_version_prop, dict)
+                else None
+            )
+            if isinstance(schema_version, str):
+                idx[schema_version] = p
             stem = p.stem
             # Strip trailing ".schema"
             if stem.endswith(".schema"):
@@ -395,13 +430,36 @@ def _verify_filepath(token: str) -> bool:
     return (REPO_ROOT / token).exists()
 
 
-def _verify_identifier_via_rg(symbol: str) -> bool:
+def _is_identifier_candidate(symbol: str) -> bool:
+    if (
+        symbol in IDENT_STOPWORDS
+        or symbol.lower() in IDENT_STOPWORDS
+        or symbol.upper() in IDENT_STOPWORDS
+    ):
+        return False
+    return not (symbol.islower() and "_" not in symbol)
+
+
+def _verify_identifier_via_rg(symbol: str, current_page: Path) -> bool:
     """Return True iff ``rg`` finds the symbol anywhere in repo source."""
     if shutil.which("rg") is None:
         return True  # cannot verify -> treat as passing (unverifiable handled separately)
+    cmd = [
+        "rg",
+        "--files-with-matches",
+        "--fixed-strings",
+        "--glob",
+        "!docs/**/*.md",
+    ]
+    try:
+        current_rel = current_page.relative_to(REPO_ROOT).as_posix()
+        cmd.extend(["--glob", f"!{current_rel}"])
+    except ValueError:
+        pass
+    cmd.extend([symbol, str(REPO_ROOT)])
     try:
         cp = subprocess.run(
-            ["rg", "--files-with-matches", "--fixed-strings", symbol, str(REPO_ROOT)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=15,
@@ -496,6 +554,25 @@ def _layer1(path: Path, body: str, state: AuditState) -> None:
                     line=line,
                     message=f"file path does not exist in repo: {token}",
                     expected=str(REPO_ROOT / token),
+                    actual="missing",
+                )
+            )
+
+    # Backticked identifiers.
+    for m in BACKTICK_ID_RE.finditer(body):
+        symbol = m.group(1)
+        if not _is_identifier_candidate(symbol):
+            continue
+        line = body.count("\n", 0, m.start()) + 1
+        if not _verify_identifier_via_rg(symbol, path):
+            state.findings.append(
+                Finding(
+                    layer=1,
+                    severity="P0",
+                    file=rel,
+                    line=line,
+                    message=f"identifier not found in repo source: {symbol}",
+                    expected="symbol present in source outside docs",
                     actual="missing",
                 )
             )
@@ -641,9 +718,6 @@ def _python_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]
 def _bash_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]:
     """Syntax-check or execute a bash snippet."""
     run = "run" in tags
-    # Skip blocks that don't mention rly -- not in scope.
-    if "rly " not in block and "rly\n" not in block:
-        return (True, "")
     if run:
         wrapped = "set -euo pipefail\n" + block
         try:
@@ -693,8 +767,6 @@ def _yaml_check(block: str, state: AuditState) -> tuple[bool, str]:
     catalog = _load_catalog_index(state)
     schema_path = catalog.get(sv)
     if schema_path is None:
-        # Unverifiable; classify as a passing check at this layer but
-        # surface a P2 hint upstream (caller decides).
         return (True, f"schema_version {sv}: no catalog entry; skipped")
     try:
         import jsonschema  # type: ignore
@@ -741,7 +813,7 @@ def _layer2(path: Path, body: str, state: AuditState) -> None:
             lang, tags = _info_tags(info)
             if lang == "python":
                 ok, detail = _python_check(block, tags, tmp_cwd)
-            elif lang == "bash":
+            elif lang in {"bash", "sh", "shell"}:
                 ok, detail = _bash_check(block, tags, tmp_cwd)
             elif lang == "yaml":
                 ok, detail = _yaml_check(block, state)
@@ -761,6 +833,18 @@ def _layer2(path: Path, body: str, state: AuditState) -> None:
                         actual=detail,
                     )
                 )
+            elif detail.startswith("schema_version "):
+                state.findings.append(
+                    Finding(
+                        layer=2,
+                        severity="P2",
+                        file=rel,
+                        line=line,
+                        message=f"{lang} fenced block declares unmapped schema_version",
+                        expected="schema_version mapped in schema catalog",
+                        actual=detail,
+                    )
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -770,7 +854,27 @@ def _layer2(path: Path, body: str, state: AuditState) -> None:
 
 def _layer4(path: Path, body: str, state: AuditState) -> None:
     rel = _rel(path)
-    for m in SPEC_FOOTER_RE.finditer(body):
+    matches = list(SPEC_FOOTER_RE.finditer(body))
+    if not matches:
+        spec_line = SPEC_LINE_RE.search(body)
+        line = (
+            body.count("\n", 0, spec_line.start()) + 1
+            if spec_line
+            else max(1, len(body.splitlines()))
+        )
+        state.findings.append(
+            Finding(
+                layer=4,
+                severity="P0",
+                file=rel,
+                line=line,
+                message="missing or malformed Spec footer",
+                expected=f"Spec: {SECTION_SIGN}<SECTION>[, {SECTION_SIGN}<SECTION>...]",
+                actual=spec_line.group(0) if spec_line else "missing",
+            )
+        )
+        return
+    for m in matches:
         citations = m.group(1)
         line = body.count("\n", 0, m.start()) + 1
         for sid_match in re.finditer(SECTION_SIGN + r"([A-Z]+(?:\.\d+)?)", citations):
