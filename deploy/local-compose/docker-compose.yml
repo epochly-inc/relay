@@ -1,0 +1,86 @@
+---
+# Relay local-compose stack (v0.1 OSS).
+#
+# A minimal Docker Compose profile for running the Relay CLI and sidecar
+# from a containerized dev environment. The container bind-mounts the
+# repo so source changes propagate without a rebuild.
+#
+# v0.1 status: this Compose profile exercises the CLI surface and the
+# sidecar library in a dev shell. The standalone long-lived daemon
+# (rly sidecar start --daemon as a forked uvicorn) is wired up in
+# milestone W5+ of the upstream OSS wedge plan; until then the
+# container stays alive via `sleep infinity` so users can
+# `docker compose exec` arbitrary `rly` commands. See README.md in
+# this directory for the full limitation list and the supported
+# usage patterns.
+#
+# Per CLAUDE.md keystone invariant #3 the only commands run against
+# this stack are those declared in `.ops/manifest.yaml` at the repo
+# root; the container is purely a host for those declared commands.
+#
+# Spec: planning/epochly-replay-spec.md "Public relay repository
+# layout" (deploy/local-compose/); plan.md Wave 1 deliverable 8.
+
+services:
+  relay-sidecar:
+    # Pinned minor of the active runtime. CLAUDE.md mandates Python
+    # 3.12+ as P0; the slim variant keeps the image small while still
+    # carrying the apt tooling needed to install `uv`.
+    image: python:3.12-slim
+    container_name: relay-sidecar
+    working_dir: /workspace
+    # Bind-mount the repo read-write so source edits propagate. A
+    # named volume holds ${RELAY_HOME} (default /root/.relay inside
+    # the container) so the lockfile and SQLite WAL survive container
+    # restarts without polluting the host filesystem.
+    volumes:
+      - ../..:/workspace
+      - relay-home:/root/.relay
+    environment:
+      # RELAY_HOME defaults to ~/.relay inside the container; the
+      # named volume above persists it across `docker compose down`
+      # / `up` cycles.
+      RELAY_HOME: /root/.relay
+      # uvicorn log level: warning is the runtime default per
+      # apps/local-sidecar/relay_sidecar/runtime.py:5295. Tune via
+      # the .env file.
+      RELAY_SIDECAR_LOG_LEVEL: ${RELAY_SIDECAR_LOG_LEVEL:-warning}
+    # Install `uv` once, sync the workspace, then keep the container
+    # alive. Users drive the CLI via `docker compose exec`.
+    command:
+      - bash
+      - -lc
+      - |
+        set -e
+        if ! command -v uv >/dev/null 2>&1; then
+          pip install --no-cache-dir --quiet uv
+        fi
+        uv sync --all-packages --quiet
+        uv run rly --version
+        echo "[relay-sidecar] container ready; use: docker compose exec relay-sidecar uv run rly --help"
+        exec sleep infinity
+    # The container does NOT expose the sidecar's HTTP port by default.
+    # Per apps/local-sidecar/relay_sidecar/runtime.py:5262 the sidecar
+    # binds 127.0.0.1 (loopback-only; never 0.0.0.0) as a security
+    # default, and v0.1 does not yet ship a forked uvicorn daemon
+    # (see W5+ in the OSS wedge plan). Once W5 lands a daemon mode
+    # and a host-bind override flag, users uncomment the ports block
+    # below. The compose file is intentionally validated `docker
+    # compose config`-clean with the port block commented out.
+    # ports:
+    #   - "127.0.0.1:8421:8421"
+    healthcheck:
+      # CLI smoke check rather than HTTP, since v0.1 has no long-lived
+      # listener inside the container. `rly --version` exits 0 on a
+      # synced workspace; non-zero indicates the sync or install
+      # failed.
+      test: ["CMD", "uv", "run", "rly", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  # Persists ${RELAY_HOME} (lockfile, sidecar.db, event log) across
+  # container restarts. To wipe state, `docker compose down -v`.
+  relay-home: {}
