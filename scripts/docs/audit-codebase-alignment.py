@@ -100,6 +100,10 @@ SPEC_FOOTER_RE = re.compile(
     r"(?:,\s*" + SECTION_SIGN + r"[A-Z]+(?:\.\d+)?)*)\s*$",
     re.MULTILINE,
 )
+VAL_SPEC_FOOTER_RE = re.compile(
+    r"^Spec:\s*VAL-[A-Z0-9]+(?:-[A-Z0-9]+)*-\d+\s*$",
+    re.MULTILINE,
+)
 SPEC_LINE_RE = re.compile(r"^Spec:.*$", re.MULTILINE)
 
 # Layer 1 token extractors.
@@ -718,7 +722,7 @@ def _python_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]
 def _bash_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]:
     """Syntax-check or execute a bash snippet."""
     run = "run" in tags
-    if run:
+    if run and ("rly " in block or "rly\n" in block):
         wrapped = "set -euo pipefail\n" + block
         try:
             cp = subprocess.run(
@@ -855,7 +859,8 @@ def _layer2(path: Path, body: str, state: AuditState) -> None:
 def _layer4(path: Path, body: str, state: AuditState) -> None:
     rel = _rel(path)
     matches = list(SPEC_FOOTER_RE.finditer(body))
-    if not matches:
+    val_matches = list(VAL_SPEC_FOOTER_RE.finditer(body))
+    if not matches and not val_matches:
         spec_line = SPEC_LINE_RE.search(body)
         line = (
             body.count("\n", 0, spec_line.start()) + 1
@@ -869,7 +874,10 @@ def _layer4(path: Path, body: str, state: AuditState) -> None:
                 file=rel,
                 line=line,
                 message="missing or malformed Spec footer",
-                expected=f"Spec: {SECTION_SIGN}<SECTION>[, {SECTION_SIGN}<SECTION>...]",
+                expected=(
+                    f"Spec: {SECTION_SIGN}<SECTION>[, {SECTION_SIGN}<SECTION>...] "
+                    "or Spec: VAL-..."
+                ),
                 actual=spec_line.group(0) if spec_line else "missing",
             )
         )

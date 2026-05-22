@@ -204,6 +204,24 @@ def test_layer2_negative_bad_bash_without_rly(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_run_bash_without_rly_is_syntax_only(tmp_path: Path) -> None:
+    """A non-rly bash run block is syntax-checked, not executed."""
+    body = (
+        "# Title\n\n"
+        "```bash run\n"
+        "exit 42\n"
+        "```\n"
+    )
+    page = _make_page(tmp_path, "docs/getting-started/runbash.md", body)
+    cp = _run(["--files", str(page), "--layers", "2", "--json"])
+    payload = json.loads(cp.stdout)
+    p0 = [f for f in payload["findings"] if f["severity"] == "P0"]
+    assert cp.returncode == 0, f"expected exit 0, got {cp.returncode}: {payload}"
+    assert not p0, f"expected no P0 findings, got: {p0}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
 def test_layer2_positive_valid_python(tmp_path: Path) -> None:
     """A python fenced block doing only ``print`` parses + imports cleanly."""
     body = (
@@ -307,6 +325,22 @@ def test_layer4_negative_malformed_spec_footer(tmp_path: Path) -> None:
     payload = json.loads(cp.stdout)
     msgs = " | ".join(f.get("message", "") for f in payload["findings"])
     assert "missing or malformed Spec footer" in msgs, f"expected footer finding, got: {payload}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer4_accepts_val_spec_footer(tmp_path: Path) -> None:
+    """Generated reference docs may carry VAL assertion footers."""
+    page = _make_page(
+        tmp_path,
+        "docs/reference/cli/rly.md",
+        "# Title\n\nBody.\n\nSpec: VAL-DOCS-M1-008\n",
+    )
+    cp = _run(["--files", str(page), "--layers", "4", "--json"])
+    payload = json.loads(cp.stdout)
+    p0 = [f for f in payload["findings"] if f["severity"] == "P0"]
+    assert cp.returncode == 0, f"expected exit 0, got {cp.returncode}: {payload}"
+    assert not p0, f"expected no P0 findings, got: {p0}"
 
 
 @pytest.mark.plumbing
