@@ -252,10 +252,30 @@ def test_bash_run_filter_executes_only_allowed_commands() -> None:
         "# rly replay run\n"
         "echo 'rly replay run'\n"
         "rly replay run && curl https://example.invalid\n"
+        "rly replay run |& tee out.log\n"
+        "rly replay run &> out.log\n"
+        "rly replay run >& out.log\n"
         "uv run rly replay run\n"
         "exit 42\n"
     )
     assert commands == ["uv run rly replay run"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+@pytest.mark.parametrize(
+    "block",
+    [
+        "if false; then\nrly replay run\nfi\n",
+        "for target in a; do\nrly replay run\n done\n",
+        "run_docs() {\nrly replay run\n}\n",
+        "(\nrly replay run\n)\n",
+    ],
+)
+def test_bash_run_filter_skips_control_blocks(block: str) -> None:
+    """The run filter does not execute commands nested in shell blocks."""
+    audit = _load_audit_module()
+    assert audit._bash_run_commands(block) == []
 
 
 @pytest.mark.plumbing

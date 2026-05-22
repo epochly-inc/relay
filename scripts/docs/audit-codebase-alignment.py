@@ -110,24 +110,24 @@ BASH_HEREDOC_RE = re.compile(
     r"(?<!<)<<-?(?!<)\s*(?P<quote>['\"]?)(?P<delim>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?P=quote)"
 )
-BASH_CONTROL_TOKENS = {
-    "&",
-    "&&",
-    "(",
-    ")",
-    ";",
-    ";;",
-    "<",
-    "<<",
-    "<<-",
-    "<<<",
-    "<>",
-    ">",
-    ">|",
-    ">>",
-    "|",
-    "||",
+BASH_CONTROL_PUNCTUATION = frozenset("&;<>|()")
+BASH_BLOCK_KEYWORDS = {
+    "case",
+    "do",
+    "done",
+    "elif",
+    "else",
+    "esac",
+    "fi",
+    "for",
+    "function",
+    "if",
+    "select",
+    "then",
+    "until",
+    "while",
 }
+BASH_BLOCK_TOKENS = {"(", ")", "((", "))", "[[", "]]", "{", "}", "()"}
 
 # Layer 1 token extractors.
 FILEPATH_RE = re.compile(r"`((?:packages|apps|services|scripts|tests)/[^`\s]+)`")
@@ -762,28 +762,64 @@ def _bash_syntax_check(block: str) -> tuple[bool, str]:
     return (False, f"bash syntax error: {cp.stderr.strip()[:400]}")
 
 
+def _bash_lex(command: str) -> list[str] | None:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _bash_has_control_punctuation(token: str) -> bool:
+    return any(char in BASH_CONTROL_PUNCTUATION for char in token)
+
+
 def _bash_run_command(line: str) -> str | None:
     command = line.strip()
     if command.startswith("$ "):
         command = command[2:].lstrip()
     if command.endswith("\\"):
         return None
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
+    tokens = _bash_lex(command)
+    if tokens is None:
         return None
-    if not tokens or any(token in BASH_CONTROL_TOKENS for token in tokens):
+    if not tokens or any(_bash_has_control_punctuation(token) for token in tokens):
         return None
     if tokens[0] == "rly" or tokens[:3] == ["uv", "run", "rly"]:
         return shlex.join(tokens)
     return None
 
 
+def _bash_has_control_block(block: str) -> bool:
+    heredoc_delim: str | None = None
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if heredoc_delim:
+            if line == heredoc_delim:
+                heredoc_delim = None
+            continue
+        if not line or line.startswith("#"):
+            continue
+        heredoc = BASH_HEREDOC_RE.search(line)
+        if heredoc:
+            heredoc_delim = heredoc.group("delim")
+            continue
+        if line.startswith("$ "):
+            line = line[2:].lstrip()
+        tokens = _bash_lex(line)
+        if tokens is None:
+            return True
+        if tokens and (tokens[0] in BASH_BLOCK_KEYWORDS or BASH_BLOCK_TOKENS & set(tokens)):
+            return True
+    return False
+
+
 def _bash_run_commands(block: str) -> list[str]:
     commands: list[str] = []
     heredoc_delim: str | None = None
+    if _bash_has_control_block(block):
+        return commands
     for raw_line in block.splitlines():
         line = raw_line.strip()
         if heredoc_delim:
