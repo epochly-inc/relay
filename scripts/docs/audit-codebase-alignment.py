@@ -298,6 +298,8 @@ def _load_error_codes(state: AuditState) -> set[str]:
             for c in data["codes"]:
                 if isinstance(c, str):
                     codes.add(c)
+                elif isinstance(c, dict) and isinstance(c.get("code"), str):
+                    codes.add(c["code"])
 
     if ERROR_CODES_PRIMARY.is_file():
         _harvest_yaml(ERROR_CODES_PRIMARY)
