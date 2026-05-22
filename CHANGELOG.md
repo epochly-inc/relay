@@ -18,8 +18,13 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 ## [Unreleased]
 
 ### Added
-- Comprehensive user documentation effort (operation `relay-docs-v1`) in
-  flight; CHANGELOG is the first deliverable.
+- Comprehensive user documentation effort (operation `relay-docs-v1`):
+  landing page, install guide, first workflow walkthroughs, local Compose
+  and devcontainer docs, plus generated CLI and error reference pages.
+- Four-layer codebase-alignment audit script for documentation source,
+  generated docs, package READMEs, and examples (m1-f01).
+- Banned-copy scanner coverage extended across `docs/**/*.md`, excluding
+  internal and release documentation surfaces (m1-f02).
 
 ## [v0.3-audit-resolution-complete] - 2026-05-19
 
@@ -124,8 +129,14 @@ Alias of `v3-m5-sealed`. See that entry for the full set of changes.
 ### Changed
 - Renamed sidecar `audit_log_entries` to `admin_override_audit` to free
   the §V name (v3m1-f03).
+- CLI PyYAML dependency lockfile refreshed (audit-r3 BUG-E7).
 
 ### Fixed
+- Audit-R4 P0 schema reconciliation: dropped stranded `gate.v1` and
+  `eval_run.v1` DDL pins, and aligned sidecar `actors.kind` to the
+  envelope enum.
+- Audit-R4 P1 redaction-budget race fix and tighter Python verifier path
+  parity.
 - §Y FK chain repair across all six OSS foreign-key references to
   undefined orgs/users (v3m1-f04).
 - Schema drift: `failed_assertion_ids` is now `text[]`,
