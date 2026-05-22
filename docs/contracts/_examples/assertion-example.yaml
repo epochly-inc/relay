@@ -1,0 +1,21 @@
+# Example BehavioralAssertion used by docs/contracts/writing-assertions.md.
+#
+# Schema: relay.assertion.behavioral.v1
+# Source: packages/contracts/src/relay_contracts/dsl_parser.py (KNOWN_SCHEMA_VERSIONS).
+# UDF used (relay.coverage) is registered in
+# packages/contracts/src/relay_contracts/__init__.py (RELAY_UDFS).
+#
+# Validate locally with:
+#   rly contract check docs/contracts/_examples
+#
+# Expected stdout (one line of JSON):
+#   {"schema_version":"relay.cli.contract_check.v1",...,"coverage_valid":true,...}
+#
+# ASCII-only per CLAUDE.md.
+schema_version: relay.assertion.behavioral.v1
+assertion_id: VAL-DOCS-EXAMPLE-001
+kind: behavioral
+severity: p1
+expression: "relay.coverage(run, 'plan_tools')"
+owner_email: alice@example.com
+lifecycle_state: active

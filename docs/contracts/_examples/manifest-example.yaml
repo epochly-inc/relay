@@ -1,0 +1,35 @@
+# Example GatePolicy that covers VAL-DOCS-EXAMPLE-001 from
+# assertion-example.yaml. Paired with that file in
+# docs/contracts/_examples/, this directory passes
+#   rly contract check docs/contracts/_examples
+# with coverage_valid: true.
+#
+# Schema: relay.gate_policy.v1
+# Source: packages/contracts/src/relay_contracts/dsl_parser.py
+#   (KNOWN_SCHEMA_VERSIONS) and _REQUIRED_FIELDS["relay.gate_policy.v1"]
+#   = {schema_version, policy_version, conditions, owner_email,
+#     lifecycle_state}. The gates_assertion_ids extension is the
+#   linkage the publish bundle uses to bind gates to assertions
+#   (see packages/cli/src/relay_cli/commands/contract.py lines 56-62).
+#
+# This file is named "manifest-example.yaml" because the docs flow
+# refers to the gate policy as the "manifest" the assertion is
+# published against. The Relay Manifest v1 schema
+# (packages/schemas/catalogs/manifest.v1.schema.json) governs runtime
+# command/service declarations; the GatePolicy here governs which
+# assertions a release gate enforces. The walkthrough in
+# docs/contracts/writing-assertions.md distinguishes the two.
+#
+# ASCII-only per CLAUDE.md.
+schema_version: relay.gate_policy.v1
+policy_version: "2026-05-22.001"
+conditions:
+  - id: behavioral_pass_rate
+    metric: behavioral.outcome.pass_rate
+    comparator: gte
+    value: 1.0
+    scope: eval_dataset:smoke
+owner_email: alice@example.com
+lifecycle_state: active
+gates_assertion_ids:
+  - VAL-DOCS-EXAMPLE-001
