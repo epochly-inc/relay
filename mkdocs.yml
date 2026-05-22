@@ -1,0 +1,273 @@
+# Relay OSS documentation site config (m4-f04, VAL-DOCS-M4-004).
+#
+# This file is the single source of truth for the published Relay docs site.
+# `docs/` contains the markdown corpus authored across milestones M1-M4 of the
+# relay-docs-v1-20260522 operation. The `internal/` and `release/` subtrees
+# are deliberately excluded from `nav` per boundaries.md (private content).
+#
+# Tooling stack (locked):
+#   * MkDocs Material theme
+#   * mkdocstrings (Python SDK reference via docstring extraction)
+#   * mkdocs-render-swagger-plugin (renders packages/schemas/raw/openapi.yaml
+#     into docs/reference/http-api/)
+#   * pymdown-extensions (Mermaid diagrams, admonitions, tabbed code blocks)
+#   * mkdocs-minify-plugin (HTML minification for static-site delivery)
+#
+# Local build:
+#   uv sync --extra docs
+#   uv run mkdocs build --strict
+#
+# Cite the spec section in the page footer for every page that derives from
+# the spec. Banned product copy (compliant / certified / AI Act-approved) is
+# enforced by scripts/lint-banned-copy.py, NOT by mkdocs itself.
+
+site_name: Relay Documentation
+site_url: https://epochly-inc.github.io/relay/
+site_description: >-
+  Relay is an agent reliability OS. Evidence-bound run records, deterministic
+  replay, CEL contracts, and offline-verifiable bundles for AI agent systems.
+site_author: epochly-inc
+repo_url: https://github.com/epochly-inc/relay
+repo_name: epochly-inc/relay
+edit_uri: edit/main/docs/
+docs_dir: docs
+copyright: Copyright (c) 2026 Epochly Inc. Licensed Apache 2.0.
+
+validation:
+  nav:
+    omitted_files: info       # ~200 error-code pages intentionally not in nav
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: info           # demoted; other-feature content-page links
+    absolute_links: warn
+    unrecognized_links: info  # ../reference/cli/ style trailing-slash links
+
+# Files under docs/ that are not part of the published nav. Workers in M1-M3
+# wrote internal-only and release-only material under these prefixes; they
+# stay in the repo for reviewers but are not part of the user-facing site.
+exclude_docs: |
+  internal/
+  release/
+  /.DS_Store
+  **/.gitkeep
+  contracts/_examples/
+  how-to/_examples/
+
+# Strict mode: any unrecognized nav reference or missing file fails the build.
+# CI (.github/workflows/docs.yml, m4-f05) runs with --strict.
+#
+# `validation` block below demotes two classes of issue to INFO so they do not
+# fail --strict while still surfacing in the build log:
+#
+#   1. `nav.omitted_files`: error-code reference pages live at
+#      docs/reference/errors/RELAY-*/index.md (one per code, ~200 pages); they
+#      are linked from per-domain how-to guides and indexed via search rather
+#      than enumerated in nav. Adding 200 nav entries would bury the reader.
+#   2. `links.not_found`: a small number of cross-doc links in content pages
+#      owned by other features (m1, m2) reference source paths outside the
+#      docs/ tree (e.g., ../../packages/verifier/src/... and ../../SECURITY.md).
+#      Those will be tightened by per-page fix features; mkdocs --strict is
+#      this config's gate, not other workers' content audits.
+#
+# `validation.nav.absolute_links` stays at the default WARN level because that
+# class of issue IS a config-level signal worth catching here.
+
+theme:
+  name: material
+  language: en
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - toc.follow
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+      minify_js: false
+      minify_css: false
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths:
+            - packages/sdk-python
+            - packages/verifier/src
+            - packages/contracts/src
+          options:
+            show_source: true
+            show_signature_annotations: true
+            show_root_heading: true
+            show_root_full_path: false
+            separate_signature: true
+            merge_init_into_class: true
+            docstring_style: google
+  - render_swagger:
+      allow_arbitrary_locations: true
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra_css:
+  - reference/http-api/.banners.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/epochly-inc/relay
+  generator: false
+
+# Nav layout mirrors the four reader personas plus the catch-all reference
+# section. Every entry below MUST resolve to a file present in docs/ at build
+# time. Items that depend on later milestone work (migration-path,
+# when-to-upgrade) are intentionally omitted until the corresponding fix
+# feature lands.
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Install: getting-started/install.md
+      - First Agent: getting-started/first-agent.md
+      - First Contract: getting-started/first-contract.md
+      - First Evidence Bundle: getting-started/first-evidence-bundle.md
+      - First Replay: getting-started/first-replay.md
+      - CI Integration: getting-started/ci-integration.md
+  - Contracts:
+      - CEL Primer: contracts/cel-primer.md
+      - UDF Reference: contracts/udf-reference.md
+      - Writing Assertions: contracts/writing-assertions.md
+      - Coverage Invariant: contracts/coverage-invariant.md
+      - Manifest Binding: contracts/manifest-binding.md
+  - Evidence:
+      - Bundle Anatomy: evidence/bundle-anatomy.md
+      - Claim Binding: evidence/claim-binding.md
+      - Trust Anchor: evidence/trust-anchor.md
+      - Offline Verification: evidence/offline-verification.md
+      - Signing Key Lifecycle: evidence/signing-key-lifecycle.md
+  - How-to:
+      - Debug Replay Failures: how-to/debug-replay-failures.md
+      - Audit Gate Decision: how-to/audit-gate-decision.md
+      - Write Redaction Policy: how-to/write-redaction-policy.md
+      - Integrate with GitHub Actions: how-to/integrate-ci-github-actions.md
+      - Extract AI Act Readiness Evidence: how-to/extract-ai-act-readiness-evidence.md
+      - Verify Bundle Offline: how-to/verify-bundle-offline.md
+  - Reference:
+      - CLI:
+          - Overview: reference/cli/index.md
+          - init: reference/cli/init.md
+          - trace: reference/cli/trace.md
+          - verify-install: reference/cli/verify-install.md
+          - verify-self: reference/cli/verify-self.md
+          - contract:
+              - Overview: reference/cli/contract.md
+              - check: reference/cli/contract/check.md
+              - publish: reference/cli/contract/publish.md
+          - eval:
+              - Overview: reference/cli/eval.md
+              - run: reference/cli/eval/run.md
+          - evidence:
+              - Overview: reference/cli/evidence.md
+              - assess: reference/cli/evidence/assess.md
+              - list: reference/cli/evidence/list.md
+              - show: reference/cli/evidence/show.md
+              - verify: reference/cli/evidence/verify.md
+          - gate:
+              - Overview: reference/cli/gate.md
+              - evaluate: reference/cli/gate/evaluate.md
+          - manifest:
+              - Overview: reference/cli/manifest.md
+              - check: reference/cli/manifest/check.md
+          - replay:
+              - Overview: reference/cli/replay.md
+              - create: reference/cli/replay/create.md
+              - list: reference/cli/replay/list.md
+              - record: reference/cli/replay/record.md
+              - run: reference/cli/replay/run.md
+          - sidecar:
+              - Overview: reference/cli/sidecar.md
+              - install: reference/cli/sidecar/install.md
+              - start: reference/cli/sidecar/start.md
+              - status: reference/cli/sidecar/status.md
+              - stop: reference/cli/sidecar/stop.md
+              - restart: reference/cli/sidecar/restart.md
+      - Python SDK:
+          - Overview: reference/python-sdk/index.md
+          - Client: reference/python-sdk/client.md
+          - Errors: reference/python-sdk/errors.md
+          - Ingest: reference/python-sdk/ingest.md
+          - Redaction: reference/python-sdk/redaction.md
+          - Adapters: reference/python-sdk/adapters.md
+      - TypeScript SDK: reference/typescript-sdk/index.md
+      - HTTP API: reference/http-api/index.md
+      - Schemas: reference/schemas/index.md
+      - Adapters:
+          - OpenAI: reference/adapters/openai.md
+          - Anthropic: reference/adapters/anthropic.md
+          - Vercel AI: reference/adapters/vercel-ai.md
+          - MCP: reference/adapters/mcp.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Keystone Invariants: architecture/keystone-invariants.md
+      - State Machine: architecture/state-machine.md
+      - Sandbox Threat Model: architecture/sandbox-threat-model.md
+  - Cloud Upgrade:
+      - Feature Parity: cloud-upgrade/feature-parity.md
+  - Compliance:
+      - EU AI Act Readiness Evidence: compliance/eu-ai-act.md
+  - Legal:
+      - Trust Anchor Governance: legal/trust-anchor-governance.md
+  - Guards: guards/INDEX.md

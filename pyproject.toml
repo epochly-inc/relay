@@ -16,6 +16,34 @@ version = "0.0.0"
 description = "Relay v0.1 OSS workspace root (not published)."
 requires-python = ">=3.12"
 
+[project.optional-dependencies]
+# Documentation site dependencies (m4-f04, VAL-DOCS-M4-004).
+#
+# Install with: uv sync --extra docs
+# Build with:   uv run mkdocs build --strict
+# Serve with:   uv run mkdocs serve
+#
+# mkdocs                          : static site generator (>=1.6 required for
+#                                   `exclude_docs` syntax used in mkdocs.yml)
+# mkdocs-material                 : theme + navigation.indexes / .tabs feature
+#                                   set referenced in mkdocs.yml `theme.features`
+# mkdocstrings[python]            : Python SDK reference extraction (driving
+#                                   off packages/sdk-python, packages/verifier,
+#                                   packages/contracts source roots)
+# mkdocs-minify-plugin            : HTML minification (mkdocs.yml plugins.minify)
+# mkdocs-render-swagger-plugin    : renders packages/schemas/raw/openapi.yaml
+#                                   into docs/reference/http-api/
+# pymdown-extensions              : Mermaid fences (superfences), admonitions,
+#                                   tabbed code blocks, snippets, etc.
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.24",
+    "mkdocs-minify-plugin>=0.8",
+    "mkdocs-render-swagger-plugin>=0.1",
+    "pymdown-extensions>=10.7",
+]
+
 [tool.uv.workspace]
 members = ["packages/schemas", "packages/sdk-python", "packages/cli", "packages/contracts", "packages/gate", "packages/evals", "packages/explain", "packages/verifier", "packages/acef", "packages/replay-sandbox-protocol", "apps/local-sidecar", "apps/replay-proxy"]
 
