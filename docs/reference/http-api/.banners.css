@@ -1,0 +1,18 @@
+/* Banners CSS for HTTP API reference.
+   Loaded by MkDocs Material via extra_css in mkdocs.yml (added in m4-f04).
+   Styles [OUT-OF-SCOPE-PRIVATE] markers and inline route badges. */
+
+.out-of-scope-private {
+  color: #c00;
+  background: #fff5f5;
+  border-left: 4px solid #c00;
+  padding: 0.5em 1em;
+  margin: 1em 0;
+}
+
+.live-route {
+  background: #f0fff4;
+  border-left: 4px solid #2c7;
+  padding: 0.25em 0.5em;
+  font-family: monospace;
+}
