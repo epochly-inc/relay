@@ -50,3 +50,6 @@ relay-sidecar-bundle-*.zip
 
 # Ops runtime
 .ops/
+
+# roborev per-developer tooling config (local agent/model selection)
+.roborev.toml
