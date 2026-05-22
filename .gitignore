@@ -53,3 +53,10 @@ relay-sidecar-bundle-*.zip
 
 # roborev per-developer tooling config (local agent/model selection)
 .roborev.toml
+
+# Docs op: generated reference pages (built by scripts/docs/build-*-reference.py in CI)
+# Per m1-f03 and m1-f04 worker instructions, these are build artifacts, not source.
+docs/reference/cli/*.md
+!docs/reference/cli/.gitkeep
+docs/reference/cli/*/
+docs/reference/errors/RELAY-*/
