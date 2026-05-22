@@ -137,7 +137,11 @@ sidecar.
 from relay import Relay
 
 with Relay("01JE6N2K8H5F0WZ8N1X3R7T0AB") as client:
-    conn = client.trace("getting-started")
+    # Inside the `with` block, the SDK is ready; call `client.trace(...)`
+    # or `client.run(agent=...)` to begin a W3.1 / W3.2 operation. Those
+    # calls lazily spawn the sidecar (omitted here so the snippet is
+    # side-effect-free and audit-executable in isolation).
+    pass
 ```
 
 Spec: §A.1, §C.5

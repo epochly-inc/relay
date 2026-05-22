@@ -28,6 +28,16 @@ against. Policies may override `applies_to_fields`.
 ## `RedactionPolicy`
 
 ```python
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any
+from relay import DEFAULT_APPLIES_TO_FIELDS
+
+# Internal helpers shown here as opaque types for illustrative purposes;
+# constructed via RedactionPolicy.load(), not directly.
+class _CompiledMatcher: ...
+class _ActionPolicy: ...
+
 @dataclass(frozen=True)
 class RedactionPolicy:
     policy_version: str
@@ -89,6 +99,8 @@ SHA-256 is never used (VAL-W3-028).
 ## `SaltProvider`
 
 ```python
+from typing import Callable
+
 SaltProvider = Callable[[str], bytes]
 ```
 

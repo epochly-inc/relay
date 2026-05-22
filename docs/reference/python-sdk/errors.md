@@ -17,6 +17,9 @@ dict per VAL-W3-031), `request_id`, `trace_id`, and a `details` payload.
 ### `RelayError`
 
 ```python
+from __future__ import annotations
+from typing import Any, ClassVar
+
 class RelayError(Exception):
     code: ClassVar[str] = "RELAY-SDK-001"
     error_class: ClassVar[str] = "RELAY-SDK-ERROR"
@@ -53,6 +56,9 @@ correct typed subclass.
 ### `RelayCanonicalStatusForbidden`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelayIngestError
+
 class RelayCanonicalStatusForbidden(RelayIngestError):
     code: ClassVar[str] = "RELAY-SDK-005"
     error_class: ClassVar[str] = "RELAY-SDK-CANONICAL-STATUS-FORBIDDEN"
@@ -65,8 +71,10 @@ control plane is the sole writer of canonical results. The sidecar
 enforces the same invariant via wire code `RELAY-ING-031`.
 
 ```python
+from relay import RelayCanonicalStatusForbidden
+
 try:
-    run.capture(client_lifecycle_status="not_a_valid_status")
+    raise RelayCanonicalStatusForbidden("blocked")
 except RelayCanonicalStatusForbidden as exc:
     print(exc.code, exc.blocked_surface)
 ```
@@ -74,6 +82,9 @@ except RelayCanonicalStatusForbidden as exc:
 ### `RelayLifecycleInvalid`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelaySdkError
+
 class RelayLifecycleInvalid(RelaySdkError):
     code: ClassVar[str] = "RELAY-SDK-006"
     error_class: ClassVar[str] = "RELAY-SDK-LIFECYCLE-INVALID"
@@ -86,6 +97,9 @@ class RelayLifecycleInvalid(RelaySdkError):
 ### `RelayPolicyError`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelayIngestError
+
 class RelayPolicyError(RelayIngestError):
     code: ClassVar[str] = "RELAY-SDK-010"
     error_class: ClassVar[str] = "RELAY-SDK-POLICY-INVALID"
@@ -102,6 +116,9 @@ wire code in `details["code"]`.
 ### `RelayConfigError`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelaySdkError
+
 class RelayConfigError(RelaySdkError):
     code: ClassVar[str] = "RELAY-SDK-001"
     error_class: ClassVar[str] = "RELAY-SDK-CONFIG-001"
@@ -115,6 +132,9 @@ Invalid SDK configuration detected synchronously at construction
 ### `RelayAuthMismatch`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelayAuthError
+
 class RelayAuthMismatch(RelayAuthError):
     code: ClassVar[str] = "RELAY-SDK-004"
     error_class: ClassVar[str] = "RELAY-SDK-AUTH-MISMATCH"
@@ -129,6 +149,9 @@ authentication. `blocked_surface` defaults to `GET /health`.
 ### `RelaySidecarNotReachable`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelaySidecarError
+
 class RelaySidecarNotReachable(RelaySidecarError):
     code: ClassVar[str] = "RELAY-SDK-003"
     error_class: ClassVar[str] = "RELAY-SDK-NO-SIDECAR"
@@ -141,6 +164,9 @@ No sidecar is reachable and auto-spawn is disabled
 ### `RelaySidecarVersionMismatch`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelaySidecarError
+
 class RelaySidecarVersionMismatch(RelaySidecarError):
     code: ClassVar[str] = "RELAY-SDK-002"
     error_class: ClassVar[str] = "RELAY-SDK-VERSION-MISMATCH"
@@ -155,6 +181,9 @@ range.
 ### `RelayEvidenceIncomplete`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelayEvidenceError
+
 class RelayEvidenceIncomplete(RelayEvidenceError):
     code: ClassVar[str] = "RELAY-SDK-008"
     error_class: ClassVar[str] = "RELAY-SDK-EVIDENCE-INCOMPLETE"
@@ -169,6 +198,9 @@ Evidence envelope is missing one or more required binding fields
 ### `RelayHandoffIncomplete`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelayIngestError
+
 class RelayHandoffIncomplete(RelayIngestError):
     code: ClassVar[str] = "RELAY-SDK-007"
     error_class: ClassVar[str] = "RELAY-SDK-HANDOFF-INCOMPLETE"
@@ -181,6 +213,9 @@ Three-anchor handoff is missing or stale. The wire equivalents are
 ### `RelayReplayPrecondition`
 
 ```python
+from typing import ClassVar
+from relay.errors import RelayReplayError
+
 class RelayReplayPrecondition(RelayReplayError):
     code: ClassVar[str] = "RELAY-SDK-009"
     error_class: ClassVar[str] = "RELAY-SDK-REPLAY-PRECONDITION"

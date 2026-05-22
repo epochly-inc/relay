@@ -1297,6 +1297,50 @@ codes:
     triggers: ""
     how_to_fix: ""
     introduced_in: v0.1.0
+  - code: RELAY-SIDECAR-020
+    domain: sidecar
+    severity: error
+    description: |
+      Sidecar bundle could not be verified against the trust root. The npx @epochly/relay sidecar wrapper refuses to launch a bundle whose signature does not chain to the default trust anchor (CLAUDE.md keystone invariant #13).
+    triggers: |
+      Bundle signature verification failed, the signing key is not in the trust root, or the signature envelope is malformed.
+    how_to_fix: |
+      Re-download the published bundle from the official release channel; do not override the trust root unless you are a self-hoster operating an approved BYO trust anchor.
+    spec_section: ""
+    introduced_in: v0.1.0
+  - code: RELAY-SIDECAR-021
+    domain: sidecar
+    severity: error
+    description: |
+      Sidecar bundle digest does not match the expected SHA-256 declared in the signed manifest. The wrapper aborts before exec so a tampered binary is never executed.
+    triggers: |
+      Computed SHA-256 of the downloaded bundle differs from the digest pinned in the signed release manifest.
+    how_to_fix: |
+      Discard the cached bundle and re-fetch from the official release channel; verify network integrity. If the mismatch persists, escalate as a possible supply-chain incident.
+    spec_section: ""
+    introduced_in: v0.1.0
+  - code: RELAY-SIDECAR-022
+    domain: sidecar
+    severity: error
+    description: |
+      Sidecar bundle is unavailable for download. The wrapper cannot fetch the platform-specific bundle from the configured release channel.
+    triggers: |
+      Network request for the bundle returned a transport error, 4xx/5xx HTTP status, or the release channel does not publish an artifact for the requested version.
+    how_to_fix: |
+      Verify network connectivity to the release channel; confirm the requested SDK version is published. Retry after the release channel is reachable.
+    spec_section: ""
+    introduced_in: v0.1.0
+  - code: RELAY-SIDECAR-023
+    domain: sidecar
+    severity: error
+    description: |
+      Sidecar bundle is not available for the host architecture. The wrapper detected an OS/arch pair (e.g., linux-riscv64) that the current release does not ship a prebuilt binary for.
+    triggers: |
+      Resolved `${platform}-${arch}` triple has no corresponding artifact in the signed release manifest.
+    how_to_fix: |
+      Run on a supported `${platform}-${arch}` pair (darwin-arm64, darwin-x86_64, linux-x86_64, linux-aarch64, win32-x86_64) or build the sidecar from source for your platform.
+    spec_section: ""
+    introduced_in: v0.1.0
   - code: RELAY-SIDEEFFECT-001
     domain: side-effect
     severity: error
