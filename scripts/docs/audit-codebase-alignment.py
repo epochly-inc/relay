@@ -792,23 +792,19 @@ def _bash_run_command(line: str) -> str | None:
 
 
 def _bash_has_control_block(block: str) -> bool:
-    heredoc_delim: str | None = None
     for raw_line in block.splitlines():
         line = raw_line.strip()
-        if heredoc_delim:
-            if line == heredoc_delim:
-                heredoc_delim = None
-            continue
         if not line or line.startswith("#"):
             continue
         heredoc = BASH_HEREDOC_RE.search(line)
         if heredoc:
-            heredoc_delim = heredoc.group("delim")
-            continue
+            return True
         if line.startswith("$ "):
             line = line[2:].lstrip()
         tokens = _bash_lex(line)
         if tokens is None:
+            return True
+        if any(_bash_has_control_punctuation(token) for token in tokens):
             return True
         if tokens and (tokens[0] in BASH_BLOCK_KEYWORDS or BASH_BLOCK_TOKENS & set(tokens)):
             return True

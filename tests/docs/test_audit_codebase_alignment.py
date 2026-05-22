@@ -251,10 +251,6 @@ def test_bash_run_filter_executes_only_allowed_commands() -> None:
     commands = audit._bash_run_commands(
         "# rly replay run\n"
         "echo 'rly replay run'\n"
-        "rly replay run && curl https://example.invalid\n"
-        "rly replay run |& tee out.log\n"
-        "rly replay run &> out.log\n"
-        "rly replay run >& out.log\n"
         "uv run rly replay run\n"
         "exit 42\n"
     )
@@ -270,10 +266,16 @@ def test_bash_run_filter_executes_only_allowed_commands() -> None:
         "for target in a; do\nrly replay run\n done\n",
         "run_docs() {\nrly replay run\n}\n",
         "(\nrly replay run\n)\n",
+        "rly replay run && curl https://example.invalid\n",
+        "rly replay run |& tee out.log\n",
+        "rly replay run &> out.log\n",
+        "rly replay run >& out.log\n",
+        "false &&\nrly replay run\n",
+        "cmd |\nrly replay run\n",
     ],
 )
-def test_bash_run_filter_skips_control_blocks(block: str) -> None:
-    """The run filter does not execute commands nested in shell blocks."""
+def test_bash_run_filter_skips_control_syntax_blocks(block: str) -> None:
+    """The run filter does not execute commands from shell syntax blocks."""
     audit = _load_audit_module()
     assert audit._bash_run_commands(block) == []
 
