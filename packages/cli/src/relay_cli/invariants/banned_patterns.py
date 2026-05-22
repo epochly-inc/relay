@@ -115,7 +115,7 @@ _PYTEST_SKIP_RE: Final[re.Pattern[str]] = re.compile(
 # ``scripts/lint-banned-copy.py`` so the verify-self surface and the
 # CI lint surface report identical violations.
 _BANNED_COPY_RE: Final[re.Pattern[str]] = re.compile(
-    r"compliant|certified|AI[. ]Act[. \-]approved|guaranteed[. ]AI[. ]Act",
+    r"\bcompliant\b|\bcertified\b|AI[. ]Act[. \-]approved|guaranteed[. ]AI[. ]Act",
     re.IGNORECASE,
 )
 

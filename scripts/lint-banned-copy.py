@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 # Repo root -- this script lives at <repo>/scripts/.
@@ -173,6 +174,21 @@ def _scan_file(path: Path) -> list[str]:
     return seen
 
 
+def _is_excluded(path: Path, root_path: Path, patterns: list[str]) -> bool:
+    rel = path.relative_to(root_path).as_posix()
+    for pattern in patterns:
+        normalized = pattern.replace("\\", "/")
+        if normalized.endswith("/**"):
+            prefix = normalized[:-3]
+            if rel == prefix or rel.startswith(prefix + "/"):
+                return True
+        if fnmatchcase(rel, normalized):
+            return True
+        if normalized.startswith("**/") and fnmatchcase(rel, normalized[3:]):
+            return True
+    return False
+
+
 def _scan_surface(surface: dict[str, object]) -> dict[str, object]:
     """Scan one surface and return a result dict.
 
@@ -196,10 +212,6 @@ def _scan_surface(surface: dict[str, object]) -> dict[str, object]:
             "files_scanned": 0,
             "violations": [],
         }
-    excluded_paths: set[Path] = set()
-    for pattern in excludes:
-        for p in root_path.glob(pattern):
-            excluded_paths.add(p.resolve())
     # Files that legitimately enumerate every banned token because their
     # purpose is to detect the tokens elsewhere (the verify-self
     # banned-pattern detector and its closed finding-codes enum / shared
@@ -239,7 +251,7 @@ def _scan_surface(surface: dict[str, object]) -> dict[str, object]:
         for p in sorted(root_path.glob(pattern)):
             if not p.is_file():
                 continue
-            if p.resolve() in excluded_paths:
+            if _is_excluded(p, root_path, excludes):
                 continue
             # Skip files that are themselves the lint script (which
             # legitimately mentions every banned token in its docs).

@@ -30,6 +30,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -246,6 +247,32 @@ def test_public_docs_surface_includes_exclusions_in_config(lint_module):
     assert "release/**" in excludes, excludes
     # Includes must still target docs/**/*.md.
     assert "**/*.md" in list(public_docs["includes"])
+
+
+@pytest.mark.plumbing
+def test_public_docs_exclude_patterns_match_candidate_files(lint_module, tmp_path: Path):
+    root = tmp_path / "docs"
+    internal_file = root / "internal" / "lint-policy.md"
+    nested_internal_file = root / "internal" / "nested" / "policy.md"
+    release_file = root / "release" / "runbook.md"
+    public_file = root / "public" / "page.md"
+    patterns = ["internal/**", "release/**"]
+
+    assert lint_module._is_excluded(internal_file, root, patterns) is True
+    assert lint_module._is_excluded(nested_internal_file, root, patterns) is True
+    assert lint_module._is_excluded(release_file, root, patterns) is True
+    assert lint_module._is_excluded(public_file, root, patterns) is False
+
+
+@pytest.mark.plumbing
+def test_verify_self_banned_copy_regex_matches_lint_policy(lint_module):
+    from relay_cli.invariants.banned_patterns import _BANNED_COPY_RE
+
+    assert _BANNED_COPY_RE.pattern == lint_module.BANNED_REGEX.pattern
+    assert _BANNED_COPY_RE.flags & re.IGNORECASE
+    assert _BANNED_COPY_RE.search("noncompliant") is None
+    assert _BANNED_COPY_RE.search("certified_status") is None
+    assert _BANNED_COPY_RE.search("non-compliant") is not None
 
 
 @pytest.mark.plumbing
