@@ -270,6 +270,7 @@ def test_verify_self_banned_copy_regex_matches_lint_policy(lint_module):
 
     assert _BANNED_COPY_RE.pattern == lint_module.BANNED_REGEX.pattern
     assert _BANNED_COPY_RE.flags & re.IGNORECASE
+    assert lint_module.BANNED_REGEX.flags & re.IGNORECASE
     assert _BANNED_COPY_RE.search("noncompliant") is None
     assert _BANNED_COPY_RE.search("certified_status") is None
     assert _BANNED_COPY_RE.search("non-compliant") is not None
