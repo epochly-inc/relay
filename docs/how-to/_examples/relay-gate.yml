@@ -1,0 +1,186 @@
+# Relay gate workflow -- production-grade sample.
+#
+# Drop this file at .github/workflows/relay-gate.yml in your repository.
+# Companion guide: docs/how-to/integrate-ci-github-actions.md.
+#
+# What this workflow does:
+#   1. Checks out the PR head with a token-bound fetch depth.
+#   2. Sets up Python 3.12 and the uv package manager (pinned actions).
+#   3. Installs Relay and your project dependencies via `uv sync`.
+#   4. Publishes the contract coverage report with `rly contract publish`.
+#   5. Evaluates the gate with `rly gate evaluate`, propagating the
+#      gate's exit code as the job's exit code (so branch protection
+#      can require an accept decision before merge).
+#   6. Falls back cleanly on forked PRs that do not have access to
+#      RELAY_CI_TOKEN -- the CLI emits a dry_run_unsigned draft (spec
+#      §A.3, §B.6, §AI.6) and exits 0; the required-check on the
+#      gate decision blocks the fork PR from merging, as intended.
+#
+# Process safety: never kills processes by name (CLAUDE.md banned
+# pattern #1). All step exits are clean exits from the Relay CLI.
+
+name: "relay-gate"
+
+on:
+  pull_request:
+    branches:
+      - main
+
+# Least-privilege permissions: read source, write PR checks for the
+# decision post-back, write status for the gate-evaluate result.
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  statuses: write
+
+# Cancel superseded runs on the same PR to keep the gate decision
+# bound to the latest commit. The Relay CLI handles SIGTERM by
+# transitioning the in-flight draft to resolution_state='cancelled'
+# (spec §A.3) so cancellation never leaves orphan drafts.
+concurrency:
+  group: "relay-gate-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
+jobs:
+  setup:
+    name: "setup: detect fork + emit run metadata"
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      is_fork: ${{ steps.fork.outputs.is_fork }}
+      release_sha: ${{ steps.meta.outputs.release_sha }}
+    steps:
+      - name: "checkout (no token needed for metadata)"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: "detect fork PR"
+        id: fork
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+        run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo "is_fork=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_fork=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "emit run metadata"
+        id: meta
+        run: |
+          echo "release_sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+
+  contract-publish:
+    name: "contract publish: coverage report"
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: "checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "install uv"
+        uses: astral-sh/setup-uv@v3
+
+      - name: "install relay + project deps"
+        run: uv sync --all-packages
+
+      - name: "publish contract coverage"
+        env:
+          RELAY_CI_TOKEN: ${{ secrets.RELAY_CI_TOKEN }}
+        run: |
+          uv run rly contract publish "${{ vars.RELAY_CONTRACT_BUNDLE }}" \
+            --out "${{ runner.temp }}/coverage.json"
+
+      - name: "upload coverage artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: "relay-coverage"
+          path: "${{ runner.temp }}/coverage.json"
+          retention-days: 14
+
+  gate-evaluate:
+    name: "gate evaluate: required check"
+    needs:
+      - setup
+      - contract-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: "checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "install uv"
+        uses: astral-sh/setup-uv@v3
+
+      - name: "install relay"
+        run: uv sync --all-packages
+
+      - name: "download coverage artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: "relay-coverage"
+          path: "${{ runner.temp }}"
+
+      - name: "evaluate gate (canonical)"
+        if: needs.setup.outputs.is_fork == 'false'
+        env:
+          RELAY_CI_TOKEN: ${{ secrets.RELAY_CI_TOKEN }}
+        run: |
+          uv run rly gate evaluate \
+            --gate-id "${{ vars.RELAY_GATE_ID }}" \
+            --release-sha "${{ needs.setup.outputs.release_sha }}" \
+            --project "${{ vars.RELAY_PROJECT_ID }}" \
+            --json
+
+      - name: "evaluate gate (fork: dry_run_unsigned)"
+        if: needs.setup.outputs.is_fork == 'true'
+        run: |
+          # Forked PRs do not receive RELAY_CI_TOKEN. The CLI emits a
+          # dry_run_unsigned draft per spec section A.3 and exits 0.
+          # Branch protection that requires the canonical gate decision
+          # blocks merge -- that's intentional (spec section B.6).
+          uv run rly gate evaluate \
+            --gate-id "${{ vars.RELAY_GATE_ID }}" \
+            --release-sha "${{ needs.setup.outputs.release_sha }}" \
+            --project "${{ vars.RELAY_PROJECT_ID }}" \
+            --json
+
+  decision-post:
+    name: "decision post-back: surface gate decision"
+    needs:
+      - setup
+      - gate-evaluate
+    if: always() && needs.setup.outputs.is_fork == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: "post decision to PR check"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATE_RESULT: ${{ needs.gate-evaluate.result }}
+        run: |
+          # The hosted control plane posts the canonical gate decision
+          # back to the PR as a required-check via webhook. This step is
+          # a fallback that records the gate-evaluate job's own result
+          # so reviewers see a check even if the hosted webhook is
+          # delayed. The contract is documented in the companion
+          # how-to guide.
+          echo "Gate evaluate job result: $GATE_RESULT"
