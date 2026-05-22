@@ -49,12 +49,13 @@ Spec citations:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import difflib
 import json
 import os
-import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,20 @@ EXIT_USAGE = 64
 # layout introduces a cycle.
 MAX_DEPTH = 5
 
+WORKSPACE_PYTHONPATH_ENTRIES = (
+    REPO_ROOT / "packages" / "cli" / "src",
+    REPO_ROOT / "packages" / "sdk-python",
+    REPO_ROOT / "packages" / "schemas" / "python",
+    REPO_ROOT / "packages" / "contracts" / "src",
+    REPO_ROOT / "packages" / "gate" / "src",
+    REPO_ROOT / "packages" / "evals" / "src",
+    REPO_ROOT / "packages" / "explain" / "src",
+    REPO_ROOT / "packages" / "verifier" / "src",
+    REPO_ROOT / "packages" / "replay-sandbox-protocol" / "src",
+    REPO_ROOT / "apps" / "local-sidecar",
+    REPO_ROOT / "apps" / "replay-proxy",
+)
+
 
 # ---------------------------------------------------------------------------
 # Data shapes
@@ -95,6 +110,7 @@ class CliCommand:
     """
 
     command_path: str
+    usage: str
     help_text: str
     options: tuple[dict[str, Any], ...]
     subcommands: tuple[dict[str, Any], ...]
@@ -110,16 +126,22 @@ class CliCommand:
 def _rly_binary() -> list[str]:
     """Resolve the ``rly`` invocation used to harvest help envelopes.
 
-    Prefers the installed ``rly`` binary on PATH (matches the documented
-    install path); falls back to ``python -m relay_cli`` so the generator
-    still works in a fresh editable install before ``uv pip install`` has
-    placed the console script.
+    Invoke the repository CLI source directly through the active Python
+    interpreter. This avoids stale ``rly`` binaries elsewhere on PATH and
+    avoids ``python -m relay_cli``, which is invalid for this package.
     """
-    on_path = shutil.which("rly")
-    if on_path:
-        return [on_path]
-    # Module form. ``relay_cli.__main__`` re-exports ``run``.
-    return [sys.executable, "-m", "relay_cli"]
+    return [
+        sys.executable,
+        "-c",
+        "import sys; sys.argv[0] = 'rly'; from relay_cli.main import run; run()",
+    ]
+
+
+def _workspace_pythonpath(existing: str | None) -> str:
+    paths = [str(path) for path in WORKSPACE_PYTHONPATH_ENTRIES if path.exists()]
+    if existing:
+        paths.append(existing)
+    return os.pathsep.join(paths)
 
 
 def _fetch_help(command_tokens: list[str]) -> dict[str, Any]:
@@ -136,15 +158,20 @@ def _fetch_help(command_tokens: list[str]) -> dict[str, Any]:
     """
     argv = [*_rly_binary(), "--json", *command_tokens, "--help"]
     env = dict(os.environ)
-    # Force the canonical JSON path even when the env happens to disable it.
+    # Force the canonical JSON path even when the env happens to disable it,
+    # and keep help harvesting out of the user's real CLI state.
     env.pop("RELAY_OUTPUT_FORMAT", None)
-    result = subprocess.run(
-        argv,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=30,
-    )
+    env["PYTHONPATH"] = _workspace_pythonpath(env.get("PYTHONPATH"))
+    env["RELAY_CLI_INVOCATIONS_DISABLED"] = "1"
+    with tempfile.TemporaryDirectory(prefix="relay-cli-help-") as relay_home:
+        env["RELAY_HOME"] = relay_home
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
     # ``--help`` exits 0 on success; we treat any non-zero as a generator
     # error so the calling tooling sees the failure rather than silently
     # producing an incomplete tree.
@@ -203,6 +230,7 @@ def _walk_tree(command_tokens: list[str], depth: int = 0) -> list[CliCommand]:
     help_text = _resolve_help_text(envelope, command_tokens)
     node = CliCommand(
         command_path=command_path,
+        usage=_normalize_usage(envelope.get("usage"), command_path, is_leaf),
         help_text=help_text,
         options=options,
         subcommands=subcommands_raw,
@@ -258,6 +286,17 @@ def _normalize_subcommands(subs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 
+def _normalize_usage(raw: Any, command_path: str, is_leaf: bool) -> str:
+    usage = str(raw or "").strip()
+    if usage.lower().startswith("usage:"):
+        usage = usage.split(":", 1)[1].strip()
+    usage = " ".join(usage.split())
+    if usage:
+        return usage
+    usage_tail = "[OPTIONS] [SUBCOMMAND]" if not is_leaf else "[OPTIONS]"
+    return f"{command_path} {usage_tail}"
+
+
 def _resolve_help_text(envelope: dict[str, Any], tokens: list[str]) -> str:
     """Extract a human-language description for the current node.
 
@@ -309,7 +348,7 @@ def _filename_for(command_path: str) -> str:
     if len(tail) == 1:
         return f"{tail[0]}.md"
     # Group + leaf: directory-per-group, leaf-as-file.
-    return os.path.join(*tail[:-1], f"{tail[-1]}.md")
+    return "/".join([*tail[:-1], f"{tail[-1]}.md"])
 
 
 def _render_page(node: CliCommand) -> str:
@@ -352,12 +391,10 @@ def _render_page(node: CliCommand) -> str:
         for paragraph in _split_paragraphs(node.help_text):
             lines.append(paragraph)
             lines.append("")
-    # Usage line: groups take [SUBCOMMAND], leaves take [ARGS].
-    usage_tail = "[OPTIONS] [SUBCOMMAND]" if not node.is_leaf else "[OPTIONS]"
     lines.append("## Usage")
     lines.append("")
     lines.append("```")
-    lines.append(f"{title} {usage_tail}")
+    lines.append(node.usage or title)
     lines.append("```")
     lines.append("")
     lines.append("## Options")
@@ -447,7 +484,7 @@ def _subcommand_link(parent_path: str, child_name: str) -> str:
     if parent_parts == ["rly"]:
         return f"{child_name}.md"
     tail = parent_parts[1:]
-    return os.path.join(*tail, f"{child_name}.md")
+    return "/".join([*tail, f"{child_name}.md"])
 
 
 # ---------------------------------------------------------------------------
@@ -488,12 +525,8 @@ def _write_pages(pages: dict[Path, str], out_root: Path) -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     # Sweep stale .md files so removed subcommands do not linger.
     for existing in out_root.rglob("*.md"):
-        try:
+        with contextlib.suppress(OSError):
             existing.unlink()
-        except OSError:
-            # A read-only or vanished file is non-fatal; the write below
-            # will fail loudly if the directory itself is bad.
-            pass
     for rel, content in pages.items():
         target = out_root / rel
         target.parent.mkdir(parents=True, exist_ok=True)

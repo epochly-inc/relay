@@ -13,7 +13,7 @@ human-readable-when-piped path; W5.1 ships ``--json`` only.
 
 Per VAL-W5-010 every subcommand's ``--help``, when piped (non-TTY), MUST
 emit a machine-readable JSON envelope ``{schema_version:
-"relay.cli.help.v1", command, options, subcommands, exit_codes}``. This
+"relay.cli.help.v1", command, usage, options, subcommands, exit_codes}``. This
 module provides the JSON-help envelope builder; the Typer integration in
 :mod:`relay_cli.main` wires it as a Typer ``Group.format_help`` override.
 
@@ -133,15 +133,18 @@ def build_version_envelope(
 def build_help_envelope(
     *,
     command: str,
+    usage: str = "",
     options: list[dict[str, Any]],
     subcommands: list[dict[str, Any]],
     exit_codes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Construct the canonical ``--help`` JSON envelope (VAL-W5-010).
 
-    Returns a dict with keys ``schema_version``, ``command``,
+    Returns a dict with keys ``schema_version``, ``command``, ``usage``,
     ``options``, ``subcommands``, ``exit_codes``. The ``command`` value
     is the dotted invocation path (e.g., ``"rly sidecar status"``);
+    ``usage`` is Click's canonical usage line without the ``Usage:``
+    prefix.
     ``options`` is a list of ``{name, type, required, help}`` dicts;
     ``subcommands`` is a list of ``{name, help}`` dicts; ``exit_codes``
     is a list of ``{code, meaning}`` dicts mirroring the canonical
@@ -150,6 +153,7 @@ def build_help_envelope(
     return {
         "schema_version": CLI_HELP_SCHEMA_VERSION,
         "command": command,
+        "usage": usage,
         "options": list(options),
         "subcommands": list(subcommands),
         "exit_codes": list(exit_codes),

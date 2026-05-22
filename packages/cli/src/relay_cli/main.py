@@ -140,6 +140,7 @@ class _RelayTyperGroup(typer.core.TyperGroup):
         if should_emit_json():
             envelope = build_help_envelope(
                 command=ctx.command_path,
+                usage=_build_usage_payload(ctx),
                 options=_build_options_payload(self),
                 subcommands=_build_subcommands_payload(self),
                 exit_codes=list(_EXIT_CODE_HELP_ROWS),
@@ -166,6 +167,7 @@ class _RelayTyperCommand(typer.core.TyperCommand):
         if should_emit_json():
             envelope = build_help_envelope(
                 command=ctx.command_path,
+                usage=_build_usage_payload(ctx),
                 options=_build_options_payload(self),
                 subcommands=[],  # leaves have no subcommands
                 exit_codes=list(_EXIT_CODE_HELP_ROWS),
@@ -224,6 +226,14 @@ def _build_options_payload(cmd: click.Command) -> list[dict[str, Any]]:
             }
         )
     return payload
+
+
+def _build_usage_payload(ctx: click.Context) -> str:
+    """Return Click's canonical usage line without the ``Usage:`` prefix."""
+    usage = ctx.command.get_usage(ctx).strip()
+    if usage.lower().startswith("usage:"):
+        usage = usage.split(":", 1)[1].strip()
+    return " ".join(usage.split())
 
 
 def _build_subcommands_payload(cmd: click.Command) -> list[dict[str, Any]]:

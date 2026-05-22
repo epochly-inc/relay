@@ -26,10 +26,12 @@ Spec citations:
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -39,6 +41,16 @@ SCRIPT = REPO_ROOT / "scripts" / "docs" / "build-cli-reference.py"
 BANNER_FRAGMENT = (
     "Generated from packages/cli/src/relay_cli/main.py. Do not edit by hand."
 )
+
+
+def _load_generator() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("build_cli_reference", SCRIPT)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -64,6 +76,84 @@ def test_help_exits_zero() -> None:
     combined = result.stdout + result.stderr
     assert "--check" in combined, "help text must mention --check flag"
     assert "--out" in combined, "help text must mention --out flag"
+
+
+@pytest.mark.plumbing
+def test_help_harvesting_uses_repo_cli_and_disables_invocation_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Help subprocesses must not resolve stale PATH binaries or write CLI state."""
+    generator = _load_generator()
+    real_home = tmp_path / "real-relay-home"
+    observed: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed["argv"] = args[0]
+        observed["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=(
+                '{"schema_version":"relay.cli.help.v1","command":"rly trace",'
+                '"usage":"rly trace [OPTIONS] RUN_ID","options":[],'
+                '"subcommands":[],"exit_codes":[]}'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("RELAY_HOME", str(real_home))
+    monkeypatch.setattr(generator.subprocess, "run", fake_run)
+
+    envelope = generator._fetch_help(["trace"])
+
+    argv = observed["argv"]
+    env = observed["env"]
+    assert isinstance(argv, list)
+    assert argv[0] == sys.executable
+    assert "-m" not in argv
+    assert any("relay_cli.main" in part for part in argv)
+    assert envelope["usage"] == "rly trace [OPTIONS] RUN_ID"
+    assert isinstance(env, dict)
+    assert env["RELAY_CLI_INVOCATIONS_DISABLED"] == "1"
+    assert env["RELAY_HOME"] != str(real_home)
+    pythonpath = env["PYTHONPATH"].split(os.pathsep)
+    assert str(REPO_ROOT / "packages" / "cli" / "src") in pythonpath
+
+
+@pytest.mark.plumbing
+def test_rendered_usage_uses_harvested_click_usage() -> None:
+    """Leaf command usage must include required positional arguments."""
+    generator = _load_generator()
+    node = generator.CliCommand(
+        command_path="rly trace",
+        usage="rly trace [OPTIONS] RUN_ID",
+        help_text="",
+        options=(),
+        subcommands=(),
+        exit_codes=(),
+        is_leaf=True,
+    )
+
+    body = generator._render_page(node)
+
+    assert "```\nrly trace [OPTIONS] RUN_ID\n```" in body
+    assert "```\nrly trace [OPTIONS]\n```" not in body
+
+
+@pytest.mark.plumbing
+def test_markdown_links_use_posix_separators(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Markdown hrefs must not inherit platform filesystem separators."""
+    generator = _load_generator()
+    monkeypatch.setattr(generator.os.path, "join", lambda *parts: "\\".join(parts))
+
+    assert generator._filename_for("rly contract publish") == "contract/publish.md"
+    assert generator._subcommand_link("rly contract", "publish") == (
+        "contract/publish.md"
+    )
 
 
 @pytest.mark.plumbing
