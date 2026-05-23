@@ -225,19 +225,23 @@ In no-Docker degraded mode:
   determinism is preserved because the cassette, not the sandbox, is
   the source of truth for provider responses.
 
-- The sandbox driver is only required for `rly verify-self`
-  (which probes whether the host has a working local-docker driver) and
-  for tier-3 evals (which require the full isolation envelope for
-  LLM-judged correctness scoring). Windows users without Docker Desktop
-  get this degraded mode by default; the `verify-self` output marks
-  `sandbox_driver=none` so the gap is visible in evidence.
+- The sandbox driver is only required for tier-3 evals (which require
+  the full isolation envelope for LLM-judged correctness scoring).
+  `rly verify-self` does NOT itself probe for a working Docker daemon
+  (the v0.1 verify-self surface runs the invariants schema only --
+  Docker availability detection is the user's responsibility via
+  `docker version` exit code, per F5 above). Windows users without
+  Docker Desktop get this degraded mode by default.
 
-- The degraded mode is documented as degraded, not as equivalent. The
-  evidence bundle for a no-Docker replay run records
-  `sandbox_driver=none`; verifiers downstream can read that field and
-  decide whether to accept it for their use case. Auditors who require
-  Docker-isolated replay can refuse no-Docker bundles; auditors who
-  only require deterministic replay can accept them.
+- The degraded mode is documented as degraded, not as equivalent. Each
+  replay run emits a `replay_result.v1` envelope whose `sandbox_driver`
+  field names the driver actually used (the values documented in
+  `packages/schemas/python/relay_schemas/envelopes.py` are
+  `"local-docker"`, `"e2b"`, `"local-firecracker"`, and `"modal"`).
+  Verifiers downstream can read that field and decide whether to
+  accept the bundle for their use case. Auditors who require
+  Docker-isolated replay can refuse non-`local-docker` bundles; auditors
+  who only require deterministic replay can accept them.
 
 **A4 layered proxy is implemented in W7; this doc establishes the doc-first design.**
 The W15 doc (this file) lands in week 1-2 of the v0.1 buildout; the W7

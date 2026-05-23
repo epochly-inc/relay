@@ -128,11 +128,16 @@ signing paths in OSS, and they verify against different JWKS:
    JWKS. To verify a local-dev bundle on hosted (or on any machine that
    doesn't have your local JWKS), either re-sign it via the hosted
    signer OR pass `--trust-anchor <jwks-url>` to the verifier. The
-   `--trust-anchor` flag accepts an `https://` URL or a `file://` URL
-   (see the `file://` URL handling docstring in
-   `packages/verifier/src/relay_verifier/jwks_loader.py` -- bare
-   filesystem paths are NOT accepted; use
-   `file:///absolute/path/to/jwks.json` to point at a local file).
+   `--trust-anchor` flag accepts an `https://` URL with a hostname (the
+   verifier's cache is keyed by hostname per
+   `_hostname_for_url` in
+   `packages/verifier/src/relay_verifier/jwks_loader.py`, which raises
+   `ValueError` on URLs without a hostname -- so `file://` URLs are
+   NOT supported on the current CLI codepath even though the underlying
+   `NetworkFetcher` docstring contemplates them). To verify a local-dev
+   bundle offline, pre-populate `${RELAY_HOME}/jwks-cache/<host>.json`
+   from a trusted source and re-run with the matching `https://`
+   `--trust-anchor` URL.
 
 Two practical confirmations:
 
