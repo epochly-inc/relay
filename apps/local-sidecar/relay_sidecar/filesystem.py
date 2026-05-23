@@ -134,11 +134,48 @@ def is_local_filesystem(path: Path | str) -> bool:
 
 
 def _probe_linux(path: Path) -> tuple[str, int | str | None]:
-    """Linux: read ``struct statfs.f_type`` via libc ctypes."""
+    """Linux: read ``struct statfs.f_type`` via libc ctypes.
+
+    The declared ctypes structure MUST be at least as large as the
+    kernel's ``struct statfs`` (see ``man 2 statfs``) -- on x86_64 that
+    is 120 bytes (12 fields x 8 bytes; ``f_fsid`` is 8 bytes too). An
+    earlier implementation declared only ``f_type`` (8 bytes), letting
+    the kernel write 112 bytes past the buffer into adjacent stack /
+    heap memory. The corruption manifested as a non-deterministic
+    segfault later during pytest teardown / garbage collection (see
+    the matching post-mortem in ``_probe_macos`` below; CI traceback at
+    GitHub run 26339170204 shows the symptom reaching the GC and the
+    fault inside ``_probe_linux``). Fix: declare every field per the
+    Linux kernel struct so ``ctypes.sizeof(_Statfs) >= sizeof(struct
+    statfs)``. Only ``f_type`` is read; the rest are padding for safety.
+    """
     try:
+        # Linux struct statfs (glibc / kernel ABI; 64-bit fields on
+        # 64-bit systems via ``__fsword_t = long``). Field order matches
+        # bits/statfs.h; ``f_spare`` is reserved padding the kernel may
+        # write to.
+        _word = ctypes.c_long  # __fsword_t (or __SWORD_TYPE) on 64-bit
+        _blocks = ctypes.c_uint64  # __fsblkcnt64_t
+        _files = ctypes.c_uint64  # __fsfilcnt64_t
+
+        class _Fsid(ctypes.Structure):
+            _fields_ = [("val", ctypes.c_int * 2)]
 
         class _Statfs(ctypes.Structure):
-            _fields_ = [("f_type", ctypes.c_long)]
+            _fields_ = [
+                ("f_type", _word),
+                ("f_bsize", _word),
+                ("f_blocks", _blocks),
+                ("f_bfree", _blocks),
+                ("f_bavail", _blocks),
+                ("f_files", _files),
+                ("f_ffree", _files),
+                ("f_fsid", _Fsid),
+                ("f_namelen", _word),
+                ("f_frsize", _word),
+                ("f_flags", _word),
+                ("f_spare", _word * 4),
+            ]
 
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
         st = _Statfs()
