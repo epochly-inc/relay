@@ -64,7 +64,7 @@ jobs:
         run: uv sync --all-packages --all-extras
       - name: run plumbing tier
         id: plumb
-        run: uv run pytest -m plumbing --timeout=60 -n 2 -q
+        run: uv run pytest -m plumbing --timeout=60 -q
       - name: emit leg decision
         if: always()
         shell: python
@@ -102,7 +102,7 @@ jobs:
         run: uv sync --all-packages --all-extras
       - name: run plumbing tier
         id: plumb
-        run: uv run pytest -m plumbing --timeout=60 -n 2 -q
+        run: uv run pytest -m plumbing --timeout=60 -q
       - name: emit leg decision
         if: always()
         shell: python
@@ -141,7 +141,7 @@ jobs:
         run: uv sync --all-packages --all-extras
       - name: run plumbing tier
         id: plumb
-        run: uv run pytest -m plumbing --timeout=60 -n 2 -q
+        run: uv run pytest -m plumbing --timeout=60 -q
       - name: emit leg decision
         if: always()
         shell: python
