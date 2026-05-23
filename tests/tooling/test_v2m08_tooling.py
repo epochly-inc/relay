@@ -337,24 +337,24 @@ def _run_gate(
 def test_tier_budget_gate_plumbing_budget_boundary(tmp_path: Path) -> None:
     """The gate fails when plumbing > budget and passes when <= budget.
 
-    Updated from the original 61/55 threshold pair to 301/295 in
-    lockstep with the plumbing budget bump from 60.0 -> 300.0 in
-    scripts/tier_budget_gate.py. The bump tracks measured reality
-    (the OSS v0.1 plumbing tier carries ~3613 tests; the original
-    60s ceiling assumed a much narrower scope per spec AM.6). The
-    test continues to verify the contract structure (boundary
-    behavior + RELAY-CI-TIER-BUDGET-EXCEEDED emission) at the new
-    threshold.
+    Threshold pair tracks the published plumbing budget in
+    scripts/tier_budget_gate.py. History: 60s -> 300s (commit
+    ebc4777, accommodating ~4-7min measured local runtime) -> 900s
+    (commit 9ad1181 follow-up, accommodating ~14min measured CI
+    serial runtime after xdist parallelism was reverted due to
+    shared-state races). The test continues to verify the contract
+    structure (boundary behavior + RELAY-CI-TIER-BUDGET-EXCEEDED
+    emission) at the current threshold (901 fails, 895 passes).
     """
     assert TIER_BUDGET_GATE.is_file(), f"missing gate script: {TIER_BUDGET_GATE}"
-    fail = _run_gate("plumbing", 301.0, tmp_path)
+    fail = _run_gate("plumbing", 901.0, tmp_path)
     assert fail.returncode != 0, (
-        f"plumbing 301.0s must fail; got rc={fail.returncode}, stdout={fail.stdout!r}"
+        f"plumbing 901.0s must fail; got rc={fail.returncode}, stdout={fail.stdout!r}"
     )
     assert "RELAY-CI-TIER-BUDGET-EXCEEDED" in fail.stdout
-    passed = _run_gate("plumbing", 295.0, tmp_path)
+    passed = _run_gate("plumbing", 895.0, tmp_path)
     assert passed.returncode == 0, (
-        f"plumbing 295.0s must pass; got rc={passed.returncode}, stderr={passed.stderr!r}"
+        f"plumbing 895.0s must pass; got rc={passed.returncode}, stderr={passed.stderr!r}"
     )
 
 

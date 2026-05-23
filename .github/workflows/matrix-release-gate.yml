@@ -44,7 +44,7 @@ jobs:
   leg-py312:
     name: "leg: py3.12"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -82,7 +82,7 @@ jobs:
   leg-py313:
     name: "leg: py3.13"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -121,7 +121,7 @@ jobs:
   leg-py314:
     name: "leg: py3.14"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
