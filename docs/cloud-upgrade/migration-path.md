@@ -24,10 +24,16 @@ both operations:
 
 ```bash
 # List every local bundle with its binding fields (project, run, hashes).
-rly evidence list --json
+# --json is a top-level rly flag; it must precede the subcommand.
+# `rly evidence list` always emits the relay.cli.evidence_list.v1
+# envelope, so --json is only required when forcing JSON output on a TTY.
+rly --json evidence list
 
-# Verify a specific bundle against the default trust anchor.
-rly evidence verify path/to/bundle.json
+# Verify a specific bundle (by bundle_id, not file path) against the
+# default trust anchor. Replace ${BUNDLE_ID} with the bundle's id from
+# the `rly evidence list` output above.
+BUNDLE_ID="01J0000000000000000000000"  # example ULID
+rly evidence verify "${BUNDLE_ID}"
 ```
 
 `rly evidence list` paginates over `${RELAY_HOME}/evidence/*.json` and
@@ -66,9 +72,13 @@ schema and the hosted Postgres schema.
 
 The OSS SDK locates the local sidecar by reading the sidecar lockfile at
 `${RELAY_HOME}/sidecar.lock` (see `packages/sdk-typescript/src/client.ts`
-and `packages/sdk-python/relay/client.py`). No environment variable
-points at the sidecar URL in production; the explicit
-`RELAY_SIDECAR_URL` env var is gated behind
+and `packages/sdk-python/relay/client.py`). This lookup is **lazy**:
+the SDK constructor does not touch the lockfile, spawn the sidecar, or
+open any sockets (per VAL-W3-003 / VAL-W4-001b). The lockfile is read
+only on the first ingest call that needs to reach the sidecar; a missing
+lockfile surfaces at first-send time, not at construction time. No
+environment variable points at the sidecar URL in production; the
+explicit `RELAY_SIDECAR_URL` env var is gated behind
 `RELAY_ALLOW_EXPLICIT_SIDECAR=1` and is intended for tests only.
 
 Switching to hosted Relay therefore means switching to the hosted client
@@ -104,10 +114,21 @@ locally-minted.
 ## Step 5: Replay existing bundles on hosted
 
 Every Relay-signed evidence bundle carries a `trust_anchor` field
-identifying the JWKS that produced its signature. The OSS verifier
-defaults to `https://relay.epochly.com/.well-known/jwks.json`; bundles
-signed under that anchor remain valid after migration. You do not need
-to re-sign locally-issued bundles to use them on hosted.
+identifying the JWKS that produced its signature. There are TWO distinct
+signing paths in OSS, and they verify against different JWKS:
+
+1. **Hosted-issued bundles** — `trust_anchor` is the production Relay-Inc
+   JWKS (`https://relay.epochly.com/.well-known/jwks.json`). Verifies
+   under the OSS verifier's default trust anchor without flags. These
+   bundles remain valid after migration to or from hosted.
+2. **Local-dev bundles** — the OSS local signer at
+   `packages/verifier/src/relay_verifier/local_signer.py` stamps
+   `trust_anchor: "local_dev"`. The verifier classifies these as a
+   local-dev trust path; they do NOT verify under the default Relay-Inc
+   JWKS. To verify a local-dev bundle on hosted (or on any machine that
+   doesn't have your local JWKS), either re-sign it via the hosted
+   signer OR pass `--trust-anchor <path-to-local-dev-jwks>` to the
+   verifier.
 
 Two practical confirmations:
 
@@ -162,7 +183,7 @@ having pointed your application at hosted Relay, the rollback is:
 
 1. Stop directing new traffic at hosted (revoke or scope the CI token,
    change the SDK construction to use the local sidecar locator).
-2. Restart the local sidecar (`rly sidecar up` or your platform-specific
+2. Restart the local sidecar (`rly sidecar start` or your platform-specific
    service launcher) so the lockfile is present.
 3. Resume from your local bundles. Bundles you generated on hosted
    between migration and rollback are still valid offline and still

@@ -302,6 +302,15 @@ codes:
   - RELAY-SIDECAR-011
   - RELAY-SIDECAR-012
   - RELAY-SIDECAR-013
+  # Fix #22: codes 020..023 are exported by packages/sdk-typescript/src/errors.ts
+  # (m3-f02-typescript-sdk-reference) and documented in
+  # packages/schemas/raw/error-codes.yaml (the docs registry); they MUST be
+  # mirrored here so gen_error_codes.py emits matching Python+TS constants
+  # and so the docs-vs-wire parity audit (VAL-W1-057) stays green.
+  - RELAY-SIDECAR-020
+  - RELAY-SIDECAR-021
+  - RELAY-SIDECAR-022
+  - RELAY-SIDECAR-023
   # M04 w4-side-effects ingest enforcement codes (VAL-V2M04-011..014,
   # VAL-V2M04-017). Per VAL-W1-029 every code MUST match
   # ^RELAY-[A-Z]+-[0-9]{3}$ -- numeric tail required. The contract

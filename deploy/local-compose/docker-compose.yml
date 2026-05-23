@@ -23,11 +23,22 @@
 
 services:
   relay-sidecar:
-    # Pinned minor of the active runtime. CLAUDE.md mandates Python
-    # 3.12+ as P0; the slim variant keeps the image small while still
-    # carrying the apt tooling needed to install `uv`.
-    image: python:3.12-slim
+    # Pinned minor of the active runtime, with image digest pin for
+    # reproducibility. CLAUDE.md mandates Python 3.12+ as P0; the slim
+    # variant keeps the image small while still carrying the apt
+    # tooling needed to install `uv`. The digest pin (Fix #32) prevents
+    # silent base-image upgrades from breaking cold pulls; refresh by
+    # running `docker buildx imagetools inspect python:3.12-slim` and
+    # updating the sha256 below.
+    image: python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
     container_name: relay-sidecar
+    # Auto-restart on failure (Fix #33). `unless-stopped` covers (a) the
+    # uv-sync step failing transiently (network hiccup), (b) the host
+    # rebooting while the user expects the sidecar back, but leaves
+    # `docker compose down` / `stop` as the explicit operator off-switch.
+    # Does NOT mask repeated startup failures: the healthcheck flips the
+    # container to "unhealthy" so `docker compose ps` shows the problem.
+    restart: unless-stopped
     working_dir: /workspace
     # Bind-mount the repo read-write so source edits propagate. A
     # named volume holds ${RELAY_HOME} (default /root/.relay inside

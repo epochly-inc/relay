@@ -110,15 +110,17 @@ mode names its detection surface and its mitigation. Spec citations:
   code; `rly replay run` surfaces `RELAY-REPLAY-PROVISION-FAILED`.
   Mitigation: degraded-mode fallback per the No-Docker Degraded Mode
   section, or operator action to repair the host. Tier-2 smoke tests
-  exercise the success path (`rly verify-self --sandbox-check`); the
+  exercise the success path (`rly verify-self`); the
   failure path is exercised by injected-fault unit tests.
 
 - **F2: Network egress leak.** A path the A4 layered proxy did not
   catch lets traffic reach a live external endpoint during replay.
   Detection: the egress-denial conformance tests
   (`apps/replay-proxy/tests/test_w7_5_egress_denial_python.py` for
-  Python; `packages/sdk-typescript/test/w7_5_node_egress_denial.test.ts`
-  for Node) exercise every named transport (requests, urllib, aiohttp,
+  in-process Python transports; `apps/replay-proxy/tests/test_w7_5_subprocess_curl.py`
+  for out-of-process child-process egress via `curl`;
+  `packages/sdk-typescript/test/w7_5_node_egress_denial.test.ts` for Node)
+  exercise every named transport (requests, urllib, aiohttp,
   subprocess, raw socket, fetch, axios, curl). Mitigation: per eng plan A4, all transports are pinned
   to the loopback mitmproxy and a residual socket-level deny rule
   refuses any connection the proxy did not authorize. A leak is a P0
@@ -147,7 +149,7 @@ mode names its detection surface and its mitigation. Spec citations:
 - **F5: Docker absent on host (Windows / minimal Linux).** The host
   has no Docker daemon (Windows users without Docker Desktop / WSL2;
   minimal Linux containers; CI runners with Docker disabled). Detection:
-  `rly verify-self --sandbox-check` reports `docker_available=false`.
+  `rly verify-self` reports `docker_available=false`.
   Mitigation: the No-Docker Degraded Mode pathway lets `rly replay
   run` operate without a Docker-based sandbox; the A4 layered proxy
   remains the default enforcement surface for replay determinism. See
@@ -220,7 +222,7 @@ In no-Docker degraded mode:
   determinism is preserved because the cassette, not the sandbox, is
   the source of truth for provider responses.
 
-- The sandbox driver is only required for `rly verify-self --sandbox-check`
+- The sandbox driver is only required for `rly verify-self`
   (which probes whether the host has a working local-docker driver) and
   for tier-3 evals (which require the full isolation envelope for
   LLM-judged correctness scoring). Windows users without Docker Desktop
@@ -311,4 +313,4 @@ Customers whose use cases include regulated workloads must obtain
 their own counsel review before relying on the local-docker P0 driver
 for any compliance-relevant claim.
 
-Spec: §E.3, §G.1
+Spec: §E.3, §E.4

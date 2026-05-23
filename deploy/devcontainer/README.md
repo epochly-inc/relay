@@ -30,9 +30,14 @@ extension installed.
    GitHub page, click the green `Code` button.
 2. Select the `Codespaces` tab and click `Create codespace on main`
    (or pick a branch).
-3. Codespaces reads `deploy/devcontainer/devcontainer.json`, builds the
-   image, runs the `postCreateCommand`, and opens the codespace in the
-   browser (or your local VS Code, if configured).
+3. Codespaces reads `.devcontainer/devcontainer.json` (Codespaces
+   autodiscovery requires the config at this exact root-level path),
+   builds the image, runs the `postCreateCommand`, and opens the
+   codespace in the browser (or your local VS Code, if configured).
+   The canonical copy of the config lives at
+   `deploy/devcontainer/devcontainer.json` for organizational visibility;
+   both files MUST match -- the root-level copy is what Codespaces
+   resolves.
 
 ## What gets installed
 

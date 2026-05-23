@@ -147,11 +147,20 @@ def _normalize_block(value: Any) -> str:
     return str(value).strip()
 
 
-def _render_section(title: str, body: str) -> str:
-    """Render a Markdown level-2 section. Empty bodies fall back to a TBD note."""
+def _render_section(title: str, body: str) -> str | None:
+    """Render a Markdown level-2 section, or None when the body is empty.
+
+    Fix #34: empty sections previously rendered "_Not yet documented. Track
+    via the docs backlog._" which is a placeholder shipped to readers (and
+    a CLAUDE.md production-readiness violation). The new behavior is to
+    return ``None`` so ``_render_page`` can omit the section entirely and
+    instead surface the gap once at the top via the documentation-status
+    banner -- honest about what is missing without scattering placeholder
+    text through every page.
+    """
     body = _normalize_block(body)
     if not body:
-        body = "_Not yet documented. Track via the docs backlog._"
+        return None
     return f"## {title}\n\n{body}\n"
 
 
@@ -162,12 +171,35 @@ def _render_page(entry: dict[str, Any]) -> str:
     severity = _normalize_block(entry.get("severity")) or "error"
     introduced_in = _normalize_block(entry.get("introduced_in")) or "unspecified"
     spec_section = _normalize_block(entry.get("spec_section"))
+    description = _normalize_block(entry.get("description"))
+    triggers = _normalize_block(entry.get("triggers"))
+    how_to_fix = _normalize_block(entry.get("how_to_fix"))
+    missing_fields = [
+        name
+        for name, value in (
+            ("description", description),
+            ("triggers", triggers),
+            ("how_to_fix", how_to_fix),
+        )
+        if not value
+    ]
 
     lines: list[str] = []
     lines.append(f"# {code}")
     lines.append("")
     lines.append(f"> {BANNER}")
     lines.append("")
+    if missing_fields:
+        lines.append(
+            "!!! warning \"Documentation pending for: "
+            + ", ".join(missing_fields)
+            + "\"\n"
+            + "    This error code is defined in the wire registry but its\n"
+            + "    user-facing prose has not yet been authored. The emit\n"
+            + "    site in the codebase is the authoritative source of\n"
+            + "    behavior; grep for the code constant to find it.\n"
+        )
+        lines.append("")
     lines.append("| Field | Value |")
     lines.append("|---|---|")
     lines.append(f"| Code | `{code}` |")
@@ -177,9 +209,13 @@ def _render_page(entry: dict[str, Any]) -> str:
     if spec_section:
         lines.append(f"| Spec section | §{spec_section} |")
     lines.append("")
-    lines.append(_render_section("Description", entry.get("description", "")))
-    lines.append(_render_section("Triggers", entry.get("triggers", "")))
-    lines.append(_render_section("How to fix", entry.get("how_to_fix", "")))
+    for section in (
+        _render_section("Description", description),
+        _render_section("Triggers", triggers),
+        _render_section("How to fix", how_to_fix),
+    ):
+        if section is not None:
+            lines.append(section)
     if spec_section:
         lines.append("---")
         lines.append("")

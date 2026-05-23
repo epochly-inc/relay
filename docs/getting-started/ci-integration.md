@@ -47,7 +47,11 @@ jobs:
         run: uv sync --all-packages
 
       - name: "publish contract coverage"
-        run: uv run rly contract publish
+        # rly contract publish requires the bundle path as a positional arg
+        # (the signed coverage report produced by `rly contract check`).
+        run: uv run rly contract publish "${RELAY_CONTRACT_BUNDLE}"
+        env:
+          RELAY_CONTRACT_BUNDLE: contracts/coverage-bundle.json
 
       - name: "evaluate gate"
         run: uv run rly gate evaluate --gate-id "${{ vars.RELAY_GATE_ID }}"

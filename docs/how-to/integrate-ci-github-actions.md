@@ -78,7 +78,7 @@ are not sensitive):
 ```bash
 gh variable set RELAY_GATE_ID --body "00000000-0000-0000-0000-000000000000"
 gh variable set RELAY_PROJECT_ID --body "your-project-id"
-gh variable set RELAY_CONTRACT_BUNDLE --body "contracts/my-contract.yaml"
+gh variable set RELAY_CONTRACT_BUNDLE --body "contracts/my-contract.json"
 ```
 
 ## The workflow

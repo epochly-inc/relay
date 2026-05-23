@@ -46,12 +46,12 @@ redirect to the same page via the route in `docs/_redirects`).
 
 Sample high-traffic codes:
 
-- [RELAY-ING-031](RELAY-ING-031/) - SDK attempted to write canonical `run_results.status` (control-plane-only)
-- [RELAY-GATE-021](RELAY-GATE-021/) - Stale three-anchor handoff rejected
-- [RELAY-REPLAY-014](RELAY-REPLAY-014/) - Side-effect attempted during cassette replay without approval
-- [RELAY-EVID-014](RELAY-EVID-014/) - Evidence bundle signature verification failed
-- [RELAY-COVERAGE-001](RELAY-COVERAGE-001/) - Orphan contract assertion (not claimed by any owner)
-- [RELAY-IDEMPOTENCY-014](RELAY-IDEMPOTENCY-014/) - Invalid Idempotency-Key grammar (must be ULID)
+- [RELAY-ING-031](RELAY-ING-031/index.md) - SDK attempted to write canonical `run_results.status` (control-plane-only)
+- [RELAY-GATE-021](RELAY-GATE-021/index.md) - Stale three-anchor handoff rejected
+- [RELAY-REPLAY-014](RELAY-REPLAY-014/index.md) - Side-effect attempted during cassette replay without approval
+- [RELAY-EVID-014](RELAY-EVID-014/index.md) - Evidence bundle signature verification failed
+- [RELAY-COVERAGE-001](RELAY-COVERAGE-001/index.md) - Orphan contract assertion (not claimed by any owner)
+- [RELAY-IDEMPOTENCY-014](RELAY-IDEMPOTENCY-014/index.md) - Invalid Idempotency-Key grammar (must be ULID)
 
 ## Adding a new code
 

@@ -38,9 +38,10 @@ features that pay back this cost.
 
 ### Audit calendar
 
-If you do not have a scheduled external review, the local evidence bundle
-output (`rly evidence bundle create`) plus the offline verifier
-(`rly evidence verify`) is sufficient. You hand the auditor a `.zip` and a
+If you do not have a scheduled external review, the local evidence bundles
+that the SDK produces on every run (browse them via `rly evidence list`
+and `rly evidence show`) plus the offline verifier (`rly evidence verify`)
+are sufficient. You hand the auditor a `.zip` and a
 JWKS pin and they verify on their own hardware with no Relay account. If you
 **do** have a recurring audit cycle - annual security review, AI Act
 conformity assessment, ISO 42001 surveillance - the hosted evidence registry

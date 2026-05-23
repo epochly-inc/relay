@@ -123,7 +123,7 @@ replay request failed in a way more specific codes do not classify.
 **Likely cause:** an unexpected sidecar or driver error. **Remediation:**
 inspect the envelope's `details` block; re-run with `--json` and
 file the structured response if the failure repeats. Reference:
-[RELAY-REPLAY-001](../reference/errors/RELAY-REPLAY-001/).
+[RELAY-REPLAY-001](../reference/errors/RELAY-REPLAY-001/index.md).
 
 ### `RELAY-REPLAY-002`
 
@@ -135,7 +135,7 @@ record` has been run for this case yet. **Remediation:** confirm the
 case has a recorded cassette (`rly replay list` shows `fixture_count`)
 and that the case's manifest binding is current; re-record if needed.
 Reference:
-[RELAY-REPLAY-002](../reference/errors/RELAY-REPLAY-002/).
+[RELAY-REPLAY-002](../reference/errors/RELAY-REPLAY-002/index.md).
 
 ### `RELAY-REPLAY-014`
 
@@ -149,7 +149,7 @@ or without `--approval-token` (for `approval_required`). **Remediation:**
 prefer cassette mode (the recorded output replays without re-executing
 the side effect); only when you genuinely need re-execution, supply
 the audited override per Step 5. Reference:
-[RELAY-REPLAY-014](../reference/errors/RELAY-REPLAY-014/).
+[RELAY-REPLAY-014](../reference/errors/RELAY-REPLAY-014/index.md).
 
 ### `RELAY-REPLAY-021`
 
@@ -159,7 +159,7 @@ of the sidecar (or vice versa) and the wire envelope shape no longer
 matches. **Remediation:** align the CLI and sidecar versions; the
 SDK/sidecar release matrix is documented in `docs/reference/`.
 Reference:
-[RELAY-REPLAY-021](../reference/errors/RELAY-REPLAY-021/).
+[RELAY-REPLAY-021](../reference/errors/RELAY-REPLAY-021/index.md).
 
 ### `RELAY-REPLAY-022`
 
@@ -169,7 +169,7 @@ cassette contains -- typical when the cassette was edited after
 recording or when the case's `inputs_digest` rotated. **Remediation:**
 re-record from the source `run_id` (`rly replay record`) so the
 cassette and case agree on inputs. Reference:
-[RELAY-REPLAY-022](../reference/errors/RELAY-REPLAY-022/).
+[RELAY-REPLAY-022](../reference/errors/RELAY-REPLAY-022/index.md).
 
 ### `RELAY-REPLAY-023`
 
@@ -178,7 +178,7 @@ replay sandbox driver refused to provision (driver not installed, or
 the configured driver is not available on this host). **Remediation:**
 confirm the configured driver and its dependencies are present on the
 host; the default OSS local profile uses `local-docker`. Reference:
-[RELAY-REPLAY-023](../reference/errors/RELAY-REPLAY-023/).
+[RELAY-REPLAY-023](../reference/errors/RELAY-REPLAY-023/index.md).
 
 ### `RELAY-REPLAY-031`
 
@@ -186,7 +186,7 @@ Replay-namespace rejection ordinal `_031`. **Likely cause:** an
 `output_ref` (recorded provider response) is missing or unreadable
 from the cassette store. **Remediation:** re-record the case so every
 span has a fresh `output_ref`. Reference:
-[RELAY-REPLAY-031](../reference/errors/RELAY-REPLAY-031/).
+[RELAY-REPLAY-031](../reference/errors/RELAY-REPLAY-031/index.md).
 
 ### `RELAY-REPLAY-032`
 
@@ -200,7 +200,7 @@ pin the fixture to `refresh_policy: hold_forever` if you need the
 historical regression-test behavior (understanding that you are
 pinning to a provider artifact that no longer exists in production).
 Reference:
-[RELAY-REPLAY-032](../reference/errors/RELAY-REPLAY-032/).
+[RELAY-REPLAY-032](../reference/errors/RELAY-REPLAY-032/index.md).
 
 ### `RELAY-REPLAY-033`
 
@@ -211,7 +211,7 @@ keep the call in cassette mode (preferred -- cassette playback needs
 no egress), or add the destination to the project's
 `egress_allowlist` if a `read_only` live call is genuinely required.
 Reference:
-[RELAY-REPLAY-033](../reference/errors/RELAY-REPLAY-033/).
+[RELAY-REPLAY-033](../reference/errors/RELAY-REPLAY-033/index.md).
 
 A `4` exit with no `RELAY-REPLAY-*` code is the cassette-miss case:
 the cassette does not contain a fixture for a call the agent made.
@@ -272,15 +272,15 @@ approximation"; do not edit the cassette to match the live diff.
 - [Your First Replay](../getting-started/first-replay.md) -- the
   basic walkthrough this how-to assumes as background.
 - Error-code reference pages:
-  [RELAY-REPLAY-001](../reference/errors/RELAY-REPLAY-001/),
-  [RELAY-REPLAY-002](../reference/errors/RELAY-REPLAY-002/),
-  [RELAY-REPLAY-014](../reference/errors/RELAY-REPLAY-014/),
-  [RELAY-REPLAY-021](../reference/errors/RELAY-REPLAY-021/),
-  [RELAY-REPLAY-022](../reference/errors/RELAY-REPLAY-022/),
-  [RELAY-REPLAY-023](../reference/errors/RELAY-REPLAY-023/),
-  [RELAY-REPLAY-031](../reference/errors/RELAY-REPLAY-031/),
-  [RELAY-REPLAY-032](../reference/errors/RELAY-REPLAY-032/),
-  [RELAY-REPLAY-033](../reference/errors/RELAY-REPLAY-033/).
+  [RELAY-REPLAY-001](../reference/errors/RELAY-REPLAY-001/index.md),
+  [RELAY-REPLAY-002](../reference/errors/RELAY-REPLAY-002/index.md),
+  [RELAY-REPLAY-014](../reference/errors/RELAY-REPLAY-014/index.md),
+  [RELAY-REPLAY-021](../reference/errors/RELAY-REPLAY-021/index.md),
+  [RELAY-REPLAY-022](../reference/errors/RELAY-REPLAY-022/index.md),
+  [RELAY-REPLAY-023](../reference/errors/RELAY-REPLAY-023/index.md),
+  [RELAY-REPLAY-031](../reference/errors/RELAY-REPLAY-031/index.md),
+  [RELAY-REPLAY-032](../reference/errors/RELAY-REPLAY-032/index.md),
+  [RELAY-REPLAY-033](../reference/errors/RELAY-REPLAY-033/index.md).
 
 ---
 
