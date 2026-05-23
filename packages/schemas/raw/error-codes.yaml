@@ -1245,21 +1245,21 @@ codes:
   domain: schema
   severity: error
   description: |
-    ACEF Core bundle.schema_version was rejected at emission as not matching the pinned vendor value. Distinct from RELAY-SCHEMA-014's x-relay block check; this code is reserved for the ACEF Core schema_version surface used by the W11.3+ emission writer.
+    Reserved wire-format constant for the ACEF Core bundle.schema_version rejection surface (intended to discriminate ACEF Core pin mismatches from x-relay block pin mismatches). NOT currently emitted at runtime: the W11.3 emission writer collapses both ACEF Core and x-relay schema_version mismatches into RELAY-SCHEMA-014 (per packages/acef/relay_extensions/emission.py line 22 + line 171 docstrings, and the W11.3 tests assert RELAY-SCHEMA-014 for these cases). The constant exists in packages/acef/relay_extensions/errors.py:43 so a future split (separating ACEF Core from x-relay rejection paths) can land without a registry change.
   triggers: |
-    Emission writer observed bundle.schema_version absent or set to a value other than the pinned ACEF Core version (VAL-W11-017).
+    Not currently emitted; reserved constant. Any ACEF Core or x-relay schema_version pin mismatch in v0.1 surfaces as RELAY-SCHEMA-014.
   how_to_fix: |
-    Set bundle.schema_version to the ACEF Core pin recorded in packages/acef/src/relay_acef/__init__.py (ACEF_CORE_SCHEMA_VERSION_PIN). Do not vendor a different ACEF Core version without running the W11.1 vendor-drift guard.
+    Not applicable until a future emission-writer change splits the schema_version surface. If observed, treat as defensive: file an issue with the envelope contents.
   introduced_in: v0.1.0
 - code: RELAY-SCHEMA-018
   domain: schema
   severity: error
   description: |
-    x-relay namespace block schema_version was rejected on write. Reserved for the W11.3+ emission writer's block-level pin check, distinct from RELAY-SCHEMA-014's combined ACEF Core + x-relay surface.
+    Reserved wire-format constant for the x-relay namespace block schema_version rejection surface (intended to discriminate the block-level pin from the ACEF Core pin). NOT currently emitted at runtime: the W11.3 emission writer routes both pin mismatches through RELAY-SCHEMA-014 (per packages/acef/relay_extensions/emission.py line 171 docstring). The constant exists in packages/acef/relay_extensions/errors.py:44 so a future split can land without a registry change.
   triggers: |
-    Emission writer observed bundle.namespaces["x-relay"].schema_version set to a value not in the supported set when persisting a bundle (VAL-W11-018).
+    Not currently emitted; reserved constant. Any x-relay block schema_version pin mismatch in v0.1 surfaces as RELAY-SCHEMA-014.
   how_to_fix: |
-    Set bundle.namespaces["x-relay"].schema_version to RELAY_EXTENSIONS_SCHEMA_VERSION ("v1"). Re-emit the bundle through EmissionWriter.write_bundle so the pin is re-verified before any object-store side effect.
+    Not applicable until a future emission-writer change splits the schema_version surface. If observed, treat as defensive: file an issue with the envelope contents.
   introduced_in: v0.1.0
 - code: RELAY-SCHEMA-023
   domain: schema
