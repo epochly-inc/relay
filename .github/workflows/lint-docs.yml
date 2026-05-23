@@ -79,9 +79,18 @@ jobs:
         # 256 and exactly 256 / 512 / ... P0 findings would falsely exit 0.
         # Use a boolean exit code instead: 1 on any P0/P1, 0 only on clean.
         run: |
+          # set +e so the audit's non-zero exit doesn't trip bash -e
+          # before the Python diagnostic runs and prints findings.
+          set +e
           uv run python scripts/docs/audit-codebase-alignment.py \
             --all-waves --layers 1,2,4 --json \
             > /tmp/audit.json
+          AUDIT_EXIT=$?
+          set -e
+          if [ ! -s /tmp/audit.json ]; then
+            echo "ERROR: audit produced empty output (exit code: $AUDIT_EXIT)"
+            exit 1
+          fi
           python3 -c "
           import json, sys
           d = json.load(open('/tmp/audit.json'))
