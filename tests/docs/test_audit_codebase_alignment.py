@@ -115,8 +115,22 @@ def test_layer1_negative_bad_filepath(tmp_path: Path) -> None:
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-DOCS-M1-013")
 def test_layer1_negative_bad_identifier(tmp_path: Path) -> None:
-    """A page citing a non-existent backticked identifier is a P0 failure."""
-    missing_identifier = "definitely_missing_" + "symbol_xyz"
+    """A page citing a non-existent backticked identifier is a P0 failure.
+
+    The "missing identifier" is generated at runtime via uuid4 so the
+    literal cannot be folded into this test module's compiled bytecode
+    (the prior `"definitely_missing_" + "symbol_xyz"` form was folded
+    by CPython at compile time into the .pyc which rg could match in
+    some environments; see scripts/docs/audit-codebase-alignment.py
+    `_verify_identifier_via_rg` comment block for the full context).
+    A uuid4 hex is unique per test invocation and cannot pre-exist
+    anywhere in the repo or build artifacts.
+    """
+    import uuid as _uuid
+
+    # Prefix ensures the symbol starts with a letter (rg/regex
+    # identifier rules) and is unambiguously synthetic.
+    missing_identifier = "audit_test_missing_" + _uuid.uuid4().hex
     page = _make_page(
         tmp_path,
         "docs/getting-started/badidentifier.md",
