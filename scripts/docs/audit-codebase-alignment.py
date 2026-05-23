@@ -603,14 +603,6 @@ def _verify_identifier_via_python_walk(symbol: str, current_page: Path) -> bool:
     for root, dirnames, filenames in os.walk(REPO_ROOT):
         # Prune excluded dirs in place so os.walk doesn't recurse into them
         dirnames[:] = [d for d in dirnames if d not in _PY_FALLBACK_EXCLUDE_DIRS]
-        # Skip the docs tree
-        rel_root = Path(root).resolve()
-        try:
-            rel_str = rel_root.relative_to(REPO_ROOT).as_posix()
-        except ValueError:
-            continue
-        if rel_str == "docs" or rel_str.startswith("docs/"):
-            continue
         for fn in filenames:
             fpath = Path(root) / fn
             try:
@@ -619,8 +611,17 @@ def _verify_identifier_via_python_walk(symbol: str, current_page: Path) -> bool:
                 continue
             if current_abs is not None and fpath_abs == current_abs:
                 continue
-            # Skip the docs markdown files even outside docs/ (defensive)
-            if fpath.suffix == ".md" and "docs" in fpath_abs.parts:
+            # Mirror rg's `--glob '!docs/**/*.md'` exclusion: only skip
+            # Markdown files under docs/; non-md files (like docs/how-to/
+            # _examples/relay-gate.yml) count as source for identifier
+            # verification, matching the rg path's behavior.
+            try:
+                rel_path = fpath_abs.relative_to(REPO_ROOT).as_posix()
+            except ValueError:
+                continue
+            if rel_path.endswith(".md") and (
+                rel_path == "docs" or rel_path.startswith("docs/")
+            ):
                 continue
             try:
                 with fpath.open("rb") as fh:
