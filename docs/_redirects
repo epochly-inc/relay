@@ -1,0 +1,12 @@
+# Relay docs redirect map.
+# Format: <source-path> <dest-path> [<status>]
+# Compatible with Netlify / Cloudflare Pages syntax.
+# GitHub Pages does NOT natively read _redirects -- but this file is the
+# canonical source-of-truth for when relay.epochly.com migrates to a CDN
+# that does (Cloudflare Pages, Netlify).
+#
+# Goal: SDK-emitted URLs like https://relay.epochly.com/docs/errors/RELAY-*
+# resolve to the generated pages at /reference/errors/RELAY-*/index.html.
+
+/docs/errors/*   /reference/errors/:splat/index.html   301
+/errors/*        /reference/errors/:splat/index.html   301
