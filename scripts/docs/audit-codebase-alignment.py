@@ -573,7 +573,15 @@ def _is_identifier_candidate(symbol: str) -> bool:
 
 def _verify_identifier_via_rg(symbol: str, current_page: Path) -> bool:
     """Return True iff ``rg`` finds the symbol anywhere in repo source."""
-    if shutil.which("rg") is None:
+    _debug = os.environ.get("RELAY_AUDIT_DEBUG") == "1"
+    rg_path = shutil.which("rg")
+    if _debug:
+        sys.stderr.write(f"[audit-debug]   shutil.which('rg') -> {rg_path!r}\n")
+    if rg_path is None:
+        if _debug:
+            sys.stderr.write(
+                "[audit-debug]   rg NOT FOUND on PATH -> permissive default True\n"
+            )
         return True  # cannot verify -> treat as passing (unverifiable handled separately)
     cmd = [
         "rg",
