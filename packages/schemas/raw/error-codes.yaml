@@ -39,1372 +39,1677 @@
 schema_version: relay.error_registry.v1
 
 codes:
-  - code: RELAY-AUTH-001
-    domain: auth
-    severity: error
-    description: |
-      Default authn failure for the auth namespace (missing or invalid bearer/identity assertion).
-    triggers: |
-      Request to a protected endpoint without a valid actor identity assertion.
-    how_to_fix: |
-      Re-authenticate the actor; confirm the identity assertion is current.
-    spec_section: "C.5"
-    introduced_in: v0.1.0
-  - code: RELAY-AUTH-014
-    domain: auth
-    severity: error
-    description: |
-      Auth assertion failed validation (signature, expiry, or audience mismatch).
-    triggers: |
-      Bearer/identity assertion fails JWS verification, is expired, or carries the wrong audience claim.
-    how_to_fix: |
-      Re-mint the actor identity assertion; verify clock skew against the authority's `iat`/`exp` claims.
-    spec_section: "C.5"
-    introduced_in: v0.1.0
-  - code: RELAY-AUTH-017
-    domain: auth
-    severity: error
-    description: |
-      Request rejected because the signed timestamp is outside the acceptable +/-300 s clock-skew window. Envelope carries server_now_utc and client_claim_utc so the client can self-diagnose; the remediation hint points at NTP / system time sync.
-    triggers: ""
-    how_to_fix: ""
-    spec_section: "L line 4479; AI lines 5651-5670"
-    introduced_in: v0.1.0
-  - code: RELAY-AUTH-022
-    domain: auth
-    severity: error
-    description: |
-      Auditor-room token presented from an IP that does not match its first-use IP binding. [OUT-OF-SCOPE-PRIVATE]: auditor rooms live in private relay-platform/; the enforcement runtime is NOT shipped in OSS relay/. This code is registered in the public OSS registry so verifier and CLI tools can decode envelopes produced by the hosted surface.
-    triggers: ""
-    how_to_fix: ""
-    spec_section: "AI line 5675"
-    introduced_in: v0.1.0
-  - code: RELAY-CANON-001
-    domain: canonicalization
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CEL-001
-    domain: contract-cel
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CEL-002
-    domain: contract-cel
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CEL-003
-    domain: contract-cel
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CEL-004
-    domain: contract-cel
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CEL-005
-    domain: contract-cel
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CEL-006
-    domain: contract-cel
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CEL-007
-    domain: contract-cel
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CEL-008
-    domain: contract-cel
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CLI-070
-    domain: cli
-    severity: error
-    description: |
-      CLI command failed with a usage error.
-    triggers: |
-      User invoked the CLI with an unknown subcommand, missing required flag, or invalid argument shape.
-    how_to_fix: |
-      Run `rly <subcommand> --help`; correct the invocation and retry.
-    spec_section: "P"
-    introduced_in: v0.1.0
-  - code: RELAY-CLI-130
-    domain: cli
-    severity: error
-    description: |
-      CLI command interrupted (typically Ctrl-C / SIGINT).
-    triggers: |
-      Operator interrupted a long-running CLI operation.
-    how_to_fix: |
-      Re-run the command. If interruption was unintentional, check whether the operation completed via the sidecar log.
-    spec_section: "P"
-    introduced_in: v0.1.0
-  - code: RELAY-CONTRACT-001
-    domain: contract
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CONTRACT-002
-    domain: contract
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CONTRACT-003
-    domain: contract
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CONTRACT-004
-    domain: contract
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-CONTRACT-005
-    domain: contract
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-COVERAGE-001
-    domain: contract-coverage
-    severity: error
-    description: |
-      Coverage invariant: orphan assertion (an assertion has no owning feature).
-    triggers: |
-      `rly contract publish` detected an assertion without exactly one owner.
-    how_to_fix: |
-      Assign the assertion to a feature in the manifest; re-publish.
-    spec_section: "D.5"
-    introduced_in: v0.1.0
-  - code: RELAY-COVERAGE-002
-    domain: contract-coverage
-    severity: error
-    description: |
-      Coverage invariant: duplicate `expression` digest across assertions.
-    triggers: |
-      Two assertions in the manifest have the same canonical-form expression.
-    how_to_fix: |
-      Consolidate the duplicate assertions; rename or re-scope one of them.
-    spec_section: "D.5"
-    introduced_in: v0.1.0
-  - code: RELAY-COVERAGE-003
-    domain: contract-coverage
-    severity: error
-    description: |
-      Coverage invariant: missing `owner_email` on a P0/P1 assertion.
-    triggers: |
-      P0 or P1 assertion lacks a human owner contact.
-    how_to_fix: |
-      Add `owner_email`; P0/P1 assertions require exactly one human owner.
-    spec_section: "D.5"
-    introduced_in: v0.1.0
-  - code: RELAY-COVERAGE-004
-    domain: contract-coverage
-    severity: error
-    description: |
-      Coverage invariant: duplicate primary ownership.
-    triggers: |
-      More than one feature claims `primaryFulfills` for the same assertion.
-    how_to_fix: |
-      Re-scope so exactly one feature primarily fulfills each assertion; other features may `secondaryFulfills`.
-    spec_section: "D.5"
-    introduced_in: v0.1.0
-  - code: RELAY-EVAL-024
-    domain: eval
-    severity: error
-    description: |
-      Pass@N filter rejection: the assertion set produced an uninformative edge across the last N runs (all-pass or all-fail). Spec AL.2 (lines 5775-5785).
-    triggers: ""
-    how_to_fix: ""
-    spec_section: "AL.2 5775-5785"
-    introduced_in: v0.1.0
-  - code: RELAY-EVID-001
-    domain: evidence
-    severity: error
-    description: |
-      Default evidence-namespace rejection (catch-all).
-    triggers: |
-      Evidence submission failed in a way more specific codes do not classify.
-    how_to_fix: |
-      Inspect `details`; consult `docs/evidence/bundle-anatomy.md`.
-    spec_section: "K"
-    introduced_in: v0.1.0
-  - code: RELAY-EVID-002
-    domain: evidence
-    severity: error
-    description: |
-      Evidence bundle is incomplete: at least one required claim is missing its paired artifact hash, exit code, span IDs, or assertion IDs.
-    triggers: |
-      Bundle assembled without binding every success claim to its evidence (CLAUDE.md keystone invariant #2).
-    how_to_fix: |
-      Re-run the validation step so the runner emits the missing artifacts; rebuild the bundle.
-    spec_section: "K"
-    introduced_in: v0.1.0
-  - code: RELAY-EVID-014
-    domain: evidence
-    severity: error
-    description: |
-      Evidence bundle signature verification failed. Subcodes carry the specific failure (`signature_invalid`, `signature_key_revoked`, `trust_anchor_mismatch`, `manifest_digest_mismatch`).
-    triggers: |
-      JWS signature fails verification against the configured trust-anchor JWKS, signing key is revoked, declared `trust_anchor` does not match verifier config, or manifest digest does not match the stored value.
-    how_to_fix: |
-      Investigate. Do not ignore. Pull the bundle and re-run `rly evidence verify --verbose` to inspect `details.subcode`; consult `docs/evidence/signing-key-lifecycle.md`.
-    spec_section: "K, AO"
-    introduced_in: v0.1.0
-  - code: RELAY-EVID-024
-    domain: evidence
-    severity: error
-    description: |
-      Evidence bundle redaction policy missing or invalid.
-    triggers: |
-      Bundle submitted without an active redaction policy version, or referencing a revoked policy.
-    how_to_fix: |
-      Publish a current redaction policy and re-bundle.
-    spec_section: "G"
-    introduced_in: v0.1.0
-  - code: RELAY-EVID-031
-    domain: evidence
-    severity: error
-    description: |
-      Evidence bundle trust-anchor mismatch: declared `trust_anchor` does not match verifier configuration.
-    triggers: |
-      Bundle's `trust_anchor` field references a JWKS the verifier is not configured to trust.
-    how_to_fix: |
-      Configure the verifier with the bundle's trust anchor (or vice versa); see `docs/evidence/trust-anchor.md`.
-    spec_section: "AO.4"
-    introduced_in: v0.1.0
-  - code: RELAY-EVID-038
-    domain: evidence
-    severity: error
-    description: |
-      Evidence bundle TSA timestamp missing or invalid.
-    triggers: |
-      Bundle assembled without a Time-Stamp Authority countersignature, or with one that fails verification.
-    how_to_fix: |
-      Re-bundle with a valid TSA countersignature; check the TSA's availability.
-    spec_section: "AO"
-    introduced_in: v0.1.0
-  - code: RELAY-EVID-040
-    domain: evidence
-    severity: error
-    description: |
-      Merkle root mismatch in a multi-claim bundle: the recomputed root differs from the stored root.
-    triggers: |
-      Claim ordering changed between sign and verify, or a claim payload was tampered.
-    how_to_fix: |
-      Rebuild the bundle from the original claim set; do not edit claims post-sign.
-    spec_section: "K"
-    introduced_in: v0.1.0
-  - code: RELAY-EVID-041
-    domain: evidence
-    severity: error
-    description: |
-      Signer key expired: bundle's `signer_key_id` resolves to a JWK whose `not_after` is in the past (with the L.5 tolerance exhausted).
-    triggers: |
-      Bundle was signed (or verification ran) after the signing key's expiry.
-    how_to_fix: |
-      Rotate to an active signing key and re-sign the bundle.
-    spec_section: "L.5"
-    introduced_in: v0.1.0
-  - code: RELAY-EVID-042
-    domain: evidence
-    severity: error
-    description: |
-      Signer key revoked: bundle was signed AFTER the JWK's `revoked_at` timestamp.
-    triggers: |
-      Signature occurred after the key was revoked (signing-before-revocation is a WARN, not an error).
-    how_to_fix: |
-      Rotate to an active key; investigate why a revoked key was still in use.
-    spec_section: "L.5"
-    introduced_in: v0.1.0
-  - code: RELAY-EXPLAIN-001
-    domain: explain
-    severity: error
-    description: |
-      Explain ingestion received a hypothesis whose span_id is not present on the associated run; the cross-row check failed before INSERT. Spec T (line 4895).
-    triggers: ""
-    how_to_fix: ""
-    spec_section: "T 4895"
-    introduced_in: v0.1.0
-  - code: RELAY-FUTURE-999
-    domain: forward-compat
-    severity: error
-    description: |
-      Forward-compat fallback for an unknown sidecar code the SDK does not recognise.
-    triggers: |
-      Sidecar emitted a wire code with a namespace or numeric ordinal the SDK has not been updated to map.
-    how_to_fix: |
-      Upgrade the SDK to a release whose code registry covers the new code. The SDK still surfaces the envelope as `RelayUnknownError` for forward compatibility.
-    spec_section: "B.4"
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-001
-    domain: gate
-    severity: error
-    description: |
-      Default gate-namespace rejection (catch-all).
-    triggers: |
-      Gate decision request failed in a way more specific codes do not classify.
-    how_to_fix: |
-      Inspect `details`; consult `docs/how-to/audit-gate-decision.md`.
-    spec_section: "C"
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-014
-    domain: gate
-    severity: error
-    description: |
-      Gate evidence pairing rule violated: a claim is marked passing without paired artifact hash + command + exit code.
-    triggers: |
-      Gate engine refused to write `accepted` because a contract assertion's evidence is incomplete.
-    how_to_fix: |
-      Re-run the validation command; ensure the runner emits a structured exit code and artifact digest. See CLAUDE.md keystone invariant #2.
-    spec_section: "K"
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-021
-    domain: gate
-    severity: error
-    description: |
-      Stale three-anchor handoff: one of `scope_id`, `actor_identity_hash`, or `manifest_commit_hash` is missing or mismatched.
-    triggers: |
-      CI submission carrying a `manifest_commit_hash` outside the active or grace window, a revoked actor identity, or a mismatched run_id.
-    how_to_fix: |
-      Refresh the manifest commit hash and the actor identity; do not bypass. See `docs/contracts/manifest-binding.md` for the three-anchor model.
-    spec_section: "C.5"
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-024
-    domain: gate
-    severity: error
-    description: |
-      Gate decision draft references a manifest_commit_hash not in the active or grace window.
-    triggers: |
-      Submission's manifest commit is older than the configured grace window.
-    how_to_fix: |
-      Re-publish the contract against the current manifest commit; re-submit.
-    spec_section: "F"
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-031
-    domain: gate
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-033
-    domain: gate
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-038
-    domain: gate
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-041
-    domain: gate
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-051
-    domain: gate
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-GATE-061
-    domain: gate
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-IDEMPOTENCY-001
-    domain: idempotency
-    severity: error
-    description: |
-      Default idempotency-namespace rejection.
-    triggers: |
-      Idempotency key handling failure not covered by a more specific code.
-    how_to_fix: |
-      Confirm the `Idempotency-Key` header is set on retried requests; inspect the idempotency record.
-    spec_section: "B.6"
-    introduced_in: v0.1.0
-  - code: RELAY-IDEMPOTENCY-014
-    domain: idempotency
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-ING-001
-    domain: ingest
-    severity: error
-    description: |
-      Default ingest envelope rejection (catch-all for the ingest namespace).
-    triggers: |
-      Ingest envelope failed schema validation in a way more specific codes do not classify.
-    how_to_fix: |
-      Inspect `details` on the envelope; re-submit with a corrected payload.
-    spec_section: "B"
-    introduced_in: v0.1.0
-  - code: RELAY-ING-014
-    domain: ingest
-    severity: error
-    description: |
-      Ingest envelope failed canonical schema validation.
-    triggers: |
-      Envelope payload violates the `relay.ingest.v1` schema (missing required field, wrong type, unknown discriminator).
-    how_to_fix: |
-      Validate the envelope client-side against the schema in `packages/schemas/catalogs/` before re-submitting.
-    spec_section: "B.4"
-    introduced_in: v0.1.0
-  - code: RELAY-ING-021
-    domain: ingest
-    severity: error
-    description: |
-      Ingest envelope schema_version unsupported.
-    triggers: |
-      Envelope declared a `schema_version` the control plane does not accept (forward or backward incompatible).
-    how_to_fix: |
-      Pin the SDK to a release whose envelope schema matches the deployed control plane; re-submit.
-    spec_section: "B.4"
-    introduced_in: v0.1.0
-  - code: RELAY-ING-022
-    domain: ingest
-    severity: error
-    description: |
-      Ingest envelope failed three-anchor handoff at the ingest edge.
-    triggers: |
-      Envelope arrived with a missing or mismatched `scope_id` / `actor_identity_hash` / `manifest_commit_hash`.
-    how_to_fix: |
-      Re-bind the run to the active manifest and current actor identity; see `docs/contracts/manifest-binding.md`.
-    spec_section: "C.5"
-    introduced_in: v0.1.0
-  - code: RELAY-ING-031
-    domain: ingest
-    severity: error
-    description: |
-      Control-plane ownership violation: the SDK attempted to write a canonical `run_results.status` value. The control plane is the only writer for canonical outcome rows.
-    triggers: |
-      Submitting an ingest envelope whose payload sets a terminal `status` field, or any attempt to mark a run `accepted` from SDK/agent/eval worker code.
-    how_to_fix: |
-      Submit lifecycle metadata only; let the control plane write the canonical status row via `compare_and_set_state`.
-    spec_section: "B.4"
-    introduced_in: v0.1.0
-  - code: RELAY-ING-032
-    domain: ingest
-    severity: error
-    description: |
-      Ingest payload contains raw capture content but the active redaction policy does not enable `raw_capture`.
-    triggers: |
-      SDK submitted a span whose `raw_*` fields are populated without an approved `raw_capture: true` policy version.
-    how_to_fix: |
-      Either enable `raw_capture: true` on the redaction policy version (requires signed DPA + org-admin approver per CLAUDE.md invariant 7), or scrub the raw fields client-side.
-    spec_section: "G.1"
-    introduced_in: v0.1.0
-  - code: RELAY-ING-041
-    domain: ingest
-    severity: error
-    description: |
-      Ingest span exceeded the canonical-JSON span size limit (256 KiB / 262144 bytes) or the nesting depth limit (16 levels). The envelope carries offending_span_id plus either measured_bytes or reason=nesting_depth_exceeded.
-    triggers: ""
-    how_to_fix: ""
-    spec_section: "AI line 5659"
-    introduced_in: v0.1.0
-  - code: RELAY-ING-045
-    domain: ingest
-    severity: error
-    description: |
-      Ingest span carried invalid UTF-8 byte sequences in an indexed field (prompt_template_id, tool_name, model, retriever_name, or any field declared via indexed_string_fields). Envelope carries field_path identifying the offending field.
-    triggers: ""
-    how_to_fix: ""
-    spec_section: "AI line 5698"
-    introduced_in: v0.1.0
-  - code: RELAY-MANIFEST-021
-    domain: manifest
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RATE-001
-    domain: rate-limit
-    severity: error
-    description: |
-      Default rate-limit namespace response (HTTP 429).
-    triggers: |
-      Caller exceeded the configured RPM / ITPM budget.
-    how_to_fix: |
-      Honor the `Retry-After` header; reduce burst rate.
-    spec_section: "B.4"
-    introduced_in: v0.1.0
-  - code: RELAY-RATE-014
-    domain: rate-limit
-    severity: error
-    description: |
-      Rate-limit token exhausted for a specific scope (e.g., per-org budget).
-    triggers: |
-      Scope-specific budget exceeded.
-    how_to_fix: |
-      Wait for the rolling window to clear; reduce concurrency.
-    spec_section: "B.4"
-    introduced_in: v0.1.0
-  - code: RELAY-REDACT-014
-    domain: redaction
-    severity: error
-    description: |
-      Redaction policy publish rejected because a regex matcher exceeded the 50 ms per-input wall-clock budget when evaluated against the published catastrophic-backtracking corpus. Envelope carries matcher_id plus measured_ms.
-    triggers: ""
-    how_to_fix: ""
-    spec_section: "AI line 5665"
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-001
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-002
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-004
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-005
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-006
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-007
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-008
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-009
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-010
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-011
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-012
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-013
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-014
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-015
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-016
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-017
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-018
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-019
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-020
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-021
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-022
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-023
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-024
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-025
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-026
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-028
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-029
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-030
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-032
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-033
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-034
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-035
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-036
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-037
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-038
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-039
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-040
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-041
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-042
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-043
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-044
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-045
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-046
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-RELEASE-047
-    domain: release
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-REPLAY-001
-    domain: replay
-    severity: error
-    description: |
-      Default replay-namespace rejection (catch-all).
-    triggers: |
-      Replay request failed in a way more specific codes do not classify.
-    how_to_fix: |
-      Inspect `details` on the envelope; consult `docs/how-to/debug-replay-failures.md`.
-    spec_section: "E"
-    introduced_in: v0.1.0
-  - code: RELAY-REPLAY-002
-    domain: replay
-    severity: error
-    description: |
-      Replay precondition not met (missing fixture, missing manifest binding, or stale handoff).
-    triggers: |
-      Caller invoked `rly replay run` against a case whose prerequisites are not satisfied.
-    how_to_fix: |
-      Confirm the case has a recorded cassette and an active manifest binding; re-record if needed.
-    spec_section: "E.2"
-    introduced_in: v0.1.0
-  - code: RELAY-REPLAY-014
-    domain: replay
-    severity: error
-    description: |
-      Side-effecting tool attempted execution during replay without an audited policy override. Cassette-first replay is default-deny for `mutating` and `external_irreversible` tools.
-    triggers: |
-      Replay run hits a tool span whose `side_effect_class` requires either cassette playback (recorded output) or an explicit two-person approval override.
-    how_to_fix: |
-      Use cassette mode (default), or add an audited `side_effect_class` policy override; never auto-approve `mutating` or `external_irreversible` classes in CI.
-    spec_section: "E.3"
-    introduced_in: v0.1.0
-  - code: RELAY-REPLAY-021
-    domain: replay
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-REPLAY-022
-    domain: replay
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-REPLAY-023
-    domain: replay
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-REPLAY-031
-    domain: replay
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-REPLAY-032
-    domain: replay
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-REPLAY-033
-    domain: replay
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SCHEMA-001
-    domain: schema
-    severity: error
-    description: |
-      Default schema-namespace rejection.
-    triggers: |
-      Schema validation failure not covered by a more specific code.
-    how_to_fix: |
-      Validate the payload against the catalog schema in `packages/schemas/catalogs/`.
-    spec_section: "B"
-    introduced_in: v0.1.0
-  - code: RELAY-SCHEMA-011
-    domain: schema
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SCHEMA-014
-    domain: schema
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SCHEMA-017
-    domain: schema
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SCHEMA-018
-    domain: schema
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SCHEMA-023
-    domain: schema
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-001
-    domain: sdk
-    severity: error
-    description: |
-      SDK configuration error.
-    triggers: |
-      SDK initialised with missing or invalid configuration (e.g., no sidecar URL, no project token).
-    how_to_fix: |
-      Provide the required configuration via constructor args or environment variables.
-    spec_section: "B"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-002
-    domain: sdk
-    severity: error
-    description: |
-      SDK detected a sidecar version mismatch.
-    triggers: |
-      Sidecar reports a version the SDK was not built against.
-    how_to_fix: |
-      Align SDK and sidecar versions; consult the release matrix.
-    spec_section: "F"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-003
-    domain: sdk
-    severity: error
-    description: |
-      Sidecar not reachable.
-    triggers: |
-      SDK could not establish a connection to the configured sidecar URL.
-    how_to_fix: |
-      Confirm the sidecar is running; check `RELAY_SIDECAR_URL`.
-    spec_section: "H.5"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-004
-    domain: sdk
-    severity: error
-    description: |
-      Sidecar bearer-digest mismatch (handshake auth failure).
-    triggers: |
-      SDK presented a bearer whose digest does not match the sidecar's expected value.
-    how_to_fix: |
-      Refresh the sidecar bearer; verify the handshake config.
-    spec_section: "C.5"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-005
-    domain: sdk
-    severity: error
-    description: |
-      Canonical-status forbidden: SDK attempted to write a control-plane-owned column.
-    triggers: |
-      Caller tried to set `run_results.status` (or other canonical columns) via the SDK.
-    how_to_fix: |
-      Submit lifecycle metadata only; the control plane writes canonical outcomes.
-    spec_section: "A.1"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-006
-    domain: sdk
-    severity: error
-    description: |
-      Lifecycle invalid: span state transition rejected by the SDK before reaching the sidecar.
-    triggers: |
-      Caller attempted an invalid lifecycle move (e.g., closing a span twice).
-    how_to_fix: |
-      Inspect the lifecycle order in your call site; consult `docs/reference/python-sdk/`.
-    spec_section: "C"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-007
-    domain: sdk
-    severity: error
-    description: |
-      Handoff incomplete: SDK detected a missing anchor in the three-anchor handoff.
-    triggers: |
-      Caller did not bind `scope_id` / `actor_identity_hash` / `manifest_commit_hash` to the run.
-    how_to_fix: |
-      Complete the three-anchor binding; see `docs/contracts/manifest-binding.md`.
-    spec_section: "C.5"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-008
-    domain: sdk
-    severity: error
-    description: |
-      Evidence incomplete: SDK detected a missing artifact hash, exit code, or span ID on a passing claim.
-    triggers: |
-      Caller marked an assertion passing without paired evidence.
-    how_to_fix: |
-      Re-run the validation step so the runner emits structured evidence.
-    spec_section: "K"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-009
-    domain: sdk
-    severity: error
-    description: |
-      Replay precondition not met (SDK-side guard).
-    triggers: |
-      Caller invoked replay without an active manifest binding or cassette.
-    how_to_fix: |
-      Bind the case to its manifest and cassette before replay.
-    spec_section: "E.2"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-010
-    domain: sdk
-    severity: error
-    description: |
-      Redaction policy invalid: SDK rejected a redaction policy at parse time.
-    triggers: |
-      Policy YAML failed schema validation, used an unsupported matcher kind, or violated default-deny on `raw_capture`.
-    how_to_fix: |
-      Validate the policy against the redaction-policy schema before publishing; see `packages/schemas/raw/redaction-policy.default.v1.yaml`.
-    spec_section: "G"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-011
-    domain: sdk
-    severity: error
-    description: |
-      Sidecar locator failure: SDK could not resolve a sidecar binary or address.
-    triggers: |
-      `npx @epochly/relay sidecar` could not locate or launch the bundled sidecar.
-    how_to_fix: |
-      Confirm the sidecar binary is available on the platform; check arch support.
-    spec_section: "F"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-012
-    domain: sdk
-    severity: error
-    description: |
-      Trust-root override denied: caller attempted to override the OSS default trust anchor outside the sanctioned BYO flow.
-    triggers: |
-      SDK rejected an unsupported trust-root override path (per CLAUDE.md banned pattern #13, the default is a board-level decision).
-    how_to_fix: |
-      Use the `--trust-anchor` BYO flag if you need to verify against a non-default JWKS.
-    spec_section: "AO.4"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-013
-    domain: sdk
-    severity: error
-    description: |
-      Bundle verify timeout: the SDK's bundled-verifier subprocess did not return within the configured deadline.
-    triggers: |
-      Verifier subprocess wedged or the bundle is unusually large.
-    how_to_fix: |
-      Re-run with a higher timeout, or invoke `rly evidence verify` directly.
-    spec_section: "K"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-014
-    domain: sdk
-    severity: error
-    description: |
-      Side-effecting tool_call missing `idempotencyKey` or `replayPolicy`.
-    triggers: |
-      Caller opened a span with `side_effect: true` but did not provide the required companion fields (CLAUDE.md keystone invariant #6).
-    how_to_fix: |
-      Provide both `idempotencyKey` and `replayPolicy` on every side-effecting tool span.
-    spec_section: "X"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-015
-    domain: sdk
-    severity: error
-    description: |
-      Live replay called without explicit acknowledgement.
-    triggers: |
-      Caller invoked live replay mode without passing `acknowledgeDegradedApproximation: true`.
-    how_to_fix: |
-      Acknowledge the degraded-approximation contract explicitly; live mode is not cassette-faithful.
-    spec_section: "E"
-    introduced_in: v0.1.0
-  - code: RELAY-SDK-016
-    domain: sdk
-    severity: error
-    description: |
-      Raw capture denied: `raw_capture: true` was requested without a signed DPA + org-admin approver.
-    triggers: |
-      Policy attempted to enable raw capture without the precondition (CLAUDE.md keystone invariant #7, banned pattern #11).
-    how_to_fix: |
-      Record a signed DPA reference and an org-admin approver on the policy version; only then may `raw_capture` be enabled.
-    spec_section: "G.1"
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-001
-    domain: sidecar
-    severity: error
-    description: |
-      Default local-sidecar rejection.
-    triggers: |
-      Sidecar request failed in a way more specific codes do not classify.
-    how_to_fix: |
-      Consult `docs/local-deploy/sidecar-lifecycle.md`; check the sidecar log.
-    spec_section: "F, H.5"
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-002
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-003
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-004
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-005
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-006
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-007
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-008
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-009
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-010
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-011
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-012
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-013
-    domain: sidecar
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-020
-    domain: sidecar
-    severity: error
-    description: |
-      Sidecar bundle could not be verified against the trust root. The npx @epochly/relay sidecar wrapper refuses to launch a bundle whose signature does not chain to the default trust anchor (CLAUDE.md keystone invariant #13).
-    triggers: |
-      Bundle signature verification failed, the signing key is not in the trust root, or the signature envelope is malformed.
-    how_to_fix: |
-      Re-download the published bundle from the official release channel; do not override the trust root unless you are a self-hoster operating an approved BYO trust anchor.
-    spec_section: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-021
-    domain: sidecar
-    severity: error
-    description: |
-      Sidecar bundle digest does not match the expected SHA-256 declared in the signed manifest. The wrapper aborts before exec so a tampered binary is never executed.
-    triggers: |
-      Computed SHA-256 of the downloaded bundle differs from the digest pinned in the signed release manifest.
-    how_to_fix: |
-      Discard the cached bundle and re-fetch from the official release channel; verify network integrity. If the mismatch persists, escalate as a possible supply-chain incident.
-    spec_section: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-022
-    domain: sidecar
-    severity: error
-    description: |
-      Sidecar bundle is unavailable for download. The wrapper cannot fetch the platform-specific bundle from the configured release channel.
-    triggers: |
-      Network request for the bundle returned a transport error, 4xx/5xx HTTP status, or the release channel does not publish an artifact for the requested version.
-    how_to_fix: |
-      Verify network connectivity to the release channel; confirm the requested SDK version is published. Retry after the release channel is reachable.
-    spec_section: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDECAR-023
-    domain: sidecar
-    severity: error
-    description: |
-      Sidecar bundle is not available for the host architecture. The wrapper detected an OS/arch pair (e.g., linux-riscv64) that the current release does not ship a prebuilt binary for.
-    triggers: |
-      Resolved `${platform}-${arch}` triple has no corresponding artifact in the signed release manifest.
-    how_to_fix: |
-      Run on a supported `${platform}-${arch}` pair (darwin-arm64, darwin-x86_64, linux-x86_64, linux-aarch64, win32-x86_64) or build the sidecar from source for your platform.
-    spec_section: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDEEFFECT-001
-    domain: side-effect
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDEEFFECT-002
-    domain: side-effect
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDEEFFECT-011
-    domain: side-effect
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SIDEEFFECT-012
-    domain: side-effect
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-SQLITE-001
-    domain: sqlite
-    severity: error
-    description: |
-      Local-sidecar SQLite backend error.
-    triggers: |
-      SQLite layer (the OSS local persistence store) returned an unexpected error.
-    how_to_fix: |
-      Check disk space, file permissions on `~/.relay/`, and the sidecar log.
-    spec_section: "H.5"
-    introduced_in: v0.1.0
-  - code: RELAY-VENDOR-001
-    domain: vendor
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-VENDOR-002
-    domain: vendor
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-VERIFY-001
-    domain: verify
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
-  - code: RELAY-VERIFY-050
-    domain: verify
-    severity: error
-    description: ""
-    triggers: ""
-    how_to_fix: ""
-    introduced_in: v0.1.0
+- code: RELAY-AUTH-001
+  domain: auth
+  severity: error
+  description: |
+    Default authn failure for the auth namespace (missing or invalid bearer/identity assertion).
+  triggers: |
+    Request to a protected endpoint without a valid actor identity assertion.
+  how_to_fix: |
+    Re-authenticate the actor; confirm the identity assertion is current.
+  spec_section: "C.5"
+  introduced_in: v0.1.0
+- code: RELAY-AUTH-014
+  domain: auth
+  severity: error
+  description: |
+    Auth assertion failed validation (signature, expiry, or audience mismatch).
+  triggers: |
+    Bearer/identity assertion fails JWS verification, is expired, or carries the wrong audience claim.
+  how_to_fix: |
+    Re-mint the actor identity assertion; verify clock skew against the authority's `iat`/`exp` claims.
+  spec_section: "C.5"
+  introduced_in: v0.1.0
+- code: RELAY-AUTH-017
+  domain: auth
+  severity: error
+  description: |
+    Request rejected because the signed timestamp is outside the acceptable +/-300 s clock-skew window. Envelope carries server_now_utc and client_claim_utc so the client can self-diagnose; the remediation hint points at NTP / system time sync.
+  triggers: |
+    Caller's signed `client_claim_utc` differs from the server's `server_now_utc` by more than the +/-300 second clock-skew tolerance; the CLI's gate-evaluate flow surfaces this after an automatic single retry with a compensated timestamp also fails.
+  how_to_fix: |
+    Re-sync the caller's system clock against NTP (or your platform equivalent) and re-issue the signed request. Persistent drift across retries indicates a misconfigured time source on the caller host, not a server-side issue.
+  spec_section: "L line 4479; AI lines 5651-5670"
+  introduced_in: v0.1.0
+- code: RELAY-AUTH-022
+  domain: auth
+  severity: error
+  description: |
+    Auditor-room token presented from an IP that does not match its first-use IP binding. [OUT-OF-SCOPE-PRIVATE]: auditor rooms live in private relay-platform/; the enforcement runtime is NOT shipped in OSS relay/. This code is registered in the public OSS registry so verifier and CLI tools can decode envelopes produced by the hosted surface.
+  triggers: |
+    A subsequent request on an auditor-room session presents the room token from a network egress IP that does not match the IP recorded on first use of that token. (Hosted enforcement only; the OSS verifier and CLI decode the envelope but do not enforce the binding.)
+  how_to_fix: |
+    Re-mint the auditor-room token from the original network location, or open a new auditor-room session from the new location. Token IP binding is single-use by design and is not relaxable from the OSS surface.
+  spec_section: "AI line 5675"
+  introduced_in: v0.1.0
+- code: RELAY-CANON-001
+  domain: canonicalization
+  severity: error
+  description: |
+    Canonical-JSON encoder refused to produce cross-runtime-stable bytes. The current emit site is the BMP-only object-key screen: a JSON object key contains a supplementary-plane codepoint (>= U+10000), where the Python-codepoint sort order and the JS UTF-16 code-unit sort order diverge and would silently yield different JCS bytes between cel-python and cel-js. The wire envelope's word-form subcode `RELAY-CANON-NON-BMP-KEY` discriminates this specific reason.
+  triggers: |
+    JCS canonicalisation invoked over a value whose object keys include a supplementary-plane codepoint. Raised by `jcs_canonicalize` in both `packages/contracts/src/relay_contracts/canonical.py` and `packages/contracts-typescript/src/canonical.ts`.
+  how_to_fix: |
+    Re-encode the offending object so all keys are in the Basic Multilingual Plane (< U+10000); supplementary-plane characters remain legal in string values. Cross-runtime byte equality is required for trust-anchor signing (CLAUDE.md keystone invariant 11).
+  introduced_in: v0.1.0
+- code: RELAY-CEL-001
+  domain: contract-cel
+  severity: error
+  description: |
+    Reserved wire-format slot for the Relay CEL evaluator's default (catch-all) error namespace. No emit site in v0.1; the CEL evaluator surfaces every classified failure via 002 (profile), 003 (timeout), 004 (UDF impurity), 006 (numeric out-of-bounds), 007 (regex backref), or 008 (resource exhausted). Reserved so future unclassified CEL failures have a stable code without renumbering the namespace.
+  triggers: |
+    Not currently emitted. Reserved by `packages/schemas/raw/relay-error-codes.yaml` and the generated `RelayErrorCode.RELAY_CEL_001` constant; no runtime code path raises it in v0.1.
+  how_to_fix: |
+    If observed in the wild before a future minor release binds it, treat as a defensive bug: file an issue with the envelope contents and consult `packages/contracts/src/relay_contracts/errors.py` for the current classified set.
+  introduced_in: v0.1.0
+- code: RELAY-CEL-002
+  domain: contract-cel
+  severity: error
+  description: |
+    Relay CEL profile violation: the expression uses a construct the profile forbids. Discriminating subtypes: `RELAY-CEL-PROFILE-DYN-DISABLED` (dyn(...) erases the type lattice), `RELAY-CEL-PROFILE-TS-DISABLED` (native timestamp(...)), `RELAY-CEL-PROFILE-DUR-DISABLED` (native duration(...)). Raised at `compile()` time so contract publish fails before any assertion is stored.
+  triggers: |
+    `RelayCelEvaluator.compile` called on an expression containing `dyn(...)`, `timestamp(...)`, or `duration(...)`. Emit site: `packages/contracts/src/relay_contracts/evaluator.py` and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`. Surfaced via `RelayCelProfileError`.
+  how_to_fix: |
+    Replace the disallowed construct with a profile-safe form: use typed inputs instead of `dyn`, the `relay.timestamp_*` UDFs instead of native temporal types, and structured field access instead of duration arithmetic. See `docs/contracts/udf-reference.md`.
+  introduced_in: v0.1.0
+- code: RELAY-CEL-003
+  domain: contract-cel
+  severity: error
+  description: |
+    Wall-clock evaluation timeout. The Relay CEL evaluator enforces a per-evaluation wall-clock budget; expressions (including UDF execution) that exceed the budget are rejected with subtype `RELAY-CEL-TIMEOUT-001`. Per CLAUDE.md banned-pattern #16 every Relay UDF is pure and bounded; a timeout is a defensive cap, not a normal outcome.
+  triggers: |
+    `RelayCelEvaluator.evaluate` exceeded the configured wall-clock budget (VAL-W6-003). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelTimeoutError`) and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`.
+  how_to_fix: |
+    Simplify the expression, shorten the UDF call chain, or raise the per-evaluation budget after auditing the cause. A persistent timeout on a pure UDF indicates either a pathological input or a UDF bug; re-verify the UDF against the conformance corpus.
+  introduced_in: v0.1.0
+- code: RELAY-CEL-004
+  domain: contract-cel
+  severity: error
+  description: |
+    UDF purity violation. A user-defined function was registered with `pure=False`, which the Relay CEL profile forbids: replay must be byte-deterministic, and an impure UDF breaks cross-runtime evidence parity. Subtype: `RELAY-CEL-UDF-IMPURE`. Per CLAUDE.md banned-pattern #16, every registered UDF must be pure (no wall clock, no network, no filesystem, no random, no mutable globals, no locale-dependent ops).
+  triggers: |
+    `RelayCelEvaluator` UDF registration attempted with `pure=False` (VAL-W6-004). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` and `packages/contracts-typescript/src/evaluator.ts`. Raised as `RelayUdfPurityError`.
+  how_to_fix: |
+    Remove all non-deterministic dependencies from the UDF body (eliminate `time.time` / `Date.now`, network, fs, random, locale-dependent sorts). Re-register with `pure=True` and add a case to the Relay Conformance Corpus (`tests/conformance/cel/`) demonstrating cross-runtime determinism before re-publishing.
+  introduced_in: v0.1.0
+- code: RELAY-CEL-005
+  domain: contract-cel
+  severity: error
+  description: |
+    Reserved wire-format slot in the Relay CEL namespace. No emit site in v0.1; held for a future classified CEL failure mode so the existing 002/003/004/006/007/008 numbering does not need to shift. Reserved in `packages/schemas/raw/relay-error-codes.yaml` and the generated `RelayErrorCode.RELAY_CEL_005` constant.
+  triggers: |
+    Not currently emitted; reserved code.
+  how_to_fix: |
+    Not applicable until bound. If observed, treat as defensive: file an issue with the envelope contents.
+  introduced_in: v0.1.0
+- code: RELAY-CEL-006
+  domain: contract-cel
+  severity: error
+  description: |
+    Evaluation produced a non-finite numeric (NaN, +Inf, or -Inf). Subtype: `RELAY-CEL-NUMERIC-OOB`. RFC 8785 (JCS) section 3.2.2 cannot canonicalise NaN or Infinity, so the evaluator rejects the result before any digest or evidence binding is attempted; emitting such a value would silently break cross-runtime signature parity.
+  triggers: |
+    An arithmetic operation or UDF return produced NaN / +Inf / -Inf during evaluation (VAL-W6-006). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelNumericOutOfBoundsError`) and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`.
+  how_to_fix: |
+    Guard division and exponentiation against zero / overflow in the expression. If the value legitimately needs a non-finite sentinel, represent it as an explicit enum string (e.g. `"infinity"`) so JCS can canonicalise it.
+  introduced_in: v0.1.0
+- code: RELAY-CEL-007
+  domain: contract-cel
+  severity: error
+  description: |
+    Regex literal contains a backreference, which RE2 forbids. Subtype: `RELAY-CEL-PROFILE-REGEX-BACKREF`. RE2 is the only regex engine the Relay CEL profile permits because PCRE-style backtracking opens a ReDoS attack surface. Rejected at `compile()` so contract publish fails before storage.
+  triggers: |
+    `matches(...)` (or a string literal used as a regex) contains a backreference like `\1`, `(.)\1+`, etc. (VAL-W6-007). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelRegexBackreferenceError`) and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`.
+  how_to_fix: |
+    Rewrite the pattern without backreferences. Most backref idioms have an equivalent RE2 formulation using character classes or explicit repetition; otherwise move the check out of CEL into a pure UDF that validates the input structurally.
+  introduced_in: v0.1.0
+- code: RELAY-CEL-008
+  domain: contract-cel
+  severity: error
+  description: |
+    Evaluator orphan-thread cap reached. Subtype: `RELAY-CEL-RESOURCE-EXHAUSTED`. cel-python evaluation is not interruptible from another thread, so a wall-clock timeout leaves the worker thread alive until cel-python finishes; under adversarial inputs orphans would accumulate without bound (DoS). The evaluator caps live orphans at `MAX_ORPHAN_THREADS`; once reached, new evaluations are rejected instead of spawning yet another orphan.
+  triggers: |
+    Live orphan thread count reached `MAX_ORPHAN_THREADS` at `RelayCelEvaluator.evaluate` (Round-3 P1 fix #4). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelResourceExhaustedError`); covered by `packages/contracts/tests/test_evaluator_orphan_thread_bound.py`.
+  how_to_fix: |
+    Investigate why prior evaluations are timing out instead of completing: the cap is reached only when cel-python is wedged on pathological inputs. Reduce concurrency, tighten the CEL timeout, or fix the underlying UDF / expression causing the wedges. The cap can be lifted once cel-python exposes a cancellation handle.
+  introduced_in: v0.1.0
+- code: RELAY-CLI-070
+  domain: cli
+  severity: error
+  description: |
+    CLI command failed with a usage error.
+  triggers: |
+    User invoked the CLI with an unknown subcommand, missing required flag, or invalid argument shape.
+  how_to_fix: |
+    Run `rly <subcommand> --help`; correct the invocation and retry.
+  spec_section: "P"
+  introduced_in: v0.1.0
+- code: RELAY-CLI-130
+  domain: cli
+  severity: error
+  description: |
+    CLI command interrupted (typically Ctrl-C / SIGINT).
+  triggers: |
+    Operator interrupted a long-running CLI operation.
+  how_to_fix: |
+    Re-run the command. If interruption was unintentional, check whether the operation completed via the sidecar log.
+  spec_section: "P"
+  introduced_in: v0.1.0
+- code: RELAY-CONTRACT-001
+  domain: contract
+  severity: error
+  description: |
+    Contract document envelope validation failure: the document is not a JSON object, is missing the required `schema_version` field, has a non-string `schema_version`, references an unknown `schema_version`, or is missing required top-level fields for its declared kind.
+  triggers: |
+    `parse_contract` envelope checks rejected the document. Emit site: `packages/contracts/src/relay_contracts/dsl_parser.py` (`_check_envelope` / `_check_required_fields` raise `ContractParseError`). Covered by `packages/contracts/tests/test_w6_4_dsl_parser.py` (VAL-W6-041).
+  how_to_fix: |
+    Inspect the envelope's `payload.json_path` (and `missing` / `allowed`); correct the offending field and re-submit. Contract schemas live in `packages/schemas/raw/`.
+  introduced_in: v0.1.0
+- code: RELAY-CONTRACT-002
+  domain: contract
+  severity: error
+  description: |
+    Contract input shape / schema validation failure. Reused by two classes of caller: (1) the DSL parser when `severity` is not in the permitted set, and (2) the W9.2 assertion-template runtime when a template's structured input fails JSON-Schema validation. The envelope's `payload.json_path` identifies the offending field.
+  triggers: |
+    Parser path: `_check_severity` in `packages/contracts/src/relay_contracts/dsl_parser.py` rejects an invalid `severity`. Template path: `packages/evals/src/relay_evals/templates/errors.py` raises `RelayTemplateInputError` (VAL-W9-010). Covered by `packages/contracts/tests/test_w6_4_dsl_parser.py` and `packages/evals/tests/test_w9_3_llm_judge.py`.
+  how_to_fix: |
+    Inspect `payload.json_path` and `payload.allowed` (when present); fix the input to satisfy the declared schema and re-submit. Do not coerce inputs at the call site -- templates and the parser refuse silent normalisation by design.
+  introduced_in: v0.1.0
+- code: RELAY-CONTRACT-003
+  domain: contract
+  severity: error
+  description: |
+    Contract lifecycle / loader rejection. Reused by two classes of caller: (1) the DSL parser when `lifecycle_state` is not in the permitted set, and (2) the W9.2 assertion-template loader when a caller asks to load a template from a disk path outside the installed package. The v0.1 runtime forbids dynamic plugin loading (spec S, malicious-template-upload mitigation).
+  triggers: |
+    Parser path: `_check_lifecycle` in `packages/contracts/src/relay_contracts/dsl_parser.py` rejects an invalid `lifecycle_state`. Loader path: `packages/evals/src/relay_evals/templates/errors.py` raises `RelayTemplateLoaderError` (VAL-W9-012). Covered by `packages/contracts/tests/test_w6_4_dsl_parser.py`.
+  how_to_fix: |
+    Set `lifecycle_state` to one of the documented values, or reference a template by its registered name (see `payload.permitted_names`). Custom templates must ship in a signed package release, not via an ad-hoc path.
+  introduced_in: v0.1.0
+- code: RELAY-CONTRACT-004
+  domain: contract
+  severity: error
+  description: |
+    Contract publish failure: a CEL profile violation, unregistered UDF call, or other compile-time defect was detected by `publish_contract`. The envelope's `payload` carries `assertion_id`, `cel_token` (the failing subtype, e.g. `RELAY-CEL-PROFILE-DYN-DISABLED`), `cel_code`, and, for unregistered UDFs, `unknown_callees`.
+  triggers: |
+    `publish_contract` in `packages/contracts/src/relay_contracts/pipeline.py` re-wrapped a `RelayCelError` from `RelayCelEvaluator.compile`, or detected an unregistered UDF in function-call position (VAL-W6-042). Covered by `packages/contracts/tests/test_w6_4_dsl_parser.py`.
+  how_to_fix: |
+    Resolve the underlying CEL failure (see the RELAY-CEL-NNN code in `payload.cel_code`) or register the missing UDF before publishing. Profile violations are intentional and must not be worked around; rewrite the expression in profile-safe form.
+  introduced_in: v0.1.0
+- code: RELAY-CONTRACT-005
+  domain: contract
+  severity: error
+  description: |
+    Contract outcome envelope is incomplete: `evaluate_assertion` produced an outcome missing one or more required binding fields (`assertion_id`, `expression_digest`, `udfs_invoked`, `udf_outputs_jcs`, `wall_time_ms`, `outcome`). CLAUDE.md keystone invariant 2: pass without evidence is not a pass; the runtime refuses to emit a partial envelope.
+  triggers: |
+    `_validate_outcome_envelope` in `packages/contracts/src/relay_contracts/pipeline.py` detected at least one missing required field (VAL-W6-045); raised as `RelayContractOutcomeError`.
+  how_to_fix: |
+    Inspect `error.missing` to see which fields were omitted and fix the evaluation path that produced the envelope; do not retry silently. A truncated envelope is `invalid`, not `accepted`.
+  introduced_in: v0.1.0
+- code: RELAY-COVERAGE-001
+  domain: contract-coverage
+  severity: error
+  description: |
+    Coverage invariant: orphan assertion (an assertion has no owning feature).
+  triggers: |
+    `rly contract publish` detected an assertion without exactly one owner.
+  how_to_fix: |
+    Assign the assertion to a feature in the manifest; re-publish.
+  spec_section: "D.5"
+  introduced_in: v0.1.0
+- code: RELAY-COVERAGE-002
+  domain: contract-coverage
+  severity: error
+  description: |
+    Coverage invariant: duplicate `expression` digest across assertions.
+  triggers: |
+    Two assertions in the manifest have the same canonical-form expression.
+  how_to_fix: |
+    Consolidate the duplicate assertions; rename or re-scope one of them.
+  spec_section: "D.5"
+  introduced_in: v0.1.0
+- code: RELAY-COVERAGE-003
+  domain: contract-coverage
+  severity: error
+  description: |
+    Coverage invariant: missing `owner_email` on a P0/P1 assertion.
+  triggers: |
+    P0 or P1 assertion lacks a human owner contact.
+  how_to_fix: |
+    Add `owner_email`; P0/P1 assertions require exactly one human owner.
+  spec_section: "D.5"
+  introduced_in: v0.1.0
+- code: RELAY-COVERAGE-004
+  domain: contract-coverage
+  severity: error
+  description: |
+    Coverage invariant: duplicate primary ownership.
+  triggers: |
+    More than one feature claims `primaryFulfills` for the same assertion.
+  how_to_fix: |
+    Re-scope so exactly one feature primarily fulfills each assertion; other features may `secondaryFulfills`.
+  spec_section: "D.5"
+  introduced_in: v0.1.0
+- code: RELAY-EVAL-024
+  domain: eval
+  severity: error
+  description: |
+    Pass@N filter rejection: the assertion set produced an uninformative edge across the last N runs (all-pass or all-fail). Spec AL.2 (lines 5775-5785).
+  triggers: |
+    `check_pass_at_n` in `packages/evals/src/relay_evals/pass_at_n.py` scored the assertion set over the most recent N runs (default N=8) and found either `pass_count == N` (all-pass edge) or `pass_count == 0` (all-fail edge). The publish path surfaces this as HTTP 422 with `failing_edge` referencing the offending run set.
+  how_to_fix: |
+    Tighten or relax the assertion so it discriminates between passing and failing runs in the most recent N executions, or widen / narrow the sampled cohort before retrying. An all-pass edge means the assertion never fires (wasted CEL budget); an all-fail edge means the assertion always rejects (degenerate). See `docs/contracts/pass-at-n.md`.
+  spec_section: "AL.2 5775-5785"
+  introduced_in: v0.1.0
+- code: RELAY-EVID-001
+  domain: evidence
+  severity: error
+  description: |
+    Default evidence-namespace rejection (catch-all).
+  triggers: |
+    Evidence submission failed in a way more specific codes do not classify.
+  how_to_fix: |
+    Inspect `details`; consult `docs/evidence/bundle-anatomy.md`.
+  spec_section: "K"
+  introduced_in: v0.1.0
+- code: RELAY-EVID-002
+  domain: evidence
+  severity: error
+  description: |
+    Evidence bundle is incomplete: at least one required claim is missing its paired artifact hash, exit code, span IDs, or assertion IDs.
+  triggers: |
+    Bundle assembled without binding every success claim to its evidence (CLAUDE.md keystone invariant #2).
+  how_to_fix: |
+    Re-run the validation step so the runner emits the missing artifacts; rebuild the bundle.
+  spec_section: "K"
+  introduced_in: v0.1.0
+- code: RELAY-EVID-014
+  domain: evidence
+  severity: error
+  description: |
+    Evidence bundle signature verification failed. Subcodes carry the specific failure (`signature_invalid`, `signature_key_revoked`, `trust_anchor_mismatch`, `manifest_digest_mismatch`).
+  triggers: |
+    JWS signature fails verification against the configured trust-anchor JWKS, signing key is revoked, declared `trust_anchor` does not match verifier config, or manifest digest does not match the stored value.
+  how_to_fix: |
+    Investigate. Do not ignore. Pull the bundle and re-run `rly evidence verify --verbose` to inspect `details.subcode`; consult `docs/evidence/signing-key-lifecycle.md`.
+  spec_section: "K, AO"
+  introduced_in: v0.1.0
+- code: RELAY-EVID-024
+  domain: evidence
+  severity: error
+  description: |
+    Evidence bundle redaction policy missing or invalid.
+  triggers: |
+    Bundle submitted without an active redaction policy version, or referencing a revoked policy.
+  how_to_fix: |
+    Publish a current redaction policy and re-bundle.
+  spec_section: "G"
+  introduced_in: v0.1.0
+- code: RELAY-EVID-031
+  domain: evidence
+  severity: error
+  description: |
+    Evidence bundle trust-anchor mismatch: declared `trust_anchor` does not match verifier configuration.
+  triggers: |
+    Bundle's `trust_anchor` field references a JWKS the verifier is not configured to trust.
+  how_to_fix: |
+    Configure the verifier with the bundle's trust anchor (or vice versa); see `docs/evidence/trust-anchor.md`.
+  spec_section: "AO.4"
+  introduced_in: v0.1.0
+- code: RELAY-EVID-038
+  domain: evidence
+  severity: error
+  description: |
+    Evidence bundle TSA timestamp missing or invalid.
+  triggers: |
+    Bundle assembled without a Time-Stamp Authority countersignature, or with one that fails verification.
+  how_to_fix: |
+    Re-bundle with a valid TSA countersignature; check the TSA's availability.
+  spec_section: "AO"
+  introduced_in: v0.1.0
+- code: RELAY-EVID-040
+  domain: evidence
+  severity: error
+  description: |
+    Merkle root mismatch in a multi-claim bundle: the recomputed root differs from the stored root.
+  triggers: |
+    Claim ordering changed between sign and verify, or a claim payload was tampered.
+  how_to_fix: |
+    Rebuild the bundle from the original claim set; do not edit claims post-sign.
+  spec_section: "K"
+  introduced_in: v0.1.0
+- code: RELAY-EVID-041
+  domain: evidence
+  severity: error
+  description: |
+    Signer key expired: bundle's `signer_key_id` resolves to a JWK whose `not_after` is in the past (with the L.5 tolerance exhausted).
+  triggers: |
+    Bundle was signed (or verification ran) after the signing key's expiry.
+  how_to_fix: |
+    Rotate to an active signing key and re-sign the bundle.
+  spec_section: "L.5"
+  introduced_in: v0.1.0
+- code: RELAY-EVID-042
+  domain: evidence
+  severity: error
+  description: |
+    Signer key revoked: bundle was signed AFTER the JWK's `revoked_at` timestamp.
+  triggers: |
+    Signature occurred after the key was revoked (signing-before-revocation is a WARN, not an error).
+  how_to_fix: |
+    Rotate to an active key; investigate why a revoked key was still in use.
+  spec_section: "L.5"
+  introduced_in: v0.1.0
+- code: RELAY-EXPLAIN-001
+  domain: explain
+  severity: error
+  description: |
+    Explain ingestion received a hypothesis whose span_id is not present on the associated run; the cross-row check failed before INSERT. Spec T (line 4895).
+  triggers: |
+    `ExplainEngine.ingest_hypothesis` in `packages/explain/src/relay_explain/engine.py` performed the cross-row check `span_belongs_to_run(run_id, span_id)` and the span was not present on the run. Surfaced by `packages/explain/src/relay_explain/api.py` as HTTP 422 with this code in the error envelope (`SpanNotOnRunError`).
+  how_to_fix: |
+    Verify the `run_id` / `span_id` pair against the run's actual span set before resubmitting. Common causes: stale client-side span id, cross-run copy/paste, or the run was rotated out of the spans table since capture. Do not retry without rechecking.
+  spec_section: "T 4895"
+  introduced_in: v0.1.0
+- code: RELAY-FUTURE-999
+  domain: forward-compat
+  severity: error
+  description: |
+    Forward-compat fallback for an unknown sidecar code the SDK does not recognise.
+  triggers: |
+    Sidecar emitted a wire code with a namespace or numeric ordinal the SDK has not been updated to map.
+  how_to_fix: |
+    Upgrade the SDK to a release whose code registry covers the new code. The SDK still surfaces the envelope as `RelayUnknownError` for forward compatibility.
+  spec_section: "B.4"
+  introduced_in: v0.1.0
+- code: RELAY-GATE-001
+  domain: gate
+  severity: error
+  description: |
+    Default gate-namespace rejection (catch-all).
+  triggers: |
+    Gate decision request failed in a way more specific codes do not classify.
+  how_to_fix: |
+    Inspect `details`; consult `docs/how-to/audit-gate-decision.md`.
+  spec_section: "C"
+  introduced_in: v0.1.0
+- code: RELAY-GATE-014
+  domain: gate
+  severity: error
+  description: |
+    Gate evidence pairing rule violated: a claim is marked passing without paired artifact hash + command + exit code.
+  triggers: |
+    Gate engine refused to write `accepted` because a contract assertion's evidence is incomplete.
+  how_to_fix: |
+    Re-run the validation command; ensure the runner emits a structured exit code and artifact digest. See CLAUDE.md keystone invariant #2.
+  spec_section: "K"
+  introduced_in: v0.1.0
+- code: RELAY-GATE-021
+  domain: gate
+  severity: error
+  description: |
+    Stale three-anchor handoff: one of `scope_id`, `actor_identity_hash`, or `manifest_commit_hash` is missing or mismatched.
+  triggers: |
+    CI submission carrying a `manifest_commit_hash` outside the active or grace window, a revoked actor identity, or a mismatched run_id.
+  how_to_fix: |
+    Refresh the manifest commit hash and the actor identity; do not bypass. See `docs/contracts/manifest-binding.md` for the three-anchor model.
+  spec_section: "C.5"
+  introduced_in: v0.1.0
+- code: RELAY-GATE-024
+  domain: gate
+  severity: error
+  description: |
+    Gate decision draft references a manifest_commit_hash not in the active or grace window.
+  triggers: |
+    Submission's manifest commit is older than the configured grace window.
+  how_to_fix: |
+    Re-publish the contract against the current manifest commit; re-submit.
+  spec_section: "F"
+  introduced_in: v0.1.0
+- code: RELAY-GATE-031
+  domain: gate
+  severity: error
+  description: |
+    A `GatePolicy` condition references a metric name that is not defined in `relay.gate_metric_catalog.v1`. Detected by `metric_compiler.validate_policy` at policy-publish time, before the policy can be activated against any scope.
+  triggers: |
+    Author of a gate policy typed a metric name that does not match any registered metric in the catalog, or referenced a metric from a private vertical pack that the active catalog does not load.
+  how_to_fix: |
+    Register the metric in `gate_metric_catalog.v1.json` (and ship it with its source/aggregation/sampling clauses) or correct the metric name in the policy. Do not work around the validator; a policy that references an undefined metric cannot produce a binding decision.
+  introduced_in: v0.1.0
+- code: RELAY-GATE-033
+  domain: gate
+  severity: error
+  description: |
+    A registered metric's `source` clause names a table or join target that is not present in the canonical SQL schema registry. Detected by `metric_compiler.validate_metric` at publish time so the metric cannot be evaluated against rows that do not exist.
+  triggers: |
+    Catalog entry's `source` FROM/JOIN clause was written against a table that has not yet been created (or has been renamed) in the canonical schema; commonly seen when a metric ships ahead of its migration.
+  how_to_fix: |
+    Ship the missing migration so the canonical schema registry knows the table, or rewrite the metric's `source` against an existing table. Re-publish the catalog once the registry resolves the reference.
+  introduced_in: v0.1.0
+- code: RELAY-GATE-038
+  domain: gate
+  severity: error
+  description: |
+    At gate-evaluation time the source-table data backing a metric had completeness below the metric's `sampling_eligibility` threshold; the gate decision is recorded as `invalid` for that round (not `pass` or `fail`) because the underlying sample is too sparse to support a defensible outcome.
+  triggers: |
+    Evaluator queried the metric's source table(s), measured row-level completeness, and the value fell below the catalog-declared threshold.
+  how_to_fix: |
+    Increase the sample size on the source table (more ingest, longer evaluation window) or lower the metric's `sampling_eligibility` threshold deliberately at the catalog level. Do not silently re-classify the round; `invalid` is the correct outcome when coverage is insufficient.
+  introduced_in: v0.1.0
+- code: RELAY-GATE-041
+  domain: gate
+  severity: error
+  description: |
+    A new gate-decision draft is byte-identical to the prior round's submission on all four anchors (`command_hash`, `manifest_commit_hash`, `release_sha`, `inputs_digest`). The restart pipeline refuses the resubmission and does NOT consume a remediation round. Surfaced as `UnchangedResubmissionError`.
+  triggers: |
+    Caller re-submitted the same draft after a failing round without producing materially changed evidence or commands.
+  how_to_fix: |
+    Address the remediation directive: change the command, manifest, release SHA, or evidence refs so the new draft's `inputs_digest` differs from the prior round, then re-submit. Identical re-submissions cannot make progress.
+  introduced_in: v0.1.0
+- code: RELAY-GATE-051
+  domain: gate
+  severity: error
+  description: |
+    A new `gate_decision_drafts` submission arrived for a scope whose `scope_state` is `gate.stalled` (remediation-round cap exceeded or admin-paused). The only legitimate transitions out of stalled are `admin.reopen` (returns to `gate.open` with a fresh round) and `admin.terminate` (final block). Surfaced as `StalledScopeRejectedError`.
+  triggers: |
+    Pipeline kept submitting after the circuit breaker tripped, or a parallel runner did not observe the stall.
+  how_to_fix: |
+    Pause the pipeline. Have an org-admin investigate why the remediation round cap was exhausted, then either `admin.reopen` (with a documented remediation plan) or `admin.terminate` (final). Do not loop on resubmits.
+  introduced_in: v0.1.0
+- code: RELAY-GATE-061
+  domain: gate
+  severity: error
+  description: |
+    A gate-decision draft's declared command contains a banned bypass flag (`--no-verify`, `--skip-tests`, `pytest.mark.skip` injected into the runner, etc.) without an accompanying audited org-admin override claim in `evidence_refs`. Surfaced as `AntiBypassRejectedError`.
+  triggers: |
+    Anti-bypass scan over the draft's declared command/runner config matched a banned token and no override was attached.
+  how_to_fix: |
+    Remove the bypass flag from the command and re-submit, or attach a single-use org-admin override (recorded in the override registry, with audit context) and re-submit. The override is recorded permanently against the round.
+  introduced_in: v0.1.0
+- code: RELAY-IDEMPOTENCY-001
+  domain: idempotency
+  severity: error
+  description: |
+    Default idempotency-namespace rejection.
+  triggers: |
+    Idempotency key handling failure not covered by a more specific code.
+  how_to_fix: |
+    Confirm the `Idempotency-Key` header is set on retried requests; inspect the idempotency record.
+  spec_section: "B.6"
+  introduced_in: v0.1.0
+- code: RELAY-IDEMPOTENCY-014
+  domain: idempotency
+  severity: error
+  description: |
+    Caller presented an `Idempotency-Key` header value that does not match the canonical Crockford-base32 ULID grammar `^[0-9A-HJKMNP-TV-Z]{26}$` (Crockford-base32 excludes the ambiguous letters I, L, O, U). The check runs BEFORE any canonical hashing so a malformed key never reaches the idempotency table. HTTP 400.
+  triggers: |
+    Header was empty, lowercase, the wrong length, contained a banned character, or contained whitespace/control bytes (including RTL/zero-width injection attempts).
+  how_to_fix: |
+    Generate `Idempotency-Key` values using a conforming ULID library, in upper case, with exactly 26 Crockford-base32 characters. Do not hand-craft keys; do not lower-case them; do not append delimiters.
+  introduced_in: v0.1.0
+- code: RELAY-ING-001
+  domain: ingest
+  severity: error
+  description: |
+    Default ingest envelope rejection (catch-all for the ingest namespace).
+  triggers: |
+    Ingest envelope failed schema validation in a way more specific codes do not classify.
+  how_to_fix: |
+    Inspect `details` on the envelope; re-submit with a corrected payload.
+  spec_section: "B"
+  introduced_in: v0.1.0
+- code: RELAY-ING-014
+  domain: ingest
+  severity: error
+  description: |
+    Ingest envelope failed canonical schema validation.
+  triggers: |
+    Envelope payload violates the `relay.ingest.v1` schema (missing required field, wrong type, unknown discriminator).
+  how_to_fix: |
+    Validate the envelope client-side against the schema in `packages/schemas/catalogs/` before re-submitting.
+  spec_section: "B.4"
+  introduced_in: v0.1.0
+- code: RELAY-ING-021
+  domain: ingest
+  severity: error
+  description: |
+    Ingest envelope schema_version unsupported.
+  triggers: |
+    Envelope declared a `schema_version` the control plane does not accept (forward or backward incompatible).
+  how_to_fix: |
+    Pin the SDK to a release whose envelope schema matches the deployed control plane; re-submit.
+  spec_section: "B.4"
+  introduced_in: v0.1.0
+- code: RELAY-ING-022
+  domain: ingest
+  severity: error
+  description: |
+    Ingest envelope failed three-anchor handoff at the ingest edge.
+  triggers: |
+    Envelope arrived with a missing or mismatched `scope_id` / `actor_identity_hash` / `manifest_commit_hash`.
+  how_to_fix: |
+    Re-bind the run to the active manifest and current actor identity; see `docs/contracts/manifest-binding.md`.
+  spec_section: "C.5"
+  introduced_in: v0.1.0
+- code: RELAY-ING-031
+  domain: ingest
+  severity: error
+  description: |
+    Control-plane ownership violation: the SDK attempted to write a canonical `run_results.status` value. The control plane is the only writer for canonical outcome rows.
+  triggers: |
+    Submitting an ingest envelope whose payload sets a terminal `status` field, or any attempt to mark a run `accepted` from SDK/agent/eval worker code.
+  how_to_fix: |
+    Submit lifecycle metadata only; let the control plane write the canonical status row via `compare_and_set_state`.
+  spec_section: "B.4"
+  introduced_in: v0.1.0
+- code: RELAY-ING-032
+  domain: ingest
+  severity: error
+  description: |
+    Ingest payload contains raw capture content but the active redaction policy does not enable `raw_capture`.
+  triggers: |
+    SDK submitted a span whose `raw_*` fields are populated without an approved `raw_capture: true` policy version.
+  how_to_fix: |
+    Either enable `raw_capture: true` on the redaction policy version (requires signed DPA + org-admin approver per CLAUDE.md invariant 7), or scrub the raw fields client-side.
+  spec_section: "G.1"
+  introduced_in: v0.1.0
+- code: RELAY-ING-041
+  domain: ingest
+  severity: error
+  description: |
+    Ingest span exceeded the canonical-JSON span size limit (256 KiB / 262144 bytes) or the nesting depth limit (16 levels). The envelope carries offending_span_id plus either measured_bytes or reason=nesting_depth_exceeded.
+  triggers: |
+    A span submitted to `/v1/ingest/spans:batch` either exceeds the 256 KiB canonical-JSON size cap (envelope carries `measured_bytes`) or exceeds the depth-16 nesting cap (envelope carries `reason=nesting_depth_exceeded`). HTTP 413.
+  how_to_fix: |
+    Reduce the offending span: split oversized prompt/output payloads across multiple spans, hoist deeply nested tool-arg structures into separate spans, or pre-redact bulky retrieval documents. Confirm SDK serializers are not double-wrapping objects.
+  spec_section: "AI line 5659"
+  introduced_in: v0.1.0
+- code: RELAY-ING-045
+  domain: ingest
+  severity: error
+  description: |
+    Ingest span carried invalid UTF-8 byte sequences in an indexed field (prompt_template_id, tool_name, model, retriever_name, or any field declared via indexed_string_fields). Envelope carries field_path identifying the offending field.
+  triggers: |
+    An indexed string field (`prompt_template_id`, `tool_name`, `model`, `retriever_name`, or any caller-declared `indexed_string_fields` entry) carries bytes that are not valid UTF-8. The envelope's `field_path` identifies the offending field. HTTP 400.
+  how_to_fix: |
+    Normalize the source value to valid UTF-8 before submission (use `errors='strict'` decoding in Python or `TextDecoder({fatal: true})` in TS to surface the bad bytes at the call site). If the field originates from an external system, re-encode upstream of ingest.
+  spec_section: "AI line 5698"
+  introduced_in: v0.1.0
+- code: RELAY-MANIFEST-021
+  domain: manifest
+  severity: error
+  description: |
+    Assertion template referenced a tool_name that is not declared in the active manifest's tool registry. Surfaces from RelayManifestUnknownToolError raised by tool_arg_assertion_template; the envelope payload carries tool_name, manifest_commit_hash, and the sorted known_tool_names list so the auditor can attribute the rejection to a specific manifest commit.
+  triggers: |
+    tool_arg_assertion_template was asked to bind an assertion against a tool_name that is absent from the manifest tool registry at the active manifest_commit_hash (VAL-W9-014).
+  how_to_fix: |
+    Add the tool to the manifest's tool registry and re-publish the manifest, or correct the tool_name in the template input to match one of the registered names listed in the envelope payload's known_tool_names. The manifest_commit_hash is SHA-256 over JCS-canonicalised manifest bytes, not git's blob SHA-1.
+  introduced_in: v0.1.0
+- code: RELAY-RATE-001
+  domain: rate-limit
+  severity: error
+  description: |
+    Default rate-limit namespace response (HTTP 429).
+  triggers: |
+    Caller exceeded the configured RPM / ITPM budget.
+  how_to_fix: |
+    Honor the `Retry-After` header; reduce burst rate.
+  spec_section: "B.4"
+  introduced_in: v0.1.0
+- code: RELAY-RATE-014
+  domain: rate-limit
+  severity: error
+  description: |
+    Rate-limit token exhausted for a specific scope (e.g., per-org budget).
+  triggers: |
+    Scope-specific budget exceeded.
+  how_to_fix: |
+    Wait for the rolling window to clear; reduce concurrency.
+  spec_section: "B.4"
+  introduced_in: v0.1.0
+- code: RELAY-REDACT-014
+  domain: redaction
+  severity: error
+  description: |
+    Redaction policy publish rejected because a regex matcher exceeded the 50 ms per-input wall-clock budget when evaluated against the published catastrophic-backtracking corpus. Envelope carries matcher_id plus measured_ms.
+  triggers: |
+    Redaction policy publish called check_regex_budget (packages/sdk-python/relay/redaction_budget.py); a regex matcher's wall-clock latency exceeded REDACTION_REGEX_BUDGET_MS (50 ms) when evaluated against the published catastrophic-backtracking corpus. The rejection envelope carries matcher_id and measured_ms.
+  how_to_fix: |
+    Rewrite the offending regex to avoid catastrophic-backtracking constructs (nested quantifiers, alternation over overlapping patterns). Re-run the publish path; the same matcher_id must complete under 50 ms across the published corpus before the policy can land.
+  spec_section: "AI line 5665"
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-001
+  domain: release
+  severity: error
+  description: |
+    PyPI publish workflow is not configured for OIDC trusted publishing or references a long-lived publish secret. The release pipeline must use the GitHub OIDC trust exchange so no static token can be exfiltrated.
+  triggers: |
+    `scripts/check-pypi-publish-workflow.py` fails when `release-pypi.yml` omits `permissions.id-token: write` on the publish job, references a `PYPI_TOKEN`-class secret, or passes a `password:` input to `pypa/gh-action-pypi-publish`.
+  how_to_fix: |
+    Remove all long-lived publish secrets, set `permissions.id-token: write` at workflow or job scope, and rely on PyPI trusted publishing for the `pypa/gh-action-pypi-publish` step.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-002
+  domain: release
+  severity: error
+  description: |
+    PyPI publish job is not bound to the canonical repo + workflow filename + `release` environment expected by trusted publishing, or the runbook does not document that binding.
+  triggers: |
+    `scripts/check-pypi-publish-workflow.py` fails when the publish job's `environment:` is not `release`, or when `docs/release/runbook.md` is missing one of the `repo:`, `workflow:`, or `environment:` declaration phrases.
+  how_to_fix: |
+    Pin the publish job to `environment: release`, keep the workflow file named `release-pypi.yml`, and declare the trusted-publisher binding (repo + workflow + environment) in `docs/release/runbook.md`.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-004
+  domain: release
+  severity: error
+  description: |
+    PyPI publish workflow does not wire the artifact hash chain into the SLSA generator, so published sdist + wheel digests cannot be bound to the provenance attestation subject.
+  triggers: |
+    `scripts/check-pypi-publish-workflow.py` fails when no job declares `outputs.hashes`, when the workflow does not invoke `slsa-framework/slsa-github-generator`, or when `base64-subjects` is not wired into the generator inputs.
+  how_to_fix: |
+    Add an `outputs.hashes` job output containing the base64-encoded `sha256sum` over `dist/*`, invoke the SLSA generator reusable workflow, and pass the hashes as `base64-subjects`.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-005
+  domain: release
+  severity: error
+  description: |
+    PyPI publish workflow does not sign every distribution with Sigstore, leaving published artifacts without a verifiable signature.
+  triggers: |
+    `scripts/check-pypi-publish-workflow.py` fails when no publish job sets `attestations: true` on `pypa/gh-action-pypi-publish` and no `sigstore/gh-action-sigstore-python` step is present.
+  how_to_fix: |
+    Set `with.attestations: true` on `pypa/gh-action-pypi-publish` (PEP 740 Sigstore-backed attestations) or add a `sigstore/gh-action-sigstore-python` step that signs every artifact under `dist/` before publish.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-006
+  domain: release
+  severity: error
+  description: |
+    PyPI publish step is not idempotent under a re-run of the same tag; a duplicate publish attempt would error instead of being a no-op.
+  triggers: |
+    `scripts/check-pypi-publish-workflow.py` fails when the `pypa/gh-action-pypi-publish` step does not set `skip-existing: true`.
+  how_to_fix: |
+    Add `with.skip-existing: true` to the `pypa/gh-action-pypi-publish` step so that re-running the workflow against an already-published `(name, version)` exits cleanly without attempting an overwrite.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-007
+  domain: release
+  severity: error
+  description: |
+    npm publish workflow is not configured for OIDC trusted publishing or references a long-lived publish secret. Every `npm publish` invocation must run with `--provenance` under an OIDC-issued token.
+  triggers: |
+    `scripts/check-npm-publish-workflow.py` fails when `release-npm.yml` references an `NPM_TOKEN`-class secret, when a publish job lacks `permissions.id-token: write`, or when an `npm publish` step omits the `--provenance` flag.
+  how_to_fix: |
+    Remove all long-lived npm credentials, declare `permissions.id-token: write` on every publish job, and invoke `npm publish --provenance` in each publish step.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-008
+  domain: release
+  severity: error
+  description: |
+    npm tarball digest cannot be bound to the provenance attestation subject, either because the SLSA hash chain is not wired or because no publish job runs `npm audit signatures` post-publish.
+  triggers: |
+    `scripts/check-npm-publish-workflow.py` fails when no job declares `outputs.hashes`, when the SLSA generator is not invoked with `base64-subjects`, or when a publish job lacks an `npm audit signatures` step.
+  how_to_fix: |
+    Wire the build job's base64-encoded `sha256sum` output into `slsa-framework/slsa-github-generator` via `base64-subjects`, and add an `npm audit signatures` step to every publish job to verify the published tarball against its attestation.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-009
+  domain: release
+  severity: error
+  description: |
+    npm release workflow does not publish both `@epochly/relay` and `@epochly/relay-sidecar-bundle` together with provenance, so the two packages can drift apart.
+  triggers: |
+    `scripts/check-npm-publish-workflow.py` fails when a required publish job (`publish-sdk`, `publish-sidecar-bundle`) or build job is missing, when a publish job's `npm publish` omits `--provenance`, or when the workflow does not reference both package names.
+  how_to_fix: |
+    Add the missing publish/build job, ensure every `npm publish` step includes `--provenance`, and keep both `@epochly/relay` and `@epochly/relay-sidecar-bundle` referenced in the workflow so a rename does not silently break the pairing.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-010
+  domain: release
+  severity: error
+  description: |
+    The npm and PyPI release workflows do not bind to the same source git commit, so the published artifacts on the two registries can attest to different code.
+  triggers: |
+    `scripts/check-npm-publish-workflow.py` or `scripts/check-npm-pypi-commit-consistency.py` fails when `release-pypi.yml` is missing, when the two workflows declare different `on.push.tags` patterns, or when the npm workflow does not invoke the cross-platform commit consistency check.
+  how_to_fix: |
+    Align both workflows to fire on the same tag-trigger pattern and invoke `scripts/check-npm-pypi-commit-consistency.py` from the npm workflow so divergent commit SHAs are caught before publish.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-011
+  domain: release
+  severity: error
+  description: |
+    A released artifact would ship without a SLSA provenance attestation because at least one required provenance job is missing from the release workflows.
+  triggers: |
+    `scripts/check-slsa-provenance.py` fails when `release-pypi.yml` lacks the `provenance` job or `release-npm.yml` lacks `provenance-sdk` or `provenance-sidecar-bundle`.
+  how_to_fix: |
+    Add the missing provenance job(s) to the corresponding workflow so every published artifact carries a SLSA attestation.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-012
+  domain: release
+  severity: error
+  description: |
+    A supply-chain critical GitHub Action or reusable workflow is referenced by tag or branch instead of being pinned to a 40-hex commit SHA, allowing a force-moved tag to silently swap the action that produces or publishes artifacts.
+  triggers: |
+    `scripts/check-pypi-publish-workflow.py`, `scripts/check-npm-publish-workflow.py`, `scripts/check-sidecar-bundle.py`, or `scripts/check-slsa-provenance.py` fails when any `uses:` reference to a supply-chain critical action (notably `slsa-framework/slsa-github-generator`) is not pinned to a 40-character lowercase-hex SHA.
+  how_to_fix: |
+    Replace the floating `@<tag>` or `@<branch>` ref with `@<40-char-sha>` for every supply-chain critical action listed in `SHA_PIN_REQUIRED_ACTIONS`; record the upstream tag the SHA corresponds to in a sibling comment.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-013
+  domain: release
+  severity: error
+  description: |
+    SLSA provenance attestation is missing keyless-OIDC permissions at the workflow side, or once produced is missing the SLSA v1 predicate type, the expected `slsa-github-generator` builder identity, or a subject digest that matches the published artifact.
+  triggers: |
+    `scripts/check-slsa-provenance.py` fails in workflow mode when a provenance job lacks `permissions.id-token: write`, or in attestation mode when `predicateType` is not `https://slsa.dev/provenance/v1`, when `builder.id` is outside the `slsa-github-generator` prefix, or when the subject `sha256` digest does not include the expected artifact hash.
+  how_to_fix: |
+    Grant `permissions.id-token: write` on every provenance job, and verify the produced attestation was issued by the `slsa-github-generator` reusable workflow against the exact artifact digest before allowing publish.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-014
+  domain: release
+  severity: error
+  description: |
+    A failed SLSA provenance step would not block the corresponding publish step because the publish job does not declare the provenance job in `needs:` or because `continue-on-error: true` is set on the publish or provenance job.
+  triggers: |
+    `scripts/check-slsa-provenance.py` fails when `publish` is not paired with `provenance` (or `publish-sdk` with `provenance-sdk`, or `publish-sidecar-bundle` with `provenance-sidecar-bundle`) via `needs:`, or when either job opts out of failure via `continue-on-error: true`.
+  how_to_fix: |
+    Add the provenance job to each publish job's `needs:` and remove any `continue-on-error: true` from the publish/provenance pair so an attestation failure blocks the release.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-015
+  domain: release
+  severity: error
+  description: |
+    SLSA provenance attestation lacks one of the four required `buildDefinition` fields (`buildType`, `externalParameters`, `internalParameters`, `resolvedDependencies`) or its `resolvedDependencies` does not include a 40-hex `gitCommit` digest binding the build to a source commit.
+  triggers: |
+    `scripts/check-slsa-provenance.py` fails in workflow mode when a provenance job does not pass `base64-subjects` via `with:`, or in attestation mode when any of the four `buildDefinition` fields is missing, when `buildType` is not a non-empty string, or when no `resolvedDependencies[].digest.gitCommit` is a 40-character hex SHA.
+  how_to_fix: |
+    Wire `base64-subjects` into the SLSA generator invocation and confirm the produced attestation has all four buildDefinition fields populated, with at least one resolved dependency carrying a `gitCommit` digest for the source SHA.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-016
+  domain: release
+  severity: error
+  description: |
+    The in-toto release layout declares a step that has no corresponding emit-link wiring in the release workflow or no `.link` file produced at build time, breaking the in-toto chain of custody.
+  triggers: |
+    `scripts/check-in-toto-attestations.py` fails in workflow mode when a layout step has no workflow run-step invoking `generate-in-toto-link.py --step-name <name>`, or in chain mode when a layout step has no matching `<step>.<keyid>.link` file under the link directory.
+  how_to_fix: |
+    Add the missing emit-link step (`generate-in-toto-link.py --step-name <step>`) to the release workflow, and verify each layout step produces and uploads its `.link` artifact before the chain check runs.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-017
+  domain: release
+  severity: error
+  description: |
+    The in-toto release layout itself is structurally invalid: its declared step set does not match `env.RELAY_INTOTO_DECLARED_STEPS` in the workflow, or it violates the v0.1 layout schema (missing required fields, malformed keyids, threshold not a positive integer, duplicate step names, etc).
+  triggers: |
+    `scripts/check-in-toto-attestations.py` fails when the workflow's `RELAY_INTOTO_DECLARED_STEPS` env value does not match the names in `layout.signed.steps`, when `layout.signed._type` is not `"layout"`, or when any required field on `layout.signed` or `layout.signed.steps[*]` is missing, malformed, or references a functionary keyid not present in `signed.keys`.
+  how_to_fix: |
+    Resync `RELAY_INTOTO_DECLARED_STEPS` and the layout's `signed.steps[*].name` set, and repair the layout JSON so every step declares `name`, `expected_command`, `pubkeys`, `expected_materials`, `expected_products`, and a positive integer `threshold` against keys present in `signed.keys`.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-018
+  domain: release
+  severity: error
+  description: |
+    In-toto chain of custody is broken: a step's `materials` does not include every `products` digest produced by its declared parent step, so the artifact passed between steps is not the artifact under attestation.
+  triggers: |
+    `scripts/check-in-toto-attestations.py` chain mode fails when a child step's parent (derived from `expected_materials` `MATCH ... FROM <step>` rules or implicit declaration order) emits products whose sha256 digests are absent from the child's materials, or when a referenced parent has no `.link` file at all.
+  how_to_fix: |
+    Re-emit the affected `.link` files so each step's materials enumerate the exact product digests of its declared parents, and fix any `expected_materials` rule whose `FROM <step>` target does not exist.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-019
+  domain: release
+  severity: error
+  description: |
+    In-toto layout signing key is expired (or the layout itself is expired) without a valid witness countersignature, so the layout cannot bind a release per the spec L.3 two-phase rotation rule.
+  triggers: |
+    `scripts/check-in-toto-attestations.py` fails when `layout.signed.expires` is missing, unparseable, or in the past; when a signature's keyid is absent from `signed.keys`; when a key's `not_after` is past with no `witness_signature` block; or when the witness key itself is past its `not_after`.
+  how_to_fix: |
+    Re-sign the layout with an unexpired key (or add a witness countersignature from an unexpired successor key per spec L.3), and refresh `signed.expires` and the affected key's `not_after` ahead of `now`.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-020
+  domain: release
+  severity: error
+  description: |
+    Sidecar bundle build workflow does not cover all five canonical OS/arch matrix cells, so the released bundle is incomplete for at least one supported platform.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when any slug in `CANONICAL_MATRIX` is absent from `release-sidecar-bundle.yml`, or when no build job declares a `strategy.matrix`.
+  how_to_fix: |
+    Add the missing OS/arch entries to the build matrix and ensure the build job actually consumes them via `strategy.matrix`.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-021
+  domain: release
+  severity: error
+  description: |
+    Sidecar bundle workflow does not perform Sigstore keyless signing with a Rekor inclusion proof, leaving the released binary without a verifiable transparency-log entry.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when the workflow does not reference both `sigstore` and `rekor`, or when no job grants `permissions.id-token: write` for the OIDC token exchange required by keyless signing.
+  how_to_fix: |
+    Wire Sigstore keyless signing into the workflow (referencing both `sigstore` and `rekor`) and grant `permissions.id-token: write` on the signing job.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-022
+  domain: release
+  severity: error
+  description: |
+    Sidecar bundle workflow does not configure a Timestamp Authority (TSA), so the Sigstore bundle lacks an RFC 3161 timestamp and cannot be verified against a fixed point in time.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when the workflow text contains none of the TSA indicator tokens (`tsa`, `timestamp`, `timestampVerificationData`).
+  how_to_fix: |
+    Enable Sigstore's TSA path (e.g., `--tsa` to `sigstore-python` or the equivalent cosign flag) and confirm the resulting bundle contains `timestampVerificationData`.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-023
+  domain: release
+  severity: error
+  description: |
+    Sidecar bundle workflow does not run a tier-1 plumbing parity / functional-equivalence job, so cross-platform binaries are released without proof of behavioral equivalence to the reference build.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when no job and no step name in the workflow contains a `parity`, `plumb`, `equiv`, `tier-1`, or `equivalence` token.
+  how_to_fix: |
+    Add a tier-1 plumbing parity job (or a named step within an existing job) that runs the functional-equivalence suite against every matrix cell before release.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-024
+  domain: release
+  severity: error
+  description: |
+    Sidecar bundle workflow does not delegate signing to a SLSA L3 hermetic builder, so the released binary lacks an L3-level provenance guarantee.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when the workflow does not reference `slsa-framework/slsa-github-generator`.
+  how_to_fix: |
+    Invoke the `slsa-framework/slsa-github-generator` reusable workflow from the sidecar release pipeline so signing runs in the SLSA L3 builder environment.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-025
+  domain: release
+  severity: error
+  description: |
+    The npm `@epochly/relay-sidecar-bundle` wrapper does not enforce the digest-first, Sigstore-second installation contract, so the wrapper would accept a binary whose digest does not match the manifest. Emitted on the wire as `RELAY-RELEASE-025-DIGEST` (artifact-digest mismatch) and `RELAY-RELEASE-025-SIGSTORE` (Sigstore verification failure).
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when `packages/sdk-typescript-sidecar-bundle/src/` is missing or has no TypeScript sources, or when neither `RELAY-RELEASE-025-DIGEST` nor `RELAY-RELEASE-025-SIGSTORE` appears in the wrapper sources.
+  how_to_fix: |
+    Restore the wrapper sources and confirm they compute the SHA-256 digest before invoking the Sigstore verifier, emitting `RELAY-RELEASE-025-DIGEST` on digest mismatch and `RELAY-RELEASE-025-SIGSTORE` on signature failure.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-026
+  domain: release
+  severity: error
+  description: |
+    Sidecar bundle workflow does not configure platform-native code signing, so the released binary will not load cleanly under Gatekeeper (macOS) or SmartScreen (Windows).
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when the workflow does not reference `notariz` (macOS notarization) or when it references no Windows code-signing path (`signtool`, `authenticode`, `windows-codesign`, `osslsigncode`).
+  how_to_fix: |
+    Add a macOS notarize-and-staple step and a Windows code-signing step (e.g., `signtool` or `osslsigncode`) for the platform-specific matrix cells.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-028
+  domain: release
+  severity: error
+  description: |
+    Verification of the installed `epochly-relay` PyPI package failed. The CLI computed a derived verdict from the on-disk install record, artifact digest, Sigstore bundle, and Rekor inclusion proof and rejected one of those bindings.
+  triggers: |
+    `rly verify-install --python` (or composite mode) emits this code when the Python install record is missing, malformed, or schema-mismatched, when the recorded artifact is absent, when the artifact's SHA-256 does not match the recorded digest, when the Sigstore bundle is missing, or when the structural Sigstore verification fails.
+  how_to_fix: |
+    Reinstall `epochly-relay` from PyPI so a fresh `RELAY_INSTALL_RECORD.json` is produced, then re-run `rly verify-install --python`; investigate the install source if the digest mismatch persists.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-029
+  domain: release
+  severity: error
+  description: |
+    Verification of the installed `@epochly/relay` npm package failed. The CLI computed a derived verdict from the on-disk install record and rejected one of the digest, Sigstore, or install-record bindings.
+  triggers: |
+    `rly verify-install --npm` (or composite mode) emits this code when the npm install record is missing, malformed, or schema-mismatched, when the recorded artifact is absent, when the artifact SHA-256 does not match the recorded digest, when the Sigstore bundle is missing, or when the structural Sigstore verification fails.
+  how_to_fix: |
+    Reinstall `@epochly/relay` from npm so a fresh `.relay-install-record.json` is produced, then re-run `rly verify-install --npm`; investigate the install source if the digest mismatch persists.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-030
+  domain: release
+  severity: error
+  description: |
+    Verification of the installed `@epochly/relay-sidecar-bundle` binary failed. The CLI computed a derived verdict from the on-disk install record and rejected one of the digest, Sigstore, or install-record bindings.
+  triggers: |
+    `rly verify-install --sidecar` (or composite mode) emits this code when the sidecar install record is missing, malformed, or schema-mismatched, when the recorded binary is absent, when the binary SHA-256 does not match the recorded digest, when the Sigstore bundle is missing, or when the structural Sigstore verification fails.
+  how_to_fix: |
+    Reinstall the sidecar bundle so a fresh `.relay-install-record.json` is produced under `${RELAY_HOME}/bin/`, then re-run `rly verify-install --sidecar`; investigate the install source if the digest mismatch persists.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-032
+  domain: release
+  severity: error
+  description: |
+    A `--trust-anchor` override is active for `rly verify-install`, replacing the default JWKS URL with a caller-supplied value. This is an audit signal (HTTP 200, not a failure) emitted whenever a fork or self-hoster overrides the spec-pinned trust anchor.
+  triggers: |
+    `rly verify-install` was invoked with `--trust-anchor <URL>` (or the caller-supplied value differs from `DEFAULT_JWKS_URL`); the envelope is emitted on stderr alongside the verification run.
+  how_to_fix: |
+    No remediation is required when the override is intentional and audited; if unintentional, omit `--trust-anchor` to fall back to the default JWKS URL.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-033
+  domain: release
+  severity: error
+  description: |
+    `rly verify-install --offline` was invoked but the JWKS cache for the active trust anchor is absent at `${RELAY_HOME}/jwks-cache/<host>.json`, so no trust anchor can be resolved. Offline mode is a structural promise rather than a network fallback, so this fails closed rather than silently passing.
+  triggers: |
+    The JWKS-resolution step in `rly verify-install` raises `_JwksUnavailableError` with reason `offline_jwks_cache_miss` because `load_jwks_from_cache` returned `None` and `--offline` was set.
+  how_to_fix: |
+    Run `rly verify-install` once while online to populate `${RELAY_HOME}/jwks-cache/<host>.json`, then retry with `--offline`.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-034
+  domain: release
+  severity: error
+  description: |
+    The Sigstore bundle for an installed artifact has no Rekor transparency-log entry, an unparseable bundle / Rekor entry, an invalid Merkle inclusion proof, an invalid signed checkpoint, an invalid Signed Entry Timestamp, or an unavailable Rekor trust root. Per spec section AO.1 transparency-log absence is the higher-trust signal and supersedes the per-check digest/sigstore codes.
+  triggers: |
+    `_verify_rekor_inclusion` in `rly verify-install` returns `(False, reason)` for one of: `transparency log entry missing`, `transparency_log_entry_unparseable`, `transparency_log_entry_bundle_invalid`, `rekor_inclusion_proof_invalid`, `rekor_checkpoint_signature_invalid`, `rekor_set_signature_invalid`, or `rekor_trust_root_unavailable`.
+  how_to_fix: |
+    Reacquire the Sigstore bundle from the official release (forks publishing self-signed bundles will not satisfy this check), and confirm the local sigstore-python install has a populated TUF trust-root cache so Rekor's keyring can be resolved.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-035
+  domain: release
+  severity: error
+  description: |
+    A release workflow references trust-anchor key material directly (inline PEM block, KMS key URN, Azure Key Vault key, GCP KMS key ring, or a TSA-vendor API key) or names a long-lived signing secret, violating the rule that signing key material lives only in the relay-platform runtime.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when the workflow text matches any of the banned trust-anchor patterns (`-----BEGIN`, `arn:aws:kms`, `vault.azure.net/keys`, `/keyRings/`, `X-API-Key.*sectigo`, `X-API-Key.*digicert`) or references a long-lived signing secret name.
+  how_to_fix: |
+    Remove the inlined key material and secret references; move signing through Sigstore's keyless OIDC path or call out to the relay-platform signing service rather than carrying key material in the OSS workflow.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-036
+  domain: release
+  severity: error
+  description: |
+    The `secret-scan.yml` workflow is missing or does not scan for trust-anchor secret patterns, so an accidental commit of a private key, KMS reference, or TSA credential would not be caught at CI.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when `.github/workflows/secret-scan.yml` is missing, when the scan workflow does not reference all of (`.pem`, `.p12`, `kms`, `sectigo`), or when it does not invoke a named scanner (e.g., `gitleaks`).
+  how_to_fix: |
+    Restore the secret-scan workflow at the expected path and extend its patterns to cover the trust-anchor token set (`.pem`, `.p12`, `kms`, `sectigo`) with a named scanner.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-037
+  domain: release
+  severity: error
+  description: |
+    Sidecar bundle workflow does not declare Rekor offline-verifiability (no reference to offline cosign verification, Merkle proof export, or inclusion-proof export), so downstream verifiers cannot validate the release against a pinned checkpoint.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when the workflow text does not reference `rekor`, or when it references Rekor but none of `offline`, `inclusion`, or `merkle`.
+  how_to_fix: |
+    Export the Rekor inclusion proof / checkpoint with the release and document the offline `cosign verify` invocation in the workflow.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-038
+  domain: release
+  severity: error
+  description: |
+    The PyPI release workflow references a long-lived publish credential anywhere in its surface (any job, any step, any env block), not just in the publish step. Companion to RELAY-RELEASE-001 with broader scope.
+  triggers: |
+    `scripts/check-pypi-publish-workflow.py` fails when any `secrets.<NAME>` reference, or any job-env injection, names one of the long-lived publish secret names (`PYPI_TOKEN`, `PYPI_API_TOKEN`, etc).
+  how_to_fix: |
+    Remove every long-lived publish credential reference from the workflow YAML and migrate to OIDC trusted publishing.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-039
+  domain: release
+  severity: error
+  description: |
+    The PyPI release workflow invokes a destructive rollback operation (`npm unpublish`, `pypi-cli delete`, `gh release delete`, `twine delete`, etc), or the runbook does not declare the no-destructive-rollback policy. Per the release process, rollbacks happen via forward version increments only.
+  triggers: |
+    `scripts/check-pypi-publish-workflow.py` fails when one of the banned destructive ops appears in the workflow's non-comment code, when the runbook is missing, or when the runbook does not contain the `## No Destructive Rollback` section header.
+  how_to_fix: |
+    Remove the destructive op from the workflow and ensure `docs/release/runbook.md` carries the canonical `## No Destructive Rollback` section spelling out the forward-rollback policy.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-040
+  domain: release
+  severity: error
+  description: |
+    Proposed release version is not strictly greater than the latest published version under SemVer 2.0.0 ordering, or matches a version already published. Re-using or rewinding a version would break attestation provenance and downstream pinning.
+  triggers: |
+    `scripts/check-semver-monotonic.py` exits non-zero when the proposed version (from `--version`, `RELAY_RELEASE_VERSION`, or `GITHUB_REF_NAME` with a stripped leading `v`) is equal to a prior published version or sorts equal-or-less than the latest published version on PyPI; the static workflow guard also fails when `release-pypi.yml` does not invoke this script.
+  how_to_fix: |
+    Bump the proposed tag to a version strictly greater than the latest published one under SemVer ordering and re-cut the release tag.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-041
+  domain: release
+  severity: error
+  description: |
+    The compromised-OIDC drill documentation is missing, incomplete, or is not referenced from the release runbook. The drill is a hard prerequisite for handling a trusted-publisher compromise without ad-hoc improvisation.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when the compromised-OIDC doc is missing at its expected path, when the doc does not contain all of (`revoke`, `rotate`, `advisory`, `publish a new release`), or when `docs/release/runbook.md` does not contain a `Compromised OIDC` section reference.
+  how_to_fix: |
+    Restore the compromised-OIDC drill document with the required steps and add a `Compromised OIDC` section to the release runbook that links to it.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-042
+  domain: release
+  severity: error
+  description: |
+    The trust-anchor governance document is missing or does not cross-reference the release pipeline (Sigstore, in-toto, SLSA), so the OSS release pipeline lacks a documented governance binding to the trust-anchor runtime.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when no file at the expected trust-anchor governance paths exists, or when the document does not reference all of (`release pipeline`, `Sigstore`, `in-toto`, `SLSA`).
+  how_to_fix: |
+    Restore the trust-anchor governance document (typically `ops/runbooks/trust-anchor-governance.md`) and add cross-references to the release pipeline's Sigstore, in-toto, and SLSA components.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-043
+  domain: release
+  severity: error
+  description: |
+    The Sectigo TSA fallback documentation is missing, does not pin `TSA_PRIMARY="sigstore"` as the default, or is not wired into the release workflow as an env value. The fallback must be configured but inactive by default.
+  triggers: |
+    `scripts/check-sidecar-bundle.py` fails when the Sectigo TSA fallback doc is missing, when it does not pin `TSA_PRIMARY = "sigstore"`, when it does not mention Sectigo, or when the workflow does not declare `TSA_PRIMARY`.
+  how_to_fix: |
+    Restore the Sectigo TSA fallback document with `TSA_PRIMARY="sigstore"` as the active default, document the Sectigo cutover procedure, and declare `TSA_PRIMARY` as an env value in the release workflow.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-044
+  domain: release
+  severity: error
+  description: |
+    A publish job in the PyPI or npm release workflow has no fork-detection step, so a fork-tag run would error hard on missing publish credentials instead of producing a `dry_run_unsigned` build per spec A.3 / AI.6.
+  triggers: |
+    `scripts/check-slsa-provenance.py` fails when a publish job in `release-pypi.yml` or `release-npm.yml` has no step whose id, name, or `if:` expression contains a `dry-run-unsigned` / `dry_run_unsigned` sentinel.
+  how_to_fix: |
+    Add a fork-detection step to each publish job that sets `dry_run_unsigned: true` and skips the actual publish when the workflow runs from a fork.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-045
+  domain: release
+  severity: error
+  description: |
+    Reserved for the release evidence bundle plumbing (`scripts/emit-release-evidence-bundle.py`). The release pipeline must emit a `relay.evidence.release.v1` bundle binding every published artifact to its SLSA, in-toto, and Sigstore digests, plus the builder workflow SHA and signer key id, written to `${RELAY_HOME}/evidence/release-<tag>.acef`.
+  triggers: |
+    Emitted when the W12.6 release evidence emission step fails (missing artifact inputs, write failure, or schema-version mismatch) per VAL-W12-045.
+  how_to_fix: |
+    Re-run `scripts/emit-release-evidence-bundle.py` after confirming every input artifact, SLSA attestation, in-toto link, and Sigstore bundle is present, and that `${RELAY_HOME}/evidence/` is writable.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-046
+  domain: release
+  severity: error
+  description: |
+    A breaking-change release tag is being cut without a qualifying announcement file published at least 7 days earlier in `docs/release/announcements/`. Per spec section Q.2, major changes must be pre-announced 7 days in advance.
+  triggers: |
+    `scripts/check-pre-announcement.py` fails when the proposed tag's message contains `RELAY-BREAKING-CHANGE` but no announcement file has matching `target_version`, `breaking: true`, and a `published_at` timestamp at least 7 days before `--now`; the workflow guard also fails when `release-pypi.yml` does not invoke this script or when `docs/release/announcements/` is missing.
+  how_to_fix: |
+    Author the announcement under `docs/release/announcements/` with frontmatter `target_version: <version>`, `breaking: true`, and `published_at:` at least 7 days before the planned release; wait out the lead time before re-cutting the tag.
+  introduced_in: v0.1.0
+- code: RELAY-RELEASE-047
+  domain: release
+  severity: error
+  description: |
+    The release runbook at `docs/release/runbook.md` is missing or does not contain every required section header (Compromised OIDC response, No Destructive Rollback, Sectigo TSA fallback, Trust-anchor governance cross-reference). The runbook is a first-tagged-release prerequisite.
+  triggers: |
+    `scripts/check-runbook-exists.py` exits non-zero when `docs/release/runbook.md` is absent or when any required section regex does not match a markdown heading line; CI invokes the script as a publish-step gate.
+  how_to_fix: |
+    Restore `docs/release/runbook.md` with all four required section headings present at any markdown heading level.
+  introduced_in: v0.1.0
+- code: RELAY-REPLAY-001
+  domain: replay
+  severity: error
+  description: |
+    Default replay-namespace rejection (catch-all).
+  triggers: |
+    Replay request failed in a way more specific codes do not classify.
+  how_to_fix: |
+    Inspect `details` on the envelope; consult `docs/how-to/debug-replay-failures.md`.
+  spec_section: "E"
+  introduced_in: v0.1.0
+- code: RELAY-REPLAY-002
+  domain: replay
+  severity: error
+  description: |
+    Replay precondition not met (missing fixture, missing manifest binding, or stale handoff).
+  triggers: |
+    Caller invoked `rly replay run` against a case whose prerequisites are not satisfied.
+  how_to_fix: |
+    Confirm the case has a recorded cassette and an active manifest binding; re-record if needed.
+  spec_section: "E.2"
+  introduced_in: v0.1.0
+- code: RELAY-REPLAY-014
+  domain: replay
+  severity: error
+  description: |
+    Side-effecting tool attempted execution during replay without an audited policy override. Cassette-first replay is default-deny for `mutating` and `external_irreversible` tools.
+  triggers: |
+    Replay run hits a tool span whose `side_effect_class` requires either cassette playback (recorded output) or an explicit two-person approval override.
+  how_to_fix: |
+    Use cassette mode (default), or add an audited `side_effect_class` policy override; never auto-approve `mutating` or `external_irreversible` classes in CI.
+  spec_section: "E.3"
+  introduced_in: v0.1.0
+- code: RELAY-REPLAY-021
+  domain: replay
+  severity: error
+  description: |
+    Replay harness lost its connection to the mitmproxy session while the agent subprocess was still running: the in-process proxy exited or the subprocess proxy refused new connections (ECONNREFUSED). Surfaced as `RelayProxyDownError`.
+  triggers: |
+    The mitmproxy thread or subprocess crashed, was killed, or exited mid-replay.
+  how_to_fix: |
+    Re-run the replay; inspect the proxy log for the crash cause (port reuse, certificate generation failure, OOM). If the failure is reproducible, capture the proxy log and the cassette directory listing before retrying.
+  introduced_in: v0.1.0
+- code: RELAY-REPLAY-022
+  domain: replay
+  severity: error
+  description: |
+    Replay harness was asked to start a session against a cassette directory that does not exist on disk, and the `--record` flag was not passed. The harness refuses to silently create a fresh recording without explicit operator intent. Surfaced as `RelayProxyMissingCassetteError`.
+  triggers: |
+    Operator pointed the harness at a cassette path that has not been recorded yet; or a previous record-run was rolled back; or a stale fixture reference survived a branch checkout.
+  how_to_fix: |
+    Record the cassette explicitly with `--record`, or correct the cassette path. Never edit the harness to fall back to record-on-miss in CI; that turns replay into live execution silently.
+  introduced_in: v0.1.0
+- code: RELAY-REPLAY-023
+  domain: replay
+  severity: error
+  description: |
+    Replay harness could not start the proxy for a generic environmental reason: failed to bind a port, failed to generate the CA certificate, failed to spawn the proxy executable. Surfaced as `RelayProxyStartError`.
+  triggers: |
+    Port already in use, missing OpenSSL/cert toolchain, mitmproxy executable not on PATH, or insufficient permissions to create the proxy's working directory.
+  how_to_fix: |
+    Read the error envelope's `details.cause` field, fix the underlying environmental problem (free the port via its PID, install mitmproxy, grant the working-directory permissions), and re-run.
+  introduced_in: v0.1.0
+- code: RELAY-REPLAY-031
+  domain: replay
+  severity: error
+  description: |
+    Replay attempted to execute a tool call whose `side_effect_class` is `approval_required` without presenting a valid single-use approval token. The replay halts before the side effect runs. The envelope `details.subcode` carries the human-readable alias `APPROVAL_REQUIRED`.
+  triggers: |
+    Replay-time policy check found an `approval_required` tool invocation but the caller did not supply `--approval-token=<token>`, or the supplied token was not registered.
+  how_to_fix: |
+    Obtain a valid single-use approval token from an org-admin (via the approval registry) and re-run with `--approval-token=<token>`. Do not promote the side-effect class to `read_only` to dodge approval; the classification is part of the audited contract.
+  introduced_in: v0.1.0
+- code: RELAY-REPLAY-032
+  domain: replay
+  severity: error
+  description: |
+    Replay attempted to consume an approval token that the approval registry has already recorded as used. Approval tokens are single-shot by contract so a recorded side effect cannot be replayed under the same authorization. Subcode alias `APPROVAL_TOKEN_CONSUMED`.
+  triggers: |
+    Caller re-supplied a token that was already redeemed by an earlier replay, an interrupted prior run, or a parallel runner that won the race.
+  how_to_fix: |
+    Request a fresh single-use approval token from an org-admin and re-run. If you see this code after retry storms, debounce the retry loop so a token is only spent once per intended execution.
+  introduced_in: v0.1.0
+- code: RELAY-REPLAY-033
+  domain: replay
+  severity: error
+  description: |
+    Replay attempted to consume an approval token that is past its `approval_ttl_seconds` expiry. The registry refuses expired tokens to bound the blast radius of leaked approvals. Subcode alias `APPROVAL_EXPIRED`.
+  triggers: |
+    Token was issued more than `approval_ttl_seconds` ago and a replay finally attempted to redeem it.
+  how_to_fix: |
+    Request a fresh approval token and re-run immediately. If long-running operations routinely outrun the TTL, raise the operational concern with the approver rather than extending the default TTL silently.
+  introduced_in: v0.1.0
+- code: RELAY-SCHEMA-001
+  domain: schema
+  severity: error
+  description: |
+    Default schema-namespace rejection.
+  triggers: |
+    Schema validation failure not covered by a more specific code.
+  how_to_fix: |
+    Validate the payload against the catalog schema in `packages/schemas/catalogs/`.
+  spec_section: "B"
+  introduced_in: v0.1.0
+- code: RELAY-SCHEMA-011
+  domain: schema
+  severity: error
+  description: |
+    Relay extension namespace block rejected because it carries an unknown x-relay namespace, an unknown key under x-relay, or an undeclared sub-field inside a declared namespace's payload. The envelope details carry the violating key path plus the permitted set so the caller can correct the bundle.
+  triggers: |
+    EmissionWriter encountered (a) a Relay-specific key at the ACEF Core bundle root (VAL-W11-011), (b) bundle.namespaces or bundle.namespaces["x-relay"] missing or non-dict, (c) a key under x-relay that is not one of the ten declared namespaces, the seven control-plane bindings, or "schema_version" (VAL-W11-012), or (d) an undeclared sub-field inside a declared namespace payload (VAL-W11-012 sub-field check).
+  how_to_fix: |
+    Move any Relay-specific keys out of the bundle root into bundle.namespaces["x-relay"]. Confirm that every key under x-relay is in the permitted set listed in the envelope's details.permitted field. For undeclared sub-fields, validate the namespace payload against the schema in packages/schemas/catalogs/ for that namespace.
+  introduced_in: v0.1.0
+- code: RELAY-SCHEMA-014
+  domain: schema
+  severity: error
+  description: |
+    Schema-version pin rejected. Either the ACEF Core bundle.schema_version is not the pinned vendor value ("v0.3") or the x-relay block schema_version is not the pinned Relay value ("v1"). Also surfaced by the W9.2 assertion-template library when schema_match_assertion_template cannot resolve a referenced canonical schema id against packages/schemas/.
+  triggers: |
+    EmissionWriter._audit_schema_versions observed bundle.schema_version != ACEF_CORE_SCHEMA_VERSION_PIN, or bundle.namespaces["x-relay"].schema_version != RELAY_EXTENSIONS_SCHEMA_VERSION (VAL-W11-014). Also raised by RelaySchemaNotFoundError when an assertion template references a schema id not present in the v1 registry (VAL-W9-015).
+  how_to_fix: |
+    Pin bundle.schema_version to the ACEF Core vendor value and pin the x-relay block schema_version to "v1". For schema_match template failures, set schema_match.schema_id to one of the known v1 ids listed in the envelope's payload.known_schema_ids; inline schema bodies are forbidden in v0.1.
+  introduced_in: v0.1.0
+- code: RELAY-SCHEMA-017
+  domain: schema
+  severity: error
+  description: |
+    ACEF Core bundle.schema_version was rejected at emission as not matching the pinned vendor value. Distinct from RELAY-SCHEMA-014's x-relay block check; this code is reserved for the ACEF Core schema_version surface used by the W11.3+ emission writer.
+  triggers: |
+    Emission writer observed bundle.schema_version absent or set to a value other than the pinned ACEF Core version (VAL-W11-017).
+  how_to_fix: |
+    Set bundle.schema_version to the ACEF Core pin recorded in packages/acef/src/relay_acef/__init__.py (ACEF_CORE_SCHEMA_VERSION_PIN). Do not vendor a different ACEF Core version without running the W11.1 vendor-drift guard.
+  introduced_in: v0.1.0
+- code: RELAY-SCHEMA-018
+  domain: schema
+  severity: error
+  description: |
+    x-relay namespace block schema_version was rejected on write. Reserved for the W11.3+ emission writer's block-level pin check, distinct from RELAY-SCHEMA-014's combined ACEF Core + x-relay surface.
+  triggers: |
+    Emission writer observed bundle.namespaces["x-relay"].schema_version set to a value not in the supported set when persisting a bundle (VAL-W11-018).
+  how_to_fix: |
+    Set bundle.namespaces["x-relay"].schema_version to RELAY_EXTENSIONS_SCHEMA_VERSION ("v1"). Re-emit the bundle through EmissionWriter.write_bundle so the pin is re-verified before any object-store side effect.
+  introduced_in: v0.1.0
+- code: RELAY-SCHEMA-023
+  domain: schema
+  severity: error
+  description: |
+    Bundle parse rejected because one of the seven required control-plane bindings is missing or empty: manifest_commit_hash, scope_kind, scope_id, actor_kind, actor_identity_hash, written_by, redaction_policy_version. The envelope's details.missing_field identifies which binding the parser stopped on.
+  triggers: |
+    validate_control_plane_bindings in packages/acef/relay_extensions/bindings.py encountered a required field that was absent or had a value of None / "" (VAL-W11-013 / VAL-W11-023). Format errors (non-hex sha256, malformed UUID, wrong scope_kind, wrong written_by/actor_kind) surface as RELAY-ING-031 instead.
+  how_to_fix: |
+    Populate every required control-plane binding before submitting the bundle. The seven keys live under bundle.namespaces["x-relay"]; see packages/acef/relay_extensions/bindings.py for the ControlPlaneBindings dataclass and the required types.
+  introduced_in: v0.1.0
+- code: RELAY-SDK-001
+  domain: sdk
+  severity: error
+  description: |
+    SDK configuration error.
+  triggers: |
+    SDK initialised with missing or invalid configuration (e.g., no sidecar URL, no project token).
+  how_to_fix: |
+    Provide the required configuration via constructor args or environment variables.
+  spec_section: "B"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-002
+  domain: sdk
+  severity: error
+  description: |
+    SDK detected a sidecar version mismatch.
+  triggers: |
+    Sidecar reports a version the SDK was not built against.
+  how_to_fix: |
+    Align SDK and sidecar versions; consult the release matrix.
+  spec_section: "F"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-003
+  domain: sdk
+  severity: error
+  description: |
+    Sidecar not reachable.
+  triggers: |
+    SDK could not establish a connection to the configured sidecar URL.
+  how_to_fix: |
+    Confirm the sidecar is running; check `RELAY_SIDECAR_URL`.
+  spec_section: "H.5"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-004
+  domain: sdk
+  severity: error
+  description: |
+    Sidecar bearer-digest mismatch (handshake auth failure).
+  triggers: |
+    SDK presented a bearer whose digest does not match the sidecar's expected value.
+  how_to_fix: |
+    Refresh the sidecar bearer; verify the handshake config.
+  spec_section: "C.5"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-005
+  domain: sdk
+  severity: error
+  description: |
+    Canonical-status forbidden: SDK attempted to write a control-plane-owned column.
+  triggers: |
+    Caller tried to set `run_results.status` (or other canonical columns) via the SDK.
+  how_to_fix: |
+    Submit lifecycle metadata only; the control plane writes canonical outcomes.
+  spec_section: "A.1"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-006
+  domain: sdk
+  severity: error
+  description: |
+    Lifecycle invalid: span state transition rejected by the SDK before reaching the sidecar.
+  triggers: |
+    Caller attempted an invalid lifecycle move (e.g., closing a span twice).
+  how_to_fix: |
+    Inspect the lifecycle order in your call site; consult `docs/reference/python-sdk/`.
+  spec_section: "C"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-007
+  domain: sdk
+  severity: error
+  description: |
+    Handoff incomplete: SDK detected a missing anchor in the three-anchor handoff.
+  triggers: |
+    Caller did not bind `scope_id` / `actor_identity_hash` / `manifest_commit_hash` to the run.
+  how_to_fix: |
+    Complete the three-anchor binding; see `docs/contracts/manifest-binding.md`.
+  spec_section: "C.5"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-008
+  domain: sdk
+  severity: error
+  description: |
+    Evidence incomplete: SDK detected a missing artifact hash, exit code, or span ID on a passing claim.
+  triggers: |
+    Caller marked an assertion passing without paired evidence.
+  how_to_fix: |
+    Re-run the validation step so the runner emits structured evidence.
+  spec_section: "K"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-009
+  domain: sdk
+  severity: error
+  description: |
+    Replay precondition not met (SDK-side guard).
+  triggers: |
+    Caller invoked replay without an active manifest binding or cassette.
+  how_to_fix: |
+    Bind the case to its manifest and cassette before replay.
+  spec_section: "E.2"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-010
+  domain: sdk
+  severity: error
+  description: |
+    Redaction policy invalid: SDK rejected a redaction policy at parse time.
+  triggers: |
+    Policy YAML failed schema validation, used an unsupported matcher kind, or violated default-deny on `raw_capture`.
+  how_to_fix: |
+    Validate the policy against the redaction-policy schema before publishing; see `packages/schemas/raw/redaction-policy.default.v1.yaml`.
+  spec_section: "G"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-011
+  domain: sdk
+  severity: error
+  description: |
+    Sidecar locator failure: SDK could not resolve a sidecar binary or address.
+  triggers: |
+    `npx @epochly/relay sidecar` could not locate or launch the bundled sidecar.
+  how_to_fix: |
+    Confirm the sidecar binary is available on the platform; check arch support.
+  spec_section: "F"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-012
+  domain: sdk
+  severity: error
+  description: |
+    Trust-root override denied: caller attempted to override the OSS default trust anchor outside the sanctioned BYO flow.
+  triggers: |
+    SDK rejected an unsupported trust-root override path (per CLAUDE.md banned pattern #13, the default is a board-level decision).
+  how_to_fix: |
+    Use the `--trust-anchor` BYO flag if you need to verify against a non-default JWKS.
+  spec_section: "AO.4"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-013
+  domain: sdk
+  severity: error
+  description: |
+    Bundle verify timeout: the SDK's bundled-verifier subprocess did not return within the configured deadline.
+  triggers: |
+    Verifier subprocess wedged or the bundle is unusually large.
+  how_to_fix: |
+    Re-run with a higher timeout, or invoke `rly evidence verify` directly.
+  spec_section: "K"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-014
+  domain: sdk
+  severity: error
+  description: |
+    Side-effecting tool_call missing `idempotencyKey` or `replayPolicy`.
+  triggers: |
+    Caller opened a span with `side_effect: true` but did not provide the required companion fields (CLAUDE.md keystone invariant #6).
+  how_to_fix: |
+    Provide both `idempotencyKey` and `replayPolicy` on every side-effecting tool span.
+  spec_section: "X"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-015
+  domain: sdk
+  severity: error
+  description: |
+    Live replay called without explicit acknowledgement.
+  triggers: |
+    Caller invoked live replay mode without passing `acknowledgeDegradedApproximation: true`.
+  how_to_fix: |
+    Acknowledge the degraded-approximation contract explicitly; live mode is not cassette-faithful.
+  spec_section: "E"
+  introduced_in: v0.1.0
+- code: RELAY-SDK-016
+  domain: sdk
+  severity: error
+  description: |
+    Raw capture denied: `raw_capture: true` was requested without a signed DPA + org-admin approver.
+  triggers: |
+    Policy attempted to enable raw capture without the precondition (CLAUDE.md keystone invariant #7, banned pattern #11).
+  how_to_fix: |
+    Record a signed DPA reference and an org-admin approver on the policy version; only then may `raw_capture` be enabled.
+  spec_section: "G.1"
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-001
+  domain: sidecar
+  severity: error
+  description: |
+    Default local-sidecar rejection.
+  triggers: |
+    Sidecar request failed in a way more specific codes do not classify.
+  how_to_fix: |
+    Consult `docs/local-deploy/sidecar-lifecycle.md`; check the sidecar log.
+  spec_section: "F, H.5"
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-002
+  domain: sidecar
+  severity: error
+  description: |
+    Local-sidecar lockfile at `${RELAY_HOME}/sidecar.lock` exists with permissions other than `0o600`. The classifier refuses to attach to or overwrite a lockfile that any other local user could read or modify, because the file holds the bearer-token digest used to authenticate sidecar HTTP requests.
+  triggers: |
+    `acquire_or_attach` detected a lockfile whose POSIX mode (after masking to `0o777`) is not `0o600` (for example `0o644` or world-writable after a careless `chmod`).
+  how_to_fix: |
+    Stop any running sidecar (via its declared stop command), delete `${RELAY_HOME}/sidecar.lock`, and restart `relay sidecar`. The new lockfile will be created with `0o600`. Investigate how the permissions drifted; do not loosen them.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-003
+  domain: sidecar
+  severity: error
+  description: |
+    Windows-specific counterpart to RELAY-SIDECAR-002: the lockfile's discretionary access control list (DACL) does not match the single-ACE owner-only policy applied by `local_two_layer_locked_write` on Windows hosts.
+  triggers: |
+    On Windows, the lockfile DACL enumeration (via `win32security.GetFileSecurity`) showed an ACE other than the expected owner-only entry, or `pywin32` lockdown failed during creation.
+  how_to_fix: |
+    Stop the sidecar, remove `${RELAY_HOME}\sidecar.lock`, and restart from an account that has rights to set the lockfile DACL. If `pywin32` is missing, install it; the spawn path cannot enforce the ACL without it.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-004
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar HTTP request presented a bearer-digest (`X-Relay-Bearer-Digest`) header that does not match the digest recorded in the lockfile. The comparison is constant-time to prevent byte-level timing probes.
+  triggers: |
+    Caller did not present the header, presented the wrong digest, or presented a digest whose nonce-proof pair (when `X-Relay-Nonce` / `X-Relay-Nonce-Proof` are sent) fails verification.
+  how_to_fix: |
+    Re-derive the bearer-token digest from the value persisted in the lockfile and re-issue the request. If the lockfile was rotated (sidecar restart), the SDK or CLI must reload the lockfile before retrying.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-005
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar request presented an `X-Relay-Nonce` whose age exceeds the configured TTL (default 5 seconds) or whose value was never issued. Nonces are single-shot; the sidecar evicts them on first successful verification.
+  triggers: |
+    Caller fetched a nonce, then issued the proof request after the TTL elapsed, or replayed an already-consumed nonce.
+  how_to_fix: |
+    Issue the proof request immediately after `/issue-nonce`; do not buffer nonces. If clock-skew on the caller exceeds the TTL window, sync the caller clock or request a longer TTL via sidecar configuration.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-006
+  domain: sidecar
+  severity: error
+  description: |
+    `acquire_or_attach` refused to start the sidecar because `${RELAY_HOME}` resides on a non-local filesystem (NFS, SMB, FUSE, or any mount where `statfs`/`GetDriveType` indicates remote storage). The two-layer locked write primitive cannot guarantee atomicity over remote filesystems.
+  triggers: |
+    Probing the filesystem under `${RELAY_HOME}` returned a non-local indicator (e.g. NFS magic number on Linux, network drive type on Windows).
+  how_to_fix: |
+    Set `RELAY_HOME` to a path on a local filesystem (typically `~/.relay` on a local SSD/HDD) and restart. Do not place `${RELAY_HOME}` on a shared mount even if it appears to work; lock-file semantics are not portable across remote filesystems.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-007
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar accepted a SIGTERM and entered drain mode; new HTTP requests are rejected with HTTP 503 plus a `Retry-After` header so the caller backs off until the next sidecar instance is ready. In-flight requests run to completion.
+  triggers: |
+    A new request arrived on a draining sidecar (the runtime middleware sets `draining=True` after SIGTERM or after a `/admin/shutdown` call).
+  how_to_fix: |
+    Respect the `Retry-After` value and re-issue the request once the new sidecar instance is bound to the lockfile. If you control the shutdown, wait for the prior process to exit and confirm `${RELAY_HOME}/sidecar.lock` reflects the new PID before retrying.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-008
+  domain: sidecar
+  severity: error
+  description: |
+    A resumed worker called `compare_and_set_state` with a manifest, contract, or procedure hash that does not match the active on-disk version. The context-reinjection guard refuses the transition so a long-running operation cannot silently proceed with stale invariants.
+  triggers: |
+    Worker process was paused (compaction, suspension, container restart) and resumed without reloading manifest/contract/procedure files; the submitted state-transition payload still carries the pre-pause hashes.
+  how_to_fix: |
+    Reload the manifest, contract, and procedure files from disk in the worker, recompute their hashes, and re-submit the transition. Do not bypass the guard; a stale hash means earlier validation may no longer apply.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-009
+  domain: sidecar
+  severity: error
+  description: |
+    Anti-bypass scan detected a quality-bypass marker (e.g. `--no-verify`, `pytest.mark.skip`, `TODO/FIXME/HACK` in a protected diff) in a payload that the sidecar would otherwise have recorded. The only legitimate path to land such a marker is an audited org-admin override referenced via `evidence_refs`.
+  triggers: |
+    Sidecar received a state-transition or evidence-submission payload whose declared command or diff body contained a banned bypass token without a matching approved-override claim.
+  how_to_fix: |
+    Remove the bypass flag from the command/diff and submit the legitimate payload, or attach an org-admin override (single-use, audited) and re-submit. Do not edit the anti-bypass detector to silence the rejection.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-010
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar startup ran `PRAGMA quick_check` against the local SQLite database and the integrity probe returned a non-`ok` status; the slow-path `PRAGMA integrity_check` diagnostic is recorded in the error envelope. The sidecar exits (code 3) without serving any traffic so a corrupt database cannot record evidence.
+  triggers: |
+    The on-disk SQLite database at the sidecar's `db_path` failed the fast-path `quick_check`, indicating page corruption, partial torn writes, or filesystem damage.
+  how_to_fix: |
+    Restore the database from the most recent good backup, or move the corrupt database aside and re-initialize a fresh one (you will lose un-backed-up local evidence). Investigate the underlying disk / filesystem health before restarting.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-011
+  domain: sidecar
+  severity: error
+  description: |
+    Mid-transaction SQLite write hit ENOSPC (or platform equivalent) and `transactional_db_write` rolled the transaction back before surfacing the error; `PRAGMA integrity_check` returns `ok` after the rollback so no partial rows remain. HTTP 507 (Insufficient Storage).
+  triggers: |
+    Disk hosting `${RELAY_HOME}` ran out of free space while the writer queue was applying a transaction.
+  how_to_fix: |
+    Free disk space on the volume hosting `${RELAY_HOME}` (rotate or archive old evidence; consider moving older bundles off-host) and retry. Monitor disk usage so the sidecar does not spend extended time in 507 mode.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-012
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar shutdown attempted `PRAGMA wal_checkpoint(TRUNCATE)` and it failed (typically because a reader still holds an old snapshot beyond the configured timeout). The WAL file is intentionally preserved on disk so the next startup's WAL-replay path recovers cleanly; the sidecar exits with code 6.
+  triggers: |
+    Final checkpoint during lifespan teardown could not converge within its budget; the underlying SQLite error is included in `details.underlying_error`.
+  how_to_fix: |
+    Restart the sidecar; the next startup's recovery path will replay the WAL during the normal open sequence. Do not manually delete the `*-wal` file. If the failure recurs, investigate long-lived reader processes that may be pinning snapshots.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-013
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar binary's compiled `SUPPORTED_SCHEMA_VERSION` does not match the `schema_version` row present in the on-disk database. The sidecar refuses to start (exit 5) rather than risk silently mis-interpreting an unknown schema generation.
+  triggers: |
+    Operator launched a sidecar binary against a database whose migrations were applied by a different (newer or older) sidecar release.
+  how_to_fix: |
+    Run the sidecar release whose `SUPPORTED_SCHEMA_VERSION` matches the database, or apply the migration that bridges the two versions. Never downgrade the sidecar across a schema generation without first restoring a compatible database backup.
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-020
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar bundle could not be verified against the trust root. The npx @epochly/relay sidecar wrapper refuses to launch a bundle whose signature does not chain to the default trust anchor (CLAUDE.md keystone invariant #13).
+  triggers: |
+    Bundle signature verification failed, the signing key is not in the trust root, or the signature envelope is malformed.
+  how_to_fix: |
+    Re-download the published bundle from the official release channel; do not override the trust root unless you are a self-hoster operating an approved BYO trust anchor.
+  spec_section: ""
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-021
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar bundle digest does not match the expected SHA-256 declared in the signed manifest. The wrapper aborts before exec so a tampered binary is never executed.
+  triggers: |
+    Computed SHA-256 of the downloaded bundle differs from the digest pinned in the signed release manifest.
+  how_to_fix: |
+    Discard the cached bundle and re-fetch from the official release channel; verify network integrity. If the mismatch persists, escalate as a possible supply-chain incident.
+  spec_section: ""
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-022
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar bundle is unavailable for download. The wrapper cannot fetch the platform-specific bundle from the configured release channel.
+  triggers: |
+    Network request for the bundle returned a transport error, 4xx/5xx HTTP status, or the release channel does not publish an artifact for the requested version.
+  how_to_fix: |
+    Verify network connectivity to the release channel; confirm the requested SDK version is published. Retry after the release channel is reachable.
+  spec_section: ""
+  introduced_in: v0.1.0
+- code: RELAY-SIDECAR-023
+  domain: sidecar
+  severity: error
+  description: |
+    Sidecar bundle is not available for the host architecture. The wrapper detected an OS/arch pair (e.g., linux-riscv64) that the current release does not ship a prebuilt binary for.
+  triggers: |
+    Resolved `${platform}-${arch}` triple has no corresponding artifact in the signed release manifest.
+  how_to_fix: |
+    Run on a supported `${platform}-${arch}` pair (darwin-arm64, darwin-x86_64, linux-x86_64, linux-aarch64, win32-x86_64) or build the sidecar from source for your platform.
+  spec_section: ""
+  introduced_in: v0.1.0
+- code: RELAY-SIDEEFFECT-001
+  domain: side-effect
+  severity: error
+  description: |
+    Ingested span declares `side_effect_class` in `{mutating, external_irreversible, approval_required}` but the corresponding `side_effect_markers` row is absent. Per spec section X, every side-effecting tool MUST write a pre-action marker before the call. Subcode alias `MARKER_MISSING`.
+  triggers: |
+    SDK adapter executed a side-effecting tool without first calling `mark_side_effect(...)`, or the marker write was lost (rolled-back transaction, missing primitive call).
+  how_to_fix: |
+    Wrap the tool invocation in the SDK's side-effect helper so the marker is written transactionally before the call. Audit the adapter for any path that calls an external service without going through the helper.
+  introduced_in: v0.1.0
+- code: RELAY-SIDEEFFECT-002
+  domain: side-effect
+  severity: error
+  description: |
+    A `side_effect_markers` row exists for the span but the matching `side_effect_proofs` row is absent. Per spec section X, every side-effecting tool needs a post-success proof binding the outcome to the marker. Subcode alias `PROOF_MISSING`.
+  triggers: |
+    Adapter wrote the pre-action marker but did not write the post-success proof: the tool call raised, the process crashed mid-call, or the proof-write was skipped on the success path.
+  how_to_fix: |
+    Add the post-success proof write to the adapter's success path so marker + proof are paired. For partial failures, write a failure proof rather than omitting the proof altogether so the evidence pairing is explicit.
+  introduced_in: v0.1.0
+- code: RELAY-SIDEEFFECT-011
+  domain: side-effect
+  severity: error
+  description: |
+    A `side_effect_markers` row was inserted during an active replay context, but the row's `idempotency_key` does not carry the required `replay:<replay_case_id>:` prefix. Per spec section X line 5176, replay-time markers MUST be prefix-namespaced so they never collide with production idempotency keys. Subcode alias `REPLAY_PREFIX_MISSING`.
+  triggers: |
+    Replay harness called the marker primitive without overriding the idempotency-key prefix, or the SDK lost track of the active replay context.
+  how_to_fix: |
+    Use the replay-aware marker helper so the prefix is applied automatically; if calling the primitive directly, construct the key with the documented `replay:<case_id>:` prefix. Do not strip the prefix to "match" a production key.
+  introduced_in: v0.1.0
+- code: RELAY-SIDEEFFECT-012
+  domain: side-effect
+  severity: error
+  description: |
+    Defensive opposite of RELAY-SIDEEFFECT-011: a `side_effect_markers` insert presented an idempotency key with the `replay:<id>:` prefix while NO replay context is active. The sidecar rejects the insert so replay-namespaced keys cannot leak into the production idempotency space. Subcode alias `REPLAY_PREFIX_PROD`.
+  triggers: |
+    Production code path constructed an idempotency key using the replay prefix template (typically by copy-pasting from a replay test) and submitted it outside any replay context.
+  how_to_fix: |
+    Remove the `replay:<id>:` prefix from the production code path and submit a production-namespaced idempotency key. Do not register `replay:` as a legitimate production prefix.
+  introduced_in: v0.1.0
+- code: RELAY-SQLITE-001
+  domain: sqlite
+  severity: error
+  description: |
+    Local-sidecar SQLite backend error.
+  triggers: |
+    SQLite layer (the OSS local persistence store) returned an unexpected error.
+  how_to_fix: |
+    Check disk space, file permissions on `~/.relay/`, and the sidecar log.
+  spec_section: "H.5"
+  introduced_in: v0.1.0
+- code: RELAY-VENDOR-001
+  domain: vendor
+  severity: error
+  description: |
+    Reserved wire code in the vendor namespace, covering third-party / wire codec failures (e.g., ACEF Core vendored dependency rejecting a payload). Registered in the wire token registry (packages/schemas/raw/relay-error-codes.yaml) so generated Python and TypeScript constants stay in sync; no Relay-emitted runtime call site exists in this release.
+  triggers: |
+    No runtime emit site in v0.1.0. The code is reserved for vendor / wire-codec failures surfaced through the public registry; consumers MAY observe it on envelopes produced by future vendor-bridge code paths.
+  how_to_fix: |
+    Inspect the envelope's details for the vendor identifier and underlying error message. Consult the corresponding vendor package's documentation (e.g., packages/acef/ for ACEF Core) for remediation. If the code is observed without a vendor details block, file a bug against the emitting service.
+  introduced_in: v0.1.0
+- code: RELAY-VENDOR-002
+  domain: vendor
+  severity: error
+  description: |
+    Reserved wire code in the vendor namespace, distinguished from RELAY-VENDOR-001 by carrying a secondary vendor / codec failure class (e.g., signature-verify against a vendored verifier). Registered in the wire token registry so generated constants stay in sync; no Relay-emitted runtime call site exists in this release.
+  triggers: |
+    No runtime emit site in v0.1.0. Reserved for future use by vendor-bridge code paths that need a second class distinct from RELAY-VENDOR-001.
+  how_to_fix: |
+    Inspect the envelope's details for the vendor identifier and underlying error message. Consult the relevant vendor package's documentation. If the code is observed without a vendor details block, file a bug against the emitting service.
+  introduced_in: v0.1.0
+- code: RELAY-VERIFY-001
+  domain: verify
+  severity: error
+  description: |
+    Offline verifier could not load a JWKS from any configured source: the live trust_anchor URL is unreachable, the on-disk cache is absent or unreadable, and the wheel-bundled JWKS asset is also unavailable. The envelope details carry the attempted trust_anchor URL, the cache path that was checked, and whether the bundled asset was checked so an operator can identify which fallback is missing.
+  triggers: |
+    Raised by RelayJWKSUnavailableError in packages/verifier/src/relay_verifier/errors.py (VAL-W10-008). The trust-anchor loader exhausted live, cache, and bundled JWKS fallbacks. The caller MUST exit non-zero and MUST NOT silently fall back to a less-trusted source.
+  how_to_fix: |
+    Verify network connectivity to the configured trust_anchor URL (default https://relay.epochly.com/.well-known/jwks.json). If running offline, populate the on-disk cache under the cache path reported in details, or reinstall the verifier wheel so the bundled JWKS asset is restored. For BYO trust anchors, confirm the operator config under details points at a reachable JWKS endpoint.
+  introduced_in: v0.1.0
+- code: RELAY-VERIFY-050
+  domain: verify
+  severity: error
+  description: |
+    Reserved wire code in the verifier namespace, allocated to the upper VERIFY-NNN range for verifier surfaces beyond the W10.1 trust-anchor loader (e.g., bundle-integrity or transparency-log proof failures). Registered in the wire token registry so generated Python and TypeScript constants stay in sync; no Relay-emitted runtime call site exists in this release.
+  triggers: |
+    No runtime emit site in v0.1.0. Reserved for future verifier surfaces; consumers MAY observe it on envelopes produced by hosted verifier paths whose enforcement runtime lives in relay-platform.
+  how_to_fix: |
+    Inspect the envelope's details for the underlying verifier sub-code and message. If observed without structured details, file a bug against the emitting verifier service.
+  introduced_in: v0.1.0
