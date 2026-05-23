@@ -64,7 +64,11 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: "install repo deps"
-        run: uv sync --all-packages
+        # --all-extras pulls every package's [test] extra so the audit's
+        # Layer-2 executable-snippet pass can import pytest + transitive
+        # test deps when a snippet references them. Without --all-extras
+        # CI reports phantom P0s on Layer 2 that don't reproduce locally.
+        run: uv sync --all-packages --all-extras
 
       - name: "banned-copy lint (docs)"
         run: python scripts/lint-banned-copy.py
