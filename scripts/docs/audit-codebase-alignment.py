@@ -919,9 +919,26 @@ def _python_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str,
 
     # Source parses. Now import-check by running in a fresh interpreter and
     # classify the failure: ImportError -> "import", anything else -> "runtime".
+    #
+    # Prepend `from __future__ import annotations` to bare reference
+    # snippets so type annotations like `Path | None` or `FlushPolicy`
+    # are stored as strings (PEP 563) and not evaluated at class-body
+    # time. Without this, Python 3.12 raises NameError on the first
+    # unimported annotation type -- which signature-stub reference
+    # snippets legitimately have. Python 3.14+ has this behavior by
+    # default (PEP 749), so this is a no-op there.
+    #
+    # Skip the prepend if the block already imports __future__
+    # annotations (any preceding docstring would push our prepended
+    # import past line 1 and trip "from __future__ imports must occur
+    # at the beginning of the file" SyntaxError).
+    if "from __future__ import annotations" in block:
+        annotated_block = block
+    else:
+        annotated_block = "from __future__ import annotations\n" + block
     try:
         cp = subprocess.run(
-            [sys.executable, "-c", block],
+            [sys.executable, "-c", annotated_block],
             capture_output=True,
             text=True,
             cwd=str(tmp_cwd),
