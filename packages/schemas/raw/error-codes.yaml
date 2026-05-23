@@ -1245,7 +1245,7 @@ codes:
   domain: schema
   severity: error
   description: |
-    Reserved wire-format constant for the ACEF Core bundle.schema_version rejection surface (intended to discriminate ACEF Core pin mismatches from x-relay block pin mismatches). NOT currently emitted at runtime: the W11.3 emission writer collapses both ACEF Core and x-relay schema_version mismatches into RELAY-SCHEMA-014 (per the EmissionWriter docstrings in `packages/acef/relay_extensions/emission.py`, and the W11.3 tests assert RELAY-SCHEMA-014 for these cases). The `RELAY_SCHEMA_017_CODE` constant is registered in `packages/acef/relay_extensions/errors.py` so a future split (separating ACEF Core from x-relay rejection paths) can land without a registry change.
+    Reserved wire-format constant for the ACEF Core bundle.schema_version rejection surface (intended to discriminate ACEF Core pin mismatches from x-relay block pin mismatches). NOT currently emitted at runtime: the W11.3 emission writer collapses both ACEF Core and x-relay schema_version mismatches into RELAY-SCHEMA-014 (per the `_audit_schema_versions` function docstring in `packages/acef/relay_extensions/emission.py`, and the W11.3 tests assert RELAY-SCHEMA-014 for these cases). The `RELAY_SCHEMA_017_CODE` constant is registered in `packages/acef/relay_extensions/errors.py` so a future split (separating ACEF Core from x-relay rejection paths) can land without a registry change.
   triggers: |
     Not currently emitted; reserved constant. Any ACEF Core or x-relay schema_version pin mismatch in v0.1 surfaces as RELAY-SCHEMA-014.
   how_to_fix: |
@@ -1255,7 +1255,7 @@ codes:
   domain: schema
   severity: error
   description: |
-    Reserved wire-format constant for the x-relay namespace block schema_version rejection surface (intended to discriminate the block-level pin from the ACEF Core pin). NOT currently emitted at runtime: the W11.3 emission writer routes both pin mismatches through RELAY-SCHEMA-014 (per the EmissionWriter docstring in `packages/acef/relay_extensions/emission.py`). The `RELAY_SCHEMA_018_CODE` constant is registered in `packages/acef/relay_extensions/errors.py` so a future split can land without a registry change.
+    Reserved wire-format constant for the x-relay namespace block schema_version rejection surface (intended to discriminate the block-level pin from the ACEF Core pin). NOT currently emitted at runtime: the W11.3 emission writer routes both pin mismatches through RELAY-SCHEMA-014 (per the `_audit_schema_versions` function docstring in `packages/acef/relay_extensions/emission.py`). The `RELAY_SCHEMA_018_CODE` constant is registered in `packages/acef/relay_extensions/errors.py` so a future split can land without a registry change.
   triggers: |
     Not currently emitted; reserved constant. Any x-relay block schema_version pin mismatch in v0.1 surfaces as RELAY-SCHEMA-014.
   how_to_fix: |
