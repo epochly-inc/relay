@@ -52,6 +52,14 @@ jobs:
           python-version: "3.12"
       - name: install uv
         run: pip install uv
+      - name: setup node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: install node deps
+        run: npm ci --workspaces --include-workspace-root || npm install --workspaces --include-workspace-root
+      - name: build typescript contracts package
+        run: npm run build --workspace @epochly/relay-contracts
       - name: install workspace deps
         run: uv sync --all-packages --all-extras
       - name: run plumbing tier
@@ -82,6 +90,14 @@ jobs:
           python-version: "3.13"
       - name: install uv
         run: pip install uv
+      - name: setup node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: install node deps
+        run: npm ci --workspaces --include-workspace-root || npm install --workspaces --include-workspace-root
+      - name: build typescript contracts package
+        run: npm run build --workspace @epochly/relay-contracts
       - name: install workspace deps
         run: uv sync --all-packages --all-extras
       - name: run plumbing tier
@@ -113,6 +129,14 @@ jobs:
           python-version: "3.14"
       - name: install uv
         run: pip install uv
+      - name: setup node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: install node deps
+        run: npm ci --workspaces --include-workspace-root || npm install --workspaces --include-workspace-root
+      - name: build typescript contracts package
+        run: npm run build --workspace @epochly/relay-contracts
       - name: install workspace deps
         run: uv sync --all-packages --all-extras
       - name: run plumbing tier
