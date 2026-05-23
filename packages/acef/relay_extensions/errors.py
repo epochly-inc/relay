@@ -12,11 +12,20 @@ Wire codes used by this layer (registered in the canonical YAML):
   * ``RELAY-SCHEMA-011`` -- unknown x-relay namespace or undeclared sub-field
                             (VAL-W11-012).
   * ``RELAY-SCHEMA-014`` -- unknown x-relay schema_version (VAL-W11-014).
-  * ``RELAY-SCHEMA-017`` -- unknown ACEF Core ``bundle.schema_version``
-                            (VAL-W11-017; raised by w11.3+ but the error
-                            class lives here for one-stop import).
-  * ``RELAY-SCHEMA-018`` -- unknown x-relay namespace block schema_version
-                            on write (VAL-W11-018; w11.3+).
+  * ``RELAY-SCHEMA-017`` -- reserved wire-format constant for the ACEF
+                            Core ``bundle.schema_version`` rejection
+                            surface (VAL-W11-017). NOT currently emitted:
+                            the W11.3 emission writer collapses both
+                            ACEF Core and x-relay schema_version
+                            mismatches into ``RELAY-SCHEMA-014`` (see
+                            emission.py module docstring + line 171
+                            docstring). Constant exists here so a future
+                            split can land without a registry change.
+  * ``RELAY-SCHEMA-018`` -- reserved wire-format constant for the
+                            x-relay namespace block schema_version
+                            rejection surface (VAL-W11-018). NOT
+                            currently emitted; same routing-through-014
+                            note as 017.
   * ``RELAY-SCHEMA-023`` -- bundle missing required control-plane bindings
                             (VAL-W11-023; w11.3+).
   * ``RELAY-ING-031``    -- ``written_by`` mutated to a value other than
@@ -82,10 +91,13 @@ class SchemaVersionError(RelayAcefExtensionError):
         sub-field inside a known namespace.
       * RELAY-SCHEMA-014 -- the x-relay block's ``schema_version`` is set
         to an unknown value.
-      * RELAY-SCHEMA-017 -- ACEF Core ``bundle.schema_version`` is not
-        the pinned value (raised by w11.3+ emission writer).
-      * RELAY-SCHEMA-018 -- x-relay block ``schema_version`` rejected on
-        write (raised by w11.3+ emission writer).
+      * RELAY-SCHEMA-017 -- reserved constant for the ACEF Core
+        ``bundle.schema_version`` rejection surface; NOT currently
+        emitted (the W11.3 writer routes both ACEF Core and x-relay
+        schema_version mismatches through RELAY-SCHEMA-014).
+      * RELAY-SCHEMA-018 -- reserved constant for the x-relay block
+        ``schema_version`` rejection surface; NOT currently emitted
+        (same routing-through-014 note as 017).
       * RELAY-SCHEMA-023 -- bundle missing one of the seven required
         control-plane bindings (raised by w11.3+ parse path).
     """

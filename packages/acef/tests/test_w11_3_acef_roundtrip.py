@@ -6,9 +6,15 @@ constitute the w11.3-acef-roundtrip-tests feature:
   * VAL-W11-016  Bundle roundtrip is byte-identical under RFC 8785 JCS
                  across >= 12 fixtures.
   * VAL-W11-017  Unknown ACEF Core bundle.schema_version rejected on
-                 write with SchemaVersionError(RELAY-SCHEMA-017).
+                 write with SchemaVersionError(RELAY-SCHEMA-014). The
+                 RELAY-SCHEMA-017 wire constant is reserved for a
+                 future split that discriminates ACEF Core from x-relay
+                 rejection paths; the W11.3 writer routes both surfaces
+                 through 014 today (see test body comment at line 574).
   * VAL-W11-018  Unknown x-relay schema_version rejected on write with
-                 SchemaVersionError(RELAY-SCHEMA-018).
+                 SchemaVersionError(RELAY-SCHEMA-014). The
+                 RELAY-SCHEMA-018 wire constant is reserved (same
+                 routing-through-014 note as 017).
   * VAL-W11-019  Roundtrip preserves Merkle root across emit -> parse
                  -> re-emit.
   * VAL-W11-020  Unicode normalisation is NFC and roundtrips losslessly.

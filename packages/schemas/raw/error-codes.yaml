@@ -1091,11 +1091,11 @@ codes:
   domain: release
   severity: error
   description: |
-    Reserved for the release evidence bundle plumbing (`scripts/emit-release-evidence-bundle.py`). The release pipeline must emit a `relay.evidence.release.v1` bundle binding every published artifact to its SLSA, in-toto, and Sigstore digests, plus the builder workflow SHA and signer key id, written to `${RELAY_HOME}/evidence/release-<tag>.acef`.
+    Reserved wire-format constant for the W12.6 release evidence bundle plumbing (`scripts/emit-release-evidence-bundle.py`). The constant `RELAY_RELEASE_045` is registered in `packages/schemas/python/relay_schemas/error_codes.py` and `packages/schemas/typescript/src/error_codes.ts` so future error-envelope wiring can land without a registry change. NOT currently emitted at runtime: `emit-release-evidence-bundle.py` raises bare Python exceptions (`FileNotFoundError`, write failures) instead of structured `RELAY-RELEASE-045` envelopes in v0.1. The intended future behavior is that the script catches failures and emits a structured envelope so CI gates can branch on the code rather than parse Python tracebacks.
   triggers: |
-    Emitted when the W12.6 release evidence emission step fails (missing artifact inputs, write failure, or schema-version mismatch) per VAL-W12-045.
+    Not currently emitted; reserved constant. Today, missing release evidence inputs surface as raw Python tracebacks from the emission script (no `RELAY-RELEASE-045` token on the wire).
   how_to_fix: |
-    Re-run `scripts/emit-release-evidence-bundle.py` after confirming every input artifact, SLSA attestation, in-toto link, and Sigstore bundle is present, and that `${RELAY_HOME}/evidence/` is writable.
+    For the underlying failure today, inspect the Python traceback from `scripts/emit-release-evidence-bundle.py` and resolve the missing artifact / write-permission issue. The structured-envelope path will land when the script is wrapped to catch + classify failures under this code.
   introduced_in: v0.1.0
 - code: RELAY-RELEASE-046
   domain: release
