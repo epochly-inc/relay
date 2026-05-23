@@ -234,19 +234,24 @@ In no-Docker degraded mode:
   Docker Desktop get this degraded mode by default.
 
 - The degraded mode is documented as degraded, not as equivalent.
-  Two distinct envelopes apply here. The CLI's `rly replay run` emits
-  `relay.cli.replay_run.v1` on stdout (per
-  `REPLAY_RUN_SCHEMA` in `packages/cli/src/relay_cli/commands/replay.py`);
-  this envelope is what the operator sees and does NOT carry a
-  `sandbox_driver` field. The sidecar's persisted replay record uses
-  the separate `relay.replay_result.v1` envelope (per
-  `relay_sidecar/runtime.py` and `relay_schemas/envelopes.py`), which
-  DOES carry `sandbox_driver` as a free-text string; documented values
-  are `"local-docker"`, `"e2b"`, `"local-firecracker"`, and `"modal"`.
-  An auditor inspecting the sidecar's stored replay records (not the
-  CLI stdout) can use that field to refuse non-`local-docker` runs;
-  auditors who only require deterministic replay can accept any
-  documented driver.
+  Today the OSS surface does not yet expose a `sandbox_driver` field
+  that an auditor can use to enforce a Docker-only policy on a
+  per-run basis: the CLI's `rly replay run` emits
+  `relay.cli.replay_run.v1` on stdout (per `REPLAY_RUN_SCHEMA` in
+  `packages/cli/src/relay_cli/commands/replay.py`) and does not
+  include a sandbox-driver field; the sidecar's persisted
+  `relay.replay_result.v1` record (created in
+  `apps/local-sidecar/relay_sidecar/runtime.py`) is shaped from the
+  set `{schema_version, replay_result_id, case_id, replay_mode,
+  manifest_commit_hash, digest_ok, outcome, evidence, written_by,
+  created_at}` -- the schema enum reserves `sandbox_driver` (per
+  `relay_schemas/envelopes.py` and SQL migration 0004) but the
+  current sidecar writer omits it. Auditors who must enforce a
+  Docker-only replay policy on the OSS local profile today rely on
+  out-of-band evidence -- the host's manifest declarations and
+  deployment configuration -- to confirm the driver in use. Closing
+  this gap (populating `sandbox_driver` from the runtime) is a
+  scheduled OSS hardening item, not a v0.1 contract.
 
 **A4 layered proxy is implemented in W7; this doc establishes the doc-first design.**
 The W15 doc (this file) lands in week 1-2 of the v0.1 buildout; the W7
