@@ -774,12 +774,23 @@ def _layer1(path: Path, body: str, state: AuditState) -> None:
             )
 
     # Backticked identifiers.
+    _debug = os.environ.get("RELAY_AUDIT_DEBUG") == "1"
     for m in BACKTICK_ID_RE.finditer(body):
         symbol = m.group(1)
-        if not _is_identifier_candidate(symbol):
+        is_cand = _is_identifier_candidate(symbol)
+        if _debug:
+            sys.stderr.write(
+                f"[audit-debug] backtick-match '{symbol}' candidate={is_cand}\n"
+            )
+        if not is_cand:
             continue
         line = body.count("\n", 0, m.start()) + 1
-        if not _verify_identifier_via_rg(symbol, path):
+        verified = _verify_identifier_via_rg(symbol, path)
+        if _debug:
+            sys.stderr.write(
+                f"[audit-debug]   _verify_identifier_via_rg('{symbol}') -> {verified}\n"
+            )
+        if not verified:
             state.findings.append(
                 Finding(
                     layer=1,

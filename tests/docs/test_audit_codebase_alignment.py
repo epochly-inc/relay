@@ -136,8 +136,26 @@ def test_layer1_negative_bad_identifier(tmp_path: Path) -> None:
         "docs/getting-started/badidentifier.md",
         f"# Title\n\nThe implementation calls `{missing_identifier}`.\n",
     )
-    cp = _run(["--files", str(page), "--layers", "1", "--json"])
-    assert cp.returncode == 1, f"expected exit 1, got {cp.returncode}: {cp.stdout}"
+    # Temporary diagnostic: enable RELAY_AUDIT_DEBUG and include stderr
+    # in the failure message so CI logs reveal what the audit's Layer-1
+    # extraction sees. Will revert once CI / local divergence is
+    # diagnosed.
+    env = dict(os.environ)
+    env["RELAY_AUDIT_DEBUG"] = "1"
+    cp = subprocess.run(
+        [sys.executable, str(SCRIPT), "--files", str(page), "--layers", "1", "--json"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=env,
+        timeout=120,
+    )
+    assert cp.returncode == 1, (
+        f"expected exit 1, got {cp.returncode}\n"
+        f"missing_identifier={missing_identifier!r}\n"
+        f"stdout={cp.stdout!r}\n"
+        f"stderr={cp.stderr!r}"
+    )
     payload = json.loads(cp.stdout)
     msgs = " | ".join(f.get("message", "") for f in payload["findings"])
     assert "identifier not found" in msgs, f"expected identifier finding, got: {payload}"
