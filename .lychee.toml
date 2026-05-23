@@ -1,0 +1,33 @@
+# lychee config for Relay docs linkchecking (VAL-DOCS-M4-007).
+#
+# Used by .github/workflows/linkcheck.yml. Run locally with:
+#   lychee --config .lychee.toml --no-progress docs/
+#
+# Spec citations:
+#   - plan.md Wave 4 deliverable 41 (linkcheck)
+#   - contract VAL-DOCS-M4-007
+
+verbose = "info"
+no_progress = true
+max_redirects = 5
+max_retries = 2
+timeout = 30
+retry_wait_time = 2
+
+# Skip URLs that are not yet resolvable in this environment.
+# - The public GitHub repo URL works only after the relay-inc/relay publish.
+# - The hosted domain is owned by relay-platform; DNS is not live in OSS CI.
+exclude = [
+  "https://github.com/epochly-inc/relay",
+  "https://relay.epochly.com/.*",
+]
+
+# Exclude the negative-test fixture from positive linkcheck runs. The fixture
+# intentionally contains a broken link to verify CI fails on link rot.
+exclude_path = [
+  "tests/docs/",
+]
+
+# Accept these status codes as OK. Some sites return 403 to crawlers even when
+# the link is valid for browsers; 206 covers partial-content responses.
+accept = ["200", "204", "206", "301", "302", "403"]

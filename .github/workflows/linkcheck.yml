@@ -1,0 +1,50 @@
+# Relay v0.1 OSS -- Docs linkcheck CI gate (VAL-DOCS-M4-007).
+#
+# Runs lychee against docs/ on every PR that touches docs/, the lychee config,
+# or this workflow itself. Also runs weekly (Monday noon UTC) to catch link
+# rot in external references between PRs.
+#
+# Triggers are path-scoped so unrelated source changes do not invoke lychee.
+#
+# Permissions:
+#   contents: read   - checkout
+#
+# Action pins (match repo convention; cf. docs.yml, tier-budgets.yml):
+#   actions/checkout@v4
+#   lycheeverse/lychee-action@v2
+#
+# Spec citations:
+#   - plan.md Wave 4 deliverable 41 (linkcheck)
+#   - contract VAL-DOCS-M4-007 (linkcheck CI gate fails on broken links)
+#   - CLAUDE.md banned pattern #9 (no banned product copy in CI output)
+
+name: "docs-linkcheck"
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".lychee.toml"
+      - ".github/workflows/linkcheck.yml"
+  schedule:
+    # Weekly Monday noon UTC -- catches link rot between PRs.
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lychee:
+    name: "lychee linkcheck"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: "checkout"
+        uses: actions/checkout@v4
+
+      - name: "run lychee"
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: "--config .lychee.toml --no-progress docs/"
+          fail: true
