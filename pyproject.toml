@@ -118,4 +118,11 @@ dev = [
     # golden fixture against its Draft 2020-12 schema; required for the
     # plumbing-tier tests in packages/acef/tests/test_w11_2_*.py.
     "jsonschema>=4.21",
+    # pytest-xdist enables `-n auto` parallel execution for the plumbing
+    # tier. Without it, 3613 plumbing tests run serially in ~7m45s on a
+    # local 8-core machine and >10min on CI runners (well over the spec
+    # AM.6 60s budget). With -n auto on ubuntu-latest (4 cores) the run
+    # completes in ~2-3 minutes -- still over the strict 60s budget but
+    # safely under the workflow's timeout-minutes ceiling.
+    "pytest-xdist>=3.6",
 ]

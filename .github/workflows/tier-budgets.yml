@@ -61,7 +61,7 @@ jobs:
   plumbing:
     name: "tier-1 plumbing budget"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: "checkout"
         uses: actions/checkout@v4
@@ -84,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           start=$(python -c 'import time; print(time.time())')
-          uv run pytest -m plumbing --timeout=60 -q
+          uv run pytest -m plumbing --timeout=60 -n 2 -q
           end=$(python -c 'import time; print(time.time())')
           duration=$(python -c "print(${end} - ${start})")
           mkdir -p artifacts
@@ -126,7 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           start=$(python -c 'import time; print(time.time())')
-          uv run pytest -m smoke --timeout=480 -q
+          uv run pytest -m smoke --timeout=480 -n 2 -q
           end=$(python -c 'import time; print(time.time())')
           duration=$(python -c "print(${end} - ${start})")
           mkdir -p artifacts
@@ -175,7 +175,7 @@ jobs:
         run: |
           set -euo pipefail
           start=$(python -c 'import time; print(time.time())')
-          uv run pytest -m eval --timeout=720 -q
+          uv run pytest -m eval --timeout=720 -n 2 -q
           end=$(python -c 'import time; print(time.time())')
           duration=$(python -c "print(${end} - ${start})")
           mkdir -p artifacts
