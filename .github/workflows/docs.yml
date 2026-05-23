@@ -46,10 +46,12 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
+# Fix #13 (codex review): default workflow permissions are read-only.
+# The deploy job overrides to grant pages:write + id-token:write only when
+# it actually publishes. PR builds (which run untrusted code via PR YAML
+# changes / docs config) no longer carry the Pages/OIDC write scope.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: "pages"
@@ -58,12 +60,14 @@ concurrency:
 jobs:
   # ---------------------------------------------------------------------------
   # Build the docs site. Runs on every PR (preview artifact) and on push to
-  # main (artifact consumed by the deploy job below).
+  # main (artifact consumed by the deploy job below). Read-only.
   # ---------------------------------------------------------------------------
   build:
     name: "build mkdocs site"
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: "checkout"
         uses: actions/checkout@v4
@@ -86,10 +90,6 @@ jobs:
       - name: "build docs (strict)"
         run: uv run mkdocs build --strict
 
-      - name: "configure pages"
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/configure-pages@v5
-
       - name: "upload pages artifact"
         uses: actions/upload-pages-artifact@v3
         with:
@@ -99,6 +99,12 @@ jobs:
   # Deploy the built artifact to GitHub Pages. Only runs on push to main; PR
   # builds stop at the artifact-upload step so contributors get a preview
   # without publishing.
+  #
+  # Fix #13: pages:write + id-token:write are scoped to THIS job only, so
+  # PR builds (which run the `build` job under contents:read) cannot
+  # publish or mint an OIDC token. configure-pages moved here too because
+  # it requires the same elevated scope and only ever needs to run when
+  # deploying.
   # ---------------------------------------------------------------------------
   deploy:
     name: "deploy to github pages"
@@ -106,10 +112,17 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: "github-pages"
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: "configure pages"
+        uses: actions/configure-pages@v5
+
       - name: "deploy to github pages"
         id: deployment
         uses: actions/deploy-pages@v4

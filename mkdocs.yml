@@ -46,13 +46,19 @@ validation:
 # Files under docs/ that are not part of the published nav. Workers in M1-M3
 # wrote internal-only and release-only material under these prefixes; they
 # stay in the repo for reviewers but are not part of the user-facing site.
+#
+# Fix #10 (roborev 348, structural-review B, codex): contracts/_examples/
+# and how-to/_examples/ were previously excluded but published pages link
+# directly to those YAML fixtures (writing-assertions.md links
+# _examples/assertion-example.yaml + _examples/manifest-example.yaml;
+# integrate-ci-github-actions.md links _examples/relay-gate.yml). Dropping
+# them from exclude_docs lets MkDocs serve the assets so those links
+# resolve in the published site instead of 404.
 exclude_docs: |
   internal/
   release/
   /.DS_Store
   **/.gitkeep
-  contracts/_examples/
-  how-to/_examples/
 
 # Strict mode: any unrecognized nav reference or missing file fails the build.
 # CI (.github/workflows/docs.yml, m4-f05) runs with --strict.

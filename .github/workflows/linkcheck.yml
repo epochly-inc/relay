@@ -11,6 +11,7 @@
 #
 # Action pins (match repo convention; cf. docs.yml, tier-budgets.yml):
 #   actions/checkout@v4
+#   actions/setup-python@v5
 #   lycheeverse/lychee-action@v2
 #
 # Spec citations:
@@ -22,8 +23,15 @@ name: "docs-linkcheck"
 
 on:
   pull_request:
+    # Fix #26 (roborev 351, structural-review B P2): the published site
+    # may have broken links even when source docs/ does not, because
+    # mkdocs.yml exclude_docs can drop linked assets. Trigger on mkdocs
+    # config + pyproject changes too, and run the check against site/
+    # after building.
     paths:
       - "docs/**"
+      - "mkdocs.yml"
+      - "pyproject.toml"
       - ".lychee.toml"
       - ".github/workflows/linkcheck.yml"
   schedule:
@@ -38,12 +46,40 @@ jobs:
   lychee:
     name: "lychee linkcheck"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: "checkout"
         uses: actions/checkout@v4
 
-      - name: "run lychee"
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "install uv"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Fix #26: build the mkdocs site so lychee checks the PUBLISHED
+      # links, not just source. mkdocs.yml exclude_docs can drop linked
+      # assets and lychee on docs/ alone would not catch that 404.
+      - name: "install docs deps"
+        run: uv sync --extra docs --all-packages
+
+      - name: "build docs (strict)"
+        run: uv run mkdocs build --strict
+
+      - name: "run lychee on built site"
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: "--config .lychee.toml --no-progress site/"
+          fail: true
+
+      # Also run a quick source-level lychee pass as a fast-fail; catches
+      # obviously-malformed links before the slower build+published-site
+      # check on the rare PR where source has bugs the build masks.
+      - name: "run lychee on source docs (fast-fail)"
         uses: lycheeverse/lychee-action@v2
         with:
           args: "--config .lychee.toml --no-progress docs/"

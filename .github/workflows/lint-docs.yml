@@ -23,20 +23,20 @@
 name: "docs-lint"
 
 on:
-  pull_request:
-    paths:
-      - "docs/**"
-      - "scripts/lint-banned-copy.py"
-      - "scripts/docs/audit-codebase-alignment.py"
-      - ".github/workflows/lint-docs.yml"
+  # Fix #12 (roborev 350, structural-review B, codex): banned-copy lint
+  # and the codebase-alignment audit cover MANY surfaces beyond docs/.
+  # Specifically, banned-copy scans 9 surfaces (CLI source, READMEs,
+  # release-notes, etc.); the audit verifies citations against schemas,
+  # error-codes, OpenAPI, CLI source, and the spec-sections vendor file.
+  # If we only triggered on docs/* + 2 scripts, a PR adding banned copy
+  # to packages/cli/README.md or breaking the error-codes registry would
+  # NEVER schedule this gate. We run the lint on every PR; the audit
+  # also runs on every PR because doc-source claims can be invalidated
+  # by upstream changes to any of those surfaces.
+  pull_request: {}
   push:
     branches:
       - main
-    paths:
-      - "docs/**"
-      - "scripts/lint-banned-copy.py"
-      - "scripts/docs/audit-codebase-alignment.py"
-      - ".github/workflows/lint-docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -70,7 +70,11 @@ jobs:
         run: python scripts/lint-banned-copy.py
 
       - name: "codebase-alignment audit (all waves, layers 1+2+4)"
+        # Fix #25 (roborev 350, structural-review B): POSIX exit codes are
+        # truncated to the low 8 bits, so sys.exit(s['p0']) wraps modulo
+        # 256 and exactly 256 / 512 / ... P0 findings would falsely exit 0.
+        # Use a boolean exit code instead: 1 on any P0/P1, 0 only on clean.
         run: |
           uv run python scripts/docs/audit-codebase-alignment.py \
             --all-waves --layers 1,2,4 --json \
-            | python3 -c "import json, sys; d = json.load(sys.stdin); s = d['summary']; print(f'p0={s[\"p0\"]} p1={s[\"p1\"]} p2={s[\"p2\"]}'); sys.exit(s['p0'])"
+            | python3 -c "import json, sys; d = json.load(sys.stdin); s = d['summary']; p0 = s['p0']; p1 = s['p1']; print(f'p0={p0} p1={p1} p2={s[chr(34)+chr(112)+chr(50)+chr(34)]}'); sys.exit(1 if (p0 or p1) else 0)"

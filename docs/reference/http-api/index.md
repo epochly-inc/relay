@@ -7,10 +7,12 @@ These routes are exposed by the OSS local sidecar. Routes marked
 `RELAY-HOSTED-ONLY` in the OSS sidecar; they are provided by the hosted
 Relay control plane in the private `relay-platform` repository.
 
-Once `mkdocs.yml` lands (m4-f04), this page will be replaced by a live
-render of `packages/schemas/raw/openapi.yaml` via
-`mkdocs-render-swagger-plugin`. The route enumeration below is the
-plain-markdown placeholder used until that plugin is wired.
+The live OpenAPI render below comes from `packages/schemas/raw/openapi.yaml`
+via `mkdocs-render-swagger-plugin`. The plain-markdown route enumeration
+that follows is a fallback view for readers viewing the source on GitHub
+(where the swagger directive is not rendered).
+
+!!swagger ../../../packages/schemas/raw/openapi.yaml!!
 
 ## Live routes (OSS sidecar)
 
@@ -23,8 +25,10 @@ plain-markdown placeholder used until that plugin is wired.
 | `GET` | `/diagnostics/quiesce` | Read sidecar quiesce / draining state. |
 | `GET` | `/diagnostics/db` | Read sidecar database connectivity diagnostics. |
 
-See [Local-deploy / sidecar lifecycle](../../local-deploy/sidecar-lifecycle.md)
-for how these endpoints are used by supervisors and self-test.
+Diagnostics endpoints are consumed by `rly sidecar status` and by
+supervisors/self-test (see `apps/local-sidecar/relay_sidecar/runtime.py`
+for the handler definitions). A future `docs/local-deploy/sidecar-lifecycle.md`
+page will document the supervisor integration in detail.
 
 ### Ingest
 

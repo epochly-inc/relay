@@ -48,6 +48,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SPEC_PATH = REPO_ROOT.parent / "planning" / "epochly-replay-spec.md"
+# Fix #1: vendored list of section IDs lifted from SPEC_PATH. Read as
+# fallback when SPEC_PATH is unreachable (e.g. CI on the public relay/
+# checkout that does NOT include the private workspace parent's
+# planning/ tree). Regenerate via scripts/docs/refresh-spec-sections.py.
+SPEC_SECTIONS_VENDOR = REPO_ROOT / "packages" / "schemas" / "raw" / "spec-sections.txt"
 ERROR_CODES_PRIMARY = REPO_ROOT / "packages" / "schemas" / "raw" / "error-codes.yaml"
 ERROR_CODES_FALLBACK = REPO_ROOT / "packages" / "schemas" / "raw" / "relay-error-codes.yaml"
 ERROR_CODES_MD_FALLBACK = REPO_ROOT / "docs" / "internal" / "error-codes.md"
@@ -328,24 +333,41 @@ def _is_layer4_footer_exempt(rel: str, body: str = "") -> bool:
 
 
 def _load_spec_sections(state: AuditState) -> set[str]:
-    """Parse every `### X.` or `#### X.Y` header from the spec.
+    """Load the set of spec section ids (e.g. ``"A"``, ``"A.1"``, ``"AO"``).
 
-    Returns the set of section ids (e.g. ``"A"``, ``"A.1"``, ``"AO"``).
+    Source priority:
+      1. SPEC_PATH (the live spec markdown in the workspace parent's
+         planning/ tree). Used when running locally inside the workspace.
+      2. SPEC_SECTIONS_VENDOR (a vendored list of section IDs inside the
+         public relay/ repo). Used when SPEC_PATH is absent, e.g. in CI
+         that only checks out epochly-inc/relay. Refresh via
+         scripts/docs/refresh-spec-sections.py.
+
+    Returns an empty set if neither source is reachable.
     """
     if state.spec_loaded:
         return state.spec_sections
     state.spec_loaded = True
-    if not SPEC_PATH.is_file():
-        return state.spec_sections
     rx = re.compile(r"^####? ([A-Z]+(?:\.\d+)?)(?:[\.\s]|$)")
-    for line in SPEC_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
-        m = rx.match(line)
-        if m:
-            sid = m.group(1)
-            state.spec_sections.add(sid)
-            # If we add "A.1" implicitly recognise "A".
-            if "." in sid:
-                state.spec_sections.add(sid.split(".", 1)[0])
+    if SPEC_PATH.is_file():
+        for line in SPEC_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+            m = rx.match(line)
+            if m:
+                sid = m.group(1)
+                state.spec_sections.add(sid)
+                # If we add "A.1" implicitly recognise "A".
+                if "." in sid:
+                    state.spec_sections.add(sid.split(".", 1)[0])
+        return state.spec_sections
+    # Fix #1: SPEC_PATH unreachable -> fall back to the vendored list.
+    if SPEC_SECTIONS_VENDOR.is_file():
+        for raw in SPEC_SECTIONS_VENDOR.read_text(encoding="utf-8").splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            state.spec_sections.add(line)
+            if "." in line:
+                state.spec_sections.add(line.split(".", 1)[0])
     return state.spec_sections
 
 
