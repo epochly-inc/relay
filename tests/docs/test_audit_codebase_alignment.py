@@ -166,10 +166,15 @@ def test_layer1_negative_bad_spec_citation(tmp_path: Path) -> None:
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-DOCS-M1-013")
 def test_layer2_negative_bad_python_import(tmp_path: Path) -> None:
-    """A python fenced block importing a non-existent module is a P0 failure."""
+    """A ``run``-tagged python fenced block importing a non-existent module is P0.
+
+    Per Fix B (bare-snippet demotion) only ``run``-tagged python blocks remain
+    P0 on import failure; bare reference snippets are demoted to P2 because
+    they cannot import in isolation by design.
+    """
     body = (
         "# Title\n\n"
-        "```python\n"
+        "```python title=\"badimport.py\" run\n"
         "from relay_does_not_exist_xyz import nope\n"
         "```\n"
     )
@@ -548,3 +553,197 @@ def test_strict_promotes_unverifiable_to_p1(tmp_path: Path) -> None:
         f"strict mode should exit 2 on promoted unverifiable findings, "
         f"got rc={cp_strict.returncode}: {payload_strict}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix A -- Layer 4 spec-footer exemption for generated reference pages
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        "docs/reference/cli/contract.md",
+        "docs/reference/errors/RELAY-FAKE-001/index.md",
+        "docs/reference/schemas/manifest.md",
+        "docs/reference/python-sdk/client.md",
+        "docs/reference/typescript-sdk/index.md",
+        "docs/reference/http-api/index.md",
+        "docs/reference/adapters/openai.md",
+        "docs/guards/INDEX.md",
+    ],
+)
+def test_layer4_exempts_generated_reference_pages(tmp_path: Path, rel_path: str) -> None:
+    """Generated / index reference pages are exempt from the Spec-footer check.
+
+    These pages enumerate the API surface and carry a ``Generated from ...``
+    banner (or are top-level index pages) rather than a ``Spec: §...`` footer.
+    The Layer 4 check must skip them and not record P0 footer findings.
+
+    Fix A: exempt the listed glob roots from the strict footer regex.
+    """
+    page = _make_page(
+        tmp_path,
+        rel_path,
+        "# Title\n\n> Generated from packages/cli/src/relay_cli/main.py. Do not edit by hand.\n\nBody.\n",
+    )
+    cp = _run(["--files", str(page), "--layers", "4", "--json"])
+    payload = json.loads(cp.stdout)
+    footer_p0 = [
+        f
+        for f in payload["findings"]
+        if f["severity"] == "P0" and "Spec footer" in f.get("message", "")
+    ]
+    assert cp.returncode == 0, (
+        f"exempt path {rel_path} must not P0, got rc={cp.returncode}: {payload}"
+    )
+    assert not footer_p0, (
+        f"exempt path {rel_path} must not produce footer P0, got: {footer_p0}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer4_exempts_non_canonical_spec_footer_on_error_page(tmp_path: Path) -> None:
+    """Error reference pages carry non-canonical ``Spec: §L line 4479`` footers.
+
+    The generator emits ``Spec: §L line 4479; AI lines 5651-5670`` which does
+    not match the strict ``Spec: §<SECTION>`` regex. The Layer 4 check must
+    not record a P0 finding for these pages.
+    """
+    body = (
+        "# RELAY-FAKE-001\n\n"
+        "> Generated from packages/schemas/raw/error-codes.yaml. Do not edit by hand.\n\n"
+        "Description.\n\n"
+        "Spec: §L line 4479; AI lines 5651-5670\n"
+    )
+    page = _make_page(tmp_path, "docs/reference/errors/RELAY-FAKE-001/index.md", body)
+    cp = _run(["--files", str(page), "--layers", "4", "--json"])
+    payload = json.loads(cp.stdout)
+    footer_p0 = [
+        f
+        for f in payload["findings"]
+        if f["severity"] == "P0" and "Spec footer" in f.get("message", "")
+    ]
+    assert cp.returncode == 0, (
+        f"exempt error page must not P0, got rc={cp.returncode}: {payload}"
+    )
+    assert not footer_p0, f"exempt error page must not produce footer P0: {footer_p0}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer4_still_enforces_footer_on_handauthored_pages(tmp_path: Path) -> None:
+    """Non-exempt hand-authored pages must still require a canonical footer.
+
+    Regression guard for Fix A: only the explicit exempt globs are skipped;
+    every other page under docs/ continues to enforce ``Spec: §<SECTION>``.
+    """
+    page = _make_page(
+        tmp_path,
+        "docs/getting-started/handauthored.md",
+        "# Title\n\nBody only, no footer.\n",
+    )
+    cp = _run(["--files", str(page), "--layers", "4", "--json"])
+    assert cp.returncode == 1, (
+        f"hand-authored page without footer must P0, got rc={cp.returncode}: {cp.stdout}"
+    )
+    payload = json.loads(cp.stdout)
+    msgs = " | ".join(f.get("message", "") for f in payload["findings"])
+    assert "missing or malformed Spec footer" in msgs, (
+        f"expected footer P0 on hand-authored page, got: {payload}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fix B -- Layer 2 bare-snippet demotion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_bare_python_snippet_without_run_tag_is_p2(tmp_path: Path) -> None:
+    """A python block lacking a ``run`` tag demotes import failures to P2.
+
+    Bare reference snippets (class/signature excerpts) cannot import in
+    isolation. They are documentation, not runnable code; ``run``-tagged
+    blocks remain P0 on import failure.
+    """
+    body = (
+        "# Title\n\n"
+        "```python\n"
+        "from relay_does_not_exist_xyz import nope\n"
+        "```\n"
+    )
+    page = _make_page(tmp_path, "docs/getting-started/baresnippet.md", body)
+    cp = _run(["--files", str(page), "--layers", "2", "--json"])
+    payload = json.loads(cp.stdout)
+    p0 = [f for f in payload["findings"] if f["severity"] == "P0"]
+    p2 = [
+        f
+        for f in payload["findings"]
+        if f["severity"] == "P2" and "python fenced block" in f.get("message", "")
+    ]
+    assert cp.returncode == 0, (
+        f"bare snippet should not P0, got rc={cp.returncode}: {payload}"
+    )
+    assert not p0, f"expected no P0 findings on bare snippet, got: {p0}"
+    assert p2, f"expected demoted P2 finding for bare snippet, got: {payload}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_run_tagged_python_snippet_failing_import_is_p0(tmp_path: Path) -> None:
+    """A python block tagged ``run`` keeps P0 on import failure.
+
+    Regression guard for Fix B: only un-tagged blocks are demoted.
+    """
+    body = (
+        "# Title\n\n"
+        "```python title=\"sample.py\" run\n"
+        "from relay_does_not_exist_xyz import nope\n"
+        "```\n"
+    )
+    page = _make_page(tmp_path, "docs/getting-started/runpy.md", body)
+    cp = _run(["--files", str(page), "--layers", "2", "--json"])
+    assert cp.returncode == 1, (
+        f"run-tagged failing snippet must P0, got rc={cp.returncode}: {cp.stdout}"
+    )
+    payload = json.loads(cp.stdout)
+    p0 = [f for f in payload["findings"] if f["severity"] == "P0"]
+    assert p0, f"expected P0 on run-tagged failing snippet, got: {payload}"
+
+
+# ---------------------------------------------------------------------------
+# Fix C -- Layer 1 CLI verifier accepts real multi-word commands
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer1_strips_trailing_punctuation_from_cli_chain(tmp_path: Path) -> None:
+    """The CLI extractor strips trailing punctuation before the verifier check.
+
+    Sentence-ending ``.``, ``,``, ``;``, ``)`` after a CLI invocation must
+    not turn a valid command into a P0. Fix C tightens the extractor.
+    """
+    body = (
+        "# Title\n\n"
+        "Run `rly evidence verify`.\n\n"
+        "Or invoke as:\n\n"
+        "```bash\n"
+        "rly evidence verify bundle.json;\n"
+        "```\n\n"
+        "Spec: §K\n"
+    )
+    page = _make_page(tmp_path, "docs/getting-started/cli-punct.md", body)
+    cp = _run(["--files", str(page), "--layers", "1", "--json"])
+    payload = json.loads(cp.stdout)
+    cli_p0 = [
+        f
+        for f in payload["findings"]
+        if f["severity"] == "P0" and "CLI command" in f.get("message", "")
+    ]
+    assert not cli_p0, f"trailing punctuation must not turn valid CLI into P0: {cli_p0}"

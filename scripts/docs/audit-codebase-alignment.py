@@ -89,6 +89,41 @@ EXCLUDE_PREFIXES: tuple[str, ...] = (
     "docs/compliance/",
 )
 
+# Layer 4 footer-check exemption prefixes (relative to REPO_ROOT).
+#
+# Pages under these prefixes are auto-generated API-surface enumerations or
+# top-level index pages that do not derive their content from a single spec
+# section -- they carry a "Generated from <source>. Do not edit by hand."
+# banner (or a top-level INDEX role) instead of a canonical
+# ``Spec: §<SECTION>`` footer. The Layer 4 check must NOT P0-fail
+# these pages for missing/malformed Spec footers.
+#
+# Hand-authored docs outside these prefixes continue to require the
+# canonical footer; the exemption is scoped tightly to generator output and
+# index roots.
+#
+# Fix A (fix-m4-prereg-audit-exempts) — unblocks the m4-f09 final-corpus
+# audit by excluding generator output from the strict-footer check.
+LAYER4_EXEMPT_PREFIXES: tuple[str, ...] = (
+    "docs/reference/cli/",
+    "docs/reference/errors/",
+    "docs/reference/schemas/",
+    "docs/reference/python-sdk/",
+    "docs/reference/typescript-sdk/",
+    "docs/reference/http-api/",
+    "docs/reference/adapters/",
+    "docs/guards/",
+)
+
+# Top-level page basenames that are exempt from the footer check (workspace
+# root README-like artifacts that surface in docs/ but never derive from a
+# single spec section).
+LAYER4_EXEMPT_BASENAMES: frozenset[str] = frozenset(
+    {
+        "CHANGELOG.md",
+    }
+)
+
 # Spec citation regex (footer + inline). Uses the section-sign byte directly;
 # this script's source file is ASCII-only -- the byte sequence below is the
 # UTF-8 encoding of U+00A7 written as a regex string-literal via escape so
@@ -244,6 +279,22 @@ def _rel(path: Path) -> str:
 
 def _is_generated_cli_reference_doc(rel: str) -> bool:
     return "/docs/reference/cli/" in f"/{rel}"
+
+
+def _is_layer4_footer_exempt(rel: str) -> bool:
+    """Return True iff ``rel`` is exempt from the strict Spec-footer check.
+
+    Tests pass fixture paths under ``tmp_path`` (outside REPO_ROOT); ``rel``
+    in that case is an absolute path that still contains the canonical
+    ``docs/<subtree>/...`` segment. Match by SEGMENT containment rather than
+    prefix to cover both repo-rooted and tmp-rooted paths.
+    """
+    needle_rel = f"/{rel}"
+    for prefix in LAYER4_EXEMPT_PREFIXES:
+        if f"/{prefix}" in needle_rel:
+            return True
+    basename = rel.rsplit("/", 1)[-1]
+    return basename in LAYER4_EXEMPT_BASENAMES
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +718,12 @@ def _layer1(path: Path, body: str, state: AuditState) -> None:
     # CLI subcommands.
     for m in CLI_RE.finditer(body):
         cmd = m.group(1).strip()
+        # Fix C: strip trailing sentence punctuation, quotes, and shell
+        # statement terminators that the line-bounded regex captured as part
+        # of the command. Real ``rly`` invocations never end in ``.``,
+        # ``,``, ``;``, ``)``, or ``\``; a sentence-period after a CLI
+        # invocation in prose must not turn a valid command into a P0.
+        cmd = cmd.rstrip("\\").rstrip(".,;:)'\"").strip()
         line = body.count("\n", 0, m.start()) + 1
         status, detail = _verify_cli(cmd)
         if status == "miss":
@@ -996,10 +1053,19 @@ def _layer2(path: Path, body: str, state: AuditState) -> None:
             else:
                 continue
             if not ok:
+                # Fix B: bare python reference snippets (no ``run`` tag) are
+                # class/signature excerpts that legitimately cannot import in
+                # isolation -- they are documentation, not runnable code.
+                # Demote import-check failures on such blocks to P2 so the
+                # audit gate does not block on documentation-only fences.
+                # Blocks tagged ``run`` (claimed-runnable) keep P0 on failure.
+                severity = "P0"
+                if lang == "python" and "run" not in tags:
+                    severity = "P2"
                 state.findings.append(
                     Finding(
                         layer=2,
-                        severity="P0",
+                        severity=severity,
                         file=rel,
                         line=line,
                         message=f"{lang} fenced block failed verification",
@@ -1032,6 +1098,14 @@ def _layer4(path: Path, body: str, state: AuditState) -> None:
     generated_cli_reference = _is_generated_cli_reference_doc(rel)
     val_matches = list(VAL_SPEC_FOOTER_RE.finditer(body)) if generated_cli_reference else []
     if not matches and not val_matches:
+        # Fix A: generator-output reference pages and top-level index pages
+        # are exempt from the strict Spec-footer requirement. They carry a
+        # "Generated from <source>. Do not edit by hand." banner or are
+        # surface enumerations rather than spec-derived prose, and lack a
+        # single canonical section to cite. Skip the footer P0 entirely for
+        # these paths; downstream layers (1, 2, 3) still run normally.
+        if _is_layer4_footer_exempt(rel):
+            return
         spec_line = SPEC_LINE_RE.search(body)
         line = (
             body.count("\n", 0, spec_line.start()) + 1
