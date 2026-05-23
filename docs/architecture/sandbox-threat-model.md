@@ -233,15 +233,20 @@ In no-Docker degraded mode:
   `docker version` exit code, per F5 above). Windows users without
   Docker Desktop get this degraded mode by default.
 
-- The degraded mode is documented as degraded, not as equivalent. Each
-  replay run emits a `replay_result.v1` envelope whose `sandbox_driver`
-  field names the driver actually used (the values documented in
-  `packages/schemas/python/relay_schemas/envelopes.py` are
-  `"local-docker"`, `"e2b"`, `"local-firecracker"`, and `"modal"`).
-  Verifiers downstream can read that field and decide whether to
-  accept the bundle for their use case. Auditors who require
-  Docker-isolated replay can refuse non-`local-docker` bundles; auditors
-  who only require deterministic replay can accept them.
+- The degraded mode is documented as degraded, not as equivalent.
+  Two distinct envelopes apply here. The CLI's `rly replay run` emits
+  `relay.cli.replay_run.v1` on stdout (per
+  `REPLAY_RUN_SCHEMA` in `packages/cli/src/relay_cli/commands/replay.py`);
+  this envelope is what the operator sees and does NOT carry a
+  `sandbox_driver` field. The sidecar's persisted replay record uses
+  the separate `relay.replay_result.v1` envelope (per
+  `relay_sidecar/runtime.py` and `relay_schemas/envelopes.py`), which
+  DOES carry `sandbox_driver` as a free-text string; documented values
+  are `"local-docker"`, `"e2b"`, `"local-firecracker"`, and `"modal"`.
+  An auditor inspecting the sidecar's stored replay records (not the
+  CLI stdout) can use that field to refuse non-`local-docker` runs;
+  auditors who only require deterministic replay can accept any
+  documented driver.
 
 **A4 layered proxy is implemented in W7; this doc establishes the doc-first design.**
 The W15 doc (this file) lands in week 1-2 of the v0.1 buildout; the W7
