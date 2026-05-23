@@ -1,0 +1,76 @@
+# Relay v0.1 OSS -- Docs lint workflow (VAL-DOCS-M4-008).
+#
+# Wires the banned-copy lint (scripts/lint-banned-copy.py) and the codebase-
+# alignment audit (scripts/docs/audit-codebase-alignment.py) into CI so that
+# no PR can merge documentation containing the forbidden product copy from
+# spec section J.5 (CLAUDE.md banned pattern #9) and so that every concrete
+# code-reference claim in docs/ is verified against current source.
+#
+# Triggers are path-scoped: only changes to docs, the lint scripts, or this
+# workflow file rebuild. Unrelated source edits skip the job.
+#
+# Permissions: contents:read only. No write scope; this is a read-only gate.
+#
+# Action pins (match repo convention; cf. docs.yml, tier-budgets.yml):
+#   actions/checkout@v4
+#   actions/setup-python@v5
+#
+# Spec citations:
+#   - plan.md Wave 4 deliverable 42 (banned-copy lint wired into CI)
+#   - contract VAL-DOCS-M4-008 (banned-copy lint extension is wired into CI)
+#   - CLAUDE.md banned pattern #9 (no banned product copy)
+
+name: "docs-lint"
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "scripts/lint-banned-copy.py"
+      - "scripts/docs/audit-codebase-alignment.py"
+      - ".github/workflows/lint-docs.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "scripts/lint-banned-copy.py"
+      - "scripts/docs/audit-codebase-alignment.py"
+      - ".github/workflows/lint-docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  banned-copy:
+    name: "banned-copy lint + alignment audit"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: "checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "install uv"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: "install repo deps"
+        run: uv sync --all-packages
+
+      - name: "banned-copy lint (docs)"
+        run: python scripts/lint-banned-copy.py
+
+      - name: "codebase-alignment audit (all waves, layers 1+2+4)"
+        run: |
+          uv run python scripts/docs/audit-codebase-alignment.py \
+            --all-waves --layers 1,2,4 --json \
+            | python3 -c "import json, sys; d = json.load(sys.stdin); s = d['summary']; print(f'p0={s[\"p0\"]} p1={s[\"p1\"]} p2={s[\"p2\"]}'); sys.exit(s['p0'])"
