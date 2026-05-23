@@ -18,9 +18,10 @@ Wire codes used by this layer (registered in the canonical YAML):
                             the W11.3 emission writer collapses both
                             ACEF Core and x-relay schema_version
                             mismatches into ``RELAY-SCHEMA-014`` (see
-                            emission.py module docstring + line 171
-                            docstring). Constant exists here so a future
-                            split can land without a registry change.
+                            the ``EmissionWriter`` class docstring in
+                            ``emission.py``). Constant exists here so a
+                            future split can land without a registry
+                            change.
   * ``RELAY-SCHEMA-018`` -- reserved wire-format constant for the
                             x-relay namespace block schema_version
                             rejection surface (VAL-W11-018). NOT

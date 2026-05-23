@@ -10,7 +10,8 @@ constitute the w11.3-acef-roundtrip-tests feature:
                  RELAY-SCHEMA-017 wire constant is reserved for a
                  future split that discriminates ACEF Core from x-relay
                  rejection paths; the W11.3 writer routes both surfaces
-                 through 014 today (see test body comment at line 574).
+                 through 014 today (see the ``VAL-W11-017`` test body
+                 comment block in this file for the routing rationale).
   * VAL-W11-018  Unknown x-relay schema_version rejected on write with
                  SchemaVersionError(RELAY-SCHEMA-014). The
                  RELAY-SCHEMA-018 wire constant is reserved (same
