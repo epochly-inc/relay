@@ -127,8 +127,12 @@ signing paths in OSS, and they verify against different JWKS:
    local-dev trust path; they do NOT verify under the default Relay-Inc
    JWKS. To verify a local-dev bundle on hosted (or on any machine that
    doesn't have your local JWKS), either re-sign it via the hosted
-   signer OR pass `--trust-anchor <path-to-local-dev-jwks>` to the
-   verifier.
+   signer OR pass `--trust-anchor <jwks-url>` to the verifier. The
+   `--trust-anchor` flag accepts an `https://` URL or a `file://` URL
+   (see the `file://` URL handling docstring in
+   `packages/verifier/src/relay_verifier/jwks_loader.py` -- bare
+   filesystem paths are NOT accepted; use
+   `file:///absolute/path/to/jwks.json` to point at a local file).
 
 Two practical confirmations:
 

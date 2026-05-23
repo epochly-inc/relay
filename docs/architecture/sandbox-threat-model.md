@@ -148,12 +148,15 @@ mode names its detection surface and its mitigation. Spec citations:
 
 - **F5: Docker absent on host (Windows / minimal Linux).** The host
   has no Docker daemon (Windows users without Docker Desktop / WSL2;
-  minimal Linux containers; CI runners with Docker disabled). Detection:
-  `rly verify-self` reports `docker_available=false`.
-  Mitigation: the No-Docker Degraded Mode pathway lets `rly replay
-  run` operate without a Docker-based sandbox; the A4 layered proxy
-  remains the default enforcement surface for replay determinism. See
-  the No-Docker Degraded Mode section.
+  minimal Linux containers; CI runners with Docker disabled).
+  Detection: shell out to `docker version` (or `docker info`) and check
+  the exit code; non-zero means the daemon is unreachable. The Relay
+  CLI does NOT currently expose a structured docker-availability field
+  in `rly verify-self --json` (the v0.1 verify-self surface emits the
+  invariants schema only). Mitigation: the No-Docker Degraded Mode
+  pathway lets `rly replay run` operate without a Docker-based sandbox;
+  the A4 layered proxy remains the default enforcement surface for
+  replay determinism. See the No-Docker Degraded Mode section.
 
 - **F6: Kernel-level escape (explicitly not in P0 scope).** An attacker
   inside the sandbox container escalates to host root via a Docker /

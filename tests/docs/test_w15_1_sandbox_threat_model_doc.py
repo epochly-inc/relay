@@ -506,9 +506,16 @@ def test_w15_007_no_docker_degraded_mode_and_w7_footnote(body: str) -> None:
     """No-Docker Degraded Mode section documents: rly replay run works
     without sandbox, A4 layered proxy is default enforcement (mitmproxy +
     HTTPS_PROXY + socket deny + undici interceptor), sandbox driver is only
-    required for verify-self --sandbox-check and tier-3 evals, Windows users
-    without Docker get this degraded mode. AND the literal W7 timing
-    footnote substring must appear."""
+    required for verify-self and tier-3 evals, Windows users without Docker
+    get this degraded mode. AND the literal W7 timing footnote substring
+    must appear.
+
+    Updated to expect bare `verify-self` rather than the prior
+    `verify-self --sandbox-check` form because the `--sandbox-check` flag
+    was never implemented on the CLI surface (`rly verify-self --help`
+    exposes only --repo-root / --json / --home / --help). Earlier review
+    iteration corrected the doc; this test now matches the corrected wording.
+    """
     section = _section_body(body, "No-Docker Degraded Mode")
     assert section.strip(), "No-Docker Degraded Mode section is empty"
     lower = section.lower()
@@ -529,9 +536,12 @@ def test_w15_007_no_docker_degraded_mode_and_w7_footnote(body: str) -> None:
         "No-Docker Degraded Mode must name 'mitmproxy' transport"
     )
 
-    # verify-self --sandbox-check named
-    assert "verify-self --sandbox-check" in lower, (
-        "No-Docker Degraded Mode must cite 'verify-self --sandbox-check'"
+    # verify-self named (the prior `--sandbox-check` flag was never
+    # implemented on the CLI; doc updated to bare `verify-self` and this
+    # assertion follows). Scoped to the No-Docker Degraded Mode section
+    # via _section_body extraction above.
+    assert "verify-self" in lower, (
+        "No-Docker Degraded Mode must cite 'verify-self' as the diagnostic"
     )
 
     # tier-3 evals named

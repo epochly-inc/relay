@@ -36,7 +36,9 @@ under Apache 2.0 with no hosted dependency.
   does not persist a `gate_decision` row to any remote registry. The hosted
   path persists the decision and binds it to the org's evidence registry.
 - **Audit log.** OSS persists per-run events in the sidecar's local
-  SQLite store under `${RELAY_HOME}/sidecar.sqlite`; you can inspect
+  SQLite store under `${RELAY_HOME}/sidecar.db` (the canonical filename
+  defined by `SIDECAR_DB_FILENAME` in
+  `apps/local-sidecar/relay_sidecar/runtime.py`); you can inspect
   individual run history via `rly trace <run_id>` or query the SQLite
   database directly. Hosted produces an equivalent stream scoped to your
   org, retained per your retention policy, and exportable through the
