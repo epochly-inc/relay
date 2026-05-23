@@ -115,10 +115,11 @@ mode names its detection surface and its mitigation. Spec citations:
 
 - **F2: Network egress leak.** A path the A4 layered proxy did not
   catch lets traffic reach a live external endpoint during replay.
-  Detection: the egress-denial conformance test
-  (`tests/integration/test_egress_denial.py`) exercises every named
-  transport (requests, urllib, aiohttp, subprocess, raw socket, fetch,
-  axios, curl). Mitigation: per eng plan A4, all transports are pinned
+  Detection: the egress-denial conformance tests
+  (`apps/replay-proxy/tests/test_w7_5_egress_denial_python.py` for
+  Python; `packages/sdk-typescript/test/w7_5_node_egress_denial.test.ts`
+  for Node) exercise every named transport (requests, urllib, aiohttp,
+  subprocess, raw socket, fetch, axios, curl). Mitigation: per eng plan A4, all transports are pinned
   to the loopback mitmproxy and a residual socket-level deny rule
   refuses any connection the proxy did not authorize. A leak is a P0
   bug; the conformance test is run as plumbing tier-1 to prevent
@@ -309,3 +310,5 @@ of the v0.1 replay sandbox for engineering and operator audiences.
 Customers whose use cases include regulated workloads must obtain
 their own counsel review before relying on the local-docker P0 driver
 for any compliance-relevant claim.
+
+Spec: §E.3, §G.1
