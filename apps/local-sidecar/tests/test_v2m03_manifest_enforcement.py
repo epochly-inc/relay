@@ -554,8 +554,21 @@ def test_manifest_schema_declares_validation_surface_globs() -> None:
     assert surface_props["globs"]["items"]["type"] == "string"
 
 
+_OPS_MANIFEST_PATH = Path(__file__).resolve().parents[3] / ".ops" / "manifest.yaml"
+
+
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M03-015")
+@pytest.mark.skipif(
+    not _OPS_MANIFEST_PATH.exists(),
+    reason=(
+        ".ops/manifest.yaml is a workspace-parent Operations-system artifact "
+        "(gitignored in the OSS relay repo). The test validates the reference "
+        "manifest when present; on a CI checkout of just the public relay/ "
+        "repo (without the workspace parent's .ops/ tree) the file is "
+        "legitimately absent and the test skips."
+    ),
+)
 def test_ops_manifest_validation_surfaces_carry_globs() -> None:
     """The reference operation manifest (.ops/manifest.yaml) MUST declare
     globs on every validation_surfaces entry so the gate runner has a
@@ -564,10 +577,7 @@ def test_ops_manifest_validation_surfaces_carry_globs() -> None:
     """
     import yaml as _yaml
 
-    ops_path = (
-        Path(__file__).resolve().parents[3] / ".ops" / "manifest.yaml"
-    )
-    body = _yaml.safe_load(ops_path.read_text(encoding="utf-8"))
+    body = _yaml.safe_load(_OPS_MANIFEST_PATH.read_text(encoding="utf-8"))
     surfaces = body.get("validation_surfaces", [])
     assert surfaces, "operation manifest must declare validation_surfaces"
     for s in surfaces:

@@ -410,6 +410,16 @@ def test_body_validator_happy_path() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M03-010")
+@pytest.mark.skipif(
+    not _OPS_MANIFEST_PATH.exists(),
+    reason=(
+        ".ops/manifest.yaml is a workspace-parent Operations-system artifact "
+        "(gitignored in the OSS relay repo). The test validates the reference "
+        "manifest when present; on a CI checkout of just the public relay/ "
+        "repo (without the workspace parent's .ops/ tree) the file is "
+        "legitimately absent and the test skips."
+    ),
+)
 def test_ops_manifest_validates_against_canonical_schema() -> None:
     schema = _load_schema()
     body = yaml.safe_load(_OPS_MANIFEST_PATH.read_text(encoding="utf-8"))

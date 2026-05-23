@@ -188,7 +188,17 @@ def test_generated_pages_have_banner(tmp_path: Path) -> None:
         )
 
 
+# CLI-reference generator tests invoke the subprocess generator (which
+# walks every `rly` subcommand via `rly --json help` recursively); each
+# subprocess invocation is slow on CI runners. The plumbing tier's
+# default per-test timeout is 60s; these tests need ~120s on CI. The
+# tier-level budget (300s) still bounds total runtime. Marker:
+# `@pytest.mark.timeout(180)` overrides the per-test timeout without
+# touching the tier-wide setting.
+
+
 @pytest.mark.plumbing
+@pytest.mark.timeout(180)
 def test_idempotent(tmp_path: Path) -> None:
     """Running the generator twice produces byte-identical output."""
     out = tmp_path / "cli"
@@ -213,6 +223,7 @@ def test_idempotent(tmp_path: Path) -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.timeout(180)
 def test_check_mode_exit_0_when_no_drift(tmp_path: Path) -> None:
     """After a fresh generate, ``--check`` against the same dir exits 0."""
     out = tmp_path / "cli"
@@ -226,6 +237,7 @@ def test_check_mode_exit_0_when_no_drift(tmp_path: Path) -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.timeout(180)
 def test_check_mode_exit_1_when_drift(tmp_path: Path) -> None:
     """After mutating an emitted page, ``--check`` exits 1 and reports drift."""
     out = tmp_path / "cli"

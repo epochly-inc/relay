@@ -581,6 +581,20 @@ def _verify_identifier_via_rg(symbol: str, current_page: Path) -> bool:
         "--fixed-strings",
         "--glob",
         "!docs/**/*.md",
+        # Explicitly exclude Python bytecode caches. .gitignore covers
+        # them and rg respects .gitignore by default, but rg's
+        # binary-vs-text heuristic (checks first ~1KB for null bytes)
+        # is CPython-version-dependent: Python 3.12 .pyc files can
+        # appear "text-like" in their marshal-encoded header and get
+        # searched, while 3.14 .pyc files have null bytes early enough
+        # to be classified as binary. Constant-folding turns
+        # `"foo_" + "bar"` into the literal `"foo_bar"` in
+        # __pycache__/*.pyc, which then matches a fixed-string search
+        # and makes the docs audit's identifier-presence check
+        # non-deterministic across Python versions. Explicit glob
+        # exclusion makes this CPython-version-independent.
+        "--glob",
+        "!**/__pycache__/**",
     ]
     try:
         current_rel = current_page.relative_to(REPO_ROOT).as_posix()
