@@ -76,7 +76,7 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: "install python deps"
-        run: uv sync --all-packages
+        run: uv sync --all-packages --all-extras
 
       - name: "install node deps"
         run: npm ci --workspaces --include-workspace-root || npm install --workspaces --include-workspace-root

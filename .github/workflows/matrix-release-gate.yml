@@ -52,6 +52,8 @@ jobs:
           python-version: "3.12"
       - name: install uv
         run: pip install uv
+      - name: install workspace deps
+        run: uv sync --all-packages --all-extras
       - name: run plumbing tier
         id: plumb
         run: uv run pytest -m plumbing --timeout=60 -q
@@ -80,6 +82,8 @@ jobs:
           python-version: "3.13"
       - name: install uv
         run: pip install uv
+      - name: install workspace deps
+        run: uv sync --all-packages --all-extras
       - name: run plumbing tier
         id: plumb
         run: uv run pytest -m plumbing --timeout=60 -q
@@ -109,6 +113,8 @@ jobs:
           python-version: "3.14"
       - name: install uv
         run: pip install uv
+      - name: install workspace deps
+        run: uv sync --all-packages --all-extras
       - name: run plumbing tier
         id: plumb
         run: uv run pytest -m plumbing --timeout=60 -q

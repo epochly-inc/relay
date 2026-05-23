@@ -77,4 +77,4 @@ jobs:
         run: |
           uv run python scripts/docs/audit-codebase-alignment.py \
             --all-waves --layers 1,2,4 --json \
-            | python3 -c "import json, sys; d = json.load(sys.stdin); s = d['summary']; p0 = s['p0']; p1 = s['p1']; print(f'p0={p0} p1={p1} p2={s[chr(34)+chr(112)+chr(50)+chr(34)]}'); sys.exit(1 if (p0 or p1) else 0)"
+            | python3 -c "import json, sys; d = json.load(sys.stdin); s = d['summary']; p0 = s['p0']; p1 = s['p1']; p2 = s['p2']; print(f'p0={p0} p1={p1} p2={p2}'); sys.exit(1 if (p0 or p1) else 0)"
