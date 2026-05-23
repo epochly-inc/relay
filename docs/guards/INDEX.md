@@ -49,3 +49,5 @@ When CLAUDE.md gains a new entry in "REQUIRED GUARD TESTS":
    recognize (extend `REQUIRED_GUARD_NAMES`).
 3. Run `pytest tests/guards/test_guard_registry_index.py -m plumbing -v`
    and confirm it passes.
+
+Spec: §U, §AM

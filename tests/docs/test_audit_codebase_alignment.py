@@ -188,6 +188,88 @@ def test_layer2_negative_bad_python_import(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_bare_python_syntax_error_is_p0(tmp_path: Path) -> None:
+    """Fix #4: bare python with a SyntaxError must stay P0 (not demote to P2).
+
+    A doc author who pastes malformed Python into a reference page would
+    silently pass the audit gate under the prior overly-broad demotion. The
+    demotion is now narrowed to ImportError; everything else (syntax, runtime,
+    infrastructure) stays P0.
+    """
+    body = (
+        "# Title\n\n"
+        "```python\n"
+        "def f(:\n"  # SyntaxError: invalid syntax
+        "    pass\n"
+        "```\n\n"
+        f"Spec: §A.1\n"
+    )
+    page = _make_page(tmp_path, "docs/contracts/syntax-error.md", body)
+    cp = _run(["--files", str(page), "--layers", "2", "--json"])
+    assert cp.returncode == 1, f"expected exit 1, got {cp.returncode}: {cp.stdout}"
+    payload = json.loads(cp.stdout)
+    p0_findings = [f for f in payload["findings"] if f["severity"] == "P0"]
+    assert p0_findings, f"expected P0 finding for SyntaxError, got: {payload}"
+    assert any("syntax" in f["actual"].lower() for f in p0_findings), (
+        f"expected syntax-related actual, got: {p0_findings}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_bare_python_runtime_error_is_p0(tmp_path: Path) -> None:
+    """Fix #4: bare python with a runtime exception must stay P0.
+
+    NameError / AttributeError / TypeError on bare snippets are real bugs in
+    the documented example, not import-isolation artefacts. They stay P0.
+    """
+    body = (
+        "# Title\n\n"
+        "```python\n"
+        "x = undefined_global_xyz  # NameError\n"
+        "```\n\n"
+        f"Spec: §A.1\n"
+    )
+    page = _make_page(tmp_path, "docs/contracts/runtime-error.md", body)
+    cp = _run(["--files", str(page), "--layers", "2", "--json"])
+    assert cp.returncode == 1, f"expected exit 1, got {cp.returncode}: {cp.stdout}"
+    payload = json.loads(cp.stdout)
+    p0_findings = [f for f in payload["findings"] if f["severity"] == "P0"]
+    assert p0_findings, f"expected P0 finding for runtime error, got: {payload}"
+    assert any("runtime" in f["actual"].lower() for f in p0_findings), (
+        f"expected runtime-classified actual, got: {p0_findings}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
+def test_layer2_bare_python_import_error_demotes_to_p2(tmp_path: Path) -> None:
+    """Fix #4: bare-snippet ImportError keeps the documented P2 demotion.
+
+    Reference snippets like ``from relay import RelayClient`` legitimately
+    fail to import in an isolated `python -c` because the package is not
+    installed in the audit's subprocess. That specific failure mode demotes.
+    """
+    body = (
+        "# Title\n\n"
+        "```python\n"
+        "from relay_pkg_that_does_not_exist_xyz import nope\n"
+        "```\n\n"
+        f"Spec: §A.1\n"
+    )
+    page = _make_page(tmp_path, "docs/contracts/import-error.md", body)
+    cp = _run(["--files", str(page), "--layers", "2", "--json"])
+    payload = json.loads(cp.stdout)
+    severities = {f["severity"] for f in payload["findings"]}
+    # Should be exit 0 (P2 only, no P0/P1) since this is a documented demotion.
+    assert "P0" not in severities, (
+        f"bare-snippet import error must demote to P2 (not P0): {payload}"
+    )
+    assert cp.returncode == 0, f"expected exit 0 (P2-only), got {cp.returncode}: {cp.stdout}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-DOCS-M1-013")
 def test_layer2_negative_bad_bash_without_rly(tmp_path: Path) -> None:
     """A bash fenced block without ``rly`` is still syntax-checked."""
     body = (

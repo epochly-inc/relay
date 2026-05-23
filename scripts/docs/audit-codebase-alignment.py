@@ -95,14 +95,14 @@ EXCLUDE_PREFIXES: tuple[str, ...] = (
 # top-level index pages that do not derive their content from a single spec
 # section -- they carry a "Generated from <source>. Do not edit by hand."
 # banner (or a top-level INDEX role) instead of a canonical
-# ``Spec: §<SECTION>`` footer. The Layer 4 check must NOT P0-fail
+# ``Spec: <SECTION-SIGN><SECTION>`` footer. The Layer 4 check must NOT P0-fail
 # these pages for missing/malformed Spec footers.
 #
 # Hand-authored docs outside these prefixes continue to require the
 # canonical footer; the exemption is scoped tightly to generator output and
 # index roots.
 #
-# Fix A (fix-m4-prereg-audit-exempts) — unblocks the m4-f09 final-corpus
+# Fix A (fix-m4-prereg-audit-exempts) -- unblocks the m4-f09 final-corpus
 # audit by excluding generator output from the strict-footer check.
 LAYER4_EXEMPT_PREFIXES: tuple[str, ...] = (
     "docs/reference/cli/",
@@ -141,6 +141,15 @@ VAL_SPEC_FOOTER_RE = re.compile(
     re.MULTILINE,
 )
 SPEC_LINE_RE = re.compile(r"^Spec:.*$", re.MULTILINE)
+# Fix #5: Layer 4 exemption requires this banner phrase to appear in the
+# body of a prefix-exempt page (e.g., docs/reference/cli/contract.md). The
+# banner is emitted by m1-f03 / m1-f04 / m3-f01..f05 generators. The match
+# is anchored to "Generated from" so legitimate docs cannot accidentally
+# mention the phrase in body prose without intending to claim auto-gen.
+GENERATED_BANNER_RE = re.compile(
+    r"^>\s*Generated from\s+\S+\.\s*Do not edit by hand\.\s*$",
+    re.MULTILINE,
+)
 BASH_HEREDOC_RE = re.compile(
     r"(?<!<)<<-?(?!<)\s*(?P<quote>['\"]?)(?P<delim>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?P=quote)"
@@ -281,20 +290,36 @@ def _is_generated_cli_reference_doc(rel: str) -> bool:
     return "/docs/reference/cli/" in f"/{rel}"
 
 
-def _is_layer4_footer_exempt(rel: str) -> bool:
+def _is_layer4_footer_exempt(rel: str, body: str = "") -> bool:
     """Return True iff ``rel`` is exempt from the strict Spec-footer check.
+
+    Fix #5: exemption is path AND content. A page under an exempt prefix
+    must ALSO carry the canonical generator banner (or the basename is in
+    the unconditional-exempt set, e.g. CHANGELOG.md). A hand-authored or
+    corrupted page under an exempt prefix with no banner is NOT exempt and
+    still requires the canonical Spec footer.
 
     Tests pass fixture paths under ``tmp_path`` (outside REPO_ROOT); ``rel``
     in that case is an absolute path that still contains the canonical
     ``docs/<subtree>/...`` segment. Match by SEGMENT containment rather than
     prefix to cover both repo-rooted and tmp-rooted paths.
     """
-    needle_rel = f"/{rel}"
-    for prefix in LAYER4_EXEMPT_PREFIXES:
-        if f"/{prefix}" in needle_rel:
-            return True
     basename = rel.rsplit("/", 1)[-1]
-    return basename in LAYER4_EXEMPT_BASENAMES
+    if basename in LAYER4_EXEMPT_BASENAMES:
+        return True
+    needle_rel = f"/{rel}"
+    in_exempt_prefix = any(
+        f"/{prefix}" in needle_rel for prefix in LAYER4_EXEMPT_PREFIXES
+    )
+    if not in_exempt_prefix:
+        return False
+    # Path-prefix matched. Require the generator banner OR an alternative
+    # marker that this is a known auto-generated / index page. The banner
+    # convention (m1-f03, m1-f04, m3-f0{1,2,3,4,5}) is:
+    #   > Generated from <source path>. Do not edit by hand.
+    # Index pages may omit the banner if they carry a clear "index" role
+    # marker; for now we accept the exact banner phrase only.
+    return GENERATED_BANNER_RE.search(body) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -825,8 +850,21 @@ def _info_tags(info: str) -> tuple[str, set[str]]:
     return (lang, tags)
 
 
-def _python_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]:
-    """Import-check or execute a python snippet. Return (passed, detail)."""
+def _python_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str, str]:
+    """Import-check or execute a python snippet.
+
+    Returns (passed, detail, failure_kind). failure_kind is one of:
+      - ""           when passed
+      - "execution"  when a ``run``-tagged block failed
+      - "syntax"     when ``compile()`` rejects the source (SyntaxError)
+      - "import"     when the block ran but raised ImportError/ModuleNotFoundError
+      - "runtime"    when the block raised any other exception at run time
+      - "infrastructure"  when subprocess itself errored (timeout / OSError)
+
+    Callers use failure_kind to decide whether to demote a finding (see
+    Fix #4: only ``import`` failures on bare reference snippets may demote
+    to P2; syntax + runtime failures stay P0).
+    """
     # If the block carries a ``title=name.py`` AND ``run`` tag, execute it.
     run = "run" in tags
     title = ""
@@ -843,13 +881,22 @@ def _python_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]
                 timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
-            return (False, f"execution error: {e}")
+            return (False, f"execution error: {e}", "infrastructure")
         if cp.returncode == 0:
-            return (True, "")
-        return (False, f"execution failed: {cp.stderr.strip()[:400]}")
+            return (True, "", "")
+        return (False, f"execution failed: {cp.stderr.strip()[:400]}", "execution")
 
-    # Otherwise import-check by running the block in a fresh interpreter
-    # (this catches both SyntaxError and ImportError).
+    # Bare reference snippet. First check for parse errors via ``compile()``
+    # so that SyntaxError is distinguishable from a runtime exception.
+    try:
+        compile(block, "<doc-fence>", "exec")
+    except SyntaxError as e:
+        return (False, f"syntax error: {e!s}"[:400], "syntax")
+    except ValueError as e:  # e.g., null bytes
+        return (False, f"compile error: {e!s}"[:400], "syntax")
+
+    # Source parses. Now import-check by running in a fresh interpreter and
+    # classify the failure: ImportError -> "import", anything else -> "runtime".
     try:
         cp = subprocess.run(
             [sys.executable, "-c", block],
@@ -859,10 +906,20 @@ def _python_check(block: str, tags: set[str], tmp_cwd: Path) -> tuple[bool, str]
             timeout=30,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
-        return (False, f"import-check error: {e}")
+        return (False, f"import-check error: {e}", "infrastructure")
     if cp.returncode == 0:
-        return (True, "")
-    return (False, f"import-check failed: {cp.stderr.strip()[:400]}")
+        return (True, "", "")
+    stderr_tail = cp.stderr.strip()[:400]
+    # Classify by stderr last-line: ModuleNotFoundError / ImportError -> import;
+    # everything else (NameError, AttributeError, etc.) -> runtime.
+    last_err_line = ""
+    for line in reversed(cp.stderr.strip().splitlines()):
+        if line and not line.startswith(" "):
+            last_err_line = line
+            break
+    if last_err_line.startswith(("ImportError", "ModuleNotFoundError")):
+        return (False, f"import failed: {stderr_tail}", "import")
+    return (False, f"runtime failed: {stderr_tail}", "runtime")
 
 
 def _bash_syntax_check(block: str) -> tuple[bool, str]:
@@ -1042,8 +1099,9 @@ def _layer2(path: Path, body: str, state: AuditState) -> None:
             block = m.group(2)
             line = body.count("\n", 0, m.start()) + 1
             lang, tags = _info_tags(info)
+            failure_kind = ""
             if lang == "python":
-                ok, detail = _python_check(block, tags, tmp_cwd)
+                ok, detail, failure_kind = _python_check(block, tags, tmp_cwd)
             elif lang in {"bash", "sh", "shell"}:
                 ok, detail = _bash_check(block, tags, tmp_cwd)
             elif lang == "yaml":
@@ -1053,14 +1111,18 @@ def _layer2(path: Path, body: str, state: AuditState) -> None:
             else:
                 continue
             if not ok:
-                # Fix B: bare python reference snippets (no ``run`` tag) are
-                # class/signature excerpts that legitimately cannot import in
-                # isolation -- they are documentation, not runnable code.
-                # Demote import-check failures on such blocks to P2 so the
-                # audit gate does not block on documentation-only fences.
-                # Blocks tagged ``run`` (claimed-runnable) keep P0 on failure.
+                # Fix #4: only ImportError on bare reference snippets demotes
+                # to P2 (those are class/signature excerpts that legitimately
+                # cannot resolve imports in isolation). SyntaxError, runtime
+                # exceptions, and infrastructure failures stay P0 -- they
+                # signal a malformed snippet that documentation readers will
+                # copy verbatim and hit.
                 severity = "P0"
-                if lang == "python" and "run" not in tags:
+                if (
+                    lang == "python"
+                    and "run" not in tags
+                    and failure_kind == "import"
+                ):
                     severity = "P2"
                 state.findings.append(
                     Finding(
@@ -1098,13 +1160,12 @@ def _layer4(path: Path, body: str, state: AuditState) -> None:
     generated_cli_reference = _is_generated_cli_reference_doc(rel)
     val_matches = list(VAL_SPEC_FOOTER_RE.finditer(body)) if generated_cli_reference else []
     if not matches and not val_matches:
-        # Fix A: generator-output reference pages and top-level index pages
-        # are exempt from the strict Spec-footer requirement. They carry a
-        # "Generated from <source>. Do not edit by hand." banner or are
-        # surface enumerations rather than spec-derived prose, and lack a
-        # single canonical section to cite. Skip the footer P0 entirely for
-        # these paths; downstream layers (1, 2, 3) still run normally.
-        if _is_layer4_footer_exempt(rel):
+        # Fix #5 (was Fix A): exemption is path AND content. A page under an
+        # exempt prefix must ALSO carry the canonical "Generated from <source>.
+        # Do not edit by hand." banner OR have an unconditional-exempt basename
+        # (e.g. CHANGELOG.md). A hand-authored or corrupted page under an
+        # exempt prefix with no banner is NOT exempt and falls through to P0.
+        if _is_layer4_footer_exempt(rel, body):
             return
         spec_line = SPEC_LINE_RE.search(body)
         line = (
