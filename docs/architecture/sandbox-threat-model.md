@@ -239,14 +239,18 @@ In no-Docker degraded mode:
   per-run basis: the CLI's `rly replay run` emits
   `relay.cli.replay_run.v1` on stdout (per `REPLAY_RUN_SCHEMA` in
   `packages/cli/src/relay_cli/commands/replay.py`) and does not
-  include a sandbox-driver field; the sidecar's persisted
-  `relay.replay_result.v1` record (created in
+  include a sandbox-driver field; the sidecar's in-memory
+  `relay.replay_result.v1` record (held in
+  `runtime.replay_results` dict in
   `apps/local-sidecar/relay_sidecar/runtime.py`) is shaped from the
   set `{schema_version, replay_result_id, case_id, replay_mode,
   manifest_commit_hash, digest_ok, outcome, evidence, written_by,
   created_at}` -- the schema enum reserves `sandbox_driver` (per
   `relay_schemas/envelopes.py` and SQL migration 0004) but the
-  current sidecar writer omits it. Auditors who must enforce a
+  current sidecar writer omits it. The OSS sidecar's `replay_results`
+  SQL table exists via migration 0012 but the runtime does not yet
+  persist into it -- replay-result records live only in the running
+  sidecar process and disappear on restart. Auditors who must enforce a
   Docker-only replay policy on the OSS local profile today rely on
   out-of-band evidence -- the host's manifest declarations and
   deployment configuration -- to confirm the driver in use. Closing
