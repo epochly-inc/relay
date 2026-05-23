@@ -571,8 +571,77 @@ def _is_identifier_candidate(symbol: str) -> bool:
     return not (symbol.islower() and "_" not in symbol)
 
 
+_PY_FALLBACK_EXCLUDE_DIRS: Final[frozenset[str]] = frozenset(
+    {
+        "__pycache__",
+        ".venv",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        "node_modules",
+        "dist",
+        "build",
+        ".git",
+        "site",  # mkdocs build output
+    }
+)
+
+
+def _verify_identifier_via_python_walk(symbol: str, current_page: Path) -> bool:
+    """Fallback identifier verification when ``rg`` isn't available.
+
+    Walks the repo tree skipping common build/test/cache dirs (mirror of
+    the rg --glob exclusions) and the docs/ tree and the page itself.
+    Reads each file and does a fixed-string check. Slower than rg but
+    correct.
+    """
+    try:
+        current_abs = current_page.resolve()
+    except OSError:
+        current_abs = None
+    needle_bytes = symbol.encode("utf-8")
+    for root, dirnames, filenames in os.walk(REPO_ROOT):
+        # Prune excluded dirs in place so os.walk doesn't recurse into them
+        dirnames[:] = [d for d in dirnames if d not in _PY_FALLBACK_EXCLUDE_DIRS]
+        # Skip the docs tree
+        rel_root = Path(root).resolve()
+        try:
+            rel_str = rel_root.relative_to(REPO_ROOT).as_posix()
+        except ValueError:
+            continue
+        if rel_str == "docs" or rel_str.startswith("docs/"):
+            continue
+        for fn in filenames:
+            fpath = Path(root) / fn
+            try:
+                fpath_abs = fpath.resolve()
+            except OSError:
+                continue
+            if current_abs is not None and fpath_abs == current_abs:
+                continue
+            # Skip the docs markdown files even outside docs/ (defensive)
+            if fpath.suffix == ".md" and "docs" in fpath_abs.parts:
+                continue
+            try:
+                with fpath.open("rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            if needle_bytes in data:
+                return True
+    return False
+
+
 def _verify_identifier_via_rg(symbol: str, current_page: Path) -> bool:
-    """Return True iff ``rg`` finds the symbol anywhere in repo source."""
+    """Return True iff the symbol is found anywhere in repo source.
+
+    Prefers ``rg`` for speed; falls back to a Python os.walk + fixed-
+    string scan when rg isn't on PATH (e.g. uv-run subprocesses on CI
+    runners with stripped PATH). The fallback is correctness-preserving:
+    a missing rg used to make this function return True for every
+    symbol (silently breaking the audit's Layer-1 identifier check on
+    any environment without rg).
+    """
     _debug = os.environ.get("RELAY_AUDIT_DEBUG") == "1"
     rg_path = shutil.which("rg")
     if _debug:
@@ -580,9 +649,14 @@ def _verify_identifier_via_rg(symbol: str, current_page: Path) -> bool:
     if rg_path is None:
         if _debug:
             sys.stderr.write(
-                "[audit-debug]   rg NOT FOUND on PATH -> permissive default True\n"
+                "[audit-debug]   rg NOT FOUND on PATH -> using Python walk fallback\n"
             )
-        return True  # cannot verify -> treat as passing (unverifiable handled separately)
+        result = _verify_identifier_via_python_walk(symbol, current_page)
+        if _debug:
+            sys.stderr.write(
+                f"[audit-debug]   python-walk fallback returned {result}\n"
+            )
+        return result
     cmd = [
         "rg",
         "--files-with-matches",
