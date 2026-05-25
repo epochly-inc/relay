@@ -111,7 +111,15 @@ jobs:
           # the pinned ones. The drift signal is "does the latest still
           # match what the pinned passed?"
           uv pip install --upgrade cel-python
-          (cd packages/contracts-typescript && npm install cel-js@latest)
+          # --no-save: install the LATEST cel-js into node_modules for the
+          # conformance run WITHOUT rewriting packages/contracts-typescript/
+          # package.json. A plain `npm install cel-js@latest` rewrites the
+          # pin "0.8.2" -> "^0.8.2", which the committed-state drift checker
+          # (invoked by test_drift_checker_exits_zero in the conformance
+          # pytest below) then flags as a spurious pin move. The drift run
+          # must test latest, not mutate the committed pin.
+          npm install cel-js@latest --no-save \
+            --workspace=packages/contracts-typescript --include-workspace-root
           uv run python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
           echo "cel-js $(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')" > .drift/latest-celjs.txt
 
