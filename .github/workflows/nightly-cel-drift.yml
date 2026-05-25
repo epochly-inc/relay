@@ -95,7 +95,12 @@ jobs:
             -q --tb=line --junitxml=.drift/pinned-pytest.xml || true
           # Capture the pinned celpy + cel-js versions for diff context.
           uv run python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/pinned-celpy.txt
-          (cd packages/contracts-typescript && node -e "import('cel-js').then(()=>{const p=require('./node_modules/cel-js/package.json'); console.log('cel-js', p.version)})") > .drift/pinned-celjs.txt
+          # Resolve cel-js via node's module resolution (require.resolve)
+          # rather than a hardcoded ./node_modules path: npm workspace
+          # hoisting installs cel-js into the ROOT node_modules, not the
+          # package-local one, so './node_modules/cel-js/package.json'
+          # does not exist under packages/contracts-typescript/.
+          (cd packages/contracts-typescript && node -e "const p=require(require.resolve('cel-js/package.json')); console.log('cel-js', p.version)") > .drift/pinned-celjs.txt
 
       - name: "Upgrade to LATEST cel-python and cel-js"
         shell: bash
@@ -107,7 +112,7 @@ jobs:
           uv pip install --upgrade cel-python
           (cd packages/contracts-typescript && npm install cel-js@latest)
           uv run python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
-          (cd packages/contracts-typescript && node -e "const p=require('./node_modules/cel-js/package.json'); console.log('cel-js', p.version)") > .drift/latest-celjs.txt
+          (cd packages/contracts-typescript && node -e "const p=require(require.resolve('cel-js/package.json')); console.log('cel-js', p.version)") > .drift/latest-celjs.txt
 
       - name: "Run conformance under LATEST"
         id: latest-run
@@ -222,14 +227,31 @@ jobs:
             } catch (e) {
               // Fall through with empty assignees; issue still opens.
             }
-            await github.rest.issues.create({
+            const issuePayload = {
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: "[nightly-cel-drift] cel-spec conformance drift detected on " + new Date().toISOString().slice(0, 10),
               body: body,
               labels: ["area:conformance-drift"],
               assignees: assignees,
-            });
+            };
+            try {
+              await github.rest.issues.create(issuePayload);
+            } catch (e) {
+              // A CODEOWNERS user who is not an assignable collaborator
+              // (e.g. a personal account not added to the repo) makes the
+              // GitHub API reject the whole create call. The drift ALERT
+              // is the load-bearing outcome; the assignee is best-effort.
+              // Retry without assignees so the issue still opens.
+              const msg = (e && e.message) ? e.message : String(e);
+              if (msg.includes("assignee")) {
+                console.log("assignee rejected (" + msg + "); reopening issue without assignees");
+                delete issuePayload.assignees;
+                await github.rest.issues.create(issuePayload);
+              } else {
+                throw e;
+              }
+            }
 
       - name: "Fail workflow on drift"
         if: steps.latest-run.outputs.py_exit != '0' || steps.latest-run.outputs.ts_exit != '0' || steps.upstream-pin-check.outputs.pin_missing == 'true'
