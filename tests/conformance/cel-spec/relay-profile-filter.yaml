@@ -11,7 +11,8 @@
 # 'citation'.
 #
 # Closed enum for 'reason' (kept in sync with the validator at
-# test_w17_3_celspec_corpus.py::test_profile_filter_excluded_entries_carry_reason_and_citation):
+# test_w17_3_celspec_corpus.py::
+#   test_profile_filter_excluded_entries_carry_reason_and_citation):
 #   - profile-rejects-dyn
 #   - profile-rejects-timestamp
 #   - profile-rejects-duration
@@ -26,6 +27,8 @@
 included:
   - vector_id: basic/self_eval_zeroish/self_eval_int_zero
     note: upstream basic.textproto self_eval_zeroish/self_eval_int_zero (cel-python and cel-js match golden)
+  - vector_id: basic/self_eval_zeroish/self_eval_float_zero
+    note: upstream basic.textproto self_eval_zeroish/self_eval_float_zero (cel-python and cel-js match golden)
   - vector_id: basic/self_eval_zeroish/self_eval_string_empty
     note: upstream basic.textproto self_eval_zeroish/self_eval_string_empty (cel-python and cel-js match golden)
   - vector_id: basic/self_eval_zeroish/self_eval_string_empty_quotes
@@ -408,6 +411,8 @@ included:
     note: upstream string.textproto concatenation/unicode_unicode (cel-python and cel-js match golden)
   - vector_id: string/concatenation/ascii_unicode
     note: upstream string.textproto concatenation/ascii_unicode (cel-python and cel-js match golden)
+  - vector_id: string/concatenation/ascii_unicode_unicode_smp
+    note: upstream string.textproto concatenation/ascii_unicode_unicode_smp (cel-python and cel-js match golden)
   - vector_id: string/concatenation/empty_unicode
     note: upstream string.textproto concatenation/empty_unicode (cel-python and cel-js match golden)
 

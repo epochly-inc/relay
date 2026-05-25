@@ -90,8 +90,18 @@ INCLUDED_SOURCE_FILES = (
 
 # Substrings / patterns that mark an expression as OUTSIDE Relay's CEL
 # profile, even when its golden value is a profile-safe JSON kind.
-_EXPR_DENY_SUBSTR = ("dyn(", "timestamp(", "duration(", "bytes(", "uint(", 'b"', "b'")
-_EXPR_DENY_RE = re.compile(r"\b\d+[uU]\b")  # uint literal, e.g. 0u / 5U
+_EXPR_DENY_SUBSTR = ("dyn(", "timestamp(", "duration(", "bytes(", "uint(")
+# Out-of-profile patterns that need token awareness, not raw substrings:
+#   - uint literal:  0u / 5U
+#   - bytes literal: a b/B prefix immediately before a quote, NOT preceded
+#     by an identifier char (so a plain string ending in b like "web" or
+#     'ab', which contain the substring b"/b', is NOT misclassified).
+_EXPR_DENY_RE = re.compile(r"\b\d+[uU]\b|(?<![A-Za-z0-9_])[bB]['\"]")
+
+# Upstream files that the curated EXCLUDED_VECTORS are sourced from. Fetched
+# and parsed so each excluded vector's expression/expected_value/source can
+# be validated against the real upstream record (no fabricated exclusions).
+EXCLUDED_SOURCE_FILES = ("lists.textproto", "timestamps.textproto")
 
 # Curated EXCLUDED vectors. Each is a REAL upstream case (real expr, real
 # golden, real source) whose expression uses a feature Relay's profile
@@ -144,7 +154,8 @@ _TOKEN_RE = re.compile(
     r"""
     (?P<ws>[\s,;]+)
   | (?P<comment>\#[^\n]*)
-  | (?P<string>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')
+  | (?P<string>[bBrR]?"(?:\\.|[^"\\])*"|[bBrR]?'(?:\\.|[^'\\])*')
+  | (?P<extname>\[[^\]]*\])
   | (?P<lbrace>\{)
   | (?P<rbrace>\})
   | (?P<colon>:)
@@ -153,6 +164,18 @@ _TOKEN_RE = re.compile(
     """,
     re.VERBOSE,
 )
+# Note: the optional [bBrR] string prefix (bytes/raw literals) and the
+# [type.url] proto-Any extension-field token are NOT present in the clean
+# INCLUDED_SOURCE_FILES; they exist so timestamps.textproto (which packs
+# proto Any in later tests) tokenizes for EXCLUDED-vector validation.
+
+
+def _unquote(tok: str) -> str:
+    """Strip an optional b/B/r/R prefix and surrounding quotes, then
+    decode escapes. Plain quoted strings are unaffected."""
+    if len(tok) >= 2 and tok[0] in "bBrR" and tok[1] in "\"'":
+        tok = tok[1:]
+    return _unescape(tok[1:-1])
 
 
 def _tokenize(text: str) -> list[tuple[str, str]]:
@@ -172,38 +195,51 @@ def _tokenize(text: str) -> list[tuple[str, str]]:
 
 
 def _unescape(s: str) -> str:
-    out: list[str] = []
+    # Decode into a BYTE buffer, then UTF-8 decode once at the end.
+    # cel-spec encodes non-ASCII string_value bytes as a run of \xHH (and
+    # octal) escapes that together form a UTF-8 sequence -- e.g. a cat
+    # emoji is `\xf0\x9f\x90\xb1`. Emitting one Python char per byte
+    # (chr(0xf0)...) produces mojibake; the bytes must be reassembled and
+    # decoded as UTF-8. Literal characters and \u/\U escapes are emitted
+    # as their UTF-8 encoding so the whole buffer is valid UTF-8.
+    buf = bytearray()
     i = 0
     n = len(s)
+    simple = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b",
+              "f": "\f", "v": "\v", '"': '"', "'": "'", "\\": "\\", "?": "?"}
     while i < n:
         c = s[i]
         if c != "\\":
-            out.append(c)
+            buf.extend(c.encode("utf-8"))
             i += 1
             continue
         i += 1
         e = s[i]
-        simple = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b",
-                  "f": "\f", "v": "\v", '"': '"', "'": "'", "\\": "\\", "?": "?"}
         if e in simple:
-            out.append(simple[e]); i += 1
+            buf.extend(simple[e].encode("utf-8"))
+            i += 1
         elif e == "x":
             j = i + 1
             while j < n and j < i + 3 and s[j] in "0123456789abcdefABCDEF":
                 j += 1
-            out.append(chr(int(s[i + 1:j], 16))); i = j
+            buf.append(int(s[i + 1:j], 16))
+            i = j
         elif e == "u":
-            out.append(chr(int(s[i + 1:i + 5], 16))); i += 5
+            buf.extend(chr(int(s[i + 1:i + 5], 16)).encode("utf-8"))
+            i += 5
         elif e == "U":
-            out.append(chr(int(s[i + 1:i + 9], 16))); i += 9
+            buf.extend(chr(int(s[i + 1:i + 9], 16)).encode("utf-8"))
+            i += 9
         elif e in "01234567":
             j = i
             while j < n and j < i + 3 and s[j] in "01234567":
                 j += 1
-            out.append(chr(int(s[i:j], 8))); i = j
+            buf.append(int(s[i:j], 8))
+            i = j
         else:
-            out.append(e); i += 1
-    return "".join(out)
+            buf.extend(e.encode("utf-8"))
+            i += 1
+    return buf.decode("utf-8", "replace")
 
 
 class _Parser:
@@ -220,7 +256,10 @@ class _Parser:
             kind, val = self._peek()
             if kind is None or kind == "rbrace":
                 break
-            if kind != "ident":
+            # `extname` is a proto-Any extension field name, e.g.
+            # [type.googleapis.com/google.protobuf.Duration]; treat it as
+            # an ordinary field name.
+            if kind not in ("ident", "extname"):
                 raise ValueError(f"expected field ident, got {kind}:{val!r}")
             self.pos += 1
             name = val
@@ -237,7 +276,7 @@ class _Parser:
                     parts: list[str] = []
                     while self._peek()[0] == "string":
                         _, sv = self._peek()
-                        parts.append(_unescape(sv[1:-1]))
+                        parts.append(_unquote(sv))
                         self.pos += 1
                     self._add(msg, name, "".join(parts))
                 else:
@@ -254,7 +293,7 @@ class _Parser:
 
     def _scalar(self, kind: str, val: str) -> Any:
         if kind == "string":
-            return _unescape(val[1:-1])
+            return _unquote(val)
         if kind == "number":
             return float(val) if any(ch in val for ch in ".eE") else int(val)
         if kind == "ident":
@@ -299,6 +338,15 @@ def _decode_value(v: dict[str, Any]) -> Any:
         raise _Unsafe(f"non-message value: {v!r}")
     if "int64_value" in v:
         return int(v["int64_value"])
+    if "double_value" in v:
+        # Finite doubles are in profile (Relay's CEL profile rejects only
+        # double-precision EDGE cases). NaN/Inf are not JSON-roundtrippable
+        # and are dropped. Parity verification against both runtimes is the
+        # backstop for any value the two evaluators format differently.
+        d = float(v["double_value"])
+        if d != d or d in (float("inf"), float("-inf")):
+            raise _Unsafe("non-finite double")
+        return d
     if "bool_value" in v:
         return bool(v["bool_value"])
     if "string_value" in v:
@@ -323,19 +371,19 @@ def _decode_value(v: dict[str, Any]) -> Any:
 def _expr_in_profile(expr: str) -> bool:
     if any(s in expr for s in _EXPR_DENY_SUBSTR):
         return False
-    if _EXPR_DENY_RE.search(expr):
-        return False
-    return True
+    return _EXPR_DENY_RE.search(expr) is None
 
 
 # ---------------------------------------------------------------------------
 # Fetch + extract + verify.
 # ---------------------------------------------------------------------------
 
-def _fetch(sha: str, cache_dir: Path) -> dict[str, str]:
+def _fetch(
+    sha: str, cache_dir: Path, names: tuple[str, ...] = INCLUDED_SOURCE_FILES
+) -> dict[str, str]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     out: dict[str, str] = {}
-    for name in INCLUDED_SOURCE_FILES:
+    for name in names:
         cached = cache_dir / f"{sha}__{name}"
         if cached.exists():
             out[name] = cached.read_text(encoding="utf-8")
@@ -359,7 +407,11 @@ def _extract(files_text: dict[str, str]) -> list[dict[str, Any]]:
             for t in _aslist(sec.get("test")):
                 tname = t.get("name")
                 expr = t.get("expr")
-                if not isinstance(expr, str) or not isinstance(sname, str) or not isinstance(tname, str):
+                if not (
+                    isinstance(expr, str)
+                    and isinstance(sname, str)
+                    and isinstance(tname, str)
+                ):
                     continue
                 if "bindings" in t or "type_env" in t or "container" in t:
                     continue
@@ -377,24 +429,67 @@ def _extract(files_text: dict[str, str]) -> list[dict[str, Any]]:
     return cands
 
 
-def _to_celtypes(value: Any, celtypes: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return celtypes.BoolType(value)
-    if isinstance(value, int):
-        return celtypes.IntType(value)
-    if isinstance(value, float):
-        return celtypes.DoubleType(value)
-    if isinstance(value, str):
-        return celtypes.StringType(value)
-    if isinstance(value, (list, tuple)):
-        return celtypes.ListType([_to_celtypes(x, celtypes) for x in value])
-    if isinstance(value, dict):
-        return celtypes.MapType(
-            {celtypes.StringType(k): _to_celtypes(v, celtypes) for k, v in value.items()}
+def _validate_excluded(files_text: dict[str, str]) -> None:
+    """Validate every curated EXCLUDED vector against the real upstream
+    record, so a hardcoded excluded entry cannot carry fabricated or
+    stale provenance (its expr / expected_value / source must match the
+    upstream test it names). Raises SystemExit on any mismatch."""
+
+    # Index upstream tests by (file, section, test) -> (expr, golden).
+    index: dict[tuple[str, str, str], tuple[str, Any]] = {}
+    for name, text in files_text.items():
+        top = _Parser(_tokenize(text)).parse_message()
+        for sec in _aslist(top.get("section")):
+            sname = sec.get("name")
+            for t in _aslist(sec.get("test")):
+                tname = t.get("name")
+                expr = t.get("expr")
+                if not (
+                    isinstance(expr, str)
+                    and isinstance(sname, str)
+                    and isinstance(tname, str)
+                ):
+                    continue
+                try:
+                    golden = _decode_value(t["value"]) if "value" in t else _SENTINEL
+                except _Unsafe:
+                    golden = _SENTINEL
+                index[(name, sname, tname)] = (expr, golden)
+
+    errors: list[str] = []
+    for e in EXCLUDED_VECTORS:
+        src = e["source"]
+        # source is "tests/simple/testdata/<file>::<section>::<test>"
+        try:
+            rel, sectest = src.split("::", 1)
+            section, test = sectest.split("::", 1)
+            fname = rel.rsplit("/", 1)[-1]
+        except ValueError:
+            errors.append(f"{e['vector_id']}: malformed source {src!r}")
+            continue
+        up = index.get((fname, section, test))
+        if up is None:
+            errors.append(
+                f"{e['vector_id']}: upstream case {fname}::{section}::{test} not found "
+                f"at the pinned commit"
+            )
+            continue
+        up_expr, up_golden = up
+        if up_expr != e["expression"]:
+            errors.append(
+                f"{e['vector_id']}: expression mismatch\n      curated:  {e['expression']!r}\n"
+                f"      upstream: {up_expr!r}"
+            )
+        if up_golden is not _SENTINEL and up_golden != e["expected_value"]:
+            errors.append(
+                f"{e['vector_id']}: expected_value mismatch (curated "
+                f"{e['expected_value']!r} != upstream {up_golden!r})"
+            )
+    if errors:
+        raise SystemExit(
+            "EXCLUDED vector validation failed (fabricated/stale provenance):\n  "
+            + "\n  ".join(errors)
         )
-    return value
 
 
 def _to_python(value: Any, celtypes: Any) -> Any:
@@ -408,11 +503,11 @@ def _to_python(value: Any, celtypes: Any) -> Any:
         return float(value)
     if isinstance(value, celtypes.StringType):
         return str(value)
-    if isinstance(value, (celtypes.ListType, list, tuple)):
+    if isinstance(value, celtypes.ListType | list | tuple):
         return [_to_python(v, celtypes) for v in value]
-    if isinstance(value, (celtypes.MapType, dict)):
+    if isinstance(value, celtypes.MapType | dict):
         return {str(k): _to_python(v, celtypes) for k, v in value.items()}
-    if isinstance(value, (bool, int, float, str)):
+    if isinstance(value, bool | int | float | str):
         return value
     raise TypeError(type(value).__name__)
 
@@ -429,7 +524,10 @@ def _verify(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
         except Exception:  # noqa: BLE001
             py[i] = _SENTINEL
     # cel-js batch.
-    vectors = [{"vector_id": str(i), "expression": c["expr"], "bindings": {}} for i, c in enumerate(cands)]
+    vectors = [
+        {"vector_id": str(i), "expression": c["expr"], "bindings": {}}
+        for i, c in enumerate(cands)
+    ]
     proc = subprocess.run(
         ["node", str(CELJS_RUNNER)],
         input=json.dumps({"vectors": vectors}).encode(),
@@ -440,9 +538,37 @@ def _verify(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ts: dict[int, Any] = {int(r["vector_id"]): (r["value"] if r.get("ok") else _SENTINEL)
                           for r in json.loads(proc.stdout.decode())["results"]}
     verified: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
     for i, c in enumerate(cands):
-        if py.get(i, _SENTINEL) == c["golden"] and ts.get(i, _SENTINEL) == c["golden"]:
+        pv = py.get(i, _SENTINEL)
+        tv = ts.get(i, _SENTINEL)
+        if pv == c["golden"] and tv == c["golden"]:
             verified.append(c)
+        else:
+            dropped.append(
+                {"file": c["file"], "section": c["section"], "test": c["test"],
+                 "expr": c["expr"], "golden": c["golden"], "py": pv, "ts": tv}
+            )
+    # Report dropped candidates LOUDLY. A candidate is statically in
+    # profile (passed _expr_in_profile + has a decodable golden) yet one
+    # runtime disagrees with the upstream golden. Most are cel-js feature
+    # gaps (cel-js 0.8.x lacks some CEL builtins), which legitimately fall
+    # outside the verified profile -- but a NEW drop after a previously
+    # clean run can signal a real cel-python/cel-js regression silently
+    # shrinking the corpus. Surfacing them keeps that visible.
+    if dropped:
+        sys.stderr.write(
+            f"[build] dropped {len(dropped)} in-profile candidate(s) on "
+            f"runtime/golden mismatch (cel-js feature gaps expected; a NEW "
+            f"increase may signal a regression):\n"
+        )
+        for d in dropped:
+            py_s = "<err>" if d["py"] is _SENTINEL else repr(d["py"])
+            ts_s = "<err>" if d["ts"] is _SENTINEL else repr(d["ts"])
+            sys.stderr.write(
+                f"  - {d['file']}::{d['section']}::{d['test']}  expr={d['expr']!r} "
+                f"golden={d['golden']!r} py={py_s} ts={ts_s}\n"
+            )
     return verified
 
 
@@ -516,7 +642,8 @@ def _build_profile_filter(verified: list[dict[str, Any]]) -> str:
     lines.append("# 'citation'.")
     lines.append("#")
     lines.append("# Closed enum for 'reason' (kept in sync with the validator at")
-    lines.append("# test_w17_3_celspec_corpus.py::test_profile_filter_excluded_entries_carry_reason_and_citation):")
+    lines.append("# test_w17_3_celspec_corpus.py::")
+    lines.append("#   test_profile_filter_excluded_entries_carry_reason_and_citation):")
     lines.append("#   - profile-rejects-dyn")
     lines.append("#   - profile-rejects-timestamp")
     lines.append("#   - profile-rejects-duration")
@@ -531,7 +658,10 @@ def _build_profile_filter(verified: list[dict[str, Any]]) -> str:
     lines.append("included:")
     for c in verified:
         vid = _vector_id(c)
-        note = f"upstream {c['file']} {c['section']}/{c['test']} (cel-python and cel-js match golden)"
+        note = (
+            f"upstream {c['file']} {c['section']}/{c['test']} "
+            "(cel-python and cel-js match golden)"
+        )
         lines.append(f"  - vector_id: {vid}")
         lines.append(f"    note: {note}")
     lines.append("")
@@ -585,20 +715,61 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--sha", help="cel-spec commit SHA (default: read PINNED_COMMIT.txt)")
     ap.add_argument("--cache-dir", default=str(Path(tempfile.gettempdir()) / "relay-celspec-cache"))
-    ap.add_argument("--check", action="store_true", help="diff against committed files; exit 1 on drift")
+    ap.add_argument(
+        "--check",
+        action="store_true",
+        help="diff against committed files; exit 1 on drift",
+    )
+    ap.add_argument(
+        "--allow-shrink",
+        action="store_true",
+        help="permit the regenerated included-vector count to drop below the "
+        "committed count (otherwise a shrink is a hard error: it usually means "
+        "a parser/profile/runtime regression silently lost coverage)",
+    )
     args = ap.parse_args(argv)
 
     sha = args.sha or _read_pinned_sha()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise SystemExit(f"SHA must be 40-char lowercase hex, got {sha!r}")
 
-    files_text = _fetch(sha, Path(args.cache_dir))
+    cache_dir = Path(args.cache_dir)
+    files_text = _fetch(sha, cache_dir)
     cands = _extract(files_text)
     sys.stderr.write(f"[build] extracted {len(cands)} profile candidates\n")
     verified = _verify(cands)
     sys.stderr.write(f"[build] verified {len(verified)} included vectors (py==ts==golden)\n")
     if len(verified) < 25:
         raise SystemExit(f"only {len(verified)} verified vectors; floor is 25")
+
+    # Validate the curated EXCLUDED vectors against the real upstream
+    # record (no fabricated/stale exclusions).
+    _validate_excluded(_fetch(sha, cache_dir, EXCLUDED_SOURCE_FILES))
+
+    # Anti-shrink floor: never let a regeneration silently REDUCE included
+    # coverage vs the committed corpus. A drop almost always means a
+    # parser/profile/runtime regression, not an intentional upstream
+    # change; require --allow-shrink to override (e.g. a real pin bump
+    # that legitimately removed cases).
+    excluded_ids = {e["vector_id"] for e in EXCLUDED_VECTORS}
+    committed_included = 0
+    if VECTORS_PATH.exists():
+        try:
+            committed = json.loads(VECTORS_PATH.read_text(encoding="utf-8"))
+            committed_included = sum(
+                1
+                for v in committed.get("vectors", [])
+                if v.get("vector_id") not in excluded_ids
+            )
+        except (json.JSONDecodeError, OSError):
+            committed_included = 0
+    if len(verified) < committed_included and not args.allow_shrink:
+        raise SystemExit(
+            f"regenerated included count {len(verified)} is BELOW the committed "
+            f"count {committed_included}; a shrink usually means a regression. "
+            f"Re-run with --allow-shrink if this drop is intentional (e.g. a "
+            f"pin bump that removed upstream cases)."
+        )
 
     doc = _build_vectors_doc(sha, verified)
     vectors_json = _render_vectors_json(doc)
@@ -616,7 +787,10 @@ def main(argv: list[str] | None = None) -> int:
             if current != fresh:
                 drift.append(str(path.relative_to(REPO_ROOT)))
         if drift:
-            sys.stderr.write("[drift] committed corpus differs from regenerated: " + ", ".join(drift) + "\n")
+            sys.stderr.write(
+                "[drift] committed corpus differs from regenerated: "
+                + ", ".join(drift) + "\n"
+            )
             return 1
         sys.stderr.write("[check] corpus matches upstream regeneration\n")
         return 0

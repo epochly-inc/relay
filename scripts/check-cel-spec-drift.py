@@ -121,23 +121,6 @@ def _extract_celjs_pin() -> str | None:
     return str(val) if isinstance(val, str) else None
 
 
-def _normalize_celjs_pin(spec: str | None) -> str | None:
-    """Normalize an npm version spec for drift comparison.
-
-    npm rewrites an exact pin "0.8.2" to a caret range "^0.8.2" on
-    `npm install <pkg>@latest`, and a human may legitimately write
-    "^0.8.2" or "~0.8.2". These all resolve to the same version, so a
-    raw string comparison would report spurious drift. Strip a leading
-    range operator (^ ~ >= <= > < =) and surrounding whitespace before
-    comparing; both the recorded pin and the live pin pass through this
-    so equal-but-differently-spelled specs compare equal.
-    """
-
-    if spec is None:
-        return None
-    return re.sub(r"^[\^~>=<\s]*", "", spec.strip())
-
-
 def _read_pinned_commit_celspec() -> str | None:
     """Read the first non-comment whitespace-stripped line of the W17.3
     PINNED_COMMIT.txt anchor. Returns None when the file is absent so
@@ -446,14 +429,16 @@ def main() -> int:
             f"{py_pin!r}; refresh tests/conformance/cel/vendor/cel_spec_vectors.json "
             "and update vendor/.upstream-pins.json"
         )
-    recorded_ts = recorded.get("cel-js")
-    if (
-        ts_pin is not None
-        and recorded_ts is not None
-        and _normalize_celjs_pin(recorded_ts) != _normalize_celjs_pin(ts_pin)
-    ):
+    # Exact-string comparison on purpose: the project pins cel-js to an
+    # EXACT version (no caret/tilde range). A change from "0.8.2" to a
+    # range like "^0.8.2" is itself meaningful drift (it changes which
+    # resolved version CI installs) and must be flagged. The nightly
+    # workflow installs cel-js@latest with --no-save so it never rewrites
+    # the committed pin, so this strict check does not false-positive on
+    # the drift run.
+    if ts_pin is not None and recorded.get("cel-js") not in (None, ts_pin):
         drifts.append(
-            f"upstream cel-js pin moved from {recorded_ts!r} to "
+            f"upstream cel-js pin moved from {recorded['cel-js']!r} to "
             f"{ts_pin!r}; refresh tests/conformance/cel/vendor/cel_spec_vectors.json "
             "and update vendor/.upstream-pins.json"
         )

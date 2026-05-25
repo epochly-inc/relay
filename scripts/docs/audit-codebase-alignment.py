@@ -41,6 +41,7 @@ import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Final
 
 # ---------------------------------------------------------------------------
 # Constants & wave map
@@ -587,48 +588,110 @@ _PY_FALLBACK_EXCLUDE_DIRS: Final[frozenset[str]] = frozenset(
 )
 
 
+def _git_candidate_files() -> list[str] | None:
+    """Return repo-relative posix paths rg would search, or None if git
+    is unavailable.
+
+    rg respects ``.gitignore`` by default, so it skips gitignored trees
+    like ``.claude/`` and ``.ops/`` (which are full of identifier strings
+    in handoff artifacts). The previous os.walk fallback did NOT respect
+    gitignore -- it only pruned a fixed dir set -- so an identifier that
+    exists ONLY in a gitignored artifact made the audit PASS without rg
+    but FAIL with rg (a false pass, opposite verdicts for the same input).
+
+    To match rg's ignore semantics exactly, enumerate
+      git ls-files                          (tracked)
+    plus
+      git ls-files --others --exclude-standard  (untracked, NOT ignored)
+    whose union is precisely rg's default search set (tracked +
+    untracked-non-ignored, gitignored excluded). Returns None when this
+    is not a git checkout / git is absent, so the caller can fall back to
+    a raw walk as a last resort.
+    """
+    files: set[str] = set()
+    for args in (
+        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        try:
+            out = subprocess.run(
+                args, cwd=str(REPO_ROOT), capture_output=True, check=False, timeout=60
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if out.returncode != 0:
+            return None
+        for raw in out.stdout.decode("utf-8", "replace").split("\0"):
+            rel = raw.strip()
+            if rel:
+                files.add(rel)
+    return sorted(files)
+
+
 def _verify_identifier_via_python_walk(symbol: str, current_page: Path) -> bool:
     """Fallback identifier verification when ``rg`` isn't available.
 
-    Walks the repo tree skipping common build/test/cache dirs (mirror of
-    the rg --glob exclusions) and the docs/ tree and the page itself.
-    Reads each file and does a fixed-string check. Slower than rg but
-    correct.
+    Mirrors rg's search set: prefers a git-enumerated file list (tracked
+    + untracked-non-ignored, so gitignored trees are skipped exactly as
+    rg skips them); falls back to a raw os.walk with a fixed exclude set
+    only when this is not a git checkout. Applies the same
+    ``!docs/**/*.md`` and current-page exclusions as the rg path, then a
+    fixed-string check on each file's bytes.
     """
     try:
         current_abs = current_page.resolve()
     except OSError:
         current_abs = None
     needle_bytes = symbol.encode("utf-8")
+
+    def _is_excluded_rel(rel_path: str) -> bool:
+        # Mirror rg's `--glob '!docs/**/*.md'`: skip only Markdown under
+        # docs/; non-md files (e.g. docs/how-to/_examples/relay-gate.yml)
+        # still count as source, matching the rg path.
+        if rel_path.endswith(".md") and (
+            rel_path == "docs" or rel_path.startswith("docs/")
+        ):
+            return True
+        # Mirror rg's explicit build/cache globs (belt-and-suspenders;
+        # most are gitignored and thus already absent from the git list).
+        segments = rel_path.split("/")
+        return any(seg in _PY_FALLBACK_EXCLUDE_DIRS for seg in segments)
+
+    def _matches(fpath: Path) -> bool:
+        try:
+            fpath_abs = fpath.resolve()
+        except OSError:
+            return False
+        if current_abs is not None and fpath_abs == current_abs:
+            return False
+        try:
+            with fpath.open("rb") as fh:
+                return needle_bytes in fh.read()
+        except OSError:
+            return False
+
+    git_files = _git_candidate_files()
+    if git_files is not None:
+        for rel_path in git_files:
+            if _is_excluded_rel(rel_path):
+                continue
+            if _matches(REPO_ROOT / rel_path):
+                return True
+        return False
+
+    # Last resort: not a git checkout. Raw walk with the fixed exclude
+    # set (cannot consult .gitignore here, but a non-git tree has none).
     for root, dirnames, filenames in os.walk(REPO_ROOT):
-        # Prune excluded dirs in place so os.walk doesn't recurse into them
         dirnames[:] = [d for d in dirnames if d not in _PY_FALLBACK_EXCLUDE_DIRS]
         for fn in filenames:
             fpath = Path(root) / fn
             try:
-                fpath_abs = fpath.resolve()
-            except OSError:
+                rel_path = fpath.resolve().relative_to(REPO_ROOT).as_posix()
+            except (OSError, ValueError):
                 continue
-            if current_abs is not None and fpath_abs == current_abs:
+            if _is_excluded_rel(rel_path):
                 continue
-            # Mirror rg's `--glob '!docs/**/*.md'` exclusion: only skip
-            # Markdown files under docs/; non-md files (like docs/how-to/
-            # _examples/relay-gate.yml) count as source for identifier
-            # verification, matching the rg path's behavior.
-            try:
-                rel_path = fpath_abs.relative_to(REPO_ROOT).as_posix()
-            except ValueError:
-                continue
-            if rel_path.endswith(".md") and (
-                rel_path == "docs" or rel_path.startswith("docs/")
-            ):
-                continue
-            try:
-                with fpath.open("rb") as fh:
-                    data = fh.read()
-            except OSError:
-                continue
-            if needle_bytes in data:
+            if _matches(fpath):
                 return True
     return False
 

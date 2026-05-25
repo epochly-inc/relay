@@ -120,7 +120,12 @@ jobs:
           # must test latest, not mutate the committed pin.
           npm install cel-js@latest --no-save \
             --workspace=packages/contracts-typescript --include-workspace-root
-          uv run python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
+          # --no-sync: a bare `uv run` re-syncs the env to uv.lock first,
+          # which would REVERT the `uv pip install --upgrade cel-python`
+          # above and silently test the pinned version instead of latest
+          # (defeating the drift signal). --no-sync runs against the
+          # already-upgraded env.
+          uv run --no-sync python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
           echo "cel-js $(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')" > .drift/latest-celjs.txt
 
       - name: "Run conformance under LATEST"
@@ -129,7 +134,8 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          uv run pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
+          # --no-sync: preserve the upgraded cel-python (see upgrade step).
+          uv run --no-sync pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
             -q --tb=line --junitxml=.drift/latest-pytest.xml \
             -o "junit_logging=system-out" \
             > .drift/latest-pytest.stdout 2>&1

@@ -17,11 +17,17 @@
 # scan job in secret-scan.yml provides defense-in-depth on file
 # extensions.
 #
-# Allowlist: the v0.1 OSS verifier ships PUBLIC TSA certificate chains
-# (cert-only PEM, no PRIVATE KEY blocks) so the offline verifier can
-# validate RFC 3161 timestamps without a network dependency. These are
-# the "lock" half of the keypair, designed to be public, and must not
-# trip the private-key rule. They are explicitly allowlisted by path.
+# Allowlisting policy (codex/structural-review hardening): there is NO
+# global [allowlist] block. A global path allowlist disables EVERY rule
+# for the listed file, so a real private key later added to an
+# allowlisted doc/test/script would go unreported. Instead, allowlists
+# are scoped PER RULE to the exact files that legitimately match THAT
+# rule. Verified empirically: with allowlists removed, a full-history
+# gitleaks scan matches only the two JWS conformance-corpus generators
+# (historical embedded test key); no other file matches any rule
+# (including the public cert-only TSA chains, which do not trip the
+# private-key rule). Every other path the old global allowlist named was
+# unnecessary and only widened the blind spot.
 
 title = "Relay trust-anchor key-material scan"
 
@@ -31,10 +37,28 @@ title = "Relay trust-anchor key-material scan"
 [[rules]]
 id = "relay-pem-private-key"
 description = "PEM-encoded private key block (trust-anchor signing keys live only in KMS/HSM per spec L.1/AO.4; never commit private key material)"
-regex = '''-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----'''
+# Matches standard PEM private-key armor (optional RSA/EC/DSA/OPENSSH/
+# ENCRYPTED prefix) AND ASCII-armored PGP private keys. The PGP armor
+# header carries a "... PRIVATE KEY BLOCK" suffix (there is no bare
+# "PGP PRIVATE KEY" form), so it is a separate alternation branch rather
+# than just a prefix on the PEM form.
+regex = '''-----BEGIN (?:(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----'''
 keywords = [
     "BEGIN",
     "PRIVATE KEY",
+]
+# Per-rule allowlist (NOT global): the two JWS RFC 7515 conformance-corpus
+# generators embedded a static test RSA key in historical commits (since
+# refactored to derive keys deterministically). gitleaks scans full
+# history on push, so the historical finding persists. These are ephemeral
+# test-corpus signing keys -- NOT trust-anchor key material -- so they are
+# out of scope per CLAUDE.md banned pattern #14. Scoping to this rule keeps
+# the private-key rule ACTIVE for every other path (e.g. a real key added
+# to a doc or test is still caught).
+[[rules.allowlists]]
+paths = [
+    '''scripts/generate-jws-rfc7515-corpus\.py''',
+    '''scripts/generate-jws-rfc7515-appendix-a-corpus\.py''',
 ]
 
 # ---------------------------------------------------------------------------
@@ -81,46 +105,4 @@ description = "npm access token (long-lived publish credential -- release pipeli
 regex = '''npm_[A-Za-z0-9]{36}'''
 keywords = [
     "npm_",
-]
-
-# ---------------------------------------------------------------------------
-# Global allowlist.
-# ---------------------------------------------------------------------------
-[allowlist]
-description = "Legitimate public artifacts and documentation that mention scan patterns without carrying real key material."
-# Public TSA certificate chains (cert-only PEM, no private keys) bundled
-# with the OSS verifier for offline RFC 3161 timestamp validation.
-# Verified cert-only via `grep -L 'BEGIN .* PRIVATE KEY'`.
-paths = [
-    '''packages/verifier/src/relay_verifier/tsa_chain/tsa-chain\.pem''',
-    '''packages/verifier/trust/tsa-chain\.pem''',
-    '''packages/verifier-typescript/src/tsa_chain/tsa-chain\.pem''',
-    # Documentation + the scan tooling itself legitimately reference the
-    # banned-pattern token names (sectigo / digicert / kms / arn:aws:kms)
-    # as prose describing what the scan looks for. These are the same
-    # files the extension-scan step in secret-scan.yml allowlists.
-    '''docs/release/sectigo-tsa-fallback\.md''',
-    '''docs/release/runbook\.md''',
-    '''docs/release/trust-anchor-governance\.md''',
-    '''docs/legal/trust-anchor-governance\.md''',
-    '''scripts/check-sidecar-bundle\.py''',
-    '''scripts/check-runbook-exists\.py''',
-    '''\.github/workflows/secret-scan\.yml''',
-    '''\.github/workflows/release-sidecar-bundle\.yml''',
-    '''\.github/gitleaks/relay-trust-anchor\.toml''',
-    '''packages/schemas/raw/error-codes\.yaml''',
-    '''packages/schemas/python/tests/test_v2m01_evidence_timestamps\.py''',
-    '''tests/release/test_w12_5_sidecar_bundle_workflow\.py''',
-    # JWS RFC 7515 conformance-corpus generators. Historical commits
-    # embedded a static `_STATIC_RSA_PRIVATE_PEM` test key for signing
-    # the conformance vectors (since refactored to derive keys
-    # deterministically). These are ephemeral test-corpus signing keys
-    # -- NOT trust-anchor key material (evidence-bundle signing keys,
-    # KMS refs, TSA creds). The scan targets the latter per CLAUDE.md
-    # banned pattern #14; a JWS conformance test key is out of scope.
-    # gitleaks scans full history (--log-opts), so the path allowlist
-    # suppresses the historical finding even though the current files
-    # no longer embed the key.
-    '''scripts/generate-jws-rfc7515-corpus\.py''',
-    '''scripts/generate-jws-rfc7515-appendix-a-corpus\.py''',
 ]
