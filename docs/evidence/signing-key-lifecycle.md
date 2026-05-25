@@ -45,7 +45,7 @@ matches the W10.1 default-JWKS behavior shipped inside the verifier wheel.
 ## Lifecycle states
 
 The function `check_signing_key_lifecycle()` in
-[`packages/verifier/src/relay_verifier/key_lifecycle.py`](../../packages/verifier/src/relay_verifier/key_lifecycle.py)
+[`packages/verifier/src/relay_verifier/key_lifecycle.py`](https://github.com/epochly-inc/relay/blob/main/packages/verifier/src/relay_verifier/key_lifecycle.py)
 returns a `KeyLifecycleResult` whose `outcome` field is one of five values.
 Each maps to a specific JWK condition:
 
@@ -71,7 +71,7 @@ attestations (spec L.3) verify under both JWKs and return one
 
 Each verdict is recorded on the structured `VerificationResult` output;
 none of them raises. The aggregator in
-[`packages/verifier/src/relay_verifier/bundle_validator.py`](../../packages/verifier/src/relay_verifier/bundle_validator.py)
+[`packages/verifier/src/relay_verifier/bundle_validator.py`](https://github.com/epochly-inc/relay/blob/main/packages/verifier/src/relay_verifier/bundle_validator.py)
 attaches the lifecycle outcome to the bundle's output envelope:
 
 - **`outcome=ok`** -- signature verifies, `signer_key_revoked=false`,
@@ -160,7 +160,7 @@ verification see the same revocation state any other consumer sees.
 ## Verifier output fields
 
 The offline verifier's `VerificationResult` envelope is defined in
-[`packages/schemas/raw/verifier-output.yaml`](../../packages/schemas/raw/verifier-output.yaml).
+[`packages/schemas/raw/verifier-output.yaml`](https://github.com/epochly-inc/relay/blob/main/packages/schemas/raw/verifier-output.yaml).
 Two fields specifically surface signing-key lifecycle outcomes; lifecycle-
 related rejections additionally populate the standard `errors[]` and
 `warnings[]` arrays.

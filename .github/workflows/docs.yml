@@ -87,6 +87,17 @@ jobs:
       - name: "install docs deps"
         run: uv sync --extra docs --all-packages
 
+      # Regenerate the gitignored reference pages (error-code + CLI
+      # subcommand pages) before building so the DEPLOYED Pages site
+      # includes them. They are generated artifacts (.gitignore
+      # excludes docs/reference/errors/RELAY-*/); without this the
+      # published site is missing the error-code pages and every
+      # external link to relay.epochly.com/.../errors/<CODE> 404s.
+      - name: "regenerate reference pages"
+        run: |
+          uv run python scripts/docs/build-error-reference.py
+          uv run python scripts/docs/build-cli-reference.py
+
       - name: "build docs (strict)"
         run: uv run mkdocs build --strict
 

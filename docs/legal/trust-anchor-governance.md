@@ -434,14 +434,14 @@ audit-friendly. The policy:
 Documentation cross-references (per spec §AO.3 step 1):
 
 - The release pipeline that produces the signed artifacts is
-  described in [`../release/runbook.md`](../release/runbook.md).
+  described in [`docs/release/runbook.md`](https://github.com/epochly-inc/relay/blob/main/docs/release/runbook.md).
 - The Sectigo TSA fallback activation procedure is described in
-  [`../release/sectigo-tsa-fallback.md`](../release/sectigo-tsa-fallback.md).
+  [`docs/release/sectigo-tsa-fallback.md`](https://github.com/epochly-inc/relay/blob/main/docs/release/sectigo-tsa-fallback.md).
 - The OSS-facing release stub of this document is at
-  [`../release/trust-anchor-governance.md`](../release/trust-anchor-governance.md);
+  [`docs/release/trust-anchor-governance.md`](https://github.com/epochly-inc/relay/blob/main/docs/release/trust-anchor-governance.md);
   it points readers to this file as the authoritative public version.
 - The public verifier source lives under `packages/verifier/`; see
-  [`../../SECURITY.md`](../../SECURITY.md) for the supported-version
+  [`SECURITY.md`](https://github.com/epochly-inc/relay/blob/main/SECURITY.md) for the supported-version
   policy and the security-disclosure channel.
 - Spec sections are anchored in `planning/epochly-replay-spec.md` in
   the workspace parent (one directory above this `relay/` repository);

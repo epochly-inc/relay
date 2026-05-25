@@ -17,17 +17,36 @@ retry_wait_time = 2
 # Skip URLs that are not yet resolvable in this environment.
 # - The public GitHub repo URL works only after the relay-inc/relay publish.
 # - The hosted domain is owned by relay-platform; DNS is not live in OSS CI.
+# - The GitHub Pages staging URL (epochly-inc.github.io/relay) is where THIS
+#   site deploys; the generated error-code pages self-reference their own
+#   production URLs (e.g. .../reference/errors/<CODE>/). Linkcheck runs on the
+#   freshly-built site/ BEFORE deploy, so those self-references 404 (chicken-
+#   and-egg). Excluded to avoid the circular pre-deploy failure.
 exclude = [
   "https://github.com/epochly-inc/relay",
   "https://relay.epochly.com/.*",
+  "https://epochly-inc.github.io/relay/.*",
 ]
 
 # Exclude the negative-test fixture from positive linkcheck runs. The fixture
 # intentionally contains a broken link to verify CI fails on link rot.
+#
+# Also exclude the built 404 page: MkDocs emits site/404.html with
+# ROOT-ABSOLUTE asset/nav paths (e.g. /relay/assets/...) so the page
+# renders correctly when served from any URL depth on GitHub Pages.
+# lychee cannot resolve those root-absolute paths against a local
+# site/ dir (no --root-dir mapping for the /relay base prefix), so it
+# reports ~180 phantom "Error building URL" failures for framework
+# assets that are valid on the deployed site. The 404 page contains no
+# author-written content links to verify.
 exclude_path = [
   "tests/docs/",
+  "site/404.html",
 ]
 
 # Accept these status codes as OK. Some sites return 403 to crawlers even when
-# the link is valid for browsers; 206 covers partial-content responses.
-accept = ["200", "204", "206", "301", "302", "403"]
+# the link is valid for browsers; 206 covers partial-content responses; 405
+# covers POST-only API endpoints (e.g. the RFC 3161 TSA endpoint
+# https://timestamp.sigstore.dev/api/v1/timestamp, which rejects lychee's GET
+# probe with Method Not Allowed but is a valid, reachable URL).
+accept = ["200", "204", "206", "301", "302", "403", "405"]
