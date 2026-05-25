@@ -63,12 +63,23 @@ jobs:
         with:
           node-version: "22"
 
+      - name: "install uv"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: "Install pinned workspace (baseline)"
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -e packages/contracts
+          # packages/contracts depends on the workspace sibling
+          # epochly-relay-schemas, which is NOT published to PyPI. A plain
+          # `pip install -e packages/contracts` therefore fails resolving
+          # that dependency. uv sync installs the whole workspace
+          # (resolving siblings via the workspace) plus the PINNED
+          # cel-python from uv.lock -- exactly the baseline this drift
+          # check needs.
+          uv sync --all-packages --all-extras
           npm ci --workspace=packages/contracts-typescript --include-workspace-root
 
       - name: "Record pinned-version corpus result"
@@ -80,10 +91,10 @@ jobs:
           # capture per-vector results. A non-zero exit on the pinned
           # run is itself a bug (the pinned run should always pass);
           # we surface it as drift.
-          python -m pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
+          uv run pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
             -q --tb=line --junitxml=.drift/pinned-pytest.xml || true
           # Capture the pinned celpy + cel-js versions for diff context.
-          python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/pinned-celpy.txt
+          uv run python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/pinned-celpy.txt
           (cd packages/contracts-typescript && node -e "import('cel-js').then(()=>{const p=require('./node_modules/cel-js/package.json'); console.log('cel-js', p.version)})") > .drift/pinned-celjs.txt
 
       - name: "Upgrade to LATEST cel-python and cel-js"
@@ -93,9 +104,9 @@ jobs:
           # VAL-W17-014: install the LATEST published versions, NOT
           # the pinned ones. The drift signal is "does the latest still
           # match what the pinned passed?"
-          pip install --upgrade cel-python
+          uv pip install --upgrade cel-python
           (cd packages/contracts-typescript && npm install cel-js@latest)
-          python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
+          uv run python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
           (cd packages/contracts-typescript && node -e "const p=require('./node_modules/cel-js/package.json'); console.log('cel-js', p.version)") > .drift/latest-celjs.txt
 
       - name: "Run conformance under LATEST"
@@ -104,7 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          python -m pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
+          uv run pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
             -q --tb=line --junitxml=.drift/latest-pytest.xml \
             -o "junit_logging=system-out" \
             > .drift/latest-pytest.stdout 2>&1
