@@ -1,0 +1,126 @@
+# Relay trust-anchor secret-scan ruleset (gitleaks v8).
+#
+# Consumed by .github/workflows/secret-scan.yml via the GITLEAKS_CONFIG
+# env var. Enforces CLAUDE.md banned pattern #14: trust-anchor key
+# material (signing private keys, KMS references, TSA partner
+# credentials, transparency-log custody keys) must NEVER be committed
+# to either repo; private keys live only in KMS/HSM (spec L.1) and the
+# Apache 2.0 grant does not extend to them (spec AO.4).
+#
+# This is a TARGETED ruleset, NOT an extension of gitleaks' default
+# rules. `useDefault` is deliberately false: the default `generic-api-
+# key` rule is high-entropy-based and flags hundreds of legitimate
+# test-fixture values (ULIDs, sha256 digests, idempotency keys, signed
+# envelope bytes). The job's contract -- per its name "trust-anchor
+# key material + publish creds" -- is to block the specific patterns
+# below, not generic high-entropy strings. The complementary extension-
+# scan job in secret-scan.yml provides defense-in-depth on file
+# extensions.
+#
+# Allowlist: the v0.1 OSS verifier ships PUBLIC TSA certificate chains
+# (cert-only PEM, no PRIVATE KEY blocks) so the offline verifier can
+# validate RFC 3161 timestamps without a network dependency. These are
+# the "lock" half of the keypair, designed to be public, and must not
+# trip the private-key rule. They are explicitly allowlisted by path.
+
+title = "Relay trust-anchor key-material scan"
+
+# ---------------------------------------------------------------------------
+# Rule: PEM-encoded private keys (RSA / EC / DSA / OpenSSH / PGP / generic).
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "relay-pem-private-key"
+description = "PEM-encoded private key block (trust-anchor signing keys live only in KMS/HSM per spec L.1/AO.4; never commit private key material)"
+regex = '''-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----'''
+keywords = [
+    "BEGIN",
+    "PRIVATE KEY",
+]
+
+# ---------------------------------------------------------------------------
+# Rule: cloud KMS key references (AWS / GCP / Azure).
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "relay-kms-urn"
+description = "Cloud KMS key reference (trust-anchor key material must live only in KMS/HSM, never referenced in source per spec AO.4)"
+regex = '''(arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+|projects/[^/\s]+/locations/[^/\s]+/keyRings/[^/\s]+/cryptoKeys/[^/\s]+|https://[A-Za-z0-9-]+\.vault\.azure\.net/keys/[^/\s]+)'''
+keywords = [
+    "arn:aws:kms",
+    "keyrings",
+    "vault.azure.net/keys",
+]
+
+# ---------------------------------------------------------------------------
+# Rule: TSA-vendor API credentials (Sectigo / DigiCert).
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "relay-tsa-vendor-credential"
+description = "TSA partner API credential (Sectigo / DigiCert) -- must not be committed; lives only in relay-platform runtime per spec AO.4"
+regex = '''(?i)X-API-Key\s*[:=]\s*['"]?[A-Za-z0-9_-]{16,}['"]?'''
+keywords = [
+    "x-api-key",
+]
+
+# ---------------------------------------------------------------------------
+# Rule: PyPI upload token (long-lived publish credential).
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "relay-pypi-token"
+description = "PyPI upload token (long-lived publish credential -- release pipeline must use OIDC trusted publishing, not static tokens)"
+regex = '''pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}'''
+keywords = [
+    "pypi-",
+]
+
+# ---------------------------------------------------------------------------
+# Rule: npm access token (long-lived publish credential).
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "relay-npm-token"
+description = "npm access token (long-lived publish credential -- release pipeline must use OIDC trusted publishing, not static tokens)"
+regex = '''npm_[A-Za-z0-9]{36}'''
+keywords = [
+    "npm_",
+]
+
+# ---------------------------------------------------------------------------
+# Global allowlist.
+# ---------------------------------------------------------------------------
+[allowlist]
+description = "Legitimate public artifacts and documentation that mention scan patterns without carrying real key material."
+# Public TSA certificate chains (cert-only PEM, no private keys) bundled
+# with the OSS verifier for offline RFC 3161 timestamp validation.
+# Verified cert-only via `grep -L 'BEGIN .* PRIVATE KEY'`.
+paths = [
+    '''packages/verifier/src/relay_verifier/tsa_chain/tsa-chain\.pem''',
+    '''packages/verifier/trust/tsa-chain\.pem''',
+    '''packages/verifier-typescript/src/tsa_chain/tsa-chain\.pem''',
+    # Documentation + the scan tooling itself legitimately reference the
+    # banned-pattern token names (sectigo / digicert / kms / arn:aws:kms)
+    # as prose describing what the scan looks for. These are the same
+    # files the extension-scan step in secret-scan.yml allowlists.
+    '''docs/release/sectigo-tsa-fallback\.md''',
+    '''docs/release/runbook\.md''',
+    '''docs/release/trust-anchor-governance\.md''',
+    '''docs/legal/trust-anchor-governance\.md''',
+    '''scripts/check-sidecar-bundle\.py''',
+    '''scripts/check-runbook-exists\.py''',
+    '''\.github/workflows/secret-scan\.yml''',
+    '''\.github/workflows/release-sidecar-bundle\.yml''',
+    '''\.github/gitleaks/relay-trust-anchor\.toml''',
+    '''packages/schemas/raw/error-codes\.yaml''',
+    '''packages/schemas/python/tests/test_v2m01_evidence_timestamps\.py''',
+    '''tests/release/test_w12_5_sidecar_bundle_workflow\.py''',
+    # JWS RFC 7515 conformance-corpus generators. Historical commits
+    # embedded a static `_STATIC_RSA_PRIVATE_PEM` test key for signing
+    # the conformance vectors (since refactored to derive keys
+    # deterministically). These are ephemeral test-corpus signing keys
+    # -- NOT trust-anchor key material (evidence-bundle signing keys,
+    # KMS refs, TSA creds). The scan targets the latter per CLAUDE.md
+    # banned pattern #14; a JWS conformance test key is out of scope.
+    # gitleaks scans full history (--log-opts), so the path allowlist
+    # suppresses the historical finding even though the current files
+    # no longer embed the key.
+    '''scripts/generate-jws-rfc7515-corpus\.py''',
+    '''scripts/generate-jws-rfc7515-appendix-a-corpus\.py''',
+]
