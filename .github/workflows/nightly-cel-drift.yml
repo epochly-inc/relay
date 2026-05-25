@@ -135,6 +135,21 @@ jobs:
           echo "ts_exit=${TS_EXIT}" >> "${GITHUB_OUTPUT}"
           echo "DRIFT-DETECTED: py_exit=${PY_EXIT} ts_exit=${TS_EXIT}"
 
+      - name: "Print conformance-under-latest logs"
+        # The artifact upload is unreliable in this org (retention), so
+        # surface the captured conformance output inline. This is the
+        # primary diagnosis surface when py_exit/ts_exit are non-zero:
+        # without it the only signal is the bare exit code.
+        if: always()
+        shell: bash
+        run: |
+          echo "===== pinned-celpy ====="; cat .drift/pinned-celpy.txt 2>/dev/null || true
+          echo "===== pinned-celjs ====="; cat .drift/pinned-celjs.txt 2>/dev/null || true
+          echo "===== latest-celpy ====="; cat .drift/latest-celpy.txt 2>/dev/null || true
+          echo "===== latest-celjs ====="; cat .drift/latest-celjs.txt 2>/dev/null || true
+          echo "===== latest-pytest.stdout ====="; cat .drift/latest-pytest.stdout 2>/dev/null || true
+          echo "===== latest-vitest.stdout (tail 80) ====="; tail -80 .drift/latest-vitest.stdout 2>/dev/null || true
+
       - name: "Build drift report"
         if: always()
         shell: bash
