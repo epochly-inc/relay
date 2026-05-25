@@ -88,14 +88,17 @@ INCLUDED_SOURCE_FILES = (
     "string.textproto",
 )
 
-# Substrings / patterns that mark an expression as OUTSIDE Relay's CEL
-# profile, even when its golden value is a profile-safe JSON kind. These
-# are matched against the CODE-ONLY form of the expression (string-literal
-# bodies stripped by _strip_string_bodies) so a string such as "dyn(" or
-# "5u" or "b" (which contains the substring b") is NOT misclassified.
-_EXPR_DENY_SUBSTR = ("dyn(", "timestamp(", "duration(", "bytes(", "uint(", 'b"', "b'")
-#   - uint literal: 0u / 5U  (a bytes literal b"/b' is in _EXPR_DENY_SUBSTR)
-_EXPR_DENY_RE = re.compile(r"\b\d+[uU]\b")
+# Patterns that mark an expression as OUTSIDE Relay's CEL profile, even
+# when its golden value is a profile-safe JSON kind. All are matched
+# against the CODE-ONLY form of the expression (string-literal bodies
+# stripped by _strip_string_bodies) so a string such as "dyn(" or "5u" or
+# "b" (which contains the substring b") is NOT misclassified.
+_EXPR_DENY_SUBSTR = ("dyn(", "timestamp(", "duration(", "bytes(", "uint(")
+#   - uint literal:  0u / 5U
+#   - bytes literal: a b OR B prefix (case-insensitive per CEL grammar)
+#     immediately before a quote, at a token boundary. On stripped code the
+#     lookbehind keeps a stray b/B that ends an identifier from matching.
+_EXPR_DENY_RE = re.compile(r"\b\d+[uU]\b|(?<![A-Za-z0-9_])[bB]['\"]")
 
 # Upstream files that the curated EXCLUDED_VECTORS are sourced from. Fetched
 # and parsed so each excluded vector's expression/expected_value/source can
