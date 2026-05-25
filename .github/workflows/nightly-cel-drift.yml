@@ -95,12 +95,13 @@ jobs:
             -q --tb=line --junitxml=.drift/pinned-pytest.xml || true
           # Capture the pinned celpy + cel-js versions for diff context.
           uv run python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/pinned-celpy.txt
-          # Resolve cel-js via node's module resolution (require.resolve)
-          # rather than a hardcoded ./node_modules path: npm workspace
-          # hoisting installs cel-js into the ROOT node_modules, not the
-          # package-local one, so './node_modules/cel-js/package.json'
-          # does not exist under packages/contracts-typescript/.
-          (cd packages/contracts-typescript && node -e "const p=require(require.resolve('cel-js/package.json')); console.log('cel-js', p.version)") > .drift/pinned-celjs.txt
+          # Capture the installed cel-js version via `npm ls`. Reading
+          # cel-js/package.json directly (require / require.resolve) hits
+          # ERR_PACKAGE_PATH_NOT_EXPORTED because cel-js's "exports" map
+          # blocks deep package.json access; and a hardcoded
+          # ./node_modules path breaks under npm workspace hoisting. npm
+          # ls reports the resolved installed version regardless.
+          echo "cel-js $(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')" > .drift/pinned-celjs.txt
 
       - name: "Upgrade to LATEST cel-python and cel-js"
         shell: bash
@@ -112,7 +113,7 @@ jobs:
           uv pip install --upgrade cel-python
           (cd packages/contracts-typescript && npm install cel-js@latest)
           uv run python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
-          (cd packages/contracts-typescript && node -e "const p=require(require.resolve('cel-js/package.json')); console.log('cel-js', p.version)") > .drift/latest-celjs.txt
+          echo "cel-js $(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')" > .drift/latest-celjs.txt
 
       - name: "Run conformance under LATEST"
         id: latest-run
