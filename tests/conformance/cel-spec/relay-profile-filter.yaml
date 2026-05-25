@@ -65,6 +65,8 @@ included:
     note: upstream comparisons.textproto eq_literal/not_eq_double (cel-python and cel-js match golden)
   - vector_id: comparisons/eq_literal/eq_string
     note: upstream comparisons.textproto eq_literal/eq_string (cel-python and cel-js match golden)
+  - vector_id: comparisons/eq_literal/not_eq_string
+    note: upstream comparisons.textproto eq_literal/not_eq_string (cel-python and cel-js match golden)
   - vector_id: comparisons/eq_literal/not_eq_string_case
     note: upstream comparisons.textproto eq_literal/not_eq_string_case (cel-python and cel-js match golden)
   - vector_id: comparisons/eq_literal/eq_string_unicode
@@ -141,6 +143,8 @@ included:
     note: upstream comparisons.textproto ne_literal/ne_map_by_value (cel-python and cel-js match golden)
   - vector_id: comparisons/ne_literal/ne_map_by_key
     note: upstream comparisons.textproto ne_literal/ne_map_by_key (cel-python and cel-js match golden)
+  - vector_id: comparisons/ne_literal/not_ne_map_key_order
+    note: upstream comparisons.textproto ne_literal/not_ne_map_key_order (cel-python and cel-js match golden)
   - vector_id: comparisons/lt_literal/lt_int
     note: upstream comparisons.textproto lt_literal/lt_int (cel-python and cel-js match golden)
   - vector_id: comparisons/lt_literal/not_lt_int
@@ -149,6 +153,8 @@ included:
     note: upstream comparisons.textproto lt_literal/lt_double (cel-python and cel-js match golden)
   - vector_id: comparisons/lt_literal/not_lt_double
     note: upstream comparisons.textproto lt_literal/not_lt_double (cel-python and cel-js match golden)
+  - vector_id: comparisons/lt_literal/lt_string
+    note: upstream comparisons.textproto lt_literal/lt_string (cel-python and cel-js match golden)
   - vector_id: comparisons/lt_literal/lt_string_empty_to_nonempty
     note: upstream comparisons.textproto lt_literal/lt_string_empty_to_nonempty (cel-python and cel-js match golden)
   - vector_id: comparisons/lt_literal/lt_string_case

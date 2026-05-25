@@ -725,6 +725,14 @@ def _verify_identifier_via_rg(symbol: str, current_page: Path) -> bool:
         "rg",
         "--files-with-matches",
         "--fixed-strings",
+        # --hidden so rg scans tracked dotfiles (e.g. .github/, .lychee.toml)
+        # exactly as the git-ls-files fallback does. Without it the two paths
+        # diverge: an identifier present only in a dotfile passes in fallback
+        # mode but fails under rg. .gitignore is still respected (so .claude/
+        # .ops/ .venv/ stay excluded); .git/ is excluded explicitly below.
+        "--hidden",
+        "--glob",
+        "!.git/**",
         "--glob",
         "!docs/**/*.md",
         # Explicitly exclude build artifacts and caches. .gitignore covers

@@ -151,6 +151,13 @@
       "source": "tests/simple/testdata/comparisons.textproto::eq_literal::eq_string"
     },
     {
+      "vector_id": "comparisons/eq_literal/not_eq_string",
+      "expression": "'a' == 'b'",
+      "bindings": {},
+      "expected_value": false,
+      "source": "tests/simple/testdata/comparisons.textproto::eq_literal::not_eq_string"
+    },
+    {
       "vector_id": "comparisons/eq_literal/not_eq_string_case",
       "expression": "'abc' == 'ABC'",
       "bindings": {},
@@ -417,6 +424,13 @@
       "source": "tests/simple/testdata/comparisons.textproto::ne_literal::ne_map_by_key"
     },
     {
+      "vector_id": "comparisons/ne_literal/not_ne_map_key_order",
+      "expression": "{'a':'b','c':'d'} != {'c':'d','a':'b'}",
+      "bindings": {},
+      "expected_value": false,
+      "source": "tests/simple/testdata/comparisons.textproto::ne_literal::not_ne_map_key_order"
+    },
+    {
       "vector_id": "comparisons/lt_literal/lt_int",
       "expression": "-1 < 0",
       "bindings": {},
@@ -443,6 +457,13 @@
       "bindings": {},
       "expected_value": false,
       "source": "tests/simple/testdata/comparisons.textproto::lt_literal::not_lt_double"
+    },
+    {
+      "vector_id": "comparisons/lt_literal/lt_string",
+      "expression": "'a' < 'b'",
+      "bindings": {},
+      "expected_value": true,
+      "source": "tests/simple/testdata/comparisons.textproto::lt_literal::lt_string"
     },
     {
       "vector_id": "comparisons/lt_literal/lt_string_empty_to_nonempty",

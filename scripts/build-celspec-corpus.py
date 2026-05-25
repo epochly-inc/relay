@@ -89,14 +89,13 @@ INCLUDED_SOURCE_FILES = (
 )
 
 # Substrings / patterns that mark an expression as OUTSIDE Relay's CEL
-# profile, even when its golden value is a profile-safe JSON kind.
-_EXPR_DENY_SUBSTR = ("dyn(", "timestamp(", "duration(", "bytes(", "uint(")
-# Out-of-profile patterns that need token awareness, not raw substrings:
-#   - uint literal:  0u / 5U
-#   - bytes literal: a b/B prefix immediately before a quote, NOT preceded
-#     by an identifier char (so a plain string ending in b like "web" or
-#     'ab', which contain the substring b"/b', is NOT misclassified).
-_EXPR_DENY_RE = re.compile(r"\b\d+[uU]\b|(?<![A-Za-z0-9_])[bB]['\"]")
+# profile, even when its golden value is a profile-safe JSON kind. These
+# are matched against the CODE-ONLY form of the expression (string-literal
+# bodies stripped by _strip_string_bodies) so a string such as "dyn(" or
+# "5u" or "b" (which contains the substring b") is NOT misclassified.
+_EXPR_DENY_SUBSTR = ("dyn(", "timestamp(", "duration(", "bytes(", "uint(", 'b"', "b'")
+#   - uint literal: 0u / 5U  (a bytes literal b"/b' is in _EXPR_DENY_SUBSTR)
+_EXPR_DENY_RE = re.compile(r"\b\d+[uU]\b")
 
 # Upstream files that the curated EXCLUDED_VECTORS are sourced from. Fetched
 # and parsed so each excluded vector's expression/expected_value/source can
@@ -368,10 +367,40 @@ def _decode_value(v: dict[str, Any]) -> Any:
     raise _Unsafe(f"out-of-profile value kind: {sorted(v.keys())}")
 
 
+def _strip_string_bodies(expr: str) -> str:
+    """Return the expression with the CONTENTS of every string literal
+    removed but the quote characters kept (e.g. b"xy" -> b"", "dyn(" ->
+    "", 'ab' -> ''). Profile checks run on this code-only form so a
+    pattern that appears only INSIDE a string body (a string value, not a
+    token) is never misclassified as an out-of-profile construct."""
+    out: list[str] = []
+    i = 0
+    n = len(expr)
+    while i < n:
+        c = expr[i]
+        if c in "\"'":
+            quote = c
+            out.append(quote)
+            i += 1
+            while i < n and expr[i] != quote:
+                if expr[i] == "\\" and i + 1 < n:
+                    i += 2  # skip escaped char inside the string body
+                    continue
+                i += 1
+            if i < n:  # closing quote
+                out.append(quote)
+                i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def _expr_in_profile(expr: str) -> bool:
-    if any(s in expr for s in _EXPR_DENY_SUBSTR):
+    code = _strip_string_bodies(expr)
+    if any(s in code for s in _EXPR_DENY_SUBSTR):
         return False
-    return _EXPR_DENY_RE.search(expr) is None
+    return _EXPR_DENY_RE.search(code) is None
 
 
 # ---------------------------------------------------------------------------
@@ -746,29 +775,34 @@ def main(argv: list[str] | None = None) -> int:
     # record (no fabricated/stale exclusions).
     _validate_excluded(_fetch(sha, cache_dir, EXCLUDED_SOURCE_FILES))
 
-    # Anti-shrink floor: never let a regeneration silently REDUCE included
-    # coverage vs the committed corpus. A drop almost always means a
-    # parser/profile/runtime regression, not an intentional upstream
-    # change; require --allow-shrink to override (e.g. a real pin bump
-    # that legitimately removed cases).
+    # Anti-shrink guard (PER VECTOR ID, not a total count): never let a
+    # regeneration silently DROP a previously-included vector. A count
+    # comparison can be masked when an unrelated newly-recovered vector
+    # offsets a lost one, so compare the SET of committed included
+    # vector_ids against the regenerated set and fail on any that vanished.
+    # A drop almost always means a parser/profile/runtime regression;
+    # require --allow-shrink to override (e.g. a pin bump that legitimately
+    # removed upstream cases).
     excluded_ids = {e["vector_id"] for e in EXCLUDED_VECTORS}
-    committed_included = 0
+    committed_included_ids: set[str] = set()
     if VECTORS_PATH.exists():
         try:
             committed = json.loads(VECTORS_PATH.read_text(encoding="utf-8"))
-            committed_included = sum(
-                1
+            committed_included_ids = {
+                vid
                 for v in committed.get("vectors", [])
-                if v.get("vector_id") not in excluded_ids
-            )
+                if (vid := v.get("vector_id")) and vid not in excluded_ids
+            }
         except (json.JSONDecodeError, OSError):
-            committed_included = 0
-    if len(verified) < committed_included and not args.allow_shrink:
+            committed_included_ids = set()
+    new_ids = {_vector_id(c) for c in verified}
+    vanished = sorted(committed_included_ids - new_ids)
+    if vanished and not args.allow_shrink:
         raise SystemExit(
-            f"regenerated included count {len(verified)} is BELOW the committed "
-            f"count {committed_included}; a shrink usually means a regression. "
-            f"Re-run with --allow-shrink if this drop is intentional (e.g. a "
-            f"pin bump that removed upstream cases)."
+            f"{len(vanished)} previously-included vector(s) no longer verify "
+            f"(a regression usually). Re-run with --allow-shrink if intentional "
+            f"(e.g. a pin bump that removed upstream cases):\n  "
+            + "\n  ".join(vanished)
         )
 
     doc = _build_vectors_doc(sha, verified)

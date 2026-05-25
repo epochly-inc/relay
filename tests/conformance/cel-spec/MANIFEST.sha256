@@ -8,5 +8,5 @@
 # check; the manifest cannot contain its own digest).
 
 723dcca8bd975798e22208a0a9e8d05ceb1af2b89163dc8d8aa6eb1da87d78f3  .upstream-pins.json
-970978390374be42814553295cba80ba32ae017a5006c027d49cbbd6e759ad68  celspec_vectors.json
-9eace5131f9d7a14c64efa9cf2651f4a497c14ddc9fae3edcf07e517057be777  relay-profile-filter.yaml
+7688b67a65818353f422af35cb324028c92840731920cc91aaee509fde6e318c  celspec_vectors.json
+b5f71e4f8768973d3616f067f8e6228033de48b665142116732cb56b795d4f6d  relay-profile-filter.yaml

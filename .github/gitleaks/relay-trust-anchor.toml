@@ -52,10 +52,20 @@ keywords = [
 # refactored to derive keys deterministically). gitleaks scans full
 # history on push, so the historical finding persists. These are ephemeral
 # test-corpus signing keys -- NOT trust-anchor key material -- so they are
-# out of scope per CLAUDE.md banned pattern #14. Scoping to this rule keeps
-# the private-key rule ACTIVE for every other path (e.g. a real key added
-# to a doc or test is still caught).
+# out of scope per CLAUDE.md banned pattern #14.
+#
+# Scoped with condition = AND to the EXACT historical commits AND paths
+# that introduced the test key, so a path allowlist alone cannot suppress
+# a NEW private key added to these files in a future commit: such a key
+# lands in a different commit, fails the commit match, and IS reported.
+# (The repo-wide working-tree guard test_no_private_keys_repo_wide is the
+# second, independent backstop -- it does not allowlist these paths.)
 [[rules.allowlists]]
+condition = "AND"
+commits = [
+    "16c28de33e1c9772b48802f3b26d93e17653e1ea",
+    "9393e49692ae3012c2f777d301dbef86a6e1b0a0",
+]
 paths = [
     '''scripts/generate-jws-rfc7515-corpus\.py''',
     '''scripts/generate-jws-rfc7515-appendix-a-corpus\.py''',
