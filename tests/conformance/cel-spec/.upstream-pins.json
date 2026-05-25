@@ -1,12 +1,12 @@
 {
-  "_doc": "W17.3 cel-spec upstream pin record (VAL-W17-010). The celspec_commit_sha MUST equal the first non-comment line of PINNED_COMMIT.txt; the drift checker asserts the equality. The cel-python and cel-js fields record the pinned (NOT latest) runtime versions used for the per-PR conformance run; the nightly drift workflow (.github/workflows/nightly-cel-drift.yml) compares against the LATEST versions on PyPI/npm per VAL-W17-014. Bumping either runtime version REQUIRES bumping last_refreshed_at and (when vectors change) MANIFEST.sha256 + celspec_vectors.json.",
+  "_doc": "W17.3 cel-spec upstream pin record (VAL-W17-010). celspec_commit_sha is the commit google/cel-spec tag v0.20.0 points at; it MUST equal the first non-comment line of PINNED_COMMIT.txt (the drift checker asserts the equality) and the nightly workflow asserts it resolves on the cel-spec remote. The corpus is regenerated from this exact commit by scripts/build-celspec-corpus.py. The cel-python and cel-js fields record the pinned (NOT latest) runtime versions used for the per-PR conformance run; the nightly drift workflow (.github/workflows/nightly-cel-drift.yml) compares against the LATEST versions on PyPI/npm per VAL-W17-014. Rotating the pin REQUIRES re-running the generator (rewrites MANIFEST.sha256 + celspec_vectors.json + relay-profile-filter.yaml) and bumping last_refreshed_at.",
   "_schema_version": 1,
-  "celspec_commit_sha": "d3b6e5a8c4f29e7b1a8d5c2f6e9b3a7d8c1f4e5a",
+  "celspec_commit_sha": "bfe4f8b06c29cc71b783819ef415e2e766606023",
   "celspec_repo": "https://github.com/google/cel-spec",
   "celspec_source_tree": "tests/simple/testdata",
   "celspec_tag_compat": "v0.20.0",
   "cel-python": "cel-python>=0.5.0,<0.6",
   "cel-js": "0.8.2",
-  "last_refreshed_at": "2026-05-16",
-  "refreshed_by_feature": "w17.3-corpus-cel-spec"
+  "last_refreshed_at": "2026-05-25",
+  "refreshed_by_feature": "celspec-corpus-rederive-from-upstream"
 }
