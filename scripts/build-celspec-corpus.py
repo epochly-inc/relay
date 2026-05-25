@@ -379,7 +379,14 @@ def _strip_string_bodies(expr: str) -> str:
     removed but the quote characters kept (e.g. b"xy" -> b"", "dyn(" ->
     "", 'ab' -> ''). Profile checks run on this code-only form so a
     pattern that appears only INSIDE a string body (a string value, not a
-    token) is never misclassified as an out-of-profile construct."""
+    token) is never misclassified as an out-of-profile construct.
+
+    RAW strings (an r/R appears in the b/B/r/R prefix, e.g. r"...", rb'...')
+    do NOT process backslash escapes, so a raw string ending in a
+    backslash before its delimiter terminates AT that delimiter. Treating
+    \\" as an escaped quote there would over-consume into following code
+    and hide a denied token (e.g. r"a\\" + dyn(0)). The prefix is inspected
+    to decide whether escapes apply."""
     out: list[str] = []
     i = 0
     n = len(expr)
@@ -387,11 +394,22 @@ def _strip_string_bodies(expr: str) -> str:
         c = expr[i]
         if c in "\"'":
             quote = c
+            # Inspect the b/B/r/R prefix (max 2 chars) immediately before
+            # the quote, but only if it is a real string prefix (not the
+            # tail of an identifier). A raw prefix disables escapes.
+            prefix = ""
+            k = i - 1
+            while k >= 0 and expr[k] in "bBrR" and len(prefix) < 2:
+                prefix = expr[k] + prefix
+                k -= 1
+            if k >= 0 and (expr[k].isalnum() or expr[k] == "_"):
+                prefix = ""  # glued to an identifier; not a string prefix
+            is_raw = "r" in prefix.lower()
             out.append(quote)
             i += 1
             while i < n and expr[i] != quote:
-                if expr[i] == "\\" and i + 1 < n:
-                    i += 2  # skip escaped char inside the string body
+                if (not is_raw) and expr[i] == "\\" and i + 1 < n:
+                    i += 2  # skip escaped char inside a non-raw string body
                     continue
                 i += 1
             if i < n:  # closing quote

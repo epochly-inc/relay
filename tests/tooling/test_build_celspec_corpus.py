@@ -97,10 +97,21 @@ def test_strip_string_bodies_keeps_quotes_drops_content() -> None:
     assert gen._strip_string_bodies('b"xy"') == 'b""'
     assert gen._strip_string_bodies('"dyn("') == '""'
     assert gen._strip_string_bodies("'ab' + 'cd'") == "'' + ''"
-    # escaped quote inside the body must not end the string early
+    # escaped quote inside a NON-raw body must not end the string early
     assert gen._strip_string_bodies(r"'a\'b'") == "''"
     # code outside strings is preserved
     assert gen._strip_string_bodies("1 + 2") == "1 + 2"
+
+
+@pytest.mark.plumbing
+def test_raw_string_trailing_backslash_does_not_hide_denied_token() -> None:
+    # A raw string ending in a backslash terminates at its delimiter;
+    # treating \" as an escaped quote would swallow the following dyn( and
+    # let an out-of-profile expression slip in. Backslash is literal here.
+    expr = 'r"a\\" + dyn(0)'
+    stripped = gen._strip_string_bodies(expr)
+    assert "dyn(" in stripped, f"denied token hidden by raw-string stripping: {stripped!r}"
+    assert gen._expr_in_profile(expr) is False
 
 
 # ---------------------------------------------------------------------------
