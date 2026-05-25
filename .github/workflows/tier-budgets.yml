@@ -208,7 +208,22 @@ jobs:
         run: |
           set -euo pipefail
           start=$(python -c 'import time; print(time.time())')
+          # The tier-3 eval tier is LLM-judged (Explain quality,
+          # assertion-template hit rate, cross-orchestrator parity per
+          # spec AM.6) and currently lives in relay-platform, not the
+          # OSS repo -- there are zero @pytest.mark.eval tests here.
+          # pytest exits 5 ("no tests collected") on an empty marker
+          # selection; under `set -e` that fails the job. Treat exit 5
+          # as success (an empty eval tier is the expected OSS state);
+          # any other non-zero exit is a real failure and propagates.
+          set +e
           uv run pytest -m eval --timeout=720 -q
+          EVAL_RC=$?
+          set -e
+          if [ "${EVAL_RC}" -ne 0 ] && [ "${EVAL_RC}" -ne 5 ]; then
+            echo "eval tier failed with exit ${EVAL_RC}"
+            exit "${EVAL_RC}"
+          fi
           end=$(python -c 'import time; print(time.time())')
           duration=$(python -c "print(${end} - ${start})")
           mkdir -p artifacts
