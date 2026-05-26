@@ -131,6 +131,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: "Install guard deps (PyYAML for layout parsing)"
+        # scripts/check-in-toto-attestations.py uses `import yaml` (PyYAML)
+        # to parse the in-toto layout file; without an explicit install
+        # the workflow fails with ModuleNotFoundError on first invocation
+        # (observed on the v0.1.0 tag run 26474620528).
+        run: pip install --no-deps "pyyaml>=6.0,<7.0"
+
       - name: "Static guard: workflow declares full step coverage (VAL-W12-017)"
         # Asserts the env.RELAY_INTOTO_DECLARED_STEPS list matches
         # exactly the steps enumerated in the committed
