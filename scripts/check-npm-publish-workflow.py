@@ -326,11 +326,28 @@ def check_val_w12_007(workflow: dict[str, Any], raw_text: str) -> CheckResult:
         NODE_AUTH_TOKEN)
       - declare ``permissions.id-token: write`` on every publish job
       - run ``npm publish --provenance`` in every publish job
+
+    Bootstrap exemption (one-shot for v0.1.0 first publish):
+
+      npm trusted publishers can only be registered AFTER a package
+      exists on the registry. For the first-ever publish of
+      ``@epochly/relay`` we inject a scoped one-shot NPM_TOKEN secret
+      bound to the ``release`` GitHub environment. The exemption is
+      gated on the sentinel ``RELAY-BOOTSTRAP-v0.1.0:`` appearing in
+      the workflow's raw text; the post-publish task removes the
+      sentinel, the env injection, the NPM_TOKEN secret, AND this
+      exemption together.
     """
+    bootstrap_active = "RELAY-BOOTSTRAP-v0.1.0:" in raw_text
     # Long-lived secret reference scan: simple substring grep handles both
     # ${{ secrets.NPM_TOKEN }} and bare references in env blocks.
     for secret_name in LONG_LIVED_NPM_SECRET_NAMES:
         if f"secrets.{secret_name}" in raw_text:
+            if bootstrap_active and secret_name in ("NPM_TOKEN", "NODE_AUTH_TOKEN"):
+                # Permitted under the bootstrap exemption; task #53
+                # removes both the sentinel and these references after
+                # trusted publishers are registered on both packages.
+                continue
             return CheckResult(
                 "VAL-W12-007",
                 "RELAY-RELEASE-007",
@@ -347,12 +364,33 @@ def check_val_w12_007(workflow: dict[str, Any], raw_text: str) -> CheckResult:
         if isinstance(env, dict):
             for key in env:
                 if key in LONG_LIVED_NPM_SECRET_NAMES:
+                    if bootstrap_active and key in ("NPM_TOKEN", "NODE_AUTH_TOKEN"):
+                        continue
                     return CheckResult(
                         "VAL-W12-007",
                         "RELAY-RELEASE-007",
                         False,
                         f"job env injects long-lived npm credential '{key}'",
                     )
+    # Step-level env scan: the bootstrap injection is on individual publish
+    # steps, not jobs. Permit the same two names under the same sentinel.
+    for _name, job in _iter_jobs(workflow):
+        for step in _iter_steps(job):
+            step_env = step.get("env")
+            if isinstance(step_env, dict):
+                for key in step_env:
+                    if key in LONG_LIVED_NPM_SECRET_NAMES:
+                        if bootstrap_active and key in ("NPM_TOKEN", "NODE_AUTH_TOKEN"):
+                            continue
+                        return CheckResult(
+                            "VAL-W12-007",
+                            "RELAY-RELEASE-007",
+                            False,
+                            (
+                                f"step env injects long-lived npm credential "
+                                f"'{key}'"
+                            ),
+                        )
 
     publish_jobs = _publish_jobs(workflow)
     if not publish_jobs:

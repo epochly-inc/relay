@@ -206,6 +206,82 @@ def test_guard_rejects_npm_token_secret_reference(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W12-007")
+def test_guard_permits_npm_token_under_bootstrap_sentinel(tmp_path: Path) -> None:
+    """The one-shot ``RELAY-BOOTSTRAP-v0.1.0:`` sentinel exempts NPM_TOKEN.
+
+    npm trusted publishers can only be registered AFTER a package exists
+    on the registry. For the first-ever publish of ``@epochly/relay`` we
+    inject a scoped NPM_TOKEN secret bound to the ``release`` GitHub
+    environment; the guard MUST permit the reference iff the sentinel
+    ``RELAY-BOOTSTRAP-v0.1.0:`` is present in the workflow's raw text.
+    Task #53 removes the sentinel, the env injection, and the secret
+    together post-publish.
+    """
+
+    def transform(data: dict[str, Any]) -> None:
+        publish_sdk = data["jobs"]["publish-sdk"]
+        for step in publish_sdk["steps"]:
+            run = step.get("run", "")
+            if isinstance(run, str) and "npm publish" in run:
+                step["env"] = {"NODE_AUTH_TOKEN": "${{ secrets.NPM_TOKEN }}"}
+
+    workflow_text = _mutate_workflow(transform)
+    workflow_text = (
+        "# RELAY-BOOTSTRAP-v0.1.0: one-shot exemption for first publish\n"
+        + workflow_text
+    )
+
+    repo = _materialize_repo(
+        tmp_path,
+        workflow_text,
+        _real_pypi_workflow_text(),
+        _real_runbook_text(),
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-007")
+    assert check["passed"], (
+        f"bootstrap exemption should permit NPM_TOKEN: {check}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-007")
+def test_guard_rejects_npm_token_without_bootstrap_sentinel(tmp_path: Path) -> None:
+    """Removing the sentinel re-engages the NPM_TOKEN rejection.
+
+    Defense against accidental retention of the bootstrap secret past
+    v0.1.0: stripping the sentinel from the workflow MUST cause the
+    guard to fail again on the same NPM_TOKEN env reference.
+    """
+
+    def transform(data: dict[str, Any]) -> None:
+        publish_sdk = data["jobs"]["publish-sdk"]
+        for step in publish_sdk["steps"]:
+            run = step.get("run", "")
+            if isinstance(run, str) and "npm publish" in run:
+                step["env"] = {"NODE_AUTH_TOKEN": "${{ secrets.NPM_TOKEN }}"}
+
+    # No bootstrap sentinel prefix.
+    workflow_text = _mutate_workflow(transform)
+
+    repo = _materialize_repo(
+        tmp_path,
+        workflow_text,
+        _real_pypi_workflow_text(),
+        _real_runbook_text(),
+    )
+    proc = _run_guard(repo)
+    report = _parse_report(proc)
+    check = _check_for(report, "VAL-W12-007")
+    assert not check["passed"], (
+        "guard must reject NPM_TOKEN env injection when sentinel is absent"
+    )
+    assert check["error_code"] == "RELAY-RELEASE-007"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-007")
 def test_guard_rejects_publish_without_provenance_flag(tmp_path: Path) -> None:
     """A publish job that omits ``--provenance`` FAILS RELAY-RELEASE-007."""
 
