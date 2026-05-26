@@ -161,6 +161,15 @@ jobs:
       base64-subjects: "${{ needs.build.outputs.hashes }}"
       upload-assets: false
       provenance-name: "epochly-relay-provenance.intoto.jsonl"
+      # When upload-assets: false, the SLSA generator skips its
+      # upload-assets job, which leaves the "final" outcome as
+      # SUCCESS=false. Without continue-on-error: true, the final
+      # step exits 27 and the SLSA caller is marked failed despite
+      # the attestation having been produced correctly. We download
+      # the attestation as a workflow artifact (via the SLSA
+      # generator's provenance-name surface) so the publish job can
+      # fetch and forward it to PyPI.
+      continue-on-error: true
 
   # ---------------------------------------------------------------------------
   # Publish to PyPI via trusted-publisher OIDC flow (VAL-W12-001/002/005/006).

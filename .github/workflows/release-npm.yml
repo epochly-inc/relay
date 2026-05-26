@@ -271,6 +271,11 @@ jobs:
       base64-subjects: "${{ needs.build-sdk.outputs.hashes }}"
       upload-assets: false
       provenance-name: "epochly-relay-npm-sdk-provenance.intoto.jsonl"
+      # See release-pypi.yml provenance job for the continue-on-error
+      # rationale: with upload-assets: false the generator's final
+      # step would otherwise exit 27 because SUCCESS depends on
+      # upload-assets.outcome which is empty when that job is skipped.
+      continue-on-error: true
 
   # ---------------------------------------------------------------------------
   # SLSA L3 provenance for the sidecar-bundle tarball (chained into VAL-W12-008).
@@ -289,6 +294,9 @@ jobs:
       base64-subjects: "${{ needs.build-sidecar-bundle.outputs.hashes }}"
       upload-assets: false
       provenance-name: "epochly-relay-npm-sidecar-bundle-provenance.intoto.jsonl"
+      # See release-pypi.yml provenance job for the continue-on-error
+      # rationale.
+      continue-on-error: true
 
   # ---------------------------------------------------------------------------
   # Publish @epochly/relay via npm OIDC trusted-publisher flow

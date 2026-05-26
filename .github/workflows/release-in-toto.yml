@@ -293,7 +293,12 @@ jobs:
         run: npm run build --workspaces --if-present
 
       - name: "Pack SDK tarball"
-        run: npm pack --workspace=packages/sdk-typescript --pack-destination=dist/
+        # mkdir is required because npm pack --pack-destination does not
+        # create the destination directory; failure mode is ENOENT on the
+        # output file path (observed on the v0.1.0 tag run 26478838946).
+        run: |
+          mkdir -p dist/
+          npm pack --workspace=packages/sdk-typescript --pack-destination=dist/
 
       - name: "Generate build-ts-package-sdk link"
         env:
@@ -309,9 +314,13 @@ jobs:
             --output links/build-ts-package-sdk.relay-layout.link
 
       - name: "Pack sidecar-bundle tarball"
+        # Canonical workspace path is packages/sdk-typescript-sidecar-bundle
+        # (NOT packages/sidecar-bundle which was an early stub name from
+        # the pre-w12.5 scaffold). The graceful-fallback previously masked
+        # the typo; v0.1.0 exercises the real publish path.
         run: |
-          npm pack --workspace=packages/sidecar-bundle --pack-destination=dist/ \
-            || echo "RELAY-RELEASE-INFO: sidecar-bundle workspace not yet present (w12.5 wires it); emitting placeholder link"
+          mkdir -p dist/
+          npm pack --workspace=packages/sdk-typescript-sidecar-bundle --pack-destination=dist/
 
       - name: "Generate build-ts-package-sidecar-bundle link"
         env:
@@ -319,10 +328,9 @@ jobs:
         run: |
           python scripts/generate-in-toto-link.py \
             --step-name build-ts-package-sidecar-bundle \
-            --command "npm pack --workspace=packages/sidecar-bundle --pack-destination=dist/" \
+            --command "npm pack --workspace=packages/sdk-typescript-sidecar-bundle --pack-destination=dist/" \
             --material-from-git-sha "${RELAY_RELEASE_SHA}" \
             --product-glob "dist/epochly-relay-sidecar-bundle-*.tgz" \
-            --allow-empty-products \
             --byproduct runner=ubuntu-latest \
             --byproduct node-version=22 \
             --byproduct sidecar-bundle-source=w12.5 \

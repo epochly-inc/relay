@@ -1,7 +1,10 @@
 {
   "name": "@epochly/relay",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "description": "Relay TypeScript SDK. v0.1 public surface: Relay client, sidecar locator + handshake (W4.1), trace lifecycle, redaction policy schema, error envelopes, and the npx @epochly/relay sidecar bundle wrapper.",
   "license": "Apache-2.0",
   "type": "module",

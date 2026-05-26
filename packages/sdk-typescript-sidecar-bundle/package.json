@@ -1,7 +1,10 @@
 {
   "name": "@epochly/relay-sidecar-bundle",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "description": "Relay sidecar bundle launcher: detects host OS/arch, downloads the matching PyInstaller-built sidecar binary, verifies the SHA-256 digest against the signed release manifest (STEP A), verifies the Sigstore Rekor inclusion proof (STEP B), and launches the binary. Digest-first / Sigstore-second ordering is load-bearing per VAL-W12-025.",
   "license": "Apache-2.0",
   "type": "module",
