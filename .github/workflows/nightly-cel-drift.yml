@@ -100,8 +100,15 @@ jobs:
           # ERR_PACKAGE_PATH_NOT_EXPORTED because cel-js's "exports" map
           # blocks deep package.json access; and a hardcoded
           # ./node_modules path breaks under npm workspace hoisting. npm
-          # ls reports the resolved installed version regardless.
-          echo "cel-js $(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')" > .drift/pinned-celjs.txt
+          # ls reports the resolved installed version regardless. Fail
+          # fast on an empty version so the drift report cannot record
+          # "cel-js " (no version) and look benign.
+          CELJS_VER=$(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')
+          if [ -z "${CELJS_VER}" ]; then
+            echo "RELAY-W17-3-CELJS-VERSION-LOOKUP-FAILED: npm ls returned no cel-js version" >&2
+            exit 1
+          fi
+          echo "cel-js ${CELJS_VER}" > .drift/pinned-celjs.txt
 
       - name: "Upgrade to LATEST cel-python and cel-js"
         shell: bash
@@ -126,7 +133,13 @@ jobs:
           # (defeating the drift signal). --no-sync runs against the
           # already-upgraded env.
           uv run --no-sync python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
-          echo "cel-js $(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')" > .drift/latest-celjs.txt
+          # Same fail-fast as the pinned-version capture step above.
+          CELJS_LATEST=$(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')
+          if [ -z "${CELJS_LATEST}" ]; then
+            echo "RELAY-W17-3-CELJS-VERSION-LOOKUP-FAILED: npm ls returned no cel-js version after upgrade" >&2
+            exit 1
+          fi
+          echo "cel-js ${CELJS_LATEST}" > .drift/latest-celjs.txt
 
       - name: "Run conformance under LATEST"
         id: latest-run

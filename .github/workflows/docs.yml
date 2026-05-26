@@ -38,12 +38,25 @@ on:
       - "mkdocs.yml"
       - "pyproject.toml"
       - ".github/workflows/docs.yml"
+      # Inputs to the regenerated reference pages: changes to the error-
+      # code registry, the CLI source (whose `--json help` output the
+      # CLI reference is built from), or the generator scripts themselves
+      # must rebuild + publish docs so the deployed reference doesn't go
+      # stale.
+      - "scripts/docs/build-error-reference.py"
+      - "scripts/docs/build-cli-reference.py"
+      - "packages/schemas/raw/error-codes.yaml"
+      - "packages/cli/**"
   pull_request:
     paths:
       - "docs/**"
       - "mkdocs.yml"
       - "pyproject.toml"
       - ".github/workflows/docs.yml"
+      - "scripts/docs/build-error-reference.py"
+      - "scripts/docs/build-cli-reference.py"
+      - "packages/schemas/raw/error-codes.yaml"
+      - "packages/cli/**"
   workflow_dispatch:
 
 # Fix #13 (codex review): default workflow permissions are read-only.

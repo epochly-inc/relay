@@ -34,6 +34,14 @@ on:
       - "pyproject.toml"
       - ".lychee.toml"
       - ".github/workflows/linkcheck.yml"
+      # Linkcheck builds the site from the regenerated reference pages,
+      # so a change in their INPUTS (error-code registry, CLI source) or
+      # their generators must run linkcheck too -- otherwise a broken
+      # cross-link in regenerated output can land on main unchecked.
+      - "scripts/docs/build-error-reference.py"
+      - "scripts/docs/build-cli-reference.py"
+      - "packages/schemas/raw/error-codes.yaml"
+      - "packages/cli/**"
   schedule:
     # Weekly Monday noon UTC -- catches link rot between PRs.
     - cron: "0 12 * * 1"
