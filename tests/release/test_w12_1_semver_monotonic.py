@@ -13,6 +13,7 @@ version increment per VAL-W12-039).
 from __future__ import annotations
 
 import importlib.util
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -145,6 +146,67 @@ def test_gate_accepts_first_release_against_empty_published() -> None:
     proc = _run_gate(version="0.1.0", published="")
     assert proc.returncode == 0, f"stderr={proc.stderr!r}"
     assert "monotonic per SemVer" in proc.stdout
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-040")
+# The pytest unraisable-exception hook (Python 3.14) catches a benign
+# _TemporaryFileCloser.__del__ that fires during GC of pytest-internal
+# tempfiles in this test scope, escalating it under the repo-wide
+# `filterwarnings = ["error"]`. Suppress only that specific known noise.
+@pytest.mark.filterwarnings(
+    "ignore:Exception ignored while calling deallocator"
+    ":pytest.PytestUnraisableExceptionWarning"
+)
+def test_fetch_published_versions_treats_pypi_404_as_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FIRST publish to PyPI hits a 404 because the package has
+    never been published. The gate must treat that as "no prior
+    versions" -- not as a fetch error -- otherwise it permanently
+    blocks every first release at the precheck step."""
+    import urllib.error
+
+    mod = _load_semver_module()
+
+    def _raise_404(*_a, **_kw):
+        raise urllib.error.HTTPError(
+            url=mod.PYPI_JSON_URL,
+            code=404,
+            msg="Not Found",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=io.BytesIO(b""),
+        )
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _raise_404)
+    assert mod._fetch_published_versions() == []
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-040")
+def test_fetch_published_versions_aborts_on_non_404_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any non-404 HTTP error (5xx, etc.) is a real fetch failure and
+    MUST abort with exit 4 -- not silently fall through as if there
+    were no prior versions."""
+    import urllib.error
+
+    mod = _load_semver_module()
+
+    def _raise_503(*_a, **_kw):
+        raise urllib.error.HTTPError(
+            url=mod.PYPI_JSON_URL,
+            code=503,
+            msg="Service Unavailable",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=io.BytesIO(b""),
+        )
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _raise_503)
+    with pytest.raises(SystemExit) as excinfo:
+        mod._fetch_published_versions()
+    assert excinfo.value.code == 4
 
 
 @pytest.mark.plumbing

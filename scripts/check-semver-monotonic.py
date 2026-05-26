@@ -203,7 +203,30 @@ def _fetch_published_versions() -> list[str]:
     try:
         with urllib.request.urlopen(PYPI_JSON_URL, timeout=15) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001 - any failure aborts cleanly
+    except urllib.error.HTTPError as exc:
+        # 404 = the package has never been published. This is the EXPECTED
+        # state for the FIRST release (e.g. v0.1.0) and must be treated
+        # as "no prior versions", not as an error -- otherwise the first
+        # publish is permanently blocked at this gate. Any other HTTP
+        # error (5xx, transient network failure) still aborts.
+        code = exc.code
+        # Close the HTTPError's body stream explicitly so its deallocator
+        # does not fire during GC (pytest's unraisable hook can catch the
+        # temp-file-closer __del__ and escalate under filterwarnings=error).
+        fp = getattr(exc, "fp", None)
+        if fp is not None:
+            try:
+                fp.close()
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
+        if code == 404:
+            return []
+        print(
+            f"FAIL: could not query PyPI for {PYPI_PROJECT}: HTTP Error {code}",
+            file=sys.stderr,
+        )
+        raise SystemExit(4) from None
+    except Exception as exc:  # noqa: BLE001 - any other failure aborts cleanly
         print(f"FAIL: could not query PyPI for {PYPI_PROJECT}: {exc}", file=sys.stderr)
         raise SystemExit(4) from None
     releases = payload.get("releases", {})
