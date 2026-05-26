@@ -150,20 +150,6 @@ def test_gate_accepts_first_release_against_empty_published() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W12-040")
-# The pytest unraisable-exception hook (Python 3.14) catches benign GC
-# noise from test-scope tempfiles AND from HTTPError responses being
-# implicitly cleaned up, then escalates under the repo-wide
-# `filterwarnings = ["error"]`. Suppress only those two specific known
-# unraisable forms; any other PytestUnraisableExceptionWarning still
-# fails the test.
-@pytest.mark.filterwarnings(
-    "ignore:Exception ignored while calling deallocator"
-    ":pytest.PytestUnraisableExceptionWarning"
-)
-@pytest.mark.filterwarnings(
-    "ignore:Implicitly cleaning up"
-    ":pytest.PytestUnraisableExceptionWarning"
-)
 def test_fetch_published_versions_treats_pypi_404_as_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -190,18 +176,6 @@ def test_fetch_published_versions_treats_pypi_404_as_empty(
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W12-040")
-# Same unraisable-hook escalation as the 404 test sibling: any HTTPError
-# constructed in-test can emit a benign ResourceWarning during GC under
-# Python 3.14 + pytest, which the repo-wide filterwarnings=error promotes
-# to a failure. Suppress only that specific known noise.
-@pytest.mark.filterwarnings(
-    "ignore:Implicitly cleaning up"
-    ":pytest.PytestUnraisableExceptionWarning"
-)
-@pytest.mark.filterwarnings(
-    "ignore:Exception ignored while calling deallocator"
-    ":pytest.PytestUnraisableExceptionWarning"
-)
 def test_fetch_published_versions_aborts_on_non_404_http_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -225,6 +199,68 @@ def test_fetch_published_versions_aborts_on_non_404_http_error(
     with pytest.raises(SystemExit) as excinfo:
         mod._fetch_published_versions()
     assert excinfo.value.code == 4
+
+
+class _CloseSpy(io.BytesIO):
+    """BytesIO that records every .close() call. Used to assert that
+    _fetch_published_versions() explicitly closes the HTTPError body
+    on BOTH the 404-success path and the 5xx-abort path -- so the
+    cleanup invariant is checked DIRECTLY (rather than via the absence
+    of a GC-time ResourceWarning, which a future code change could
+    silence by simply suppressing the warning)."""
+
+    def __init__(self) -> None:
+        super().__init__(b"")
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-040")
+def test_fetch_published_versions_closes_httperror_body_on_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct cleanup assertion: the HTTPError body MUST be closed
+    before returning on the 404-no-prior-versions path."""
+    import urllib.error
+    mod = _load_semver_module()
+    spy = _CloseSpy()
+
+    def _raise_404(*_a, **_kw):
+        raise urllib.error.HTTPError(
+            url=mod.PYPI_JSON_URL, code=404, msg="Not Found",
+            hdrs=None, fp=spy,  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _raise_404)
+    assert mod._fetch_published_versions() == []
+    assert spy.close_calls >= 1, "HTTPError body was not closed on 404 path"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-040")
+def test_fetch_published_versions_closes_httperror_body_on_5xx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct cleanup assertion: the HTTPError body MUST be closed
+    before raising SystemExit on the 5xx-abort path too."""
+    import urllib.error
+    mod = _load_semver_module()
+    spy = _CloseSpy()
+
+    def _raise_500(*_a, **_kw):
+        raise urllib.error.HTTPError(
+            url=mod.PYPI_JSON_URL, code=500, msg="Internal Server Error",
+            hdrs=None, fp=spy,  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _raise_500)
+    with pytest.raises(SystemExit):
+        mod._fetch_published_versions()
+    assert spy.close_calls >= 1, "HTTPError body was not closed on 5xx abort path"
 
 
 @pytest.mark.plumbing
