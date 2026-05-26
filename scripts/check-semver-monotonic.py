@@ -45,6 +45,7 @@ ASCII-only output per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -215,10 +216,8 @@ def _fetch_published_versions() -> list[str]:
         # temp-file-closer __del__ and escalate under filterwarnings=error).
         fp = getattr(exc, "fp", None)
         if fp is not None:
-            try:
+            with contextlib.suppress(Exception):
                 fp.close()
-            except Exception:  # noqa: BLE001 - best-effort cleanup
-                pass
         if code == 404:
             return []
         print(
