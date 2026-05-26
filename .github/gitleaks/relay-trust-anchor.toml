@@ -37,12 +37,13 @@ title = "Relay trust-anchor key-material scan"
 [[rules]]
 id = "relay-pem-private-key"
 description = "PEM-encoded private key block (trust-anchor signing keys live only in KMS/HSM per spec L.1/AO.4; never commit private key material)"
-# Matches standard PEM private-key armor (optional RSA/EC/DSA/OPENSSH/
-# ENCRYPTED prefix) AND ASCII-armored PGP private keys. The PGP armor
-# header carries a "... PRIVATE KEY BLOCK" suffix (there is no bare
-# "PGP PRIVATE KEY" form), so it is a separate alternation branch rather
-# than just a prefix on the PEM form.
-regex = '''-----BEGIN (?:(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----'''
+# Matches standard PEM private-key armor with the optional prefixes the
+# repo-wide guard (test_no_private_keys_repo_wide._BANNED_PEM_HEADERS)
+# treats as banned (RSA / EC / DSA / OPENSSH / ENCRYPTED / ED25519), AND
+# ASCII-armored PGP private keys (header carries a "... PRIVATE KEY BLOCK"
+# suffix; there is no bare "PGP PRIVATE KEY" form, so it is a separate
+# alternation branch rather than just a prefix on the PEM form).
+regex = '''-----BEGIN (?:(?:RSA |EC |DSA |OPENSSH |ENCRYPTED |ED25519 )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----'''
 keywords = [
     "BEGIN",
     "PRIVATE KEY",
