@@ -117,8 +117,15 @@ def test_requests_get_external_blocked_under_replay() -> None:
 
 
 @pytest.mark.fulfills("VAL-W7-080")
+# Narrow to the specific socket-cleanup ResourceWarning we expect from
+# urllib3 / socket.socket GC after an ECONNREFUSED tear-down -- not
+# every PytestUnraisableExceptionWarning. A broad filter would weaken
+# the repo-wide ``filterwarnings = ["error", ...]`` policy for this
+# test; this match= regex only suppresses the known timing-dependent
+# ResourceWarning about an unclosed socket.
 @pytest.mark.filterwarnings(
-    "ignore::pytest.PytestUnraisableExceptionWarning"
+    "ignore:.*ResourceWarning.*unclosed.*socket.*"
+    ":pytest.PytestUnraisableExceptionWarning"
 )
 def test_requests_get_loopback_passes_through() -> None:
     """A request to ``127.0.0.1:<closed>`` raises ``ConnectionError`` at

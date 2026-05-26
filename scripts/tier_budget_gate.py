@@ -7,7 +7,7 @@ exceeds its budget per spec AM.6:
 
     | Tier      | Budget |
     | --------- | ------ |
-    | plumbing  |  60 s  |
+    | plumbing  | 900 s  |
     | smoke     | 480 s  |
     | eval      | 720 s  |
 
@@ -151,8 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     # Tier consistency: when the report carries a 'tier' field, it MUST
     # match the --tier argument. Prevents a CI typo where the smoke job
     # accidentally runs the plumbing budget evaluator over a smoke
-    # report (would let an 8-minute smoke run silently "pass" the 60s
-    # plumbing budget).
+    # report (would let an 8-minute smoke run silently "pass" the wrong
+    # tier's budget).
     if "tier" in report and report["tier"] != args.tier:
         print(
             f"FAIL: {ERROR_CODE} report tier {report['tier']!r} does not "

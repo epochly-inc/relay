@@ -12,7 +12,8 @@ Covers:
 
 Per CLAUDE.md TDD discipline each test binds to its contract assertion via
 ``@pytest.mark.fulfills``. All tests are plumbing-tier (offline; no
-network; <60 s wall) per the contract evidence clause.
+network) per the contract evidence clause; the enforced plumbing wall
+budget is 900 s (see scripts/tier_budget_gate.py).
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -299,7 +300,7 @@ def test_evidence_bundle_registry_artifact_prefix(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# VAL-V2M08-038/039/040: tier_budget_gate enforces 60s / 480s / 720s budgets.
+# VAL-V2M08-038/039/040: tier_budget_gate enforces 900s / 480s / 720s budgets.
 # ---------------------------------------------------------------------------
 
 

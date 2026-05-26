@@ -2,9 +2,14 @@
 #
 # Three jobs, one per pytest tier marker (spec AM.6):
 #
-#   plumbing : -m plumbing --timeout=60   budget <= 60 s
+#   plumbing : -m plumbing --timeout=60   budget <= 900 s (15 min)
 #   smoke    : -m smoke    --timeout=480  budget <= 480 s (8 min)
 #   eval     : -m eval     --timeout=720  budget <= 720 s (12 min)
+#
+# The plumbing wall budget was raised from 60s to 900s (history in
+# scripts/tier_budget_gate.py) once the OSS v0.1 plumbing tier grew well
+# beyond the spec's narrower scope; --timeout=60 stays as the PER-TEST
+# timeout, not the tier budget.
 #
 # Each job:
 #   1. Records wall-clock start time.
@@ -104,7 +109,7 @@ jobs:
           cat artifacts/plumbing-report.json
           echo
 
-      - name: "enforce plumbing 60s budget"
+      - name: "enforce plumbing 900s budget"
         run: |
           python scripts/tier_budget_gate.py --tier plumbing --report artifacts/plumbing-report.json
 

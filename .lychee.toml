@@ -26,6 +26,12 @@ exclude = [
   "https://github.com/epochly-inc/relay",
   "https://relay.epochly.com/.*",
   "https://epochly-inc.github.io/relay/.*",
+  # Sigstore's public TSA endpoint accepts POST only (per RFC 3161) and
+  # returns 405 to lychee's GET probe. lychee has no per-URL accept code,
+  # so excluding the URL is the targeted way to allow this single POST-
+  # only endpoint without globally accepting 405 (which would hide a
+  # Method-Not-Allowed response from any other broken link).
+  "https://timestamp\\.sigstore\\.dev/api/v1/timestamp",
 ]
 
 # Exclude the negative-test fixture from positive linkcheck runs. The fixture
@@ -44,9 +50,10 @@ exclude_path = [
   "site/404.html",
 ]
 
-# Accept these status codes as OK. Some sites return 403 to crawlers even when
-# the link is valid for browsers; 206 covers partial-content responses; 405
-# covers POST-only API endpoints (e.g. the RFC 3161 TSA endpoint
-# https://timestamp.sigstore.dev/api/v1/timestamp, which rejects lychee's GET
-# probe with Method Not Allowed but is a valid, reachable URL).
-accept = ["200", "204", "206", "301", "302", "403", "405"]
+# Accept these status codes as OK. Some sites return 403 to crawlers even
+# when the link is valid for browsers; 206 covers partial-content
+# responses. 405 (Method Not Allowed) is NOT globally accepted -- the one
+# POST-only endpoint we care about (the RFC 3161 TSA at
+# timestamp.sigstore.dev) is in `exclude` above so a 405 from any other
+# link still surfaces as broken.
+accept = ["200", "204", "206", "301", "302", "403"]

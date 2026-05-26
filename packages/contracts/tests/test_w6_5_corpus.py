@@ -119,7 +119,8 @@ _CASES_BY_ID: dict[str, dict[str, Any]] = {c["id"]: c for c in _CASES}
 
 
 # ---------------------------------------------------------------------------
-# Plumbing-tier structure guards (always run; offline; <60s budget)
+# Plumbing-tier structure guards (always run; offline; budget per
+# scripts/tier_budget_gate.py)
 # ---------------------------------------------------------------------------
 
 

@@ -10,7 +10,7 @@ Covers:
   * VAL-W10-008: live unreachable + no cache + no bundled -> clear fail.
   * VAL-W10-009: network-deny default for bundled-JWKS path.
 
-All tests are plumbing-tier (offline, <60s budget) per the
+All tests are plumbing-tier (offline; plumbing-tier budget per scripts/tier_budget_gate.py) per the
 :data:`pytest.mark.plumbing` marker. Each test binds to its contract
 assertion via :data:`pytest.mark.fulfills`.
 
