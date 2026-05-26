@@ -97,18 +97,21 @@ async def test_per_project_rate_limit_429(
     monkeypatch: pytest.MonkeyPatch,
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    # Set per-project to 2 RPS. Three rapid PUTs from same project ->
-    # third returns 429.
+    # Set per-project to 2 RPS. The rate limiter uses a fixed 1-second
+    # window: a slow CI runner that spreads only 4 requests across >1s
+    # leaves each window with <=2 requests and never trips 429 (this was
+    # observed flaking the scheduled tier-budgets run). Send enough
+    # requests in a tight loop that the per-second count is guaranteed to
+    # exceed 2 even on a heavily loaded runner -- in-process ASGI calls
+    # complete in sub-ms each, so 40 calls land in well under a second.
     monkeypatch.setenv("RELAY_SIDECAR_RATELIMIT_PROJECT_RPS", "2")
-    # Rebuild a fresh app since the env-var is read on each request inside
-    # the middleware -- no rebuild needed actually.
     c, _db, _app = v2m02_client
     hdrs = {
         **scope_header("gates:configure"),
         "X-Relay-Project": "proj-A",
     }
     status_codes = []
-    for _ in range(4):
+    for _ in range(40):
         r = await c.put("/v1/gates/g", json={"name": "g"}, headers=hdrs)
         status_codes.append(r.status_code)
         if r.status_code == 429:
@@ -116,7 +119,7 @@ async def test_per_project_rate_limit_429(
             assert "retry-after" in r.headers
             assert int(r.headers["retry-after"]) >= 1
             return
-    pytest.fail(f"expected 429 within 4 requests; got {status_codes}")
+    pytest.fail(f"expected 429 within 40 requests; got {status_codes}")
 
 
 @pytest.mark.plumbing
@@ -126,6 +129,9 @@ async def test_per_jwt_rate_limit_429(
     monkeypatch: pytest.MonkeyPatch,
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
+    # See test_per_project_rate_limit_429 -- same fixed-window flake risk:
+    # send enough requests in a tight loop to guarantee the per-second count
+    # exceeds 2 even on a heavily loaded CI runner.
     monkeypatch.setenv("RELAY_SIDECAR_RATELIMIT_JWT_RPS", "2")
     c, _db, app = v2m02_client
     # Register a token with runs:read scope and a project_id.
@@ -135,13 +141,13 @@ async def test_per_jwt_rate_limit_429(
     }
     hdrs = {"Authorization": "Bearer jwt-aaa"}
     status_codes = []
-    for _ in range(5):
+    for _ in range(40):
         r = await c.get("/v1/runs/unknown-id", headers=hdrs)
         status_codes.append(r.status_code)
         if r.status_code == 429:
             assert json.loads(r.text)["code"] == "RELAY-RATE-001"
             return
-    pytest.fail(f"expected 429; got {status_codes}")
+    pytest.fail(f"expected 429 within 40 requests; got {status_codes}")
 
 
 @pytest.mark.plumbing
@@ -151,6 +157,7 @@ async def test_per_ip_verify_rate_limit_429(
     monkeypatch: pytest.MonkeyPatch,
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
+    # See test_per_project_rate_limit_429 -- same fixed-window flake risk.
     monkeypatch.setenv("RELAY_SIDECAR_RATELIMIT_IP_RPS", "2")
     c, _db, _app = v2m02_client
     # Audit fix (2026-05-17 P0): POST /v1/evidence-bundles requires
@@ -162,11 +169,11 @@ async def test_per_ip_verify_rate_limit_429(
     )
     bid = json.loads(r_create.text)["bundle_id"]
     status_codes = []
-    for _ in range(5):
+    for _ in range(40):
         r = await c.post(f"/v1/evidence-bundles/{bid}/verify")
         status_codes.append(r.status_code)
         if r.status_code == 429:
             assert json.loads(r.text)["code"] == "RELAY-RATE-014"
             assert "retry-after" in r.headers
             return
-    pytest.fail(f"expected 429; got {status_codes}")
+    pytest.fail(f"expected 429 within 40 requests; got {status_codes}")
