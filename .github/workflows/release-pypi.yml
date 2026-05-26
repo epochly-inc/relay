@@ -57,6 +57,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: "Install PyYAML for static guard"
+        # The static guard parses release workflow YAML with PyYAML.
+        # Pinned MAJOR.x range to silence Dependabot drift, --no-deps to
+        # avoid pulling unrelated wheels into the precheck job.
+        run: pip install --no-deps "pyyaml>=6.0,<7.0"
+
       - name: "Static guard: PyPI publish workflow contract"
         # Enforces VAL-W12-001..006, 038..040, 046 by static analysis
         # of this workflow file plus the release runbook.
