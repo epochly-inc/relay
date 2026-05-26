@@ -322,6 +322,10 @@ jobs:
       base64-subjects: ${{ needs.collect-hashes.outputs.hashes }}
       provenance-name: "relay-sidecar-bundle.intoto.jsonl"
       upload-assets: true
+      # Build the generator binary from source against our pinned SHA.
+      # The release-asset fetch path refuses bare SHA refs (it expects
+      # refs/tags/vX.Y.Z form), so the binary would otherwise be missing.
+      compile-generator: true
 
   # ---------------------------------------------------------------------------
   # Sigstore keyless signing (VAL-W12-021 + VAL-W12-022). Signs each

@@ -276,6 +276,11 @@ jobs:
       # step would otherwise exit 27 because SUCCESS depends on
       # upload-assets.outcome which is empty when that job is skipped.
       continue-on-error: true
+      # Build the generator from source against our pinned SHA. The
+      # release-asset fetch path refuses bare SHA refs ("Expected ref
+      # of the form refs/tags/vX.Y.Z"), so the binary would otherwise
+      # be missing and the attest step would silently exit 127.
+      compile-generator: true
 
   # ---------------------------------------------------------------------------
   # SLSA L3 provenance for the sidecar-bundle tarball (chained into VAL-W12-008).
@@ -295,8 +300,9 @@ jobs:
       upload-assets: false
       provenance-name: "epochly-relay-npm-sidecar-bundle-provenance.intoto.jsonl"
       # See release-pypi.yml provenance job for the continue-on-error
-      # rationale.
+      # and compile-generator rationale.
       continue-on-error: true
+      compile-generator: true
 
   # ---------------------------------------------------------------------------
   # Publish @epochly/relay via npm OIDC trusted-publisher flow

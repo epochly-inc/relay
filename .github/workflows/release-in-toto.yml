@@ -473,6 +473,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: "Install guard deps (PyYAML for layout parsing)"
+        # check-in-toto-attestations.py imports yaml; install before
+        # any guard invocation runs.
+        run: pip install --no-deps "pyyaml>=6.0,<7.0"
+
       - name: "Verify layout signing key rotation window (VAL-W12-019)"
         # Refuses to proceed when the layout-signing key is past its
         # not_after timestamp without a witness signature. The runtime

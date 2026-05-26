@@ -170,6 +170,15 @@ jobs:
       # generator's provenance-name surface) so the publish job can
       # fetch and forward it to PyPI.
       continue-on-error: true
+      # compile-generator builds the slsa-generator-generic binary from
+      # the pinned-SHA source checkout rather than fetching a pre-built
+      # release asset. Required because the generator's internal builder
+      # fetch step refuses bare SHAs ("Invalid ref: <sha>. Expected ref
+      # of the form refs/tags/vX.Y.Z") -- but our VAL-W12-012 guard
+      # mandates SHA pinning. compile-generator bridges the gap at a
+      # ~2-minute build cost, preserving both supply-chain pinning AND
+      # the v2.1.0 generator surface.
+      compile-generator: true
 
   # ---------------------------------------------------------------------------
   # Publish to PyPI via trusted-publisher OIDC flow (VAL-W12-001/002/005/006).
