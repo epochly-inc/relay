@@ -205,19 +205,26 @@ def _fetch_published_versions() -> list[str]:
         with urllib.request.urlopen(PYPI_JSON_URL, timeout=15) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        # ALWAYS close the HTTPError body stream first, regardless of how
+        # we handle the status code. Without this, the urllib response
+        # body lingers on the HTTPError and is finalized by GC -- which
+        # under Python 3.14 raises a ResourceWarning ("Implicitly cleaning
+        # up <HTTPError ...>") that pytest's unraisable-exception hook
+        # catches and escalates to a hard failure under the repo-wide
+        # filterwarnings=error policy. Closing here prevents it on BOTH
+        # the 404 success path and the abort-on-other-status path.
+        code = exc.code
+        fp = getattr(exc, "fp", None)
+        if fp is not None:
+            with contextlib.suppress(Exception):
+                fp.close()
+        with contextlib.suppress(Exception):
+            exc.close()
         # 404 = the package has never been published. This is the EXPECTED
         # state for the FIRST release (e.g. v0.1.0) and must be treated
         # as "no prior versions", not as an error -- otherwise the first
         # publish is permanently blocked at this gate. Any other HTTP
         # error (5xx, transient network failure) still aborts.
-        code = exc.code
-        # Close the HTTPError's body stream explicitly so its deallocator
-        # does not fire during GC (pytest's unraisable hook can catch the
-        # temp-file-closer __del__ and escalate under filterwarnings=error).
-        fp = getattr(exc, "fp", None)
-        if fp is not None:
-            with contextlib.suppress(Exception):
-                fp.close()
         if code == 404:
             return []
         print(

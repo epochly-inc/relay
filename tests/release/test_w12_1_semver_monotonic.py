@@ -150,12 +150,18 @@ def test_gate_accepts_first_release_against_empty_published() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W12-040")
-# The pytest unraisable-exception hook (Python 3.14) catches a benign
-# _TemporaryFileCloser.__del__ that fires during GC of pytest-internal
-# tempfiles in this test scope, escalating it under the repo-wide
-# `filterwarnings = ["error"]`. Suppress only that specific known noise.
+# The pytest unraisable-exception hook (Python 3.14) catches benign GC
+# noise from test-scope tempfiles AND from HTTPError responses being
+# implicitly cleaned up, then escalates under the repo-wide
+# `filterwarnings = ["error"]`. Suppress only those two specific known
+# unraisable forms; any other PytestUnraisableExceptionWarning still
+# fails the test.
 @pytest.mark.filterwarnings(
     "ignore:Exception ignored while calling deallocator"
+    ":pytest.PytestUnraisableExceptionWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:Implicitly cleaning up"
     ":pytest.PytestUnraisableExceptionWarning"
 )
 def test_fetch_published_versions_treats_pypi_404_as_empty(
@@ -184,6 +190,18 @@ def test_fetch_published_versions_treats_pypi_404_as_empty(
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W12-040")
+# Same unraisable-hook escalation as the 404 test sibling: any HTTPError
+# constructed in-test can emit a benign ResourceWarning during GC under
+# Python 3.14 + pytest, which the repo-wide filterwarnings=error promotes
+# to a failure. Suppress only that specific known noise.
+@pytest.mark.filterwarnings(
+    "ignore:Implicitly cleaning up"
+    ":pytest.PytestUnraisableExceptionWarning"
+)
+@pytest.mark.filterwarnings(
+    "ignore:Exception ignored while calling deallocator"
+    ":pytest.PytestUnraisableExceptionWarning"
+)
 def test_fetch_published_versions_aborts_on_non_404_http_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

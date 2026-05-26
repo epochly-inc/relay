@@ -17,6 +17,14 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.0] - 2026-05-26
+
+First SemVer-tagged release of Relay OSS. Tracks the codebase at HEAD
+of `main` after the `relay-docs-v1` documentation operation sealed
+(49/49 contract assertions passed; see `~/.ops-runtime/relay-docs-v1-
+20260522/`) and after the post-audit review pass (structural-review,
+codex `xhigh`, and roborev all clean at tag time).
+
 ### Added
 - Comprehensive user documentation effort (operation `relay-docs-v1`):
   landing page, install guide, first workflow walkthroughs, local Compose
@@ -25,6 +33,43 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
   generated docs, package READMEs, and examples (m1-f01).
 - Banned-copy scanner coverage extended across `docs/**/*.md`, excluding
   internal and release documentation surfaces (m1-f02).
+- Re-derived W17.3 cel-spec conformance corpus reproducible from the
+  pinned google/cel-spec v0.20.0 commit
+  (`bfe4f8b06c29cc71b783819ef415e2e766606023`); 198 verified upstream
+  vectors + 3 curated profile-rejection examples, all validated against
+  upstream by `scripts/build-celspec-corpus.py`. Drop-list audit
+  artifact (`dropped-candidates.json`) tracked in git so a NEW
+  parity drop is a PR-visible diff.
+- Secret-scan fork-PR fallback: licensed gitleaks-action runs on
+  same-repo non-Dependabot PRs; a no-license CLI fallback (Docker image
+  digest-pinned, config loaded from `origin/<base_ref>`) runs on fork
+  PRs and Dependabot PRs.
+
+### Fixed
+- SemVer monotonicity gate now treats PyPI 404 as "no prior versions"
+  so the first publish (this release) is not permanently blocked.
+- Audit fallback (`scripts/docs/audit-codebase-alignment.py`) honors
+  `.gitignore` semantics via `git ls-files` enumeration, matching
+  `rg`'s skip-gitignored behavior; `rg` invocation gains `--hidden` for
+  symmetric tracked-dotfile coverage.
+- Rate-limit `429` tests use a deterministic clock-freeze monkeypatch
+  (`relay_sidecar.runtime.datetime`) plus direct bucket seeding, so
+  the assertion does not depend on whether N requests land in the same
+  wall-clock second on a slow CI runner.
+
+### Security
+- gitleaks ruleset: PEM private-key regex now matches `ED25519` PEM
+  armor (in addition to RSA / EC / DSA / OPENSSH / ENCRYPTED / PGP); the
+  per-rule allowlist for the historical JWS conformance-corpus test key
+  is scoped with `condition = AND` to the EXACT historical commit SHAs
+  AND paths, so a new key added to those paths in a different commit is
+  caught.
+- Secret-scan `_FIXTURE` exemption restricted to `^tests/(.*/)?...`
+  basename-anchored, so a real key cannot bypass scanning via a
+  fixture-named path segment outside `tests/`.
+- gitleaks Docker image pinned by sha256 manifest digest (v8.21.4); the
+  fork-PR fallback config is loaded from the trusted base branch via
+  `git show` so a fork PR cannot weaken the ruleset in the same change.
 
 ## [v0.3-audit-resolution-complete] - 2026-05-19
 
