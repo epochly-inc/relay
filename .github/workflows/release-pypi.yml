@@ -156,7 +156,7 @@ jobs:
       actions: read     # for the reusable workflow to read its own run
     # Pinned by SHA (VAL-W12-012). When bumping, refresh from
     # https://github.com/slsa-framework/slsa-github-generator/releases.
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@5a775b367a56d5bd118a224a811bba288150a563
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
     with:
       base64-subjects: "${{ needs.build.outputs.hashes }}"
       upload-assets: false

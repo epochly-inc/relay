@@ -419,6 +419,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: "Install guard deps (PyYAML for layout parsing)"
+        # scripts/check-in-toto-attestations.py uses `import yaml` (PyYAML)
+        # to parse the in-toto layout file in chain-verification mode;
+        # without an explicit install the job fails with ModuleNotFoundError.
+        run: pip install --no-deps "pyyaml>=6.0,<7.0"
+
       - name: "Download all link artifacts"
         uses: actions/download-artifact@v4
         with:

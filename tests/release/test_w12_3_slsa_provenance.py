@@ -55,7 +55,7 @@ REAL_NPM_WORKFLOW: Path = REPO_ROOT / ".github" / "workflows" / "release-npm.yml
 # Pinned SHA for the slsa-github-generator reusable workflow.  The
 # committed release workflows reference this exact SHA today; the guard
 # verifies pinning by SHA (40-hex), not by tag.
-SLSA_GENERATOR_PIN_SHA = "5a775b367a56d5bd118a224a811bba288150a563"
+SLSA_GENERATOR_PIN_SHA = "f7dd8c54c2067bafc12ca7a55595d5ee9b75204a"
 SLSA_GENERATOR_PATH_PREFIX = (
     "slsa-framework/slsa-github-generator/.github/workflows/"
 )
