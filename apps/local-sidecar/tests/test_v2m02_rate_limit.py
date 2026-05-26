@@ -13,6 +13,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 import pytest
@@ -97,29 +98,29 @@ async def test_per_project_rate_limit_429(
     monkeypatch: pytest.MonkeyPatch,
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    # Set per-project to 2 RPS. The rate limiter uses a fixed 1-second
-    # window: a slow CI runner that spreads only 4 requests across >1s
-    # leaves each window with <=2 requests and never trips 429 (this was
-    # observed flaking the scheduled tier-budgets run). Send enough
-    # requests in a tight loop that the per-second count is guaranteed to
-    # exceed 2 even on a heavily loaded runner -- in-process ASGI calls
-    # complete in sub-ms each, so 40 calls land in well under a second.
+    # Deterministic assertion of the exact RPS=2 threshold: pre-seed the
+    # per-project bucket at the limit (count == limit) for the CURRENT
+    # window, then issue ONE request and assert it 429s. The middleware
+    # increments count -> limit+1 in the same window, count > limit ->
+    # 429. This tests the precise contract (third same-window request is
+    # 429) without depending on whether N requests happen to land in the
+    # same wall-clock second on a slow CI runner. Bucket key format
+    # `project:<id>` is internal to runtime.py:_rate_limit_state -- update
+    # both together if the format ever changes.
     monkeypatch.setenv("RELAY_SIDECAR_RATELIMIT_PROJECT_RPS", "2")
     c, _db, _app = v2m02_client
     hdrs = {
         **scope_header("gates:configure"),
         "X-Relay-Project": "proj-A",
     }
-    status_codes = []
-    for _ in range(40):
-        r = await c.put("/v1/gates/g", json={"name": "g"}, headers=hdrs)
-        status_codes.append(r.status_code)
-        if r.status_code == 429:
-            assert json.loads(r.text)["code"] == "RELAY-RATE-001"
-            assert "retry-after" in r.headers
-            assert int(r.headers["retry-after"]) >= 1
-            return
-    pytest.fail(f"expected 429 within 40 requests; got {status_codes}")
+    _app.state.runtime.rate_limit_buckets["project:proj-A"] = (int(time.time()), 2)
+    r = await c.put("/v1/gates/g", json={"name": "g"}, headers=hdrs)
+    assert r.status_code == 429, (
+        f"expected 429 at RPS=2 threshold; got {r.status_code}"
+    )
+    assert json.loads(r.text)["code"] == "RELAY-RATE-001"
+    assert "retry-after" in r.headers
+    assert int(r.headers["retry-after"]) >= 1
 
 
 @pytest.mark.plumbing
@@ -129,9 +130,9 @@ async def test_per_jwt_rate_limit_429(
     monkeypatch: pytest.MonkeyPatch,
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    # See test_per_project_rate_limit_429 -- same fixed-window flake risk:
-    # send enough requests in a tight loop to guarantee the per-second count
-    # exceeds 2 even on a heavily loaded CI runner.
+    # See test_per_project_rate_limit_429 -- same deterministic
+    # seed-at-limit pattern asserts the precise RPS=2 threshold for the
+    # per-JWT bucket without wall-clock dependence.
     monkeypatch.setenv("RELAY_SIDECAR_RATELIMIT_JWT_RPS", "2")
     c, _db, app = v2m02_client
     # Register a token with runs:read scope and a project_id.
@@ -140,14 +141,12 @@ async def test_per_jwt_rate_limit_429(
         "project_id": "proj-jwt",
     }
     hdrs = {"Authorization": "Bearer jwt-aaa"}
-    status_codes = []
-    for _ in range(40):
-        r = await c.get("/v1/runs/unknown-id", headers=hdrs)
-        status_codes.append(r.status_code)
-        if r.status_code == 429:
-            assert json.loads(r.text)["code"] == "RELAY-RATE-001"
-            return
-    pytest.fail(f"expected 429 within 40 requests; got {status_codes}")
+    app.state.runtime.rate_limit_buckets["jwt:jwt-aaa"] = (int(time.time()), 2)
+    r = await c.get("/v1/runs/unknown-id", headers=hdrs)
+    assert r.status_code == 429, (
+        f"expected 429 at RPS=2 threshold; got {r.status_code}"
+    )
+    assert json.loads(r.text)["code"] == "RELAY-RATE-001"
 
 
 @pytest.mark.plumbing
@@ -157,7 +156,10 @@ async def test_per_ip_verify_rate_limit_429(
     monkeypatch: pytest.MonkeyPatch,
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    # See test_per_project_rate_limit_429 -- same fixed-window flake risk.
+    # See test_per_project_rate_limit_429 -- same deterministic
+    # seed-at-limit pattern for the per-IP verify bucket. X-Forwarded-For
+    # is honoured by _client_ip so the bucket key is fully pinned regardless
+    # of the underlying httpx ASGI client-host default.
     monkeypatch.setenv("RELAY_SIDECAR_RATELIMIT_IP_RPS", "2")
     c, _db, _app = v2m02_client
     # Audit fix (2026-05-17 P0): POST /v1/evidence-bundles requires
@@ -168,12 +170,16 @@ async def test_per_ip_verify_rate_limit_429(
         headers=scope_header("evidence:write"),
     )
     bid = json.loads(r_create.text)["bundle_id"]
-    status_codes = []
-    for _ in range(40):
-        r = await c.post(f"/v1/evidence-bundles/{bid}/verify")
-        status_codes.append(r.status_code)
-        if r.status_code == 429:
-            assert json.loads(r.text)["code"] == "RELAY-RATE-014"
-            assert "retry-after" in r.headers
-            return
-    pytest.fail(f"expected 429 within 40 requests; got {status_codes}")
+    xff = "10.0.0.7"
+    _app.state.runtime.rate_limit_buckets[f"ip:{xff}:verify"] = (
+        int(time.time()), 2,
+    )
+    r = await c.post(
+        f"/v1/evidence-bundles/{bid}/verify",
+        headers={"X-Forwarded-For": xff},
+    )
+    assert r.status_code == 429, (
+        f"expected 429 at RPS=2 threshold; got {r.status_code}"
+    )
+    assert json.loads(r.text)["code"] == "RELAY-RATE-014"
+    assert "retry-after" in r.headers
