@@ -255,7 +255,10 @@ jobs:
     needs: [build-sdk]
     permissions:
       id-token: write
-      contents: read
+      # contents: write required by the SLSA reusable workflow's declared
+      # `upload-assets` permissions even though upload-assets: false (see
+      # release-pypi.yml for the full diagnostic note).
+      contents: write
       actions: read
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@5a775b367a56d5bd118a224a811bba288150a563
     with:
@@ -271,7 +274,9 @@ jobs:
     needs: [build-sidecar-bundle]
     permissions:
       id-token: write
-      contents: read
+      # contents: write required by SLSA reusable workflow declared
+      # permissions (see provenance-sdk above for the full note).
+      contents: write
       actions: read
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@5a775b367a56d5bd118a224a811bba288150a563
     with:

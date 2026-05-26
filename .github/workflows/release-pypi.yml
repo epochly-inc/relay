@@ -136,7 +136,17 @@ jobs:
     needs: [build]
     permissions:
       id-token: write   # for keyless Sigstore signing
-      contents: read
+      # contents: write is required even though `upload-assets: false`
+      # below disables actual release-asset writes. The SLSA reusable
+      # workflow's internal `upload-assets` job declares
+      # `permissions.contents: write` in its top-level metadata, and
+      # GitHub validates declared (not actually-used) permissions on
+      # the calling workflow at startup -- without `contents: write`
+      # here, the entire workflow fails with
+      #   "The nested job 'upload-assets' is requesting 'contents: write',
+      #    but is only allowed 'contents: read'."
+      # (observed on the v0.1.0 tag run 26474621339).
+      contents: write
       actions: read     # for the reusable workflow to read its own run
     # Pinned by SHA (VAL-W12-012). When bumping, refresh from
     # https://github.com/slsa-framework/slsa-github-generator/releases.
