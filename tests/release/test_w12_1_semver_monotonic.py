@@ -224,20 +224,31 @@ def test_fetch_published_versions_closes_httperror_body_on_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Direct cleanup assertion: the HTTPError body MUST be closed
-    before returning on the 404-no-prior-versions path."""
+    EXPLICITLY by `_fetch_published_versions()` on the 404-no-prior-
+    versions path -- not implicitly by HTTPError finalization. A strong
+    reference (`captured`) is held to the HTTPError so its `__del__`
+    cannot fire and close `fp` between the function return and the
+    assertion, ensuring `close_calls` reflects ONLY in-function cleanup."""
     import urllib.error
     mod = _load_semver_module()
     spy = _CloseSpy()
+    captured: list[urllib.error.HTTPError] = []
 
     def _raise_404(*_a, **_kw):
-        raise urllib.error.HTTPError(
+        exc = urllib.error.HTTPError(
             url=mod.PYPI_JSON_URL, code=404, msg="Not Found",
             hdrs=None, fp=spy,  # type: ignore[arg-type]
         )
+        captured.append(exc)
+        raise exc
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", _raise_404)
     assert mod._fetch_published_versions() == []
+    # The HTTPError is still alive via `captured`; if the script stops
+    # calling fp.close, the spy's counter would be 0 here -- the
+    # finalizer cannot have fired because we hold a strong reference.
     assert spy.close_calls >= 1, "HTTPError body was not closed on 404 path"
+    assert len(captured) == 1, "test invariant: HTTPError was raised"
 
 
 @pytest.mark.plumbing
@@ -246,21 +257,27 @@ def test_fetch_published_versions_closes_httperror_body_on_5xx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Direct cleanup assertion: the HTTPError body MUST be closed
-    before raising SystemExit on the 5xx-abort path too."""
+    EXPLICITLY before raising SystemExit on the 5xx-abort path. Same
+    strong-reference pattern as the 404 test so the spy's counter
+    cannot be inflated by finalizer-driven close."""
     import urllib.error
     mod = _load_semver_module()
     spy = _CloseSpy()
+    captured: list[urllib.error.HTTPError] = []
 
     def _raise_500(*_a, **_kw):
-        raise urllib.error.HTTPError(
+        exc = urllib.error.HTTPError(
             url=mod.PYPI_JSON_URL, code=500, msg="Internal Server Error",
             hdrs=None, fp=spy,  # type: ignore[arg-type]
         )
+        captured.append(exc)
+        raise exc
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", _raise_500)
     with pytest.raises(SystemExit):
         mod._fetch_published_versions()
     assert spy.close_calls >= 1, "HTTPError body was not closed on 5xx abort path"
+    assert len(captured) == 1, "test invariant: HTTPError was raised"
 
 
 @pytest.mark.plumbing
