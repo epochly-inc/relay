@@ -13,7 +13,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import json
-import time
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -21,6 +21,27 @@ from _v2m02_w25_helpers import (
     no_scope_header,
     scope_header,
 )
+
+
+def _freeze_runtime_clock(monkeypatch: pytest.MonkeyPatch) -> int:
+    """Pin relay_sidecar.runtime.datetime to a fixed instant so the
+    rate-limit window the test SEEDS and the window the middleware
+    READS through _now_epoch_s (datetime.now(tz=UTC).timestamp()) are
+    guaranteed identical -- eliminating the sub-second wall-clock race
+    that flaked the scheduled tier-budgets nightly run. Returns the
+    integer-epoch matching the runtime's _now_epoch_s under the freeze,
+    so the test can seed bucket windows with the same value."""
+    import relay_sidecar.runtime as rt_mod
+
+    frozen = datetime(2025, 1, 1, tzinfo=UTC)
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return frozen if tz is None else frozen.astimezone(tz)
+
+    monkeypatch.setattr(rt_mod, "datetime", _FrozenDateTime)
+    return int(frozen.timestamp())
 
 
 @pytest.mark.plumbing
@@ -108,12 +129,13 @@ async def test_per_project_rate_limit_429(
     # `project:<id>` is internal to runtime.py:_rate_limit_state -- update
     # both together if the format ever changes.
     monkeypatch.setenv("RELAY_SIDECAR_RATELIMIT_PROJECT_RPS", "2")
+    frozen_epoch = _freeze_runtime_clock(monkeypatch)
     c, _db, _app = v2m02_client
     hdrs = {
         **scope_header("gates:configure"),
         "X-Relay-Project": "proj-A",
     }
-    _app.state.runtime.rate_limit_buckets["project:proj-A"] = (int(time.time()), 2)
+    _app.state.runtime.rate_limit_buckets["project:proj-A"] = (frozen_epoch, 2)
     r = await c.put("/v1/gates/g", json={"name": "g"}, headers=hdrs)
     assert r.status_code == 429, (
         f"expected 429 at RPS=2 threshold; got {r.status_code}"
@@ -134,6 +156,7 @@ async def test_per_jwt_rate_limit_429(
     # seed-at-limit pattern asserts the precise RPS=2 threshold for the
     # per-JWT bucket without wall-clock dependence.
     monkeypatch.setenv("RELAY_SIDECAR_RATELIMIT_JWT_RPS", "2")
+    frozen_epoch = _freeze_runtime_clock(monkeypatch)
     c, _db, app = v2m02_client
     # Register a token with runs:read scope and a project_id.
     app.state.runtime.registered_tokens["jwt-aaa"] = {
@@ -141,7 +164,7 @@ async def test_per_jwt_rate_limit_429(
         "project_id": "proj-jwt",
     }
     hdrs = {"Authorization": "Bearer jwt-aaa"}
-    app.state.runtime.rate_limit_buckets["jwt:jwt-aaa"] = (int(time.time()), 2)
+    app.state.runtime.rate_limit_buckets["jwt:jwt-aaa"] = (frozen_epoch, 2)
     r = await c.get("/v1/runs/unknown-id", headers=hdrs)
     assert r.status_code == 429, (
         f"expected 429 at RPS=2 threshold; got {r.status_code}"
@@ -170,9 +193,13 @@ async def test_per_ip_verify_rate_limit_429(
         headers=scope_header("evidence:write"),
     )
     bid = json.loads(r_create.text)["bundle_id"]
+    # Freeze the runtime clock AFTER bundle creation (creation hits the
+    # project bucket; freezing only matters for the verify call where the
+    # seed-then-request window must match).
+    frozen_epoch = _freeze_runtime_clock(monkeypatch)
     xff = "10.0.0.7"
     _app.state.runtime.rate_limit_buckets[f"ip:{xff}:verify"] = (
-        int(time.time()), 2,
+        frozen_epoch, 2,
     )
     r = await c.post(
         f"/v1/evidence-bundles/{bid}/verify",

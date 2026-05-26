@@ -100,10 +100,14 @@ jobs:
           # ERR_PACKAGE_PATH_NOT_EXPORTED because cel-js's "exports" map
           # blocks deep package.json access; and a hardcoded
           # ./node_modules path breaks under npm workspace hoisting. npm
-          # ls reports the resolved installed version regardless. Fail
-          # fast on an empty version so the drift report cannot record
-          # "cel-js " (no version) and look benign.
-          CELJS_VER=$(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')
+          # ls reports the resolved installed version regardless. Capture
+          # WITHOUT aborting on a non-zero npm-ls exit (npm ls can exit
+          # non-zero when the installed version no longer satisfies the
+          # package.json pin while still printing a valid tree -- exactly
+          # the case the latest-upgrade pass below needs to test). Then
+          # FAIL FAST on an empty parsed version.
+          NPM_LS_OUT=$(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null || true)
+          CELJS_VER=$(echo "${NPM_LS_OUT}" | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')
           if [ -z "${CELJS_VER}" ]; then
             echo "RELAY-W17-3-CELJS-VERSION-LOOKUP-FAILED: npm ls returned no cel-js version" >&2
             exit 1
@@ -133,8 +137,13 @@ jobs:
           # (defeating the drift signal). --no-sync runs against the
           # already-upgraded env.
           uv run --no-sync python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
-          # Same fail-fast as the pinned-version capture step above.
-          CELJS_LATEST=$(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')
+          # Same as the pinned-version capture above: tolerate a non-zero
+          # npm-ls exit (after `npm install cel-js@latest --no-save`, the
+          # installed latest may not satisfy package.json's pinned spec,
+          # which makes npm ls exit non-zero while still printing the
+          # resolved tree -- exactly the case we want to TEST here).
+          NPM_LS_LATEST=$(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null || true)
+          CELJS_LATEST=$(echo "${NPM_LS_LATEST}" | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')
           if [ -z "${CELJS_LATEST}" ]; then
             echo "RELAY-W17-3-CELJS-VERSION-LOOKUP-FAILED: npm ls returned no cel-js version after upgrade" >&2
             exit 1
