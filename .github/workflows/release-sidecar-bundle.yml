@@ -147,21 +147,22 @@ jobs:
 
       - name: "Install PyInstaller and sidecar deps"
         shell: bash
-        # The Relay workspace forms a 4-way cycle:
-        #   apps/local-sidecar      -> epochly-relay-schemas, epochly-relay
-        #   packages/sdk-python     -> epochly-relay-sidecar, epochly-relay-schemas, epochly-relay-cli
-        #   packages/schemas        -> (no workspace deps)
-        #   packages/cli            -> epochly-relay, epochly-relay-schemas, epochly-relay-sidecar
+        # Install EVERY workspace member editable, in one `pip install`
+        # command, so that:
+        #   (a) pip never falls through to PyPI for an in-workspace
+        #       sibling that has not yet been published (the failure
+        #       mode that broke the v0.1.9 sidecar-bundle build before
+        #       packages/cli was added to this list);
+        #   (b) the tier-1 plumbing parity step below can `import
+        #       relay_gate_engine`, `import relay_verifier`, etc., the
+        #       same way the local dev environment can (those imports
+        #       come from packages/gate, packages/verifier, etc.).
         #
         # Plain pip does not read uv's [tool.uv.sources] table, so
-        # installing these one-at-a-time causes pip to query PyPI for
-        # the workspace siblings of whichever package it sees first.
-        # Pass ALL FOUR editable paths to a single `pip install` so pip
-        # registers each workspace package in its build environment
-        # BEFORE attempting dependency resolution. Omitting any one
-        # package (e.g. `packages/cli` before v0.1.9 added the CLI to
-        # the SDK's runtime deps) makes pip fall through to PyPI for
-        # that name and fail with "No matching distribution found".
+        # any package omitted here triggers a PyPI lookup for the
+        # corresponding sibling and either fails outright (sibling
+        # not on PyPI) or pulls a stale published version (sibling
+        # is on PyPI at the wrong version).
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller==6.11.0
@@ -169,7 +170,15 @@ jobs:
             -e packages/schemas \
             -e packages/sdk-python \
             -e packages/cli \
-            -e apps/local-sidecar
+            -e packages/contracts \
+            -e packages/gate \
+            -e packages/evals \
+            -e packages/explain \
+            -e packages/verifier \
+            -e packages/acef \
+            -e packages/replay-sandbox-protocol \
+            -e apps/local-sidecar \
+            -e apps/replay-proxy
 
       - name: "Build sidecar binary for ${{ matrix.cell }}"
         shell: bash
