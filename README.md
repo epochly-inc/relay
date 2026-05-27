@@ -53,6 +53,62 @@ format and one contract DSL across SDKs:
   and the manifest commit the agent was built against, into a single
   Sigstore-signed bundle that can be verified offline.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph App["Your application"]
+        direction TB
+        Agent["Agent code"]
+        Adapters["Provider adapters<br/>(OpenAI, Anthropic,<br/>Vercel AI, LangChain, MCP)"]
+        Agent --> Adapters
+    end
+
+    subgraph SDK["Relay SDK (Python / TypeScript)"]
+        direction TB
+        Wrap["Decorators &amp; context managers<br/>(@model_call, @tool_call, trace)"]
+        Envelope["Canonical envelope serializer<br/>(JCS-normalized JSON)"]
+        Wrap --> Envelope
+    end
+
+    subgraph Sidecar["Local sidecar (per host, lockfile-serialized)"]
+        direction TB
+        Ingest["Ingest endpoint<br/>(FastAPI, loopback only)"]
+        Log["Append-only event log<br/>(aiosqlite, WAL)"]
+        Redact["Redaction policy engine<br/>(default-deny on raw capture)"]
+        Ingest --> Redact --> Log
+    end
+
+    subgraph Engines["Replay &amp; verification"]
+        direction TB
+        Replay["Replay engine<br/>(cassette-first, sandbox-net=deny)"]
+        Contracts["Contract engine<br/>(CEL + Relay UDFs)"]
+        Gate["Gate decision aggregator"]
+        Replay --> Contracts --> Gate
+    end
+
+    subgraph Evidence["Evidence layer"]
+        direction TB
+        Bundle["Signed evidence bundle<br/>(Sigstore + SLSA L3 provenance)"]
+        Verifier["Offline verifier<br/>(rly verify, JWKS trust anchor)"]
+        Gate --> Bundle
+        Bundle -. consumed by .-> Verifier
+    end
+
+    Adapters --> Wrap
+    Envelope -->|HTTP loopback| Ingest
+    Log --> Replay
+```
+
+The SDK wraps your agent's existing calls without modifying the surrounding
+code. Envelopes flow over loopback HTTP to a per-host sidecar that
+serializes ingest, applies the active redaction policy, and persists to a
+WAL-mode SQLite log. The replay engine reads recorded envelopes and
+re-executes them against a fixed provider cassette, feeding the resulting
+trace to the contract engine. Gate decisions are emitted as Sigstore-signed
+evidence bundles with SLSA L3 provenance; the `rly verify` CLI checks them
+offline against the published JWKS trust anchor.
+
 ## Trust model
 
 The reliability of an AI system depends on where verification occurs.
