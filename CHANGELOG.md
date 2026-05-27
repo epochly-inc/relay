@@ -17,6 +17,35 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.10] - 2026-05-27
+
+Release-infrastructure patch: makes the sidecar-bundle binary build
+actually produce binaries. v0.1.9 published 4 PyPI packages and the
+2 npm packages cleanly, but the companion
+`release-sidecar-bundle.yml` workflow (which PyInstaller-builds the
+sidecar binary for each OS/arch and attaches them to the GitHub
+release) failed on 4 of 5 platforms in its install step. Root cause:
+`packages/cli` was missing from the editable-install list, so pip
+queried PyPI for `epochly-relay-cli` (the SDK's transitive runtime
+dep) while resolving the SDK's editable install, and failed with
+"No matching distribution found" because v0.1.9 had not yet
+published when the build ran.
+
+v0.1.9 of `@epochly/relay-sidecar-bundle` on npm is functional as a
+package, but its launcher cannot download its sidecar binary at
+runtime because no binaries reached the v0.1.9 GitHub release. The
+v0.1.10 release ships an `npx @epochly/relay-sidecar-bundle` whose
+launcher CAN find its binaries on the v0.1.10 GitHub release.
+
+No SDK, CLI, schema, or sidecar runtime behavior changes.
+
+### Fixed
+- `release-sidecar-bundle.yml` install step: added `-e packages/cli`
+  to the editable install list so pip resolves the SDK's
+  `epochly-relay-cli` workspace dep locally instead of querying PyPI.
+  Updated the workspace-cycle comment from 3-way to 4-way with each
+  package's full dep list enumerated.
+
 ## [v0.1.9] - 2026-05-27
 
 Release-infrastructure patch: makes the PyPI release path actually

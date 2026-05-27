@@ -1,6 +1,6 @@
 {
   "name": "@epochly/relay",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/epochly-inc/relay.git",
