@@ -17,6 +17,25 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.6] - 2026-05-27
+
+Release-infrastructure patch. The release-sidecar-bundle workflow
+had been failing since the v0.1.0 bring-up for a reason unrelated
+to the npm OIDC cleanup: the PyInstaller cell-build step ran
+`pip install -e apps/local-sidecar` and pip went to PyPI for the
+sidecar's `epochly-relay-schemas` dependency, which has its own
+publish cadence and is not yet on the registry.
+
+No SDK or CLI behavior changes.
+
+### Fixed
+- `release-sidecar-bundle.yml` "Install PyInstaller and sidecar
+  deps" step now pre-installs `packages/schemas` and
+  `packages/sdk-python` from local source before installing
+  `apps/local-sidecar`. This lets pip satisfy the sidecar's
+  `epochly-relay-schemas` and `epochly-relay` workspace
+  dependencies locally instead of failing the registry lookup.
+
 ## [v0.1.5] - 2026-05-26
 
 Release-infrastructure patch. v0.1.4 npm publishes via OIDC

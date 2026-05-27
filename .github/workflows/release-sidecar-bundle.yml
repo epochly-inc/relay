@@ -147,9 +147,18 @@ jobs:
 
       - name: "Install PyInstaller and sidecar deps"
         shell: bash
+        # apps/local-sidecar depends on epochly-relay-schemas and
+        # epochly-relay (declared as `{ workspace = true }` in
+        # apps/local-sidecar/pyproject.toml). We install both
+        # workspace packages from their local source paths FIRST so
+        # pip can satisfy the sidecar's requirements without going to
+        # PyPI for the schemas package (which has its own publish
+        # cadence and may not yet be on the registry for every release).
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller==6.11.0
+          python -m pip install -e packages/schemas
+          python -m pip install -e packages/sdk-python
           python -m pip install -e apps/local-sidecar
 
       - name: "Build sidecar binary for ${{ matrix.cell }}"
