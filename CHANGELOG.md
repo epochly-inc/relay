@@ -17,6 +17,23 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.4] - 2026-05-26
+
+Release-infrastructure patch for v0.1.3. The v0.1.3 npm publishes
+to both registries succeeded via OIDC trusted publishing, but the
+post-publish `npm audit signatures` step failed because the
+`npm install --no-save <pkg>` invocation did not write a
+`package-lock.json`, and `npm audit signatures` requires a
+lockfile to know what to audit.
+
+No SDK or CLI behavior changes.
+
+### Fixed
+- `release-npm.yml` post-publish audit step now writes the
+  `package-lock.json` (dropped `--no-save`) so `npm audit signatures`
+  has a manifest to walk. Applied to both publish-sdk and
+  publish-sidecar-bundle audit blocks.
+
 ## [v0.1.3] - 2026-05-26
 
 Release-infrastructure patch for v0.1.2. The v0.1.2 npm publish

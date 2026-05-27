@@ -421,7 +421,10 @@ jobs:
         # into a scratch project, then audit signatures. The publish
         # job otherwise has no node_modules to audit ("found no
         # dependencies to audit that were installed from a supported
-        # registry").
+        # registry"). `npm audit signatures` requires a
+        # package-lock.json to know what to audit, so we omit
+        # --no-save and let `npm install` write both package.json
+        # and the lockfile in the scratch dir.
         run: |
           mkdir -p audit-tmp
           cd audit-tmp
@@ -429,7 +432,7 @@ jobs:
           PKG_VERSION=$(node -p "require('../packages/sdk-typescript/package.json').version")
           # Retry-wait for registry propagation up to 60s.
           for i in 1 2 3 4 5 6; do
-            if npm install --no-save "@epochly/relay@${PKG_VERSION}" 2>&1; then
+            if npm install "@epochly/relay@${PKG_VERSION}" 2>&1; then
               break
             fi
             echo "Registry propagation retry ${i}/6"
@@ -517,13 +520,15 @@ jobs:
         if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         # See publish-sdk for rationale; same fresh-install-then-audit
         # pattern handles the no-node_modules-in-publish-job case.
+        # Drop --no-save so npm writes the package-lock.json that
+        # `npm audit signatures` requires.
         run: |
           mkdir -p audit-tmp-sidecar-bundle
           cd audit-tmp-sidecar-bundle
           npm init -y >/dev/null
           PKG_VERSION=$(node -p "require('../packages/sdk-typescript-sidecar-bundle/package.json').version")
           for i in 1 2 3 4 5 6; do
-            if npm install --no-save "@epochly/relay-sidecar-bundle@${PKG_VERSION}" 2>&1; then
+            if npm install "@epochly/relay-sidecar-bundle@${PKG_VERSION}" 2>&1; then
               break
             fi
             echo "Registry propagation retry ${i}/6"
