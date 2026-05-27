@@ -1,13 +1,13 @@
 # Relay
 
-**An agent reliability OS for engineers shipping AI features.**
+**Reliability infrastructure for AI agents.**
 
-Relay captures every LLM call, tool call, and retrieval an AI agent makes;
-lets you deterministically replay them against modified code; evaluates them
-against contracts you write; and produces signed, content-addressed evidence
-bundles that prove how the agent behaved.
+Relay records every model call, tool invocation, and retrieval an AI agent
+performs; replays them deterministically against modified code; evaluates
+them against contracts declared in CEL; and produces signed,
+content-addressed evidence bundles that prove how the system behaved.
 
-Apache 2.0. Python, TypeScript, and a `rly` CLI.
+Apache 2.0. Python, TypeScript, and a `rly` command-line interface.
 
 [![PyPI](https://img.shields.io/pypi/v/epochly-relay.svg?label=PyPI%20epochly-relay)](https://pypi.org/project/epochly-relay/)
 [![npm](https://img.shields.io/npm/v/@epochly/relay.svg?label=npm%20%40epochly%2Frelay)](https://www.npmjs.com/package/@epochly/relay)
@@ -16,73 +16,82 @@ Apache 2.0. Python, TypeScript, and a `rly` CLI.
 
 ---
 
-## Why Relay
+## The problem Relay solves
 
-If you build with AI agents — LangChain, LangGraph, the OpenAI or Anthropic
-SDK, the Vercel AI SDK, MCP servers, or your own framework — you have
-already hit at least one of:
+Teams shipping AI features in production run into a consistent set of
+operational failures:
 
-- A tool call that worked yesterday and silently does nothing today.
-- A structured-output schema the model has started quietly ignoring.
-- A retrieval step that returns the right doc in dev and the wrong one
-  in production.
-- A provider rolled out a new model version and your evals dropped eight
-  points overnight, and you cannot tell whether your code or theirs changed.
-- A customer can describe what their agent did wrong but you cannot
-  reproduce it.
+- Silent regressions in tool calls that previously worked.
+- Structured outputs that drift out of schema as models update.
+- Retrieval steps that return different documents in production than
+  in development.
+- Eval score movements after a provider rolls out a new model version,
+  with no way to isolate the cause.
+- Customer-reported defects that cannot be reproduced from logs alone.
 
-Relay is the layer underneath your agent that makes all of these debuggable.
-Think of it as a **flight recorder + replay theatre + contract engine +
-evidence factory**, with the same trace format and contract DSL across SDKs.
+Relay provides the recording, replay, evaluation, and evidence layer
+underneath the agent so each of these failures becomes diagnosable
+through the same workflow.
 
-## The trust model
+## Approach
 
-Most agent frameworks — LangChain, LangGraph, the SDK wrappers, the
-"agent eval" SaaS tier — get the trust model backwards. They trust the
-LLM. They take the model's structured output at face value, log its
-self-reported tool decisions, and treat its chain-of-thought as ground
-truth.
+Relay separates the system into four primitives that share one trace
+format and one contract DSL across SDKs:
 
-LLMs are non-deterministic. They will lie about what they did. They will
-emit a tool call that looks plausible and skip the actual side effect.
-They will return JSON that almost validates. They will hallucinate a
-retrieval citation. None of this is a bug; it is the medium.
+- **Recorder.** A loopback sidecar captures every model call, tool call,
+  and retrieval as a signed envelope, written to a tamper-evident
+  append-only log on the local host.
+- **Replay engine.** Recorded traces play back deterministically against
+  modified application code. The default mode replays a fixed cassette
+  of provider responses; live mode is opt-in and is marked in the
+  resulting evidence.
+- **Contract engine.** Behavioral requirements are declared in CEL and
+  evaluated against the recorded trace by the Relay gate engine. The
+  language model is never asked whether its own behavior was correct.
+- **Evidence bundles.** Every gate decision binds the contracts that
+  ran, the assertions they evaluated, the artifact hashes they produced,
+  and the manifest commit the agent was built against, into a single
+  Sigstore-signed bundle that can be verified offline.
 
-Relay's trust model:
+## Trust model
 
-- **Trust the trace, not the model.** Every tool call, model call, and
-  retrieval is captured by the SDK as it happens. The trace is what
-  occurred — not what the LLM said occurred.
-- **Verify against contracts you wrote.** Contracts are evaluated by the
-  Relay gate engine in CEL, deterministically, on the trace. The LLM is
-  never asked whether the contract passed.
-- **Make evidence portable.** A signed evidence bundle proves what the
-  agent did to anyone who has the trust anchor, without needing access
-  to your CI or your Relay account.
+The reliability of an AI system depends on where verification occurs.
+LLM output is non-deterministic and can misrepresent the system's actual
+behavior — emitting tool calls that look plausible without performing
+the side effect, returning structured output that almost validates, or
+asserting retrieval citations that were never fetched.
 
-This is why Relay exists. If your tooling is trusting the LLM to grade
-its own homework, you do not have evidence — you have a transcript of
-what the LLM wants you to believe.
+Relay places verification outside the language model:
+
+| Layer | Source of truth |
+|---|---|
+| What occurred | The SDK-captured trace |
+| Whether requirements were met | CEL contracts evaluated by the gate engine |
+| What a third party can confirm | Signed evidence bundle, verifiable offline |
+
+Agent observability frameworks that derive correctness from the model's
+self-report cannot meet this standard. Relay's primitives are designed
+so that no decision about correctness flows back through the language
+model under evaluation.
 
 ## Install
 
 ```bash
-# Python SDK + CLI (installs the `rly` binary)
+# Python SDK and `rly` CLI
 pip install epochly-relay
 # or, with uv:
 uv pip install epochly-relay
 
-# TypeScript SDK + sidecar bundle (also installs the `rly` binary)
+# TypeScript SDK and sidecar bundle (also installs the `rly` binary)
 npm install @epochly/relay
 ```
 
-Both packages publish from this repo via OIDC trusted publishing with
-SLSA L3 provenance and Sigstore attestations on every release.
+Both packages publish via OIDC trusted publishing with SLSA L3 provenance
+and Sigstore attestations on every release.
 
-## 30-second quickstart
+## Quickstart
 
-Wrap your agent's LLM and tool calls, define a contract, and let Relay
-record what happened:
+Wrap agent operations, evaluate a contract, ship a signed bundle:
 
 ```python
 from epochly_relay import trace, model_call, tool_call, validate_contract
@@ -102,86 +111,80 @@ with trace(scope_id="refund-policy-lookup") as run:
     assert result.ok
 ```
 
-When you want to investigate, replay, or hand the trace to QA or compliance:
+Operational commands:
 
 ```bash
-# Re-run a recorded trace against modified code, deterministically
+# Replay a recorded trace against modified code, deterministically
 rly replay run refund-policy-lookup --against ./my_agent.py
 
-# Evaluate a saved gate (passes only if every contract holds)
+# Evaluate a saved gate (passes only when every contract holds)
 rly gate evaluate refund-quality-gate
 
 # Verify a signed evidence bundle offline (no Relay account required)
 rly verify ./bundles/refund-policy-lookup.acef
 ```
 
-Every command emits machine-readable JSON when given `--json`, and exits
-with stable, documented codes. See [`docs/`](docs/).
+Every command emits machine-readable JSON when given `--json` and exits
+with stable, documented status codes.
 
-## What you get
+## Capabilities
 
-- **One trace format across SDKs.** Python and TypeScript SDKs produce
-  byte-identical envelopes; you can record in TS and replay in Python.
-- **Cassette-first replay.** Default replay mode plays a recorded
-  cassette of provider responses for deterministic re-runs. Live replay
-  is opt-in and clearly marked in the resulting evidence.
-- **Contracts in CEL.** Describe what "correct" looks like for an agent
-  in a declarative DSL with first-class UDFs for tool-arg checks,
-  retrieval coverage, and structured-output schema matching.
-- **Side-effect aware.** Tool calls declare an idempotency class
-  (`read`, `idempotent_write`, `mutating`, `external_irreversible`).
-  Replay refuses to re-execute irreversible side effects unless you
-  explicitly authorize it.
-- **Signed evidence bundles.** Every gate decision binds artifact
-  hashes, command exit codes, trace span IDs, contract assertion IDs,
-  and a manifest commit hash into one Sigstore-signed bundle you can
-  verify offline.
-- **Default-deny on raw capture.** The local sidecar never persists
+- **Cross-SDK trace parity.** The Python and TypeScript SDKs produce
+  byte-identical envelopes. A trace recorded in one SDK replays in the
+  other.
+- **Cassette-first replay.** Deterministic re-execution against a fixed
+  cassette of provider responses is the default. Live replay against
+  real providers is opt-in and recorded as a degraded mode in the
+  resulting evidence.
+- **CEL contract language.** Requirements are declared in Common
+  Expression Language with first-class user-defined functions for tool
+  argument validation, retrieval coverage analysis, and structured
+  output schema matching.
+- **Side-effect classification.** Tool calls declare their idempotency
+  class (`read`, `idempotent_write`, `mutating`, `external_irreversible`).
+  Replay refuses to re-execute irreversible side effects unless an
+  explicit override is recorded in the evidence.
+- **Signed evidence bundles.** Each gate decision binds artifact hashes,
+  command exit codes, trace span identifiers, contract assertion
+  identifiers, and the manifest commit hash into a single
+  Sigstore-signed bundle.
+- **Default-deny on raw capture.** The local sidecar does not persist
   raw prompts, model outputs, tool arguments, or retrieval documents
-  unless you turn raw capture on with a signed redaction policy.
-- **Adapters that disappear.** Drop-in adapters for OpenAI, Anthropic,
-  Vercel AI SDK, LangChain, LangGraph, and MCP. Your existing code
-  keeps working; Relay records and replays around it.
+  unless raw capture is explicitly enabled by a signed redaction policy.
+- **Drop-in adapters.** Adapters for the OpenAI SDK, Anthropic SDK,
+  Vercel AI SDK, LangChain, LangGraph, and MCP servers integrate
+  recording and replay without modification to the surrounding
+  application code.
 
-## AI Act readiness evidence
+## EU AI Act readiness evidence
 
-If you ship AI features into the EU market, the EU AI Act now requires you
-to produce, on demand, an auditable record of how a high-risk AI system
-behaved. Article 12 mandates automatic logging of events that are relevant
-to identifying risk and to enabling post-market monitoring; Annex IV
-expects technical documentation that describes the system, its risk
-controls, and the evidence those controls actually fired.
+Operators placing high-risk AI systems on the EU market are required by
+the AI Act to maintain auditable records of system behavior:
 
-Relay's evidence bundles map directly onto that surface:
-
-- **Article 12 (automatic logging).** Every traced agent run is captured
-  as a signed envelope with timestamped tool calls, model calls, and
-  retrieval steps. The local sidecar writes them to a tamper-evident
+- **Article 12 (automatic logging).** Relay records every traced agent
+  run as a signed envelope with timestamped model calls, tool calls,
+  and retrieval steps. The sidecar writes them to a tamper-evident
   append-only log.
-- **Annex IV (technical documentation).** Every gate decision binds the
-  contracts that were checked, the assertions they evaluated, the
-  artifact hashes they produced, and the manifest commit the agent ran
-  against. You can hand an auditor a bundle and they can reproduce the
-  decision without your CI account.
-- **Post-market monitoring.** Cassette-first replay lets you reproduce a
-  customer-reported failure deterministically, weeks or months later,
-  against the exact model version and tool surface the agent saw.
+- **Annex IV (technical documentation).** Each gate decision binds the
+  contracts evaluated, the assertions they checked, the artifact hashes
+  produced, and the manifest commit the system ran against. An auditor
+  can reproduce any decision from the bundle alone.
+- **Post-market monitoring.** Cassette-first replay reproduces a
+  customer-reported failure deterministically against the exact model
+  version and tool surface the system saw at the time of the incident.
 
-Relay does not certify your system as AI-Act-conformant — no tool can do
-that for you. What it does is generate the evidence record an auditor or
-notified body asks for, in a portable signed format, with no Relay account
-needed to verify. See [docs/compliance/eu-ai-act.md](docs/compliance/eu-ai-act.md)
-for the per-article mapping and the readiness checklist.
+Relay produces the evidence record requested during conformity
+assessment; certification of the broader system remains the operator's
+responsibility. The per-article mapping and a readiness checklist are
+documented in [docs/compliance/eu-ai-act.md](docs/compliance/eu-ai-act.md).
 
-## Package names
-
-Deliberately short and registry-searchable:
+## Package surface
 
 | Surface | Name |
 |---|---|
 | PyPI package | `epochly-relay` |
 | Python import | `epochly_relay` |
-| **CLI binary** | **`rly`** |
+| **Command-line interface** | **`rly`** |
 | npm package | `@epochly/relay` |
 | npm sidecar bundle | `@epochly/relay-sidecar-bundle` |
 
@@ -194,10 +197,10 @@ relay/
 │   ├── sdk-typescript/                   # TypeScript SDK (@epochly/relay)
 │   ├── sdk-typescript-sidecar-bundle/    # signed sidecar bundle (@epochly/relay-sidecar-bundle)
 │   ├── cli/                              # `rly` CLI (Typer-based)
-│   ├── schemas/                          # JSON Schema 2020-12 + OpenAPI 3.1 + codegen
-│   ├── contracts/                        # CEL parser + Relay UDFs + conformance corpus
-│   ├── evals/                            # pass/fail evaluators, eval-delta tooling
-│   ├── verifier/                         # offline JCS + JWS + Merkle bundle verifier
+│   ├── schemas/                          # JSON Schema 2020-12 and OpenAPI 3.1 with codegen
+│   ├── contracts/                        # CEL parser, Relay user-defined functions, conformance corpus
+│   ├── evals/                            # pass/fail evaluators and eval-delta tooling
+│   ├── verifier/                         # offline JCS, JWS, and Merkle bundle verifier
 │   ├── acef/                             # Agent Conversation Evidence Format helpers
 │   ├── adapters/                         # OpenAI, Anthropic, Vercel AI, LangChain, MCP
 │   └── replay-proxy/                     # mitmproxy-based replay enforcement
@@ -208,16 +211,16 @@ relay/
 │   └── devcontainer/                     # VS Code devcontainer
 ├── examples/                             # ready-to-run agents (OpenAI, LangChain, Vercel, MCP)
 ├── tests/
-│   ├── contract/                         # tier-1 plumbing (under 60s)
-│   ├── integration/                      # tier-2 smoke (under 8 min)
-│   ├── golden/                           # canonical envelope + bundle fixtures
+│   ├── contract/                         # tier-1 plumbing (under 60 seconds)
+│   ├── integration/                      # tier-2 smoke (under 8 minutes)
+│   ├── golden/                           # canonical envelope and bundle fixtures
 │   └── conformance/                      # RFC 8785 JCS, JWS RFC 7515, CEL parity corpus
 └── docs/                                 # getting-started, architecture, contracts, evidence
 ```
 
-## Verifying a release offline
+## Offline verification
 
-Every published artifact ships with a Sigstore attestation and a SLSA L3
+Every published artifact carries a Sigstore attestation and a SLSA L3
 provenance statement. The `rly` CLI verifies them without contacting
 Relay infrastructure:
 
@@ -225,26 +228,23 @@ Relay infrastructure:
 rly verify ./bundles/your-trace.acef
 ```
 
-The OSS verifier ships with the canonical JWKS trust anchor at
-`relay.epochly.com/.well-known/jwks.json`. You can swap it for your own
-trust anchor with `--trust-anchor <url>` for forks or self-hosted
-installations. See
-[docs/legal/trust-anchor-governance.md](docs/legal/trust-anchor-governance.md)
-for the governance rules around key rotation and transparency log
-custody.
+The verifier ships with the canonical JWKS trust anchor at
+`relay.epochly.com/.well-known/jwks.json`. Forks and self-hosted
+installations can supply an alternative trust anchor with
+`--trust-anchor <url>`. Key rotation rules and transparency log custody
+are documented in
+[docs/legal/trust-anchor-governance.md](docs/legal/trust-anchor-governance.md).
 
 ## Contributing
 
-External contributions are gated on signing the [Relay CLA](CLA.md)
-(one-time, electronic, via the CLA Assistant Lite bot) **and** a
-`Signed-off-by:` DCO trailer on every commit. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the
-three-tier test cadence (plumbing / smoke / eval), and the code-review
-expectations.
+External contributions require a signed [Relay CLA](CLA.md) (one-time,
+electronic, via the CLA Assistant Lite bot) and a `Signed-off-by:` DCO
+trailer on every commit. Development setup, the three-tier test cadence
+(plumbing, smoke, eval), and code-review expectations are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-For security disclosures, please follow the procedure in
-[SECURITY.md](SECURITY.md) (do not file a public issue for a
-suspected vulnerability).
+Security disclosures follow the procedure in [SECURITY.md](SECURITY.md).
+Do not file a public issue for a suspected vulnerability.
 
 ## License
 
