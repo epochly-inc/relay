@@ -17,6 +17,34 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.2] - 2026-05-26
+
+Cleanup release after the v0.1.0 / v0.1.1 first-publish bring-up. No
+SDK or CLI behavior changes; the npm publish pipeline now uses OIDC
+trusted publishing for both `@epochly/relay` and
+`@epochly/relay-sidecar-bundle`, and the post-publish signature
+audit is fixed.
+
+### Fixed
+- `release-npm.yml` `npm audit signatures` post-publish step previously
+  exited 1 with "found no dependencies to audit that were installed
+  from a supported registry" because the publish job has no
+  node_modules. Replaced with a fresh-install-then-audit pattern that
+  installs the just-published tarball from the registry (with 6x10s
+  retry for CDN propagation) then audits, exercising the real signed
+  install path.
+
+### Removed
+- One-shot `RELAY-BOOTSTRAP-v0.1.0` NPM_TOKEN bootstrap exemption.
+  v0.1.0 / v0.1.1 needed it because npm trusted publishers can only be
+  registered AFTER a package exists on the registry. With both
+  `@epochly/relay` and `@epochly/relay-sidecar-bundle` now published
+  and their OIDC trusted-publisher bindings configured (`epochly-inc/relay`
+  / `release-npm.yml` / `release` env / `npm publish`), the bootstrap
+  is removed: workflow `NODE_AUTH_TOKEN` env injections, the
+  `NPM_TOKEN` GitHub environment secret, and both granular npm tokens
+  are deleted. OIDC trusted publishing is now the only auth path.
+
 ## [v0.1.1] - 2026-05-26
 
 Release-infrastructure patch for v0.1.0. PyPI `epochly-relay@0.1.0`

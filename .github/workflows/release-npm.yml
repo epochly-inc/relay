@@ -394,35 +394,38 @@ jobs:
 
       - name: "npm publish --provenance --access public"
         if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
-        # RELAY-BOOTSTRAP-v0.1.0: npm trusted publishers can only be
-        # registered AFTER a package exists on the registry. For the
-        # first-ever publish of @epochly/relay we inject a one-shot
-        # NPM_TOKEN secret scoped to the `release` environment; npm
-        # CLI uses NODE_AUTH_TOKEN before falling back to OIDC. Track
-        # cleanup in the post-publish task: register trusted publishers
-        # on both packages, delete the NPM_TOKEN env secret, revert
-        # this workflow + static guard to OIDC-only.
-        #
-        # Steady-state: OIDC trusted publishing: npm cli (>=11.5.1)
-        # detects ACTIONS_ID_TOKEN_REQUEST_URL + ACTIONS_ID_TOKEN_REQUEST_TOKEN
+        # OIDC trusted publishing: npm cli (>=11.5.1) detects
+        # ACTIONS_ID_TOKEN_REQUEST_URL + ACTIONS_ID_TOKEN_REQUEST_TOKEN
         # in the CI env and exchanges the GitHub OIDC token for an
         # ephemeral npm publish token at publish time. NO long-lived
         # NPM_TOKEN. The --provenance flag attaches a Sigstore-backed
         # SLSA provenance statement whose subject digest equals the
         # published tarball's SHA-512.
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd dist-sdk
           npm publish *.tgz --provenance --access public
 
       - name: "npm audit signatures (VAL-W12-008 post-condition)"
         if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
-        # Fetches the published @epochly/relay tarball back from the
-        # registry, recomputes its SHA-512, and verifies the digest
-        # equals the attestation subject digest. Non-zero exit on
-        # mismatch -> RELAY-RELEASE-008.
-        run: npm audit signatures
+        # Fresh-install the just-published tarball from the registry
+        # into a scratch project, then audit signatures. The publish
+        # job otherwise has no node_modules to audit ("found no
+        # dependencies to audit that were installed from a supported
+        # registry").
+        run: |
+          mkdir -p audit-tmp
+          cd audit-tmp
+          npm init -y >/dev/null
+          PKG_VERSION=$(node -p "require('../packages/sdk-typescript/package.json').version")
+          # Retry-wait for registry propagation up to 60s.
+          for i in 1 2 3 4 5 6; do
+            if npm install --no-save "@epochly/relay@${PKG_VERSION}" 2>&1; then
+              break
+            fi
+            echo "Registry propagation retry ${i}/6"
+            sleep 10
+          done
+          npm audit signatures
 
   # ---------------------------------------------------------------------------
   # Publish @epochly/relay-sidecar-bundle via the same OIDC flow
@@ -488,15 +491,24 @@ jobs:
 
       - name: "npm publish --provenance --access public"
         if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
-        # RELAY-BOOTSTRAP-v0.1.0: see matching note on publish-sdk step.
-        # Token injection is one-shot for v0.1.0 first publish; task #53
-        # registers a trusted publisher and reverts this back to OIDC-only.
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd dist-sidecar-bundle
           npm publish *.tgz --provenance --access public
 
       - name: "npm audit signatures (VAL-W12-008 post-condition)"
         if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
-        run: npm audit signatures
+        # See publish-sdk for rationale; same fresh-install-then-audit
+        # pattern handles the no-node_modules-in-publish-job case.
+        run: |
+          mkdir -p audit-tmp-sidecar-bundle
+          cd audit-tmp-sidecar-bundle
+          npm init -y >/dev/null
+          PKG_VERSION=$(node -p "require('../packages/sdk-typescript-sidecar-bundle/package.json').version")
+          for i in 1 2 3 4 5 6; do
+            if npm install --no-save "@epochly/relay-sidecar-bundle@${PKG_VERSION}" 2>&1; then
+              break
+            fi
+            echo "Registry propagation retry ${i}/6"
+            sleep 10
+          done
+          npm audit signatures
