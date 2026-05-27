@@ -17,6 +17,37 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.11] - 2026-05-27
+
+Release-infrastructure patch: makes the sidecar-bundle tier-1
+plumbing parity step actually pass. v0.1.10 fixed the SDK
+workspace-dep install but the parity step still failed because the
+sidecar's tier-1 tests transitively import workspace siblings
+(`relay_gate_engine` from `packages/gate`, `relay_verifier` from
+`packages/verifier`) that were not in the editable install list.
+
+v0.1.11 installs ALL 12 workspace members editable in the
+`release-sidecar-bundle.yml` install step so the CI environment
+mirrors local dev (where `uv sync --all-packages --all-extras`
+installs everything). With every workspace import resolvable, the
+tier-1 plumbing parity tests pass and the binary build proceeds to
+upload its artifacts to the v0.1.11 GitHub release.
+
+`@epochly/relay-sidecar-bundle@0.1.10` on npm is functional as a
+package but its launcher cannot download a sidecar binary at runtime
+because no binaries reached the v0.1.10 GitHub release. v0.1.11
+ships a complete release: PyPI packages, npm packages, AND the
+5-platform sidecar binary set on the v0.1.11 GitHub release.
+
+No SDK, CLI, schema, or sidecar runtime behavior changes.
+
+### Fixed
+- `release-sidecar-bundle.yml` install step: expanded the editable
+  install list from 4 to all 12 workspace members so tier-1
+  plumbing parity tests can import workspace siblings
+  (`relay_gate_engine`, `relay_verifier`, etc.) the same way the
+  local dev environment can.
+
 ## [v0.1.10] - 2026-05-27
 
 Release-infrastructure patch: makes the sidecar-bundle binary build
