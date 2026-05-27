@@ -1,9 +1,8 @@
 name: "CLA Assistant"
 
-# Per spec lines 264-298: external contribution gate (CLA Assistant Lite).
-# Paired with the DCO Bot installed separately from the GitHub Marketplace
-# (no workflow file needed for DCO). Both checks are required by branch
-# protection on main.
+# External contribution gate (CLA Assistant Lite).
+# Paired with the DCO check workflow at .github/workflows/dco.yml.
+# Both checks are required by branch protection on main.
 
 on:
   issue_comment:
@@ -32,17 +31,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # Signatures land in this repository at signatures/version1/cla.json
+          # per the promise in CLA.md (line 14). Storing in-repo means the
+          # workflow needs only the default GITHUB_TOKEN -- no Personal
+          # Access Token and no separate signatures repository.
           path-to-signatures: 'signatures/version1/cla.json'
-          path-to-document: 'https://relay.epochly.com/legal/cla'
+          # CLA document is the CLA.md file at the repository root.
+          path-to-document: 'https://github.com/epochly-inc/relay/blob/main/CLA.md'
           branch: 'main'
           allowlist: 'dependabot[bot],github-actions[bot],renovate[bot]'
-          remote-organization-name: epochly-inc
-          remote-repository-name: relay-cla-signatures
           signed-commit-message: 'CLA signature for $contributorName ($pullRequestNo)'
           custom-notsigned-prcomment: |
             Thanks for the PR! Before we can merge, you'll need to sign the
-            [Relay Contributor License Agreement](https://relay.epochly.com/legal/cla)
-            (mirrored in this repo at [CLA.md](../../CLA.md)).
+            [Relay Contributor License Agreement](https://github.com/epochly-inc/relay/blob/main/CLA.md).
 
             Reply in this PR with the exact phrase below to sign:
 
@@ -52,4 +53,5 @@ jobs:
             from your GitHub account.
 
             Note: every commit must also include a `Signed-off-by:` DCO
-            trailer (`git commit -s`). See [CONTRIBUTING.md](../../CONTRIBUTING.md).
+            trailer (`git commit -s`). See
+            [CONTRIBUTING.md](https://github.com/epochly-inc/relay/blob/main/CONTRIBUTING.md).
