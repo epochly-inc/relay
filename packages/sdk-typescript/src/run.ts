@@ -72,8 +72,34 @@ import {
 } from "./lifecycle.js";
 import { newUlid } from "./ulid.js";
 
-/** SDK version string the SDK includes in every envelope. */
-export const SDK_VERSION = "relay-typescript@0.0.0";
+/** SDK version string the SDK includes in every envelope.
+ *
+ * Resolved at module load time from the package's own package.json so
+ * the canonical version (the one baked into the published tarball) is
+ * what every envelope reports. The published tarball includes
+ * package.json at the package root and the compiled module at
+ * dist/src/run.js, so `../../package.json` resolves correctly in both
+ * the published artifact and a local `npm pack` build.
+ */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+function resolveSdkVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = join(here, "..", "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
+    if (typeof pkg.version === "string" && pkg.version.length > 0) {
+      return `relay-typescript@${pkg.version}`;
+    }
+  } catch {
+    // fallthrough to fallback
+  }
+  return "relay-typescript@0.0.0+local";
+}
+
+export const SDK_VERSION = resolveSdkVersion();
 
 /** UTC timestamp with millisecond precision (mirrors Python ``_utcnow_iso8601``). */
 export function utcNowIso8601(): string {

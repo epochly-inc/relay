@@ -12,8 +12,34 @@
  * ASCII-only per CLAUDE.md "ASCII-Safe Source".
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { RelayError } from "../errors.js";
 import { launchSidecar, type LaunchSidecarOptions } from "./wrapper.js";
+
+/** Resolve the CLI's own version from package.json.
+ *
+ * Compiled module lives at dist/src/bin/relay-sidecar.js; package.json
+ * sits at the package root, so `../../../package.json` resolves to the
+ * canonical published version in both the npm tarball and a local pack.
+ */
+function resolveCliVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = join(here, "..", "..", "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
+    if (typeof pkg.version === "string" && pkg.version.length > 0) {
+      return pkg.version;
+    }
+  } catch {
+    // fallthrough
+  }
+  return "0.0.0+local";
+}
+
+const CLI_VERSION = resolveCliVersion();
 
 interface ParsedArgs {
   command: "sidecar" | "version" | "help" | "unknown";
@@ -96,7 +122,7 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
     return 0;
   }
   if (parsed.command === "version") {
-    process.stdout.write("@epochly/relay v0.0.0\n");
+    process.stdout.write(`@epochly/relay v${CLI_VERSION}\n`);
     return 0;
   }
   if (parsed.command !== "sidecar") {

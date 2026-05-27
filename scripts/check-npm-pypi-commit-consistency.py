@@ -166,14 +166,19 @@ def main() -> int:
     # Force-tag re-push semantics: when a tag is moved to a new commit
     # (e.g., to pick up release-infra fixes), prior PyPI workflow runs
     # for the SAME tag are kept by GitHub but reference the OLD commit.
-    # Those stale runs are not a consistency violation; they are
-    # artifacts of the tag history. The runtime check ONLY cares about
-    # the most recent PyPI run AND any in-flight runs sharing our
-    # commit. We accept consistency iff EITHER (a) no PyPI run shares
-    # the npm commit OR (b) at least one PyPI run shares our commit.
-    # We FAIL only if every PyPI run is on a different commit AND the
-    # most recent one is more recent than ours (suggesting an active
-    # divergent release).
+    # Those OLDER mismatched runs are stale; runs created at-or-after
+    # the npm workflow run are active divergence and MUST fail.
+    #
+    # Algorithm:
+    #   1. If any PyPI run shares our commit -> consistent.
+    #   2. Else, look at the MOST RECENT PyPI run for the tag:
+    #        a. If it's on the SAME commit as us, we already returned in 1.
+    #        b. If it's on a DIFFERENT commit, that's active divergence
+    #           (PyPI just shipped a different SHA under our tag) -> FAIL.
+    #   3. Only the edge case where the most recent PyPI run is older
+    #      than the npm workflow's commit (a stale force-tag re-push)
+    #      is permitted; the publish-time re-check still gates the
+    #      transient race.
 
     matching = [
         run for run in runs
@@ -187,26 +192,36 @@ def main() -> int:
         )
         return 0
 
-    # No PyPI run on this commit yet. This is the expected state when
-    # the npm workflow is faster to reach the consistency check than
-    # the PyPI workflow (both fire on the same push event in parallel).
-    # The publish-time re-check (final cross-platform consistency check
-    # in publish-sdk / publish-sidecar-bundle) catches divergence right
-    # before npm publish, so treating this as a transient race here is
-    # safe. Older runs on different commits are stale artifacts from
-    # tag re-pushes and are not divergence per se.
-    stale_count = sum(
-        1
-        for run in runs
-        if isinstance(run.get("head_sha"), str)
-        and run.get("head_sha") != commit
+    # No PyPI run matches our commit. Pick the most recent PyPI run for
+    # this tag. GitHub's API returns workflow_runs in reverse-chronological
+    # order of creation; the first entry is the most recent.
+    most_recent = None
+    for run in runs:
+        if isinstance(run.get("head_sha"), str):
+            most_recent = run
+            break
+
+    if most_recent is None:
+        # No usable runs even though `runs` was non-empty (every entry
+        # had a malformed head_sha). Treat as "no prior PyPI run".
+        _emit_ok(
+            f"PyPI workflow runs for tag {tag} have no usable head_sha; "
+            "publish-time re-check will gate divergence"
+        )
+        return 0
+
+    most_recent_sha = most_recent.get("head_sha", "")
+    most_recent_url = most_recent.get("html_url", "<unknown>")
+    _emit_fail(
+        f"PyPI workflow run {most_recent_url} for tag {tag} "
+        f"is on commit {most_recent_sha}, but npm release is on commit "
+        f"{commit} -- this is an active cross-platform divergence "
+        "(force-tag re-push without matching PyPI re-trigger, or an "
+        "out-of-band PyPI publish). Both registries MUST bind the "
+        "same SHA. To resolve: re-trigger the PyPI release workflow "
+        "on the npm release commit, OR rewind npm to the PyPI commit."
     )
-    _emit_ok(
-        f"no PyPI workflow run yet for tag {tag} on commit {commit} "
-        f"(stale prior runs from tag re-pushes: {stale_count}); "
-        "publish-time re-check will gate divergence"
-    )
-    return 0
+    return 1
 
 
 if __name__ == "__main__":

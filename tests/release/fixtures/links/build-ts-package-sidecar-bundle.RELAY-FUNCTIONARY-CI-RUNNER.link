@@ -3,7 +3,7 @@
     "_type": "link",
     "schema_version": "relay-link-v0.1",
     "name": "build-ts-package-sidecar-bundle",
-    "command": "npm pack --workspace=packages/sidecar-bundle --pack-destination=dist/",
+    "command": "npm pack --workspace=packages/sdk-typescript-sidecar-bundle --pack-destination=dist/",
     "materials": [
       {
         "uri": "git+commit://abcdef0123456789abcdef0123456789abcdef01",

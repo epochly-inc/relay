@@ -443,7 +443,11 @@ jobs:
             echo "Registry propagation poll ${i}/10 (30s wait)"
             sleep 30
           done
-          npm install "@epochly/relay@${PKG_VERSION}"
+          # --ignore-scripts: defense in depth -- the publish job holds
+          # id-token: write; a malicious lifecycle script in any
+          # transitive dep could exfiltrate the OIDC token before the
+          # signature audit runs.
+          npm install --ignore-scripts "@epochly/relay@${PKG_VERSION}"
           npm audit signatures
 
   # ---------------------------------------------------------------------------
@@ -543,5 +547,8 @@ jobs:
             echo "Registry propagation poll ${i}/10 (30s wait)"
             sleep 30
           done
-          npm install "@epochly/relay-sidecar-bundle@${PKG_VERSION}"
+          # --ignore-scripts: see publish-sdk for rationale (defense
+          # in depth against transitive dep lifecycle scripts in a
+          # job that holds id-token: write).
+          npm install --ignore-scripts "@epochly/relay-sidecar-bundle@${PKG_VERSION}"
           npm audit signatures

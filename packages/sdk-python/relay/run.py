@@ -58,7 +58,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger("relay.run")
 
 # SDK version string the SDK includes in every envelope (spec line 1943).
-SDK_VERSION: Final[str] = "relay-python@0.0.0"
+# Derived from package metadata at import time so the canonical version
+# (the value baked into the published wheel / sdist) is what every
+# envelope reports. If the package is not installed (rare; e.g., source
+# checkout run without `pip install -e .`), fall back to "0.0.0+local"
+# so the value remains valid SemVer + clearly signals a dev/local run.
+def _resolve_sdk_version() -> str:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return f"relay-python@{version('epochly-relay')}"
+    except PackageNotFoundError:
+        return "relay-python@0.0.0+local"
+
+
+SDK_VERSION: Final[str] = _resolve_sdk_version()
 
 
 def _utcnow_iso8601() -> str:

@@ -104,7 +104,7 @@
         "name": "build-ts-package-sidecar-bundle",
         "expected_command": [
           "npm", "pack",
-          "--workspace=packages/sidecar-bundle",
+          "--workspace=packages/sdk-typescript-sidecar-bundle",
           "--pack-destination=dist/"
         ],
         "expected_materials": [

@@ -17,6 +17,47 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.7] - 2026-05-27
+
+Addresses the verified roborev findings from the v0.1.0 - v0.1.6
+release cycle: one High-severity safety bug in the cross-platform
+consistency gate, plus three Medium-severity hygiene issues
+(SDK version reporting, npm install lifecycle scripts, stale
+in-toto layout fixture).
+
+No SDK or CLI behavior changes beyond version reporting.
+
+### Fixed
+- `scripts/check-npm-pypi-commit-consistency.py` previously exited 0
+  whenever ANY mismatched PyPI run existed for the tag, treating all
+  mismatches as "stale force-tag re-push artifacts". Active divergence
+  (a PyPI publish on a different SHA than the in-flight npm publish)
+  was silently passed. Reworked to fail when the MOST RECENT PyPI run
+  is on a different commit, with a structured error message that
+  guides re-trigger or rewind.
+- `packages/sdk-python/relay/run.py` `SDK_VERSION` constant now reads
+  the live package version via `importlib.metadata.version` instead
+  of a hardcoded `"relay-python@0.0.0"`. Falls back to
+  `"relay-python@0.0.0+local"` (valid SemVer + clearly local) when
+  the package is not installed.
+- `packages/sdk-typescript/src/run.ts` `SDK_VERSION` const reads the
+  published package.json at module load time (resolved via
+  `import.meta.url`) instead of a hardcoded `"relay-typescript@0.0.0"`.
+  Falls back to `"relay-typescript@0.0.0+local"` on any error.
+- `packages/sdk-typescript/src/bin/relay-sidecar.ts` `relay --version`
+  output now reports the published package version instead of the
+  hardcoded `v0.0.0`.
+- `release-npm.yml` post-publish audit step now passes
+  `--ignore-scripts` to `npm install`, preventing transitive
+  dependency lifecycle scripts from executing in a job that holds
+  `id-token: write` before signature verification completes.
+- `tests/release/fixtures/release.layout` and the matching
+  `build-ts-package-sidecar-bundle` link fixture updated to reference
+  `packages/sdk-typescript-sidecar-bundle` (the canonical workspace
+  path) instead of the obsolete pre-w12.5 stub name
+  `packages/sidecar-bundle`. Brings the signed in-toto layout in
+  sync with the actual emitted build command.
+
 ## [v0.1.6] - 2026-05-27
 
 Release-infrastructure patch. The release-sidecar-bundle workflow
