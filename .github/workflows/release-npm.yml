@@ -430,14 +430,20 @@ jobs:
           cd audit-tmp
           npm init -y >/dev/null
           PKG_VERSION=$(node -p "require('../packages/sdk-typescript/package.json').version")
-          # Retry-wait for registry propagation up to 60s.
-          for i in 1 2 3 4 5 6; do
-            if npm install "@epochly/relay@${PKG_VERSION}" 2>&1; then
+          # Retry-wait for npm CDN propagation up to ~5 minutes. The
+          # PUT returns immediately, but the CDN edge can take 30-120s
+          # before npm-view / npm-install resolve the new version.
+          # We poll with `npm view` (cheaper, no install) and only
+          # attempt install after the version is observably present.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if npm view "@epochly/relay@${PKG_VERSION}" version >/dev/null 2>&1; then
+              echo "Registry propagation complete after ${i} attempts"
               break
             fi
-            echo "Registry propagation retry ${i}/6"
-            sleep 10
+            echo "Registry propagation poll ${i}/10 (30s wait)"
+            sleep 30
           done
+          npm install "@epochly/relay@${PKG_VERSION}"
           npm audit signatures
 
   # ---------------------------------------------------------------------------
@@ -527,11 +533,15 @@ jobs:
           cd audit-tmp-sidecar-bundle
           npm init -y >/dev/null
           PKG_VERSION=$(node -p "require('../packages/sdk-typescript-sidecar-bundle/package.json').version")
-          for i in 1 2 3 4 5 6; do
-            if npm install "@epochly/relay-sidecar-bundle@${PKG_VERSION}" 2>&1; then
+          # See publish-sdk for rationale: poll npm view (cheap)
+          # until CDN propagation completes, then install + audit.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if npm view "@epochly/relay-sidecar-bundle@${PKG_VERSION}" version >/dev/null 2>&1; then
+              echo "Registry propagation complete after ${i} attempts"
               break
             fi
-            echo "Registry propagation retry ${i}/6"
-            sleep 10
+            echo "Registry propagation poll ${i}/10 (30s wait)"
+            sleep 30
           done
+          npm install "@epochly/relay-sidecar-bundle@${PKG_VERSION}"
           npm audit signatures

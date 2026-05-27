@@ -17,6 +17,25 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.5] - 2026-05-26
+
+Release-infrastructure patch. v0.1.4 npm publishes via OIDC
+succeeded for both `@epochly/relay@0.1.4` and
+`@epochly/relay-sidecar-bundle@0.1.4`, but the post-publish
+audit step still failed because the 60-second registry-propagation
+retry window was too short for npm CDN propagation, which can
+take 30-120s in practice.
+
+No SDK or CLI behavior changes.
+
+### Fixed
+- `release-npm.yml` post-publish audit step retry loop replaced
+  with a `npm view`-based propagation poll (cheaper than retried
+  `npm install`) extended to 10 attempts at 30s each (~5 minutes).
+  Once the version is visible to `npm view`, the install + audit
+  proceeds as before. Applied to both publish-sdk and
+  publish-sidecar-bundle audit blocks.
+
 ## [v0.1.4] - 2026-05-26
 
 Release-infrastructure patch for v0.1.3. The v0.1.3 npm publishes
