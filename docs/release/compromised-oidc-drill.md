@@ -49,14 +49,18 @@ Expected duration: 15 minutes.
      "Trusted Publishers" and remove the affected GitHub Actions
      binding. As above, remove all of them if unsure.
   3. In `epochly-inc/relay` repo settings, navigate to "Environments"
-     -> "release" and disable the environment temporarily (set
-     `deployment branches` to `<none>`). This blocks any in-flight
-     workflow run from reaching the publish step.
+     and disable each release-pipeline environment temporarily
+     (`release`, `release-sidecar`, `release-cli` for the PyPI side;
+     plus the npm release environments). Set each environment's
+     `deployment branches` to `<none>` so no in-flight workflow run
+     can reach any publish step.
 
 Verification artifact: screenshots of the PyPI/npm publishing
 settings pages showing zero trusted publishers configured; GitHub API
-output of `GET /repos/epochly-inc/relay/environments/release`
-returning `protection_rules: []`.
+output of `GET /repos/epochly-inc/relay/environments/release`,
+`/environments/release-sidecar`, and `/environments/release-cli`
+each returning `protection_rules: []` (or with `deployment branches`
+restricted to `<none>`).
 
 ### Step 2 -- Rotate impacted Sigstore Fulcio root anchors if needed
 

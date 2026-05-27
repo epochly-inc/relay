@@ -1,9 +1,9 @@
 # Relay v0.1 OSS Release Runbook
 
 Authoritative operational runbook for cutting a tagged release of the
-`epochly-relay` Python distribution on PyPI. This document is the
-human-readable companion to `.github/workflows/release-pypi.yml`; the
-two MUST stay in lockstep. CI guards (see
+four `epochly-relay` Python distributions on PyPI. This document is
+the human-readable companion to `.github/workflows/release-pypi.yml`;
+the two MUST stay in lockstep. CI guards (see
 `scripts/check-pypi-publish-workflow.py`) verify that the workflow's
 behavior matches what this runbook declares.
 
@@ -17,28 +17,58 @@ structure satisfies VAL-W12-001..006, 038, 039, 040, 046.
 
 ## Trusted Publisher Binding
 
-The PyPI trusted publisher for the `epochly-relay` distribution is
-scoped to a single GitHub repo + workflow + environment triple:
+The release pipeline publishes four PyPI distributions on every tag:
+the SDK (`epochly-relay`) and its three workspace siblings
+(`epochly-relay-schemas`, `epochly-relay-sidecar`, `epochly-relay-cli`).
+PyPI's trusted-publisher table has a UNIQUE constraint on
+`(owner, repo, workflow, environment)`. To keep one repo + one
+workflow file, the four packages bind to three distinct environments,
+grouped to minimize GitHub environment sprawl while honoring the
+unique constraint.
+
+Shared binding fields (identical for every package):
 
 - repo: epochly-inc/relay
 - workflow: release-pypi.yml
-- environment: release
+
+Per-package environment bindings:
+
+| PyPI project          | environment       | Publish job in workflow |
+|-----------------------|-------------------|-------------------------|
+| epochly-relay         | environment: release         | publish-release         |
+| epochly-relay-schemas | environment: release         | publish-release         |
+| epochly-relay-sidecar | environment: release-sidecar | publish-sidecar         |
+| epochly-relay-cli     | environment: release-cli     | publish-cli             |
+
+The SDK and schemas share `environment: release` because they are
+co-owned by the same release-engineering approver and there is no
+risk-isolation benefit to splitting them; sidecar and cli each get
+their own environment so the unique constraint holds, and so a
+sidecar-specific or cli-specific approval gate can be added later
+without disturbing the SDK release flow.
 
 A trusted publisher with a broader scope (any-workflow, no-environment,
-or a different repo) is a misconfiguration and MUST be revoked from the
-PyPI project settings. The binding above is the only acceptable form.
+or a different repo) is a misconfiguration and MUST be revoked from
+the PyPI project settings. Only the four bindings above are acceptable.
 
-Configuration steps (one-time per project, performed by the release
+Configuration steps (one-time per package, performed by the release
 engineering owner):
 
-1. Sign in to https://pypi.org as a maintainer of the `epochly-relay`
-   project.
-2. Navigate to "Manage" -> "Publishing" -> "Add a new publisher".
+1. Sign in to https://pypi.org as a maintainer (or as the account
+   that will create the project).
+2. Navigate to "Your account" -> "Publishing" -> "Add a new pending
+   publisher" (for unpublished projects) OR open the existing project,
+   "Manage" -> "Publishing" -> "Add a new publisher" (for published
+   projects).
 3. Select "GitHub" as the publisher type.
-4. Owner: `epochly-inc`. Repository: `relay`. Workflow filename:
-   `release-pypi.yml`. Environment name: `release`.
+4. Fill the fields per the table above:
+   - PyPI Project Name: the project from the table
+   - Owner: `epochly-inc`
+   - Repository name: `relay`
+   - Workflow filename: `release-pypi.yml`
+   - Environment name: the matching env from the table
 5. Save. PyPI now issues short-lived publish tokens to ONLY this
-   exact workflow run when invoked from the protected environment.
+   exact workflow + environment combination.
 
 No long-lived PyPI API token, no `PYPI_TOKEN` repo secret, no
 `TWINE_PASSWORD` env var is ever created. The CI guard
@@ -49,21 +79,26 @@ references these names.
 
 ## Release Environment Protection
 
-The GitHub environment named `release` MUST have the following
-protection rules enabled:
+Every GitHub environment used by the release pipeline (`release`,
+`release-sidecar`, `release-cli`) MUST have the following protection
+rules enabled, identical across all three:
 
 - required_reviewers: Chandler (release engineering owner) is the
-  designated approver. Any push of a release tag pauses at the
-  publish job until Chandler approves the run from the GitHub UI.
+  designated approver. Any push of a release tag pauses each
+  publish job at its environment gate until Chandler approves the
+  run from the GitHub UI.
 - wait timer: 0 minutes (manual approval is the gate; no extra delay).
 - deployment branches: only protected tags matching
-  `v[0-9]+.[0-9]+.[0-9]+*` may deploy to `release`.
+  `v[0-9]+.[0-9]+.[0-9]+*` may deploy to any of the three
+  environments.
 
 A push to `main`, a feature branch, or an unprotected tag MUST NOT
-reach the publish job. The runbook explicitly forbids auto-publish
+reach any publish job. The runbook explicitly forbids auto-publish
 without manual approval; review the GitHub API output of
-`GET /repos/epochly-inc/relay/environments/release` quarterly to
-verify the `required_reviewers` rule is still in place.
+`GET /repos/epochly-inc/relay/environments/release`,
+`/environments/release-sidecar`, and `/environments/release-cli`
+quarterly to verify the `required_reviewers` rule is still in place
+on each.
 
 ---
 

@@ -339,7 +339,7 @@ def test_guard_rejects_pypi_workflow_missing_provenance_job(
     def transform(data: dict[str, Any]) -> None:
         del data["jobs"]["provenance"]
         # Update publish needs to remove provenance dependency.
-        data["jobs"]["publish"]["needs"] = ["build"]
+        data["jobs"]["publish-release"]["needs"] = ["build"]
 
     repo = _materialize_repo(tmp_path, _mutate_yaml(_real_pypi_text(), transform))
     proc = _run_workflow_guard(repo)
@@ -476,7 +476,7 @@ def test_guard_rejects_publish_job_not_needing_provenance(
     def transform(data: dict[str, Any]) -> None:
         # Drop the provenance dependency from publish (publish would
         # ship without waiting for the attestation).
-        data["jobs"]["publish"]["needs"] = ["build"]
+        data["jobs"]["publish-release"]["needs"] = ["build"]
 
     repo = _materialize_repo(tmp_path, _mutate_yaml(_real_pypi_text(), transform))
     proc = _run_workflow_guard(repo)
@@ -515,7 +515,7 @@ def test_guard_rejects_publish_using_continue_on_error(tmp_path: Path) -> None:
     publish proceed even when the provenance step failed)."""
 
     def transform(data: dict[str, Any]) -> None:
-        data["jobs"]["publish"]["continue-on-error"] = True
+        data["jobs"]["publish-release"]["continue-on-error"] = True
 
     repo = _materialize_repo(tmp_path, _mutate_yaml(_real_pypi_text(), transform))
     proc = _run_workflow_guard(repo)
@@ -537,8 +537,9 @@ def test_guard_rejects_workflow_without_fork_dry_run_step(
     """A publish job that has no fork-detection step FAILS RELAY-RELEASE-044."""
 
     def transform(data: dict[str, Any]) -> None:
-        # Strip the dry-run-unsigned guard from every publish job.
-        for job_name in ("publish",):
+        # Strip the dry-run-unsigned guard from every PyPI publish job
+        # (post-split: publish-release, publish-sidecar, publish-cli).
+        for job_name in ("publish-release", "publish-sidecar", "publish-cli"):
             steps = data["jobs"][job_name].get("steps", [])
             data["jobs"][job_name]["steps"] = [
                 s for s in steps if "dry-run-unsigned" not in (s.get("id") or "")

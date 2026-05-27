@@ -187,7 +187,7 @@ def test_guard_rejects_long_lived_pypi_token_reference(tmp_path: Path) -> None:
 
     def transform(data: dict[str, Any]) -> None:
         # Inject a step that references the banned secret.
-        data["jobs"]["publish"]["steps"].append(
+        data["jobs"]["publish-release"]["steps"].append(
             {
                 "name": "Bad: legacy token reference",
                 "run": 'echo "${{ secrets.PYPI_TOKEN }}"',
@@ -211,7 +211,7 @@ def test_guard_rejects_missing_id_token_write_permission(tmp_path: Path) -> None
     """A publish job missing ``permissions.id-token: write`` FAILS."""
 
     def transform(data: dict[str, Any]) -> None:
-        data["jobs"]["publish"]["permissions"] = {"contents": "read"}
+        data["jobs"]["publish-release"]["permissions"] = {"contents": "read"}
 
     repo = _materialize_repo(
         tmp_path, _mutate_workflow(transform), _real_runbook_text()
@@ -229,7 +229,7 @@ def test_guard_rejects_missing_release_environment(tmp_path: Path) -> None:
     """A publish job not bound to environment ``release`` FAILS RELAY-RELEASE-002."""
 
     def transform(data: dict[str, Any]) -> None:
-        data["jobs"]["publish"]["environment"] = {"name": "preview"}
+        data["jobs"]["publish-release"]["environment"] = {"name": "preview"}
 
     repo = _materialize_repo(
         tmp_path, _mutate_workflow(transform), _real_runbook_text()
@@ -282,7 +282,7 @@ def test_guard_rejects_workflow_without_slsa_generator(tmp_path: Path) -> None:
     def transform(data: dict[str, Any]) -> None:
         # Strip the entire provenance job; replace with a no-op.
         del data["jobs"]["provenance"]
-        data["jobs"]["publish"]["needs"] = ["build"]
+        data["jobs"]["publish-release"]["needs"] = ["build"]
 
     repo = _materialize_repo(
         tmp_path, _mutate_workflow(transform), _real_runbook_text()
@@ -318,7 +318,7 @@ def test_guard_rejects_publish_step_without_attestations(tmp_path: Path) -> None
     """A publish step lacking ``attestations: true`` FAILS RELAY-RELEASE-005."""
 
     def transform(data: dict[str, Any]) -> None:
-        for step in data["jobs"]["publish"]["steps"]:
+        for step in data["jobs"]["publish-release"]["steps"]:
             uses = step.get("uses", "")
             if isinstance(uses, str) and uses.startswith(
                 "pypa/gh-action-pypi-publish"
@@ -346,7 +346,7 @@ def test_guard_accepts_publish_step_with_sigstore_helper(tmp_path: Path) -> None
     """
 
     def transform(data: dict[str, Any]) -> None:
-        for step in data["jobs"]["publish"]["steps"]:
+        for step in data["jobs"]["publish-release"]["steps"]:
             uses = step.get("uses", "")
             if isinstance(uses, str) and uses.startswith(
                 "pypa/gh-action-pypi-publish"
@@ -354,7 +354,7 @@ def test_guard_accepts_publish_step_with_sigstore_helper(tmp_path: Path) -> None
                 step.setdefault("with", {})
                 step["with"]["attestations"] = False
         # Insert the Sigstore step before publish.
-        data["jobs"]["publish"]["steps"].insert(
+        data["jobs"]["publish-release"]["steps"].insert(
             0,
             {
                 "name": "Sigstore sign",
@@ -381,7 +381,7 @@ def test_guard_rejects_publish_step_without_skip_existing(tmp_path: Path) -> Non
     """A publish step without ``skip-existing: true`` FAILS RELAY-RELEASE-006."""
 
     def transform(data: dict[str, Any]) -> None:
-        for step in data["jobs"]["publish"]["steps"]:
+        for step in data["jobs"]["publish-release"]["steps"]:
             uses = step.get("uses", "")
             if isinstance(uses, str) and uses.startswith(
                 "pypa/gh-action-pypi-publish"
@@ -430,7 +430,7 @@ def test_guard_rejects_workflow_with_destructive_op_in_code(tmp_path: Path) -> N
     """A workflow that runs ``gh release delete`` in code (not comments) FAILS."""
 
     def transform(data: dict[str, Any]) -> None:
-        data["jobs"]["publish"]["steps"].append(
+        data["jobs"]["publish-release"]["steps"].append(
             {
                 "name": "Bad: delete prior release",
                 "run": "gh release delete v0.0.1 --yes",
@@ -575,7 +575,7 @@ def test_guard_module_unit_check_accepts_dict_environment_form(tmp_path: Path) -
 
     # Bare-string form.
     def to_string_form(data: dict[str, Any]) -> None:
-        data["jobs"]["publish"]["environment"] = "release"
+        data["jobs"]["publish-release"]["environment"] = "release"
 
     repo = _materialize_repo(
         tmp_path, _mutate_workflow(to_string_form), _real_runbook_text()
@@ -618,7 +618,7 @@ def test_guard_rejects_pypa_publish_pinned_to_branch(tmp_path: Path) -> None:
     """A workflow pinning ``pypa/gh-action-pypi-publish`` to a branch FAILS."""
 
     def transform(data: dict[str, Any]) -> None:
-        for step in data["jobs"]["publish"]["steps"]:
+        for step in data["jobs"]["publish-release"]["steps"]:
             uses = step.get("uses", "")
             if isinstance(uses, str) and uses.startswith(
                 "pypa/gh-action-pypi-publish"
@@ -646,7 +646,7 @@ def test_guard_rejects_pypa_publish_pinned_to_tag(tmp_path: Path) -> None:
     """A workflow pinning ``pypa/gh-action-pypi-publish`` to a tag FAILS."""
 
     def transform(data: dict[str, Any]) -> None:
-        for step in data["jobs"]["publish"]["steps"]:
+        for step in data["jobs"]["publish-release"]["steps"]:
             uses = step.get("uses", "")
             if isinstance(uses, str) and uses.startswith(
                 "pypa/gh-action-pypi-publish"
@@ -708,7 +708,7 @@ def test_guard_failure_message_is_structured(tmp_path: Path) -> None:
     bad ref so CI logs are actionable."""
 
     def transform(data: dict[str, Any]) -> None:
-        for step in data["jobs"]["publish"]["steps"]:
+        for step in data["jobs"]["publish-release"]["steps"]:
             uses = step.get("uses", "")
             if isinstance(uses, str) and uses.startswith(
                 "pypa/gh-action-pypi-publish"

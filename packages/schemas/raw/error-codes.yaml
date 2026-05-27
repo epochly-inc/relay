@@ -691,11 +691,11 @@ codes:
   domain: release
   severity: error
   description: |
-    PyPI publish job is not bound to the canonical repo + workflow filename + `release` environment expected by trusted publishing, or the runbook does not document that binding.
+    A PyPI publish job is not bound to the canonical repo + workflow filename + one of the enumerated trusted-publishing environments (`release`, `release-sidecar`, `release-cli`), the same environment is shared by two publish jobs, an enumerated environment has no publish job, or the runbook does not document every binding.
   triggers: |
-    `scripts/check-pypi-publish-workflow.py` fails when the publish job's `environment:` is not `release`, or when `docs/release/runbook.md` is missing one of the `repo:`, `workflow:`, or `environment:` declaration phrases.
+    `scripts/check-pypi-publish-workflow.py` fails when a publish job's `environment:` is not one of `{release, release-sidecar, release-cli}`, when two publish jobs bind to the same environment, when any enumerated environment has no covering publish job, or when `docs/release/runbook.md` is missing one of the required `repo:`, `workflow:`, `environment: release`, `environment: release-sidecar`, or `environment: release-cli` declaration phrases.
   how_to_fix: |
-    Pin the publish job to `environment: release`, keep the workflow file named `release-pypi.yml`, and declare the trusted-publisher binding (repo + workflow + environment) in `docs/release/runbook.md`.
+    Bind each publish job to exactly one of `{release, release-sidecar, release-cli}` (one publish job per environment, no duplicates, no orphans), keep the workflow file named `release-pypi.yml`, and document the trusted-publisher binding table (one row per PyPI project) in `docs/release/runbook.md` so all 5 required phrases (`repo: epochly-inc/relay`, `workflow: release-pypi.yml`, plus the three `environment:` lines) appear.
   introduced_in: v0.1.0
 - code: RELAY-RELEASE-004
   domain: release

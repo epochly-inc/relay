@@ -80,7 +80,18 @@ ANNOUNCEMENTS_RELDIR = "docs/release/announcements"
 
 EXPECTED_REPO = "epochly-inc/relay"
 EXPECTED_WORKFLOW_FILENAME = "release-pypi.yml"
-EXPECTED_ENVIRONMENT = "release"
+# PyPI's pending-publisher table has a UNIQUE constraint on
+# (owner, repo, workflow, environment). The four epochly-relay PyPI
+# packages cannot share a single environment binding (see warehouse
+# PR #20074), so the workflow uses three environments and the guard
+# accepts any publish job bound to one of them. Each env must be
+# covered by exactly one publish job in the workflow (no orphan, no
+# duplicate).
+EXPECTED_ENVIRONMENTS: tuple[str, ...] = (
+    "release",
+    "release-sidecar",
+    "release-cli",
+)
 
 # Long-lived credential secret names that signal a token-based publish
 # (anti-pattern; VAL-W12-001 / VAL-W12-038).  Trusted publishing exchanges
@@ -294,10 +305,13 @@ def check_val_w12_002(
 
     Workflow MUST:
       - run from a file literally named ``release-pypi.yml``
-      - bind the publish job to ``environment: release``
+      - bind every publish job to one of the enumerated environments
+        in :data:`EXPECTED_ENVIRONMENTS`
+      - cover every enumerated environment with exactly one publish
+        job (no orphan binding, no duplicate)
 
-    Runbook MUST document the trusted-publisher binding with repo,
-    workflow filename, and environment name.
+    Runbook MUST document each environment in the enumerated set
+    alongside the shared repo and workflow filename.
     """
     publish_jobs = _publish_jobs(workflow)
     if not publish_jobs:
@@ -308,21 +322,47 @@ def check_val_w12_002(
             "no publish job found",
         )
 
+    seen_envs: dict[str, str] = {}
     for name, job in publish_jobs:
         env = job.get("environment")
         env_name = env if isinstance(env, str) else (
             env.get("name") if isinstance(env, dict) else None
         )
-        if env_name != EXPECTED_ENVIRONMENT:
+        if env_name not in EXPECTED_ENVIRONMENTS:
+            allowed = ", ".join(EXPECTED_ENVIRONMENTS)
             return CheckResult(
                 "VAL-W12-002",
                 "RELAY-RELEASE-002",
                 False,
                 (
-                    f"publish job '{name}' must use 'environment: {EXPECTED_ENVIRONMENT}', "
-                    f"got '{env_name}'"
+                    f"publish job '{name}' must use one of "
+                    f"'environment: {{{allowed}}}', got '{env_name}'"
                 ),
             )
+        if env_name in seen_envs:
+            return CheckResult(
+                "VAL-W12-002",
+                "RELAY-RELEASE-002",
+                False,
+                (
+                    f"publish jobs '{seen_envs[env_name]}' and '{name}' both "
+                    f"bind to environment '{env_name}' (each env must be "
+                    "covered by exactly one publish job)"
+                ),
+            )
+        seen_envs[env_name] = name
+
+    missing = [e for e in EXPECTED_ENVIRONMENTS if e not in seen_envs]
+    if missing:
+        return CheckResult(
+            "VAL-W12-002",
+            "RELAY-RELEASE-002",
+            False,
+            (
+                f"no publish job binds to expected environment(s): "
+                f"{', '.join(missing)}"
+            ),
+        )
 
     if runbook_text is None:
         return CheckResult(
@@ -331,11 +371,10 @@ def check_val_w12_002(
             False,
             "runbook missing at docs/release/runbook.md",
         )
-    required_phrases = (
+    required_phrases = [
         f"repo: {EXPECTED_REPO}",
         f"workflow: {EXPECTED_WORKFLOW_FILENAME}",
-        f"environment: {EXPECTED_ENVIRONMENT}",
-    )
+    ] + [f"environment: {env}" for env in EXPECTED_ENVIRONMENTS]
     for phrase in required_phrases:
         if phrase not in runbook_text:
             return CheckResult(

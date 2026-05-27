@@ -97,7 +97,11 @@ FORK_DETECTION_SENTINELS: tuple[str, ...] = (
 # Publish-job names per workflow.  These are the jobs that perform the
 # external publish (PyPI / npm registry); each must depend on a
 # provenance job and must include a fork-detection step.
-PYPI_PUBLISH_JOBS: tuple[str, ...] = ("publish",)
+PYPI_PUBLISH_JOBS: tuple[str, ...] = (
+    "publish-release",
+    "publish-sidecar",
+    "publish-cli",
+)
 PYPI_PROVENANCE_JOBS: tuple[str, ...] = ("provenance",)
 
 NPM_PUBLISH_JOBS: tuple[str, ...] = ("publish-sdk", "publish-sidecar-bundle")
@@ -443,12 +447,18 @@ def check_val_w12_014(
     ``needs:``, AND MUST NOT carry ``continue-on-error: true``.
 
     Pairing rules:
-      - release-pypi.yml: publish needs provenance
+      - release-pypi.yml: publish-release  needs provenance
+      - release-pypi.yml: publish-sidecar  needs provenance
+      - release-pypi.yml: publish-cli      needs provenance
+        (single shared provenance attestation covers all 3 PyPI publish
+        jobs; base64-subjects payload binds every artifact's digest)
       - release-npm.yml: publish-sdk needs provenance-sdk;
                          publish-sidecar-bundle needs provenance-sidecar-bundle
     """
     pairings: list[tuple[str, str, str]] = [
-        ("release-pypi.yml", "publish", "provenance"),
+        ("release-pypi.yml", "publish-release", "provenance"),
+        ("release-pypi.yml", "publish-sidecar", "provenance"),
+        ("release-pypi.yml", "publish-cli", "provenance"),
         ("release-npm.yml", "publish-sdk", "provenance-sdk"),
         (
             "release-npm.yml",
