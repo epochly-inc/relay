@@ -17,6 +17,35 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.1] - 2026-05-26
+
+Release-infrastructure patch for v0.1.0. PyPI `epochly-relay@0.1.0`
+shipped successfully on the v0.1.0 tag; this release adds the missing
+metadata required for the npm tier (`@epochly/relay@0.1.1`,
+`@epochly/relay-sidecar-bundle@0.1.1`) to publish its first version.
+No SDK or CLI behavior changed.
+
+### Fixed
+- npm `--provenance` registry validation: added `repository`, `homepage`,
+  and `bugs` fields to both `packages/sdk-typescript/package.json` and
+  `packages/sdk-typescript-sidecar-bundle/package.json`. Without these,
+  npm registry rejects publish with HTTP 422 ("Error verifying sigstore
+  provenance bundle: Failed to validate repository information").
+- SLSA L3 generator caller: added `compile-generator: true` to all
+  provenance jobs so the generator binary is built from the pinned-SHA
+  source checkout instead of fetched from a release asset (the fetch
+  path rejects bare SHA refs, leaving the attest step silently
+  failing).
+- Release workflow precheck jobs install PyYAML explicitly; static
+  guards parse workflow YAML with PyYAML which is not pre-installed by
+  `actions/setup-python@v5`.
+- `release-in-toto.yml` build steps create `dist/` before invoking
+  `npm pack --pack-destination`, and reference the canonical
+  `packages/sdk-typescript-sidecar-bundle` workspace path.
+- `check-npm-pypi-commit-consistency.py` tolerates stale prior PyPI
+  workflow runs from tag re-pushes; only divergence between the
+  in-flight commits across registries fails the gate.
+
 ## [v0.1.0] - 2026-05-26
 
 First SemVer-tagged release of Relay OSS. Tracks the codebase at HEAD
