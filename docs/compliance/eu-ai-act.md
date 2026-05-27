@@ -1,76 +1,138 @@
-# EU AI Act readiness — public stub
+# EU AI Act readiness evidence
 
-> **Status:** public stub. Full counsel-reviewed Article 11 / Annex IV mapping
-> is publication-gated (PW1-6) and lives behind the trust-anchor governance
-> review track. This page exists so OSS users can locate the upstream ACEF
-> template and understand the scope of what Relay produces today.
+This page describes what Relay produces for EU AI Act conformity assessment
+work — Article 12 logging, Annex IV technical documentation, and post-market
+monitoring under [Regulation (EU) 2024/1689](https://eur-lex.europa.eu/eli/reg/2024/1689/oj).
 
-## What this page is
+Relay is an evidence pipeline. It records what your AI system did, binds
+each captured artifact to a verifiable signature, and emits portable
+bundles that you can hand to internal counsel, an auditor, or a notified
+body. It does not render legal conclusions and it does not certify a
+deployed system. Customer-facing surfaces in Relay use the language
+discipline documented in this page: "readiness evidence", "evidence
+coverage", and "gaps".
 
-This is a pointer, not a counsel-grade interpretation of the EU AI Act. Relay
-is an evidence pipeline: it captures runs, binds artifacts to assertions, and
-emits signed bundles. It does not render legal conclusions. Customer-facing
-surfaces in Relay obey the language discipline in §J.5 of the spec: we speak
-in terms of "AI Act readiness evidence", "evidence coverage", and "gaps".
-We do not use language that would imply a legal determination.
+## What the OSS pipeline produces
 
-## Where the mapping template lives
+Three concrete outputs map onto AI Act obligations:
 
-The Article 11 / Annex IV scaffold ships in the public OSS tree as an ACEF
-template:
+### Article 12 (automatic logging of events)
+
+Every traced agent run is captured by the local Relay sidecar as a signed
+envelope. The envelope records the model call, every tool call, every
+retrieval step, and the timestamps that anchor them. Envelopes are
+written to a tamper-evident append-only log on the local host
+(`${RELAY_HOME}/sidecar.db`, SQLite WAL mode). The sidecar refuses to
+persist raw prompts, model outputs, tool arguments, or retrieval
+documents unless a signed redaction policy explicitly enables raw
+capture (see [docs/how-to/write-redaction-policy.md](../how-to/write-redaction-policy.md)).
+
+The append-only log is the substrate for the rest of the pipeline. Each
+envelope carries enough binding information (scope identifier, manifest
+commit hash, redaction policy version) for a downstream consumer to
+reconstruct the context the system ran in.
+
+### Annex IV (technical documentation)
+
+Annex IV requires technical documentation describing the system, its
+risk controls, and the evidence that those controls actually fired. The
+Relay gate engine produces this evidence per gate decision:
+
+- Every contract that was evaluated, with its CEL source.
+- Every assertion that was checked, with its identifier.
+- The artifact hashes the assertion saw.
+- The manifest commit hash the system was built against.
+- The trace span identifiers the assertion referenced.
+- The redaction policy version active at evaluation time.
+
+These bindings travel inside the signed evidence bundle, so a third
+party verifying the bundle can reproduce the gate decision without
+contacting your CI or your Relay deployment.
+
+### Post-market monitoring
+
+Cassette-first replay reproduces a customer-reported failure
+deterministically against the exact model version and tool surface the
+system saw at the time of the incident. See
+[docs/how-to/debug-replay-failures.md](../how-to/debug-replay-failures.md).
+Because the cassette is content-addressed, a recorded failure replays
+identically months later, even after the provider rolls out a new model
+version.
+
+## The Annex IV mapping template
+
+Relay ships a machine-readable mapping of EU AI Act provisions to
+evidence claim shapes:
 
 ```text
 packages/acef/upstream/src/acef/templates/eu-ai-act-2024.json
 ```
 
-That JSON file is the authoritative source for which Annex IV sections Relay
-recognises and which evidence claim shapes map to each section. It is loaded
-by the ACEF template registry (`packages/acef/upstream/src/acef/registry.py`)
-and is what `relay evidence build` consults when assembling an AI-Act-scoped
-bundle.
+The template enumerates every Annex IV provision Relay's evidence
+pipeline can produce structured claims for, with each provision linked
+to the normative text reference (`Regulation (EU) 2024/1689` article and
+paragraph), the applicable system types (high-risk, GPAI,
+GPAI-systemic, limited-risk), and the evidence claim shape the
+provision expects.
 
-What the template gives you today:
+The template covers (non-exhaustive):
 
-- The set of Annex IV section identifiers Relay knows about
-- The evidence claim shape each section expects (artifact digest, command +
-  exit code, trace span IDs, manifest commit hash, redaction policy version)
-- A machine-readable mapping suitable for diffing against a system's actual
-  captured evidence to surface gaps
+- Article 9 — Risk management system
+- Article 10 — Data governance
+- Article 11 — Technical documentation
+- Article 12 — Automatic logging
+- Article 13 — Transparency and provision of information
+- Article 14 — Human oversight
+- Article 15 — Accuracy, robustness, and cybersecurity
+- Annex IV — Technical documentation contents
 
-What the template deliberately does not give you:
+The same template directory holds parallel files for NIST AI RMF 1.0,
+the NIST GAI Profile (AI 600-1), ISO/IEC 23894:2023, ISO/IEC 42001:2023,
+the EU GPAI Code of Practice 2025, and the China CAC labeling rules
+2025. Pick the template that matches your jurisdiction.
 
-- Counsel-reviewed interpretation of any Annex IV clause
-- A determination that a system meets any specific Article 11 obligation
-- Any claim about the legal status of a deployed model
+## How OSS users consume the template
 
-That work is publication-gated and tracked under PW1-6 in the
-relay-platform private repository. Until it ships, this page and the upstream
-template are the public surface.
+The OSS pipeline gives you three building blocks:
 
-## How to read the output
+1. **Capture.** Run your agent under the Relay SDK; the local sidecar
+   records every model call, tool call, and retrieval as a signed
+   envelope.
+2. **Evaluate.** Author CEL contracts that map to the Annex IV
+   provisions you care about. The gate engine evaluates them against
+   the captured trace. Each gate decision is emitted as a signed
+   evidence bundle with the bindings described above.
+3. **Verify.** Run `rly evidence verify <bundle>` to confirm the bundle
+   is intact, signatures resolve against the published JWKS trust
+   anchor, and every claim is bound to its underlying artifact. The
+   verifier runs fully offline.
 
-When `relay evidence build --scope eu-ai-act-2024` runs against a project, it
-produces an ACEF bundle whose `claims[]` are scoped to the Annex IV sections
-in the template above. The bundle reports:
+Operators preparing conformity assessment material treat the resulting
+bundles as the input to their counsel review or notified-body
+submission. The bundle is structured so a human reviewer can see, per
+Annex IV section, whether evidence exists and what it consists of.
 
-- **Evidence coverage:** which Annex IV sections have at least one bound,
-  signed claim
-- **Gaps:** which Annex IV sections the template recognises but for which the
-  project has no bound claim
-- **Per-claim binding:** for every claim, the artifact digest, command and
-  exit code, trace span IDs, manifest commit hash, and redaction policy
-  version that anchor it (per §K)
+## Important: what Relay does not do
 
-A bundle reporting non-zero evidence coverage is exactly that — evidence — and
-nothing more. It is not a determination of legal status, and Relay output must
-not be represented as one. If you are preparing material for an auditor or for
-internal counsel review, the bundle is the input to that review, not its
-conclusion.
+- Relay does not determine whether a system conforms to the AI Act.
+  Conformity assessment is the operator's responsibility (Article 43)
+  and, for high-risk systems, the notified body's.
+- Relay does not represent its output as a legal opinion. The bundles
+  are evidence — recordings of what the system did, signed and bound
+  to their context. Legal conclusions are downstream of Relay.
+- Relay does not exempt operators from any AI Act obligation. The
+  pipeline produces the evidence record an auditor asks for; it does
+  not substitute for the obligations themselves.
 
 ## See also
 
-- Spec §J (compliance assessment) — banned product copy rules in §J.5
-- Spec §K (evidence binding) — what makes a claim bound rather than narrative
-- Spec §AO (trust anchor) — why bundle signatures are verifiable offline
-- `packages/acef/upstream/src/acef/templates/` — full set of upstream
-  regulatory templates Relay recognises today
+- [docs/how-to/extract-ai-act-readiness-evidence.md](../how-to/extract-ai-act-readiness-evidence.md)
+  — step-by-step procedure for emitting an AI-Act-scoped evidence bundle.
+- [docs/evidence/bundle-anatomy.md](../evidence/bundle-anatomy.md) —
+  the structure of a signed evidence bundle.
+- [docs/evidence/claim-binding.md](../evidence/claim-binding.md) — what
+  makes a claim bound versus narrative.
+- [docs/evidence/offline-verification.md](../evidence/offline-verification.md)
+  — how `rly evidence verify` works without contacting Relay.
+- [docs/legal/trust-anchor-governance.md](../legal/trust-anchor-governance.md)
+  — key rotation and transparency log custody rules.

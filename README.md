@@ -56,48 +56,31 @@ format and one contract DSL across SDKs:
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph App["Your application"]
-        direction TB
-        Agent["Agent code"]
-        Adapters["Provider adapters<br/>(OpenAI, Anthropic,<br/>Vercel AI, LangChain, MCP)"]
-        Agent --> Adapters
-    end
+flowchart TD
+    Agent["Your agent code"]
+    Adapters["Provider adapters<br/>(OpenAI, Anthropic, Vercel AI, LangChain, MCP)"]
+    Wrap["Relay SDK<br/>(decorators, context managers)"]
+    Envelope["Canonical envelope serializer<br/>(JCS-normalized JSON)"]
+    Ingest["Local sidecar (per host)<br/>FastAPI on loopback, lockfile-serialized"]
+    Redact["Redaction policy engine<br/>(default-deny on raw capture)"]
+    Log["Append-only event log<br/>(aiosqlite, WAL)"]
+    Replay["Replay engine<br/>(cassette-first, sandbox-net=deny)"]
+    Contracts["Contract engine<br/>(CEL + Relay UDFs)"]
+    Gate["Gate decision aggregator"]
+    Bundle["Signed evidence bundle<br/>(Sigstore + SLSA L3 provenance)"]
+    Verifier["Offline verifier<br/>(rly verify, JWKS trust anchor)"]
 
-    subgraph SDK["Relay SDK (Python / TypeScript)"]
-        direction TB
-        Wrap["Decorators &amp; context managers<br/>(@model_call, @tool_call, trace)"]
-        Envelope["Canonical envelope serializer<br/>(JCS-normalized JSON)"]
-        Wrap --> Envelope
-    end
-
-    subgraph Sidecar["Local sidecar (per host, lockfile-serialized)"]
-        direction TB
-        Ingest["Ingest endpoint<br/>(FastAPI, loopback only)"]
-        Log["Append-only event log<br/>(aiosqlite, WAL)"]
-        Redact["Redaction policy engine<br/>(default-deny on raw capture)"]
-        Ingest --> Redact --> Log
-    end
-
-    subgraph Engines["Replay &amp; verification"]
-        direction TB
-        Replay["Replay engine<br/>(cassette-first, sandbox-net=deny)"]
-        Contracts["Contract engine<br/>(CEL + Relay UDFs)"]
-        Gate["Gate decision aggregator"]
-        Replay --> Contracts --> Gate
-    end
-
-    subgraph Evidence["Evidence layer"]
-        direction TB
-        Bundle["Signed evidence bundle<br/>(Sigstore + SLSA L3 provenance)"]
-        Verifier["Offline verifier<br/>(rly verify, JWKS trust anchor)"]
-        Gate --> Bundle
-        Bundle -. consumed by .-> Verifier
-    end
-
+    Agent --> Adapters
     Adapters --> Wrap
+    Wrap --> Envelope
     Envelope -->|HTTP loopback| Ingest
+    Ingest --> Redact
+    Redact --> Log
     Log --> Replay
+    Replay --> Contracts
+    Contracts --> Gate
+    Gate --> Bundle
+    Bundle -. consumed by .-> Verifier
 ```
 
 The SDK wraps your agent's existing calls without modifying the surrounding
