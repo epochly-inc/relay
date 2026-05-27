@@ -1,0 +1,82 @@
+<svg viewBox="0 0 1280 760" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-labelledby="t2 d2">
+  <title id="t2">Relay three-tier architecture</title>
+  <desc id="d2">Three-tier system: your agent code at top; the OSS Relay layer (Apache 2.0, local) in the middle with SDK, sidecar, contract engine, and replay + evidence subcomponents; and the optional commercial Relay Cloud at the bottom. A verifier strip spans the OSS tier and validates bundles offline.</desc>
+
+  <rect width="1280" height="760" fill="#FFFFFF"/>
+
+  <text x="80" y="58" font-size="13" font-weight="700" fill="#0F766E" letter-spacing="2">RELAY  /  THREE-TIER ARCHITECTURE</text>
+  <text x="80" y="98" font-size="30" font-weight="700" fill="#0F172A" letter-spacing="-0.7">Local-first.  OSS does everything you need.</text>
+  <text x="80" y="130" font-size="30" font-weight="700" fill="#0F172A" letter-spacing="-0.7">Cloud is additive, not in place of it.</text>
+
+  <g>
+    <rect x="80" y="174" width="1120" height="72" rx="12" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1.5"/>
+    <text x="104" y="204" font-size="11" font-weight="700" fill="#64748B" letter-spacing="2">YOUR AGENT</text>
+    <text x="104" y="226" font-size="14" fill="#334155">Application code  &#183;  provider calls (OpenAI, Anthropic, Vercel AI, LangChain, MCP)  &#183;  tool functions  &#183;  retrieval</text>
+  </g>
+
+  <g>
+    <line x1="640" y1="256" x2="640" y2="286" stroke="#94A3B8" stroke-width="1.5"/>
+    <path d="M635,282 L640,292 L645,282 Z" fill="#94A3B8"/>
+    <text x="655" y="279" font-size="11" fill="#64748B" font-style="italic">loopback HTTP  &#183;  redacted at the trace boundary</text>
+  </g>
+
+  <g>
+    <rect x="80" y="306" width="1120" height="310" rx="14" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="1.5"/>
+    <rect x="80" y="306" width="6" height="310" rx="3" fill="#0F766E"/>
+
+    <text x="104" y="334" font-size="11" font-weight="700" fill="#0F766E" letter-spacing="2">OSS RELAY  &#183;  APACHE 2.0  &#183;  LOCAL</text>
+    <text x="104" y="362" font-size="20" font-weight="700" fill="#0F172A">SDK + per-host sidecar.  No Relay account required.</text>
+
+    <g>
+      <rect x="104" y="386" width="256" height="148" rx="10" fill="#FFFFFF" stroke="#A7F3D0" stroke-width="1"/>
+      <text x="120" y="412" font-size="11" font-weight="700" fill="#0F766E" letter-spacing="1.5">SDK</text>
+      <text x="120" y="438" font-size="15" font-weight="600" fill="#0F172A">Adapters &amp; capture</text>
+      <text x="120" y="464" font-size="12" fill="#475569">Python + TypeScript</text>
+      <text x="120" y="482" font-size="12" fill="#475569">byte-identical envelopes</text>
+      <text x="120" y="500" font-size="12" fill="#475569">SDK-side redaction</text>
+      <text x="120" y="522" font-size="11" fill="#64748B" font-style="italic">packages/sdk-*</text>
+    </g>
+    <g>
+      <rect x="376" y="386" width="256" height="148" rx="10" fill="#FFFFFF" stroke="#A7F3D0" stroke-width="1"/>
+      <text x="392" y="412" font-size="11" font-weight="700" fill="#0F766E" letter-spacing="1.5">SIDECAR</text>
+      <text x="392" y="438" font-size="15" font-weight="600" fill="#0F172A">Ingest &amp; state engine</text>
+      <text x="392" y="464" font-size="12" fill="#475569">FastAPI on loopback</text>
+      <text x="392" y="482" font-size="12" fill="#475569">append-only SQLite WAL</text>
+      <text x="392" y="500" font-size="12" fill="#475569">compare_and_set_state</text>
+      <text x="392" y="522" font-size="11" fill="#64748B" font-style="italic">apps/local-sidecar</text>
+    </g>
+    <g>
+      <rect x="648" y="386" width="256" height="148" rx="10" fill="#FFFFFF" stroke="#A7F3D0" stroke-width="1"/>
+      <text x="664" y="412" font-size="11" font-weight="700" fill="#0F766E" letter-spacing="1.5">CONTRACT ENGINE</text>
+      <text x="664" y="438" font-size="15" font-weight="600" fill="#0F172A">CEL + Relay UDFs</text>
+      <text x="664" y="464" font-size="12" fill="#475569">tool-arg validation</text>
+      <text x="664" y="482" font-size="12" fill="#475569">retrieval coverage</text>
+      <text x="664" y="500" font-size="12" fill="#475569">structured-output match</text>
+      <text x="664" y="522" font-size="11" fill="#64748B" font-style="italic">packages/contracts + gate</text>
+    </g>
+    <g>
+      <rect x="920" y="386" width="256" height="148" rx="10" fill="#FFFFFF" stroke="#A7F3D0" stroke-width="1"/>
+      <text x="936" y="412" font-size="11" font-weight="700" fill="#0F766E" letter-spacing="1.5">REPLAY + EVIDENCE</text>
+      <text x="936" y="438" font-size="15" font-weight="600" fill="#0F172A">Cassette-first, signed</text>
+      <text x="936" y="464" font-size="12" fill="#475569">deterministic re-execution</text>
+      <text x="936" y="482" font-size="12" fill="#475569">deny-by-default egress</text>
+      <text x="936" y="500" font-size="12" fill="#475569">Sigstore + SLSA L3</text>
+      <text x="936" y="522" font-size="11" fill="#64748B" font-style="italic">packages/replay-proxy + acef</text>
+    </g>
+
+    <rect x="104" y="554" width="1072" height="46" rx="10" fill="#ECFEFF" stroke="#67E8F9" stroke-width="1"/>
+    <text x="120" y="580" font-size="11" font-weight="700" fill="#0E7490" letter-spacing="1.5">VERIFIER</text>
+    <text x="120" y="596" font-size="12" fill="#334155">Ships with <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-weight="600">rly</tspan>.  Validates bundles offline — JCS + JWS + Merkle.  Default JWKS at relay.epochly.com; BYO via <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-weight="600">--trust-anchor</tspan>.</text>
+  </g>
+
+  <line x1="80" y1="640" x2="1200" y2="640" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="6,6"/>
+  <rect x="500" y="628" width="280" height="24" rx="12" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="640" y="644" text-anchor="middle" font-size="10" font-weight="700" fill="#64748B" letter-spacing="2">OSS BOUNDARY  /  COMMERCIAL BELOW</text>
+
+  <g>
+    <rect x="80" y="668" width="1120" height="76" rx="12" fill="#FFFBEB" stroke="#FCD34D" stroke-width="1.5" stroke-dasharray="5,4"/>
+    <text x="104" y="696" font-size="11" font-weight="700" fill="#B45309" letter-spacing="2">RELAY CLOUD  &#183;  COMMERCIAL  &#183;  OPTIONAL</text>
+    <text x="104" y="720" font-size="14" font-weight="600" fill="#0F172A">Multi-tenant control plane.  Adds at scale.</text>
+    <text x="104" y="738" font-size="12" fill="#475569">tenancy + RBAC/SSO  &#183;  trust-anchor signing service + transparency log  &#183;  fleet eval &amp; replay workers  &#183;  compliance + vertical packs</text>
+  </g>
+</svg>

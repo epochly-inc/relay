@@ -1,0 +1,69 @@
+<svg viewBox="0 0 1280 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title id="title">How Relay works: capture, replay, evaluate, sign, verify</title>
+  <desc id="desc">Five stations of a Relay agent run: Record, Replay, Evaluate, Sign, Verify. Captures every model call, replays deterministically, gates on CEL contracts, signs the result, and verifies offline.</desc>
+
+  <rect width="1280" height="480" fill="#0D1117"/>
+
+  <text x="80" y="58" font-size="13" font-weight="700" fill="#2DD4BF" letter-spacing="2">RELAY  /  AGENT RUN PIPELINE</text>
+  <text x="80" y="98" font-size="30" font-weight="700" fill="#F0F6FC" letter-spacing="-0.7">Capture every step. Replay it deterministically.</text>
+  <text x="80" y="130" font-size="30" font-weight="700" fill="#F0F6FC" letter-spacing="-0.7">Sign the evidence.</text>
+
+  <line x1="280" y1="280" x2="1080" y2="280" stroke="#30363D" stroke-width="1.5" stroke-dasharray="3,5"/>
+  <g fill="#6E7681">
+    <path d="M286,275 L300,280 L286,285 Z"/>
+    <path d="M486,275 L500,280 L486,285 Z"/>
+    <path d="M686,275 L700,280 L686,285 Z"/>
+    <path d="M886,275 L900,280 L886,285 Z"/>
+    <path d="M1066,275 L1080,280 L1066,285 Z"/>
+  </g>
+
+  <g>
+    <rect x="80" y="180" width="200" height="200" rx="14" fill="#161B22" stroke="#30363D" stroke-width="1.5"/>
+    <circle cx="180" cy="222" r="22" fill="#2DD4BF"/>
+    <text x="180" y="228" text-anchor="middle" font-size="15" font-weight="700" fill="#0D1117">1</text>
+    <text x="180" y="276" text-anchor="middle" font-size="11" font-weight="700" fill="#2DD4BF" letter-spacing="2">RECORD</text>
+    <text x="180" y="304" text-anchor="middle" font-size="14" font-weight="600" fill="#F0F6FC">Every call captured</text>
+    <text x="180" y="328" text-anchor="middle" font-size="12" fill="#C9D1D9">model, tool, retrieval</text>
+    <text x="180" y="358" text-anchor="middle" font-size="11" fill="#8B949E" font-style="italic">SDK + loopback sidecar</text>
+  </g>
+  <g>
+    <rect x="300" y="180" width="200" height="200" rx="14" fill="#161B22" stroke="#30363D" stroke-width="1.5"/>
+    <circle cx="400" cy="222" r="22" fill="#2DD4BF"/>
+    <text x="400" y="228" text-anchor="middle" font-size="15" font-weight="700" fill="#0D1117">2</text>
+    <text x="400" y="276" text-anchor="middle" font-size="11" font-weight="700" fill="#2DD4BF" letter-spacing="2">REPLAY</text>
+    <text x="400" y="304" text-anchor="middle" font-size="14" font-weight="600" fill="#F0F6FC">Deterministically</text>
+    <text x="400" y="328" text-anchor="middle" font-size="12" fill="#C9D1D9">against modified code</text>
+    <text x="400" y="358" text-anchor="middle" font-size="11" fill="#8B949E" font-style="italic">cassette-first, sandboxed</text>
+  </g>
+  <g>
+    <rect x="520" y="180" width="200" height="200" rx="14" fill="#161B22" stroke="#30363D" stroke-width="1.5"/>
+    <circle cx="620" cy="222" r="22" fill="#2DD4BF"/>
+    <text x="620" y="228" text-anchor="middle" font-size="15" font-weight="700" fill="#0D1117">3</text>
+    <text x="620" y="276" text-anchor="middle" font-size="11" font-weight="700" fill="#2DD4BF" letter-spacing="2">EVALUATE</text>
+    <text x="620" y="304" text-anchor="middle" font-size="14" font-weight="600" fill="#F0F6FC">Contracts decide</text>
+    <text x="620" y="328" text-anchor="middle" font-size="12" fill="#C9D1D9">pass or fail, not the LLM</text>
+    <text x="620" y="358" text-anchor="middle" font-size="11" fill="#8B949E" font-style="italic">CEL + Relay UDFs</text>
+  </g>
+  <g>
+    <rect x="740" y="180" width="200" height="200" rx="14" fill="#161B22" stroke="#30363D" stroke-width="1.5"/>
+    <circle cx="840" cy="222" r="22" fill="#2DD4BF"/>
+    <text x="840" y="228" text-anchor="middle" font-size="15" font-weight="700" fill="#0D1117">4</text>
+    <text x="840" y="276" text-anchor="middle" font-size="11" font-weight="700" fill="#2DD4BF" letter-spacing="2">SIGN</text>
+    <text x="840" y="304" text-anchor="middle" font-size="14" font-weight="600" fill="#F0F6FC">One evidence bundle</text>
+    <text x="840" y="328" text-anchor="middle" font-size="12" fill="#C9D1D9">artifacts + commit + trace</text>
+    <text x="840" y="358" text-anchor="middle" font-size="11" fill="#8B949E" font-style="italic">Sigstore + SLSA L3</text>
+  </g>
+  <g>
+    <rect x="960" y="180" width="200" height="200" rx="14" fill="#1F1500" stroke="#92400E" stroke-width="1.5"/>
+    <circle cx="1060" cy="222" r="22" fill="#FBBF24"/>
+    <text x="1060" y="228" text-anchor="middle" font-size="15" font-weight="700" fill="#0D1117">5</text>
+    <text x="1060" y="276" text-anchor="middle" font-size="11" font-weight="700" fill="#FBBF24" letter-spacing="2">VERIFY</text>
+    <text x="1060" y="304" text-anchor="middle" font-size="14" font-weight="600" fill="#F0F6FC">Offline. No account.</text>
+    <text x="1060" y="328" text-anchor="middle" font-size="12" fill="#C9D1D9">your CI, your auditor</text>
+    <text x="1060" y="358" text-anchor="middle" font-size="11" fill="#8B949E" font-style="italic">rly verify ./bundle.acef</text>
+  </g>
+
+  <line x1="80" y1="420" x2="1200" y2="420" stroke="#21262D" stroke-width="1"/>
+  <text x="80" y="448" font-size="12" fill="#8B949E">Every gate decision binds artifact hashes, command exit codes, trace span IDs, contract assertion IDs, and the manifest commit.</text>
+  <text x="80" y="466" font-size="12" fill="#8B949E">Reproducible from the bundle alone.  No language model is asked whether its own behavior was correct.</text>
+</svg>

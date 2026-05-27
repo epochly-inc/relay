@@ -1,0 +1,120 @@
+<svg viewBox="0 0 1280 660" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-labelledby="t3 d3">
+  <title id="t3">What Relay turns into proof</title>
+  <desc id="d3">Three columns. Left: what your team builds and brings to Relay. Middle: Relay's four primitives (Recorder, Replay engine, Contract engine, Evidence bundles). Right: what you can prove externally — reproducible failures, verified gate decisions, isolated provider regressions, EU AI Act evidence.</desc>
+
+  <rect width="1280" height="660" fill="#0D1117"/>
+
+  <text x="80" y="58" font-size="13" font-weight="700" fill="#2DD4BF" letter-spacing="2">RELAY  /  WHAT IT TURNS INTO PROOF</text>
+  <text x="80" y="98" font-size="30" font-weight="700" fill="#F0F6FC" letter-spacing="-0.7">You ship agents.  Relay turns their behavior</text>
+  <text x="80" y="130" font-size="30" font-weight="700" fill="#F0F6FC" letter-spacing="-0.7">into something a third party can verify.</text>
+
+  <text x="80" y="186" font-size="11" font-weight="700" fill="#8B949E" letter-spacing="2">YOU BRING</text>
+  <text x="475" y="186" font-size="11" font-weight="700" fill="#2DD4BF" letter-spacing="2">RELAY DOES</text>
+  <text x="870" y="186" font-size="11" font-weight="700" fill="#FBBF24" letter-spacing="2">YOU CAN PROVE</text>
+
+  <g>
+    <rect x="80" y="200" width="345" height="372" rx="14" fill="#161B22" stroke="#30363D" stroke-width="1.5"/>
+
+    <g>
+      <text x="104" y="234" font-size="15" font-weight="700" fill="#F0F6FC">Agent code</text>
+      <text x="104" y="258" font-size="12" fill="#C9D1D9">Whatever framework you use.</text>
+      <text x="104" y="276" font-size="12" fill="#C9D1D9">Wrapped, not rewritten.</text>
+    </g>
+    <line x1="104" y1="300" x2="401" y2="300" stroke="#30363D"/>
+
+    <g>
+      <text x="104" y="328" font-size="15" font-weight="700" fill="#F0F6FC">Provider calls</text>
+      <text x="104" y="352" font-size="12" fill="#C9D1D9">Models, tools, retrieval.</text>
+      <text x="104" y="370" font-size="12" fill="#C9D1D9">OpenAI, Anthropic, Vercel,</text>
+      <text x="104" y="388" font-size="12" fill="#C9D1D9">LangChain, MCP.</text>
+    </g>
+    <line x1="104" y1="412" x2="401" y2="412" stroke="#30363D"/>
+
+    <g>
+      <text x="104" y="440" font-size="15" font-weight="700" fill="#F0F6FC">Contracts</text>
+      <text x="104" y="464" font-size="12" fill="#C9D1D9">What &quot;correct&quot; means,</text>
+      <text x="104" y="482" font-size="12" fill="#C9D1D9">declared in CEL.</text>
+      <text x="104" y="500" font-size="12" fill="#C9D1D9">Not the LLM&apos;s opinion.</text>
+    </g>
+  </g>
+
+  <g>
+    <line x1="430" y1="386" x2="450" y2="386" stroke="#2DD4BF" stroke-width="2"/>
+    <path d="M446,381 L456,386 L446,391 Z" fill="#2DD4BF"/>
+  </g>
+
+  <g>
+    <rect x="465" y="200" width="345" height="372" rx="14" fill="#042F2E" stroke="#2DD4BF" stroke-width="1.5"/>
+    <rect x="465" y="200" width="6" height="372" rx="3" fill="#2DD4BF"/>
+
+    <g>
+      <text x="489" y="234" font-size="13" font-weight="700" fill="#2DD4BF" letter-spacing="1.5">1  RECORDER</text>
+      <text x="489" y="260" font-size="13" fill="#F0F6FC">Every call captured as a signed envelope.</text>
+      <text x="489" y="278" font-size="13" fill="#F0F6FC">Append-only, tamper-evident, local.</text>
+    </g>
+    <line x1="489" y1="300" x2="786" y2="300" stroke="#134E4A"/>
+
+    <g>
+      <text x="489" y="328" font-size="13" font-weight="700" fill="#2DD4BF" letter-spacing="1.5">2  REPLAY ENGINE</text>
+      <text x="489" y="354" font-size="13" fill="#F0F6FC">Re-run the trace deterministically</text>
+      <text x="489" y="372" font-size="13" fill="#F0F6FC">against modified code.  Cassette-first.</text>
+    </g>
+    <line x1="489" y1="394" x2="786" y2="394" stroke="#134E4A"/>
+
+    <g>
+      <text x="489" y="422" font-size="13" font-weight="700" fill="#2DD4BF" letter-spacing="1.5">3  CONTRACT ENGINE</text>
+      <text x="489" y="448" font-size="13" fill="#F0F6FC">CEL evaluates the trace.</text>
+      <text x="489" y="466" font-size="13" fill="#F0F6FC">Verification stays outside the LLM.</text>
+    </g>
+    <line x1="489" y1="488" x2="786" y2="488" stroke="#134E4A"/>
+
+    <g>
+      <text x="489" y="516" font-size="13" font-weight="700" fill="#2DD4BF" letter-spacing="1.5">4  EVIDENCE BUNDLES</text>
+      <text x="489" y="542" font-size="13" fill="#F0F6FC">One signed bundle binds everything.</text>
+      <text x="489" y="560" font-size="13" fill="#F0F6FC">Sigstore + SLSA L3 + Merkle.</text>
+    </g>
+  </g>
+
+  <g>
+    <line x1="815" y1="386" x2="835" y2="386" stroke="#FBBF24" stroke-width="2"/>
+    <path d="M831,381 L841,386 L831,391 Z" fill="#FBBF24"/>
+  </g>
+
+  <g>
+    <rect x="850" y="200" width="350" height="372" rx="14" fill="#1F1500" stroke="#92400E" stroke-width="1.5"/>
+
+    <g>
+      <circle cx="884" cy="232" r="6" fill="#FBBF24"/>
+      <text x="902" y="237" font-size="14" font-weight="700" fill="#F0F6FC">Reproducible failures</text>
+      <text x="902" y="259" font-size="12" fill="#C9D1D9">Customer-reported defects</text>
+      <text x="902" y="277" font-size="12" fill="#C9D1D9">replay deterministically.</text>
+    </g>
+    <line x1="874" y1="300" x2="1176" y2="300" stroke="#451A03"/>
+
+    <g>
+      <circle cx="884" cy="326" r="6" fill="#FBBF24"/>
+      <text x="902" y="331" font-size="14" font-weight="700" fill="#F0F6FC">Verifiable gate decisions</text>
+      <text x="902" y="353" font-size="12" fill="#C9D1D9">Offline.  No Relay account.</text>
+      <text x="902" y="371" font-size="12" fill="#C9D1D9">CI, auditor, or air-gapped.</text>
+    </g>
+    <line x1="874" y1="394" x2="1176" y2="394" stroke="#451A03"/>
+
+    <g>
+      <circle cx="884" cy="420" r="6" fill="#FBBF24"/>
+      <text x="902" y="425" font-size="14" font-weight="700" fill="#F0F6FC">Provider-rollout isolation</text>
+      <text x="902" y="447" font-size="12" fill="#C9D1D9">Replay last week&apos;s cassette</text>
+      <text x="902" y="465" font-size="12" fill="#C9D1D9">against this week&apos;s code.</text>
+    </g>
+    <line x1="874" y1="488" x2="1176" y2="488" stroke="#451A03"/>
+
+    <g>
+      <circle cx="884" cy="514" r="6" fill="#FBBF24"/>
+      <text x="902" y="519" font-size="14" font-weight="700" fill="#F0F6FC">EU AI Act evidence record</text>
+      <text x="902" y="541" font-size="12" fill="#C9D1D9">Article 12 logging,</text>
+      <text x="902" y="559" font-size="12" fill="#C9D1D9">Annex IV technical docs.</text>
+    </g>
+  </g>
+
+  <line x1="80" y1="600" x2="1200" y2="600" stroke="#21262D" stroke-width="1"/>
+  <text x="80" y="626" font-size="12" fill="#8B949E">No decision about correctness flows back through the language model under evaluation.  That is the point.</text>
+</svg>

@@ -2,6 +2,11 @@
 
 **Reliability infrastructure for AI agents.**
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/img/flight-recorder-dark.svg">
+  <img alt="How Relay works: capture every step, replay it deterministically, evaluate against contracts, sign the evidence bundle, and verify offline." src="docs/architecture/img/flight-recorder-light.svg">
+</picture>
+
 Relay records every model call, tool invocation, and retrieval an AI agent
 performs; replays them deterministically against modified code; evaluates
 them against contracts declared in CEL; and produces signed,
@@ -53,35 +58,17 @@ format and one contract DSL across SDKs:
   and the manifest commit the agent was built against, into a single
   Sigstore-signed bundle that can be verified offline.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/img/value-prop-dark.svg">
+  <img alt="Inputs (agent code, provider calls, contracts) flow into Relay's four primitives (recorder, replay engine, contract engine, evidence bundles), producing outcomes you can verify externally: reproducible failures, verifiable gate decisions, provider-rollout isolation, EU AI Act evidence record." src="docs/architecture/img/value-prop-light.svg">
+</picture>
+
 ## Architecture
 
-```mermaid
-flowchart TD
-    Agent["Your agent code"]
-    Adapters["Provider adapters<br/>(OpenAI, Anthropic, Vercel AI, LangChain, MCP)"]
-    Wrap["Relay SDK<br/>(decorators, context managers)"]
-    Envelope["Canonical envelope serializer<br/>(JCS-normalized JSON)"]
-    Ingest["Local sidecar (per host)<br/>FastAPI on loopback, lockfile-serialized"]
-    Redact["Redaction policy engine<br/>(default-deny on raw capture)"]
-    Log["Append-only event log<br/>(aiosqlite, WAL)"]
-    Replay["Replay engine<br/>(cassette-first, sandbox-net=deny)"]
-    Contracts["Contract engine<br/>(CEL + Relay UDFs)"]
-    Gate["Gate decision aggregator"]
-    Bundle["Signed evidence bundle<br/>(Sigstore + SLSA L3 provenance)"]
-    Verifier["Offline verifier<br/>(rly verify, JWKS trust anchor)"]
-
-    Agent --> Adapters
-    Adapters --> Wrap
-    Wrap --> Envelope
-    Envelope -->|HTTP loopback| Ingest
-    Ingest --> Redact
-    Redact --> Log
-    Log --> Replay
-    Replay --> Contracts
-    Contracts --> Gate
-    Gate --> Bundle
-    Bundle -. consumed by .-> Verifier
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/img/three-tier-dark.svg">
+  <img alt="Three-tier architecture: your agent at top; the OSS Relay layer (SDK, sidecar, contract engine, replay + evidence, verifier strip) in the middle as the prominent local-first tier; and the optional commercial Relay Cloud at the bottom across the OSS boundary." src="docs/architecture/img/three-tier-light.svg">
+</picture>
 
 The SDK wraps your agent's existing calls without modifying the surrounding
 code. Envelopes flow over loopback HTTP to a per-host sidecar that
