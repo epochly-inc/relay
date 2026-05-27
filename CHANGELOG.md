@@ -17,6 +17,42 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.12] - 2026-05-27
+
+Release-infrastructure patch: makes the sidecar-bundle tier-1
+plumbing parity step deterministic on macos-arm64 (Apple Silicon
+runners). v0.1.11's sidecar-bundle build completed linux-x86_64 and
+linux-arm64 successfully but failed on macos-arm64 because a
+forced-contention test (`test_forced_contention_emits_observable_retries`)
+raced a 0.005s sleep against the holder task's `BEGIN IMMEDIATE`
+plus sentinel insert. On Apple Silicon's faster scheduler, the
+holder lost the race -- the writers grabbed the (still free) WAL
+write lock before the holder acquired it, observed zero
+`sqlite_busy_retry` events, and the assertion failed.
+
+v0.1.12 replaces the timing race with an `asyncio.Event` for
+explicit ready-signaling, mirroring the synchronization pattern
+used by sibling tests (`test_sqlite_busy_exhausted`,
+`test_idle_timer_inflight`). Verified 3x consecutive PASS locally
+on macOS arm64. No behavioral change to the writer-queue code under
+test; only the test's synchronization primitive changed.
+
+`@epochly/relay-sidecar-bundle@0.1.11` on npm is functional as a
+package but its launcher cannot download a sidecar binary at runtime
+because no binaries reached the v0.1.11 GitHub release (mac-arm64
+build failed; mac-x86_64 and windows builds were cancelled). v0.1.12
+ships a complete release pipeline.
+
+No SDK, CLI, schema, or sidecar runtime behavior changes.
+
+### Fixed
+- `apps/local-sidecar/tests/test_writer_queue_concurrency.py::test_forced_contention_emits_observable_retries`:
+  replaced the 0.005s sleep race with `asyncio.Event` synchronization
+  so the holder task always wins the lock before the racing writers
+  start. Bumped the hold duration from 100ms to 500ms so writers'
+  combined first-attempt latency is comfortably covered on any
+  supported runner.
+
 ## [v0.1.11] - 2026-05-27
 
 Release-infrastructure patch: makes the sidecar-bundle tier-1
