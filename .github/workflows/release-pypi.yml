@@ -109,8 +109,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build==1.2.2.post1
 
-      - name: "Build sdist + wheel"
-        run: python -m build --sdist --wheel packages/sdk-python --outdir dist/
+      - name: "Build sdist + wheel for all 4 PyPI packages"
+        # `pip install epochly-relay` pulls in the SDK plus the three
+        # workspace dependencies it declares (schemas, sidecar, cli),
+        # so every release publishes all four to PyPI together. Each
+        # package has its own pyproject.toml; the build invocations
+        # are independent.
+        run: |
+          python -m build --sdist --wheel packages/schemas --outdir dist/
+          python -m build --sdist --wheel apps/local-sidecar --outdir dist/
+          python -m build --sdist --wheel packages/sdk-python --outdir dist/
+          python -m build --sdist --wheel packages/cli --outdir dist/
 
       - name: "Compute artifact hashes (base64-subjects payload)"
         id: hash

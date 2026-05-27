@@ -19,7 +19,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "epochly-relay"
-version = "0.1.7"
+version = "0.1.8"
 description = "Relay Python SDK (placeholder; W3 wires the client surface)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -48,6 +48,12 @@ dependencies = [
   # W1.5: the generated + hand-authored canonical schema models the SDK
   # composes on top of. Also a workspace dependency.
   "epochly-relay-schemas",
+  # The `rly` CLI ships with the SDK so `pip install epochly-relay`
+  # installs everything a user needs in one command (the SDK, the
+  # sidecar, the schemas, and the `rly` binary on PATH). The CLI
+  # itself imports back from this SDK (exit_codes, errors) -- pip
+  # resolves the pair together at install time.
+  "epochly-relay-cli",
 ]
 
 [project.optional-dependencies]
@@ -69,3 +75,4 @@ include = [
 [tool.uv.sources]
 epochly-relay-sidecar = { workspace = true }
 epochly-relay-schemas = { workspace = true }
+epochly-relay-cli = { workspace = true }

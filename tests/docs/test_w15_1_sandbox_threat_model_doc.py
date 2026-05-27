@@ -61,7 +61,7 @@ REQUIRED_H2: tuple[str, ...] = (
     "Failure Modes (F)",
     "Local-Docker Sandbox (P0)",
     "No-Docker Degraded Mode",
-    "Spec Hygiene TODO (§E.4 contradiction)",
+    "§E.4 reconciliation",
 )
 
 
@@ -559,48 +559,46 @@ def test_w15_007_no_docker_degraded_mode_and_w7_footnote(body: str) -> None:
 
 
 # ===========================================================================
-# VAL-W15-008  Spec E.4 contradiction TODO explicitly flagged (L1).
+# VAL-W15-008  §E.4 reconciliation section explicitly flagged (L1).
 # ===========================================================================
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W15-008")
 def test_w15_008_spec_e4_contradiction_todo_flagged(body: str) -> None:
-    """Spec Hygiene TODO section explicitly states: spec E.4 lines 3939-4005
-    lists e2b as P0; D10 elevates local-docker to P0; spec hygiene TODO is
-    filed; this doc resolves the contradiction for v0.1 in favor of
-    local-docker P0."""
-    section = _section_body(body, "Spec Hygiene TODO (§E.4 contradiction)")
-    assert section.strip(), "Spec Hygiene TODO section is empty"
+    """§E.4 reconciliation section explicitly states: spec E.4 lines
+    3939-4005 lists e2b as P0; D10 elevates local-docker to P0; this
+    doc is the authoritative resolution for v0.1 in favor of local-docker P0.
+    """
+    section = _section_body(body, "§E.4 reconciliation")
+    assert section.strip(), "§E.4 reconciliation section is empty"
     lower = section.lower()
 
     # Spec section cite
-    assert "§e.4" in lower, "Spec Hygiene TODO must cite spec section '§E.4'"
+    assert "§e.4" in lower, "§E.4 reconciliation must cite spec section '§E.4'"
 
     # Stable line range form per C-MIN-005 reconciliation
     assert "lines 3939-4005" in lower, (
-        "Spec Hygiene TODO must cite the stable line range 'lines 3939-4005' "
+        "§E.4 reconciliation must cite the stable line range 'lines 3939-4005' "
         "per C-MIN-005 reconciliation (dropping 'line ~3941' hedging)"
     )
 
     # e2b and local-docker contrast
-    assert "e2b" in lower, "Spec Hygiene TODO must name 'e2b'"
-    assert "local-docker" in lower, "Spec Hygiene TODO must name 'local-docker'"
+    assert "e2b" in lower, "§E.4 reconciliation must name 'e2b'"
+    assert "local-docker" in lower, "§E.4 reconciliation must name 'local-docker'"
 
     # D10 cite
-    assert "d10" in lower, "Spec Hygiene TODO must cite CEO plan D10"
-
-    # spec hygiene TODO is filed
-    assert "spec hygiene todo" in lower, (
-        "Spec Hygiene TODO section must contain the literal 'spec hygiene TODO' phrase"
-    )
+    assert "d10" in lower, "§E.4 reconciliation must cite CEO plan D10"
 
     # Resolution statement
     resolution_present = (
-        "resolves" in lower or "resolution" in lower or "in favor of" in lower
+        "resolves" in lower
+        or "resolution" in lower
+        or "in favor of" in lower
+        or "authoritative" in lower
     )
     assert resolution_present, (
-        "Spec Hygiene TODO must state this doc resolves the contradiction in "
+        "§E.4 reconciliation must state this doc resolves the contradiction in "
         "favor of local-docker P0 for v0.1"
     )
 

@@ -18,6 +18,20 @@ from __future__ import annotations
 # VAL-W5-001: ``rly --version`` reports a stable semver string. The version
 # is mirrored from the package distribution metadata at runtime so a single
 # source of truth (pyproject.toml [project] version) governs the wire form.
-__version__: str = "0.0.0"
+def _resolve_version() -> str:
+    """Read the package version from installed distribution metadata.
+
+    When the package is not installed (rare; source checkout used without
+    ``pip install -e .``), fall back to a SemVer-valid local marker so
+    ``rly --version`` still emits a valid version envelope.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return version("epochly-relay-cli")
+    except PackageNotFoundError:
+        return "0.0.0+local"
+
+
+__version__: str = _resolve_version()
 
 __all__ = ["__version__"]

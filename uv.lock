@@ -706,9 +706,10 @@ wheels = [
 
 [[package]]
 name = "epochly-relay"
-version = "0.1.7"
+version = "0.1.8"
 source = { editable = "packages/sdk-python" }
 dependencies = [
+    { name = "epochly-relay-cli" },
     { name = "epochly-relay-schemas" },
     { name = "epochly-relay-sidecar" },
     { name = "httpx" },
@@ -725,6 +726,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "epochly-relay-cli", editable = "packages/cli" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
     { name = "epochly-relay-sidecar", editable = "apps/local-sidecar" },
     { name = "httpx", specifier = ">=0.27,<0.29" },
@@ -758,7 +760,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "epochly-relay-cli"
-version = "0.0.0"
+version = "0.1.8"
 source = { editable = "packages/cli" }
 dependencies = [
     { name = "click" },
@@ -952,7 +954,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "epochly-relay-schemas"
-version = "0.0.0"
+version = "0.1.8"
 source = { editable = "packages/schemas" }
 dependencies = [
     { name = "pydantic" },
@@ -980,7 +982,7 @@ provides-extras = ["test", "codegen"]
 
 [[package]]
 name = "epochly-relay-sidecar"
-version = "0.0.0"
+version = "0.1.8"
 source = { editable = "apps/local-sidecar" }
 dependencies = [
     { name = "aiosqlite" },

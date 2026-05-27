@@ -17,6 +17,37 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.8] - 2026-05-27
+
+Release-infrastructure patch: `pip install epochly-relay` is now
+actually installable. Prior `epochly-relay` 0.1.0-0.1.7 publishes on
+PyPI declared `epochly-relay-schemas` and `epochly-relay-sidecar` as
+runtime dependencies, but neither package was published to PyPI, so
+`pip install epochly-relay` failed with `ResolutionImpossible`. v0.1.8
+publishes all four packages together and adds `epochly-relay-cli` as
+a fourth dependency so the `rly` binary lands on first install.
+
+No SDK or CLI behavior changes.
+
+### Fixed
+- `pip install epochly-relay` now resolves and installs four PyPI
+  packages: `epochly-relay-schemas`, `epochly-relay-sidecar`,
+  `epochly-relay-cli`, and the SDK itself. Previously only the SDK
+  package was published; resolution failed at the first transitive
+  dependency.
+- `npm install @epochly/relay` now installs the `rly` binary
+  (renamed from `relay`) so the documented CLI name matches the
+  installed command.
+
+### Added
+- `packages/cli` (CLI binary) and `packages/schemas` (canonical
+  schemas) and `apps/local-sidecar` (local sidecar daemon) are now
+  built and published by `.github/workflows/release-pypi.yml`
+  alongside the SDK.
+- `packages/cli/src/relay_cli/__init__.py` `__version__` now reads
+  the live distribution metadata at import time, so `rly --version`
+  reports the installed version instead of a hardcoded 0.0.0.
+
 ## [v0.1.7] - 2026-05-27
 
 Addresses the verified roborev findings from the v0.1.0 - v0.1.6
