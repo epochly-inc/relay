@@ -367,6 +367,16 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
+      - name: "Upgrade npm to OIDC-trusted-publisher capable version"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
+        # Node 22 ships npm 10.x; OIDC trusted publishing requires
+        # npm >= 11.5.1 (npm CLI exchanges the GitHub OIDC token for
+        # an ephemeral npm publish token at publish time only on
+        # 11.5.1+). Pinning to 11.x to silence Dependabot bumps.
+        run: |
+          npm install -g "npm@>=11.5.1 <12"
+          npm --version
+
       - name: "Download SDK tarball"
         if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
         uses: actions/download-artifact@v4
@@ -466,6 +476,14 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+
+      - name: "Upgrade npm to OIDC-trusted-publisher capable version"
+        if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
+        # See publish-sdk for rationale: Node 22 ships npm 10.x;
+        # OIDC trusted publishing requires npm >= 11.5.1.
+        run: |
+          npm install -g "npm@>=11.5.1 <12"
+          npm --version
 
       - name: "Download sidecar-bundle tarball"
         if: steps.dry-run-unsigned.outputs.dry_run_unsigned != 'true'
