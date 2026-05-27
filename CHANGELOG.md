@@ -17,6 +17,22 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.3] - 2026-05-26
+
+Release-infrastructure patch for v0.1.2. The v0.1.2 npm publish
+failed because Node 22's bundled npm CLI is 10.x; OIDC trusted
+publishing requires npm CLI >= 11.5.1. The npm registry returned
+HTTP 404 on the PUT (npm's idiomatic "you can't publish here"
+response) even with trusted publisher bindings in place.
+
+No SDK or CLI behavior changes.
+
+### Fixed
+- `release-npm.yml` publish-sdk and publish-sidecar-bundle jobs now
+  install npm 11.5.1+ between `actions/setup-node@v4` and the publish
+  step. Without this, OIDC trusted publishing falls back to
+  unauthenticated PUT and the registry rejects with 404.
+
 ## [v0.1.2] - 2026-05-26
 
 Cleanup release after the v0.1.0 / v0.1.1 first-publish bring-up. No
