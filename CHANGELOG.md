@@ -17,6 +17,57 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.9] - 2026-05-27
+
+Release-infrastructure patch: makes the PyPI release path actually
+publish all 4 packages. v0.1.8's tag triggered a release workflow that
+sat at its approval gate without ever publishing -- the underlying
+constraint is that PyPI's pending-publisher table has a UNIQUE
+constraint on `(owner, repo, workflow, environment)`, so a single
+environment cannot host trusted-publisher bindings for 4 different
+packages from the same workflow. v0.1.9 splits the publish flow into
+three environment-scoped jobs, one per binding group:
+
+- `publish-release`  (env `release`)         publishes `epochly-relay` + `epochly-relay-schemas`
+- `publish-sidecar`  (env `release-sidecar`) publishes `epochly-relay-sidecar`
+- `publish-cli`      (env `release-cli`)     publishes `epochly-relay-cli`
+
+No SDK, CLI, schema, or sidecar behavior changes. v0.1.8 was never
+published to PyPI; v0.1.9 is the first publish on the new pipeline.
+
+### Fixed
+- PyPI publish: a single `release` environment can no longer collide
+  on its trusted-publisher unique constraint when more than one
+  package is published from the same workflow. The release workflow
+  is now split into three environment-scoped publish jobs, each
+  approved independently from the GitHub UI.
+
+### Added
+- `release-sidecar` and `release-cli` GitHub environments (mirror
+  the same protection rules as `release`: required reviewer
+  `chandlercvaughn`, branch policy `v*` tag pattern, wait timer 0).
+- Per-environment dist subdirs in the `build` job (`dist/release/`,
+  `dist/release-sidecar/`, `dist/release-cli/`); SLSA provenance
+  still binds to every artifact via a single base64-subjects payload
+  spanning the whole `dist/` tree.
+
+### Changed
+- `scripts/check-pypi-publish-workflow.py` (VAL-W12-002): single
+  `EXPECTED_ENVIRONMENT` constant replaced with an enumerated tuple;
+  guard now requires every publish job to bind to one of the
+  enumerated envs, and every enumerated env to be covered by
+  exactly one publish job.
+- `scripts/check-slsa-provenance.py` (VAL-W12-014, VAL-W12-044):
+  `PYPI_PUBLISH_JOBS` expanded from `("publish",)` to the 3 new job
+  names; provenance pairings list expanded from 1 to 3 PyPI rows
+  (all pointing to the single shared provenance attestation).
+- `docs/release/runbook.md` and `docs/release/compromised-oidc-drill.md`:
+  per-environment binding table and per-environment incident-response
+  steps.
+- `packages/schemas/raw/error-codes.yaml` RELAY-RELEASE-002:
+  description, triggers, and how-to-fix updated to enumerate the 3
+  trusted-publishing environments.
+
 ## [v0.1.8] - 2026-05-27
 
 Release-infrastructure patch: `pip install epochly-relay` is now
