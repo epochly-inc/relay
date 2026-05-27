@@ -35,6 +35,35 @@ Relay is the layer underneath your agent that makes all of these debuggable.
 Think of it as a **flight recorder + replay theatre + contract engine +
 evidence factory**, with the same trace format and contract DSL across SDKs.
 
+## The trust model
+
+Most agent frameworks — LangChain, LangGraph, the SDK wrappers, the
+"agent eval" SaaS tier — get the trust model backwards. They trust the
+LLM. They take the model's structured output at face value, log its
+self-reported tool decisions, and treat its chain-of-thought as ground
+truth.
+
+LLMs are non-deterministic. They will lie about what they did. They will
+emit a tool call that looks plausible and skip the actual side effect.
+They will return JSON that almost validates. They will hallucinate a
+retrieval citation. None of this is a bug; it is the medium.
+
+Relay's trust model:
+
+- **Trust the trace, not the model.** Every tool call, model call, and
+  retrieval is captured by the SDK as it happens. The trace is what
+  occurred — not what the LLM said occurred.
+- **Verify against contracts you wrote.** Contracts are evaluated by the
+  Relay gate engine in CEL, deterministically, on the trace. The LLM is
+  never asked whether the contract passed.
+- **Make evidence portable.** A signed evidence bundle proves what the
+  agent did to anyone who has the trust anchor, without needing access
+  to your CI or your Relay account.
+
+This is why Relay exists. If your tooling is trusting the LLM to grade
+its own homework, you do not have evidence — you have a transcript of
+what the LLM wants you to believe.
+
 ## Install
 
 ```bash
@@ -113,6 +142,36 @@ with stable, documented codes. See [`docs/`](docs/).
 - **Adapters that disappear.** Drop-in adapters for OpenAI, Anthropic,
   Vercel AI SDK, LangChain, LangGraph, and MCP. Your existing code
   keeps working; Relay records and replays around it.
+
+## AI Act readiness evidence
+
+If you ship AI features into the EU market, the EU AI Act now requires you
+to produce, on demand, an auditable record of how a high-risk AI system
+behaved. Article 12 mandates automatic logging of events that are relevant
+to identifying risk and to enabling post-market monitoring; Annex IV
+expects technical documentation that describes the system, its risk
+controls, and the evidence those controls actually fired.
+
+Relay's evidence bundles map directly onto that surface:
+
+- **Article 12 (automatic logging).** Every traced agent run is captured
+  as a signed envelope with timestamped tool calls, model calls, and
+  retrieval steps. The local sidecar writes them to a tamper-evident
+  append-only log.
+- **Annex IV (technical documentation).** Every gate decision binds the
+  contracts that were checked, the assertions they evaluated, the
+  artifact hashes they produced, and the manifest commit the agent ran
+  against. You can hand an auditor a bundle and they can reproduce the
+  decision without your CI account.
+- **Post-market monitoring.** Cassette-first replay lets you reproduce a
+  customer-reported failure deterministically, weeks or months later,
+  against the exact model version and tool surface the agent saw.
+
+Relay does not certify your system as AI-Act-conformant — no tool can do
+that for you. What it does is generate the evidence record an auditor or
+notified body asks for, in a portable signed format, with no Relay account
+needed to verify. See [docs/compliance/eu-ai-act.md](docs/compliance/eu-ai-act.md)
+for the per-article mapping and the readiness checklist.
 
 ## Package names
 

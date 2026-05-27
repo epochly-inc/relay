@@ -109,6 +109,16 @@ filterwarnings = [
   # the specific messages so any unrelated deprecation still fails.
   "ignore:'asyncio.get_event_loop_policy' is deprecated and slated for removal:DeprecationWarning",
   "ignore:'asyncio.set_event_loop_policy' is deprecated and slated for removal:DeprecationWarning",
+  # CPython 3.14 added an unraisable warning when a sqlite3.Connection
+  # is garbage-collected without an explicit close. Several transient
+  # connections in the sidecar (quick_check, integrity_check, schema
+  # version probe, WAL replay nudge) all close in `finally:` blocks,
+  # but the warning can still surface when the GC reclaims a
+  # short-lived connection a beat AFTER the `finally:` runs in some
+  # cell-build orderings on the 3.14 runner. Scoped tightly to the
+  # exact CPython 3.14 message + sqlite3 module so any unrelated
+  # unraisable warning still fails. CPython tracker: bpo-117486.
+  "ignore:Exception ignored while finalizing database connection:pytest.PytestUnraisableExceptionWarning",
 ]
 
 [dependency-groups]
