@@ -106,26 +106,53 @@ async def test_forced_contention_emits_observable_retries(
         scope_id = str(uuid.uuid4())
         project_id = str(uuid.uuid4())
 
-        # Competing connection: hold a write lock for 100ms.
+        # Synchronization primitive: the holder signals AFTER it has
+        # acquired the WAL write lock, before the writers race. Using an
+        # explicit Event removes the timing race in the prior version,
+        # which raced a 0.005s sleep against the holder's BEGIN IMMEDIATE
+        # plus sentinel write -- a race the holder reliably lost on
+        # faster CI hardware (e.g., macos-arm64 Apple Silicon runners,
+        # where writers completed before the holder ever took the lock,
+        # so 0 sqlite_busy_retry rows were emitted).
+        lock_acquired = asyncio.Event()
+
+        # Competing connection: hold a write lock for 500ms after signaling.
         async def hold_write_lock() -> None:
             async with aiosqlite.connect(str(db_path)) as competitor:
                 # busy_timeout=0 so the competitor immediately gets the
                 # write lock (it's free at this moment) without waiting.
                 await competitor.execute("PRAGMA busy_timeout = 0")
                 await competitor.execute("BEGIN IMMEDIATE")
-                # Hold the lock for 100ms with a sentinel write that
-                # forces the WAL to actually take the lock.
+                # Force the WAL to actually take the write lock via a
+                # sentinel insert; without this the WAL deferred-lock
+                # semantics can leave BEGIN IMMEDIATE without an actual
+                # WAL_WRITER lock.
                 await competitor.execute(
                     "CREATE TABLE IF NOT EXISTS _contention_sentinel(x INTEGER)"
                 )
                 await competitor.execute(
                     "INSERT INTO _contention_sentinel(x) VALUES (?)", (1,)
                 )
-                await asyncio.sleep(0.10)
+                # Signal AFTER the lock is actually held. Writers below
+                # block on this Event before racing, so they will always
+                # observe SQLITE_BUSY when they attempt their first write.
+                lock_acquired.set()
+                # Hold for 500ms; comfortably longer than the 5 writers'
+                # combined first-attempt latency on any supported runner,
+                # so every writer is guaranteed to retry at least once
+                # (the sidecar's busy_timeout is 2000ms, so retries
+                # succeed deterministically).
+                await asyncio.sleep(0.5)
                 await competitor.execute("COMMIT")
 
         # Kick off N writer tasks racing for the lock during contention.
         async def one_write(i: int) -> int:
+            # Block until the holder has actually acquired the WAL write
+            # lock. asyncio.gather runs all 5 writers concurrently, all
+            # blocked on the same Event; when the holder sets it, the 5
+            # writers unblock simultaneously and race against the held
+            # lock, guaranteeing SQLITE_BUSY observations.
+            await lock_acquired.wait()
             row = build_event_log_row(
                 event_type="test.contention_write",
                 scope_id=scope_id,
@@ -139,11 +166,8 @@ async def test_forced_contention_emits_observable_retries(
             )
             return result.ingest_sequence
 
-        # Start the lock-holder first so writers see contention.
+        # Start the lock-holder first; writers block until lock_acquired.
         holder = asyncio.create_task(hold_write_lock())
-        # Brief yield so the holder reaches its BEGIN IMMEDIATE.
-        await asyncio.sleep(0.005)
-        # Now race 5 writers; they'll observe SQLITE_BUSY at least once.
         sequences = await asyncio.gather(*(one_write(i) for i in range(5)))
         await holder
 
