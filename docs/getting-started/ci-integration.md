@@ -46,15 +46,45 @@ jobs:
       - name: "install relay"
         run: uv sync --all-packages
 
+      - name: "start the local sidecar"
+        # `rly contract publish` and `rly gate evaluate` both submit
+        # drafts to the local sidecar over loopback HTTP. Without a
+        # running sidecar both commands exit non-zero with
+        # RelaySidecarNotReachable. The sidecar runs as a background
+        # process; the lockfile at ${RELAY_HOME}/sidecar.lock
+        # serializes startup.
+        run: |
+          uv run rly sidecar start --json
+        env:
+          RELAY_HOME: ${{ runner.temp }}/relay-home
+
+      - name: "build the signed coverage bundle"
+        # rly contract check reads the CEL contract source under
+        # contracts/ and emits the signed coverage report that
+        # rly contract publish consumes.
+        run: |
+          uv run rly contract check \
+            --out contracts/coverage-bundle.json \
+            contracts/
+        env:
+          RELAY_HOME: ${{ runner.temp }}/relay-home
+
       - name: "publish contract coverage"
-        # rly contract publish requires the bundle path as a positional arg
-        # (the signed coverage report produced by `rly contract check`).
         run: uv run rly contract publish "${RELAY_CONTRACT_BUNDLE}"
         env:
           RELAY_CONTRACT_BUNDLE: contracts/coverage-bundle.json
+          RELAY_HOME: ${{ runner.temp }}/relay-home
 
       - name: "evaluate gate"
         run: uv run rly gate evaluate --gate-id "${{ vars.RELAY_GATE_ID }}"
+        env:
+          RELAY_HOME: ${{ runner.temp }}/relay-home
+
+      - name: "stop the local sidecar"
+        if: always()
+        run: uv run rly sidecar stop --json
+        env:
+          RELAY_HOME: ${{ runner.temp }}/relay-home
 ```
 
 `rly gate evaluate` returns one of the canonical CLI exit codes

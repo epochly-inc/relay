@@ -37,8 +37,10 @@ After completing this guide:
 
 ## Prerequisites
 
-- A Relay project already provisioned (`rly project create` or your
-  hosted control plane's project bootstrap).
+- A Relay project already provisioned. Project provisioning is a
+  hosted Relay surface; the `project_key` referenced below is created
+  through the hosted control plane (or by direct sidecar insertion
+  for local development).
 - A gate already configured for the project. The gate's UUID is the
   value you pass via `--gate-id` (see `rly gate evaluate --help`).
 - A contract bundle in the repository. The path is the positional

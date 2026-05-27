@@ -93,17 +93,30 @@ CLI wraps it with the wire schema version and trust-anchor metadata.
 }
 ```
 
-Fields drawn from `VerificationResult`:
+The wire envelope combines fields from the verifier library's
+`VerificationResult` dataclass with three CLI-level fields the
+`rly evidence verify` command adds at emit time.
+
+Fields from `VerificationResult` (verifier-library output):
 
 | Field | Meaning |
 |---|---|
 | `digest_ok` | The bundle's content-addressed digest matches its recomputed digest. |
 | `signatures_ok` | Every signature on the bundle verified against a resolved JWK. |
 | `structure_ok` | The bundle's JSON shape conforms to the v1 schema. |
-| `signature_checks` | Per-signature outcomes: `kid`, `alg`, `ok`, `reason`, `code`. The CLI wire envelope emits these under the key `signatures_checked` for compatibility with downstream consumers. |
+| `signatures_checked` | Per-signature outcomes (`kid`, `alg`, `ok`, `reason`). The CLI wire-envelope key is `signatures_checked`; the dataclass attribute is `signature_checks`. |
 | `claims_count` | Number of `evidence_claims` covered by the bundle. |
 | `bundle_digest_sha256` | Hex SHA-256 of the canonical bundle bytes (the value the digest check verified against). |
 | `errors` | Structured failure reasons; empty list on success. |
+
+Fields added by the CLI envelope (set by `rly evidence verify` after
+the verifier returns):
+
+| Field | Meaning |
+|---|---|
+| `trust_anchor` | The JWKS URL that resolved the bundle's signing keys. |
+| `trust_anchor_overridden` | `true` when `--trust-anchor` was passed; `false` for the default anchor. |
+| `bundle_path` | Filesystem path the CLI loaded the bundle from. |
 
 A verifier outcome is "pass" iff `digest_ok && signatures_ok &&
 structure_ok` and `errors` is empty. A single-byte mutation of the

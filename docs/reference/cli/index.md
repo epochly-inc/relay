@@ -26,7 +26,7 @@ rly [OPTIONS] COMMAND [ARGS]...
 | [`eval`](eval.md) | Run evaluation datasets through the local sidecar. The ``run`` subcommand enqueues an eval-run against POST /v1/eval-runs and emits the canonical relay.cli.eval_run.v1 envelope. |
 | [`evidence`](evidence.md) | List, show, verify, and assess evidence bundles. The verifier defaults to the spec-pinned trust anchor; --trust-anchor accepts a BYO JWKS URL for forks and self-hosters and emits a structured stderr WARN when used. The ``assess`` subcommand (M07 w7-cli-evidence-assess) enqueues a readiness-profile assessment against the bundle id. |
 | [`gate`](gate.md) | Evaluate a contract gate against a release/manifest. Submits a draft via POST /v1/gates/{id}/drafts, polls await_url with exponential backoff, emits the canonical relay.cli.gate_evaluate.v1 envelope on resolution. |
-| [`init`](init.md) | Initialize a Relay project (sidecar config, manifest scaffold). |
+| [`init`](init.md) | Reserved namespace for project-init. Invoking returns RELAY-CLI-NOT-IMPLEMENTED; the project-scaffold implementation ships in a separate sub-feature. |
 | [`manifest`](manifest.md) | Validate Relay manifests against the canonical manifest.v1.json schema. The ``check`` subcommand validates the body, computes command_hash digests, and emits a structured report. |
 | [`replay`](replay.md) | Record and play back agent traffic. Cassette mode is the default; live mode lands in W6. Side effects are blocked without an explicit --allow-side-effects override. |
 | [`sidecar`](sidecar.md) | Manage the local Relay sidecar: start, stop, status, restart, install. Lifecycle commands NEVER kill processes by name; PID is read from the sidecar lockfile. |

@@ -26,7 +26,7 @@ rly evidence assess [OPTIONS]
 | `--help` | `boolean` | no | Show this message and exit. |
 | `--home` | `text` | no | Override RELAY_HOME (test seam). |
 | `--json` | `boolean` | no | Force JSON output even on TTY. |
-| `--readiness-profile` | `text` | no | Readiness profile to assess against (e.g., 'eu-ai-act', 'nist-ai-rmf'). Hosted-only in OSS v0.2: the OSS sidecar does not implement the assessment worker (lives in the hosted Relay runtime). The OSS CLI verifies the bundle exists locally and emits a hosted-only envelope. |
+| `--readiness-profile` | `text` | no | Readiness profile to assess against (e.g., 'eu-ai-act', 'nist-ai-rmf'). Hosted-only in OSS v0.2: the OSS sidecar does not implement the assessment worker (lives in private relay-platform). The OSS CLI verifies the bundle exists locally and emits a hosted-only envelope. |
 
 ## Exit codes
 

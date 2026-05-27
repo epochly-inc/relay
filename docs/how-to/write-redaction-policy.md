@@ -205,9 +205,9 @@ Per spec section G.1:
 Storage of any raw field requires ALL of the following preconditions
 (spec section G.1, enforced in source at `redaction.py` lines 419-434):
 
-1. `raw_capture: true` in the policy body with explicit `retention_days`
-   and a `dpa_ref` (UUID of the signed Data Processing Agreement in
-   Relay's contract management system).
+1. `raw_capture: true` in the policy body alongside a `dpa_ref` (UUID
+   of the signed Data Processing Agreement in Relay's contract
+   management system).
 2. The DPA referenced by `dpa_ref` must be in `signed` state with a
    non-revoked signature from both the customer's org owner and Relay's
    org owner.
@@ -215,10 +215,10 @@ Storage of any raw field requires ALL of the following preconditions
    the customer side; the audit log row for the policy create event must
    reference the human approver.
 
-Absent both, the SDK refuses to load the policy with
-`RelayPolicyError(reason="raw-capture-missing-dpa-or-approver",
-missing=["dpa_ref", "approver_user_id"])`. Hosted ingest re-validates
-as defense in depth.
+If either `dpa_ref` or `approver_user_id` is missing when
+`raw_capture: true`, the SDK refuses to load the policy with
+`RelayPolicyError` carrying a `missing` list naming the absent
+field(s). Hosted ingest re-validates as defense in depth.
 
 CLAUDE.md banned pattern #11 is exactly this rule: `raw_capture: true`
 without a signed DPA and an org-admin approver is a structural violation.

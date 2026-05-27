@@ -154,9 +154,8 @@ Custody model for v0.1:
   Chandler-personal), with a separate billing account from product
   infrastructure, so that a product-account compromise does not extend
   to key custody. The KMS provider, project, and key resource names
-  are recorded in the private the operator's internal runbooks
-  trust-anchor runbook (not in this OSS document, per CLAUDE.md banned
-  pattern #14).
+  are recorded in the operator's internal trust-anchor runbook (not
+  in this OSS document, per CLAUDE.md banned pattern #14).
 - **HSM-backed roots.** The root-of-trust signing identity (the key
   whose fingerprint is published out-of-band on the Relay status page,
   per spec §L.2) is HSM-backed. The HSM provider is named only in the
@@ -245,8 +244,8 @@ spec §AO.3 step 3 and §AB):
    log?" concern; a rewrite would invalidate every witness signature
    issued before the rewrite, which observers monitor and publish.
    The witness onboarding procedure, including reviewer selection and
-   the rotation schedule, lives in the private
-   the operator's internal trust-anchor witness roster.
+   the rotation schedule, lives in the operator's internal
+   trust-anchor witness roster.
 
 A bundle without a valid `evidence_timestamps` row cannot be marked
 active; the signer halts with `RELAY-EVID-031` (spec §AB rule). The
@@ -326,8 +325,8 @@ reference implementation to relevant standards work (ISO/IEC JTC1
 SC42, NIST AI Safety Institute, EU AI Office post-Omnibus). The
 trust anchor wins durability when it is referenced by name in
 regulatory guidance. Standards-engagement status is tracked in the
-private the operator's internal standards-engagement document; the public
-summary appears in the Relay annual evidence-bundle report.
+operator's internal standards-engagement document; the public summary
+appears in the Relay annual evidence-bundle report.
 
 ## Fork Path (BYO Trust Anchor)
 

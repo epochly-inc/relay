@@ -48,10 +48,10 @@ with `pure=True` and arity 2; it returns `true` when `trace.steps`
 contains an entry whose `name` equals `step_name`, `false` otherwise.
 
 ```cel
-relay.coverage(run, "plan_tools")
+relay.coverage(trace, "plan_tools")
 ```
 
-This expression reads `run.steps`, scans for `{"name": "plan_tools"}`,
+This expression reads `trace.steps`, scans for `{"name": "plan_tools"}`,
 and returns a boolean. It never raises, even on partial traces. See
 [CEL Primer](cel-primer.md) and [UDF Reference](udf-reference.md) for
 the full surface (`relay.coverage`, `relay.tool_arg`,

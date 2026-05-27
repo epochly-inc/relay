@@ -96,7 +96,7 @@ This is the load-bearing reassurance. The upgrade is an operational shift,
 not a re-architecture. Specifically:
 
 - **Same SDK.** The Python and TypeScript SDKs are the same packages
-  (`relay-sdk`, `@epochly/relay-sdk`). No code rewrite.
+  (`epochly-relay` on PyPI, `@epochly/relay` on npm). No code rewrite.
 - **Same contracts.** Your CEL YAML files pass through `rly contract publish`
   unchanged. Your `relay.coverage`, `relay.schema_match`, `relay.tool_arg`
   UDFs work identically (they are `pure=True` on both surfaces, by

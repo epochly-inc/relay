@@ -21,15 +21,19 @@ DEFAULT_JWKS_URL: Final[str] = "https://relay.epochly.com/.well-known/jwks.json"
 ```
 
 Both `DEFAULT_JWKS_URL` and the backwards-compatible alias
-`DEFAULT_TRUST_ANCHOR_URL` resolve to the same string object. The CLI's
-`packages/cli/src/relay_cli/commands/evidence.py` imports the alias, so the
-CLI and the verifier library always agree on the default.
+`DEFAULT_TRUST_ANCHOR_URL` resolve to the same string object. The CLI
+declares its own `DEFAULT_TRUST_ANCHOR_URL` literal in
+`packages/cli/src/relay_cli/commands/evidence.py` (one occurrence) so
+the CLI does not require the verifier package to be importable at
+parse time.
 
-A source-grep guard (`VAL-W10-001`) enforces exactly one occurrence of the
-literal URL across the verifier package's non-test Python sources; a guard
-test at `packages/verifier/tests/guards/default_trust_anchor_lock.py`
-re-asserts the constant against a frozen reference value so any mutation
-trips a structured CI failure.
+Two grep guards keep the two literals in lockstep: `VAL-W10-001`
+enforces exactly one occurrence in the verifier package's non-test
+Python sources, and `VAL-W5-030` enforces exactly one occurrence in
+the CLI package. A guard test at
+`packages/verifier/tests/guards/default_trust_anchor_lock.py`
+re-asserts the verifier constant against a frozen reference value, so
+any mutation (in either package) trips a structured CI failure.
 
 ## Bring-your-own (BYO) trust anchor
 

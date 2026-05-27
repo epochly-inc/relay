@@ -117,41 +117,54 @@ and Sigstore attestations on every release.
 
 ## Quickstart
 
-Wrap agent operations, evaluate a contract, ship a signed bundle:
+Wrap an OpenAI call with the Relay SDK and produce a signed trace:
 
 ```python
-from epochly_relay import trace, model_call, tool_call, validate_contract
+import os
+import openai
+from relay import Relay
+from relay.adapters import wrap_openai
 
-@model_call
-def ask(prompt: str) -> str:
-    ...
+relay = Relay(
+    project_key=os.environ["RELAY_PROJECT_KEY"],
+    actor_identity_hash="sha256-<your-actor-hash>",
+    manifest_commit_hash="sha256-<your-manifest-hash>",
+    redaction_policy_version="v1",
+)
+wrapped = wrap_openai(openai.OpenAI())
 
-@tool_call(side_effect="read")
-def search(query: str) -> list[str]:
-    ...
-
-with trace(scope_id="refund-policy-lookup") as run:
-    answer = ask("Find the policy for refund requests")
-    docs = search(answer)
-    result = validate_contract("refund_policy_present", run)
-    assert result.ok
+with relay.run(scope_id="refund-policy-lookup") as run:
+    response = wrapped.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "Find the refund policy"}],
+    )
+    print("run_id:", run.run_id)
 ```
+
+See [`docs/getting-started/first-agent.md`](docs/getting-started/first-agent.md)
+for the full walkthrough including how to obtain the actor identity
+and manifest commit hashes.
 
 Operational commands:
 
 ```bash
-# Replay a recorded trace against modified code, deterministically
-rly replay run refund-policy-lookup --against ./my_agent.py
+# Re-execute a recorded replay case against modified code, deterministically
+rly replay run --case <replay_case_id>
 
-# Evaluate a saved gate (passes only when every contract holds)
-rly gate evaluate refund-quality-gate
+# Evaluate a published gate (passes only when every contract holds)
+rly gate evaluate --gate-id <gate_uuid>
 
 # Verify a signed evidence bundle offline (no Relay account required)
-rly verify ./bundles/refund-policy-lookup.acef
+rly evidence verify <bundle_id>
+
+# Run every checked invariant and emit an evidence bundle
+rly verify-self
 ```
 
-Every command emits machine-readable JSON when given `--json` and exits
-with stable, documented status codes.
+Every `rly` command emits machine-readable JSON when given `--json`
+and exits with stable, documented status codes. See
+[`docs/reference/cli/index.md`](docs/reference/cli/index.md) for the
+full subcommand surface.
 
 ## Capabilities
 

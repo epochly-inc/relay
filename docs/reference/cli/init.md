@@ -2,7 +2,7 @@
 
 > Generated from packages/cli/src/relay_cli/main.py. Do not edit by hand.
 
-Initialize a Relay project (sidecar config, manifest scaffold).
+Reserved namespace for project-init. Invoking returns RELAY-CLI-NOT-IMPLEMENTED; the project-scaffold implementation ships in a separate sub-feature.
 
 ## Usage
 

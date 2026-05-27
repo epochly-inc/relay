@@ -355,7 +355,11 @@ def _emit_not_implemented(group: str, sub_feature: str) -> None:
 init_app = typer.Typer(
     name="init",
     cls=_RelayTyperGroup,
-    help="Initialize a Relay project (sidecar config, manifest scaffold).",
+    help=(
+        "Reserved namespace for project-init. Invoking returns "
+        "RELAY-CLI-NOT-IMPLEMENTED; the project-scaffold implementation "
+        "ships in a separate sub-feature."
+    ),
     no_args_is_help=False,
     rich_markup_mode=None,
     context_settings={"help_option_names": ["-h", "--help"]},
@@ -365,7 +369,7 @@ app.add_typer(init_app, name="init")
 
 @init_app.callback(invoke_without_command=True)
 def _init_root(ctx: typer.Context) -> None:
-    """Stub root for ``rly init``. Lands in a future W5 sub-feature."""
+    """Reserved namespace; emits RELAY-CLI-NOT-IMPLEMENTED today."""
     if ctx.invoked_subcommand is None:
         _emit_not_implemented("init", "w5.future")
 
