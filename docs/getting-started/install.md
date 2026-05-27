@@ -110,8 +110,8 @@ Field meanings:
 
 - `schema_version` -- `relay.cli.version.v1`; never changes within
   the v1 schema generation.
-- `version` -- the published `rly` version. `0.0.0` is the pre-1.0
-  scaffold version; the first release will be `v0.1.0`.
+- `version` -- the published `rly` version (matches the `epochly-relay`
+  PyPI release you installed).
 - `python` -- the interpreter version `rly` is running under.
 - `platform` -- one of `darwin` / `linux` / `win32`.
 

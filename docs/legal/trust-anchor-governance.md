@@ -38,7 +38,7 @@ custody model, the rotation cadence, the disclosure procedure, the
 transparency-log design, the TSA partner selection, the JWKS hosting
 arrangement, and the counsel-review path. Runtime signing infrastructure,
 key escrow tooling, and the witness-signature scheduler live in the
-private `relay-platform` repository (per CLAUDE.md banned pattern #14:
+Epochly's hosted Relay infrastructure (per CLAUDE.md banned pattern #14:
 trust-anchor key material may never be committed to the public `relay`
 repository). The OSS verifier, the bundle format, and the offline-verify
 machinery live in the public `relay` repository under Apache 2.0; the
@@ -66,7 +66,7 @@ Truth):
   their own anchors without forking the verifier.
 - All trust-anchor key custody, rotation, compromise response, and
   revocation publication procedures named below are operated by Relay-Inc
-  out of the private `relay-platform` repository (per spec §L.1 and
+  out of the Epochly's hosted Relay infrastructure (per spec §L.1 and
   CLAUDE.md Keystone Invariant #11). Their interfaces are public; their
   key material is not.
 
@@ -154,7 +154,7 @@ Custody model for v0.1:
   Chandler-personal), with a separate billing account from product
   infrastructure, so that a product-account compromise does not extend
   to key custody. The KMS provider, project, and key resource names
-  are recorded in the private `relay-platform/ops/runbooks/`
+  are recorded in the private the operator's internal runbooks
   trust-anchor runbook (not in this OSS document, per CLAUDE.md banned
   pattern #14).
 - **HSM-backed roots.** The root-of-trust signing identity (the key
@@ -181,7 +181,7 @@ marked deprecated. Bundles signed within the propagation window may
 carry both the new `signer_key_id` and a witness signature from the
 old key, so that verifiers that have not yet refreshed their JWKS
 cache can still verify. The full rotation runbook lives in
-`relay-platform/ops/runbooks/`; the schedule is recorded in the
+the operator's internal runbooks; the schedule is recorded in the
 public Relay release calendar.
 
 Compromise response (spec §L.5): on suspected key compromise, the
@@ -246,7 +246,7 @@ spec §AO.3 step 3 and §AB):
    issued before the rewrite, which observers monitor and publish.
    The witness onboarding procedure, including reviewer selection and
    the rotation schedule, lives in the private
-   `relay-platform/ops/runbooks/trust-anchor-witness-roster.md`.
+   the operator's internal trust-anchor witness roster.
 
 A bundle without a valid `evidence_timestamps` row cannot be marked
 active; the signer halts with `RELAY-EVID-031` (spec §AB rule). The
@@ -326,7 +326,7 @@ reference implementation to relevant standards work (ISO/IEC JTC1
 SC42, NIST AI Safety Institute, EU AI Office post-Omnibus). The
 trust anchor wins durability when it is referenced by name in
 regulatory guidance. Standards-engagement status is tracked in the
-private `relay-platform/ops/standards-engagement.md`; the public
+private the operator's internal standards-engagement document; the public
 summary appears in the Relay annual evidence-bundle report.
 
 ## Fork Path (BYO Trust Anchor)
@@ -406,7 +406,7 @@ audit-friendly. The policy:
   schedule is preempted; the affected `signer_key_id` is revoked
   within four hours of confirmation; a new key is activated; a sev1
   incident is opened automatically. The full emergency-rotation
-  runbook lives in `relay-platform/ops/runbooks/key-compromise.md`;
+  runbook lives in the operator's internal key-compromise runbook;
   the public summary is published on the Relay status page.
 - **Revocation publication.** Revocation events are published at
   `https://relay.epochly.com/.well-known/revoked-keys.json` and in

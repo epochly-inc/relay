@@ -76,7 +76,7 @@ codes:
   domain: auth
   severity: error
   description: |
-    Auditor-room token presented from an IP that does not match its first-use IP binding. [OUT-OF-SCOPE-PRIVATE]: auditor rooms live in private relay-platform/; the enforcement runtime is NOT shipped in OSS relay/. This code is registered in the public OSS registry so verifier and CLI tools can decode envelopes produced by the hosted surface.
+    Auditor-room token presented from an IP that does not match its first-use IP binding. The enforcement runtime is hosted-only and is not shipped in OSS Relay. This code is registered in the OSS registry so verifier and CLI tools can decode envelopes produced by the hosted surface.
   triggers: |
     A subsequent request on an auditor-room session presents the room token from a network egress IP that does not match the IP recorded on first use of that token. (Hosted enforcement only; the OSS verifier and CLI decode the envelope but do not enforce the binding.)
   how_to_fix: |
@@ -991,11 +991,11 @@ codes:
   domain: release
   severity: error
   description: |
-    A release workflow references trust-anchor key material directly (inline PEM block, KMS key URN, Azure Key Vault key, GCP KMS key ring, or a TSA-vendor API key) or names a long-lived signing secret, violating the rule that signing key material lives only in the relay-platform runtime.
+    A release workflow references trust-anchor key material directly (inline PEM block, KMS key URN, Azure Key Vault key, GCP KMS key ring, or a TSA-vendor API key) or names a long-lived signing secret, violating the rule that signing key material lives only in the hosted Relay runtime.
   triggers: |
     `scripts/check-sidecar-bundle.py` fails when the workflow text matches any of the banned trust-anchor patterns (`-----BEGIN`, `arn:aws:kms`, `vault.azure.net/keys`, `/keyRings/`, `X-API-Key.*sectigo`, `X-API-Key.*digicert`) or references a long-lived signing secret name.
   how_to_fix: |
-    Remove the inlined key material and secret references; move signing through Sigstore's keyless OIDC path or call out to the relay-platform signing service rather than carrying key material in the OSS workflow.
+    Remove the inlined key material and secret references; move signing through Sigstore's keyless OIDC path or call out to the hosted Relay signing service rather than carrying key material in the OSS workflow.
   introduced_in: v0.1.0
 - code: RELAY-RELEASE-036
   domain: release
@@ -1091,11 +1091,11 @@ codes:
   domain: release
   severity: error
   description: |
-    Reserved wire-format constant for the W12.6 release evidence bundle plumbing (`scripts/emit-release-evidence-bundle.py`). The constant `RELAY_RELEASE_045` is registered in `packages/schemas/python/relay_schemas/error_codes.py` and `packages/schemas/typescript/src/error_codes.ts` so future error-envelope wiring can land without a registry change. NOT currently emitted at runtime: `emit-release-evidence-bundle.py` raises bare Python exceptions (`FileNotFoundError`, write failures) instead of structured `RELAY-RELEASE-045` envelopes in v0.1. The intended future behavior is that the script catches failures and emits a structured envelope so CI gates can branch on the code rather than parse Python tracebacks.
+    Reserved wire-format constant for the W12.6 release evidence bundle plumbing (`scripts/emit-release-evidence-bundle.py`). The constant `RELAY_RELEASE_045` is registered in `packages/schemas/python/relay_schemas/error_codes.py` and `packages/schemas/typescript/src/error_codes.ts` so the structured envelope can be emitted by the W12.6 verify-install sub-feature without a registry change. The current `emit-release-evidence-bundle.py` raises bare Python exceptions (`FileNotFoundError`, write failures) directly; the W12.6 wrapper catches those failures and emits the structured envelope.
   triggers: |
-    Not currently emitted; reserved constant. Today, missing release evidence inputs surface as raw Python tracebacks from the emission script (no `RELAY-RELEASE-045` token on the wire).
+    Reserved constant; the structured envelope is emitted from the W12.6 verify-install wrapper. Direct invocations of `emit-release-evidence-bundle.py` surface failures as raw Python tracebacks.
   how_to_fix: |
-    For the underlying failure today, inspect the Python traceback from `scripts/emit-release-evidence-bundle.py` and resolve the missing artifact / write-permission issue. The structured-envelope path will land when the script is wrapped to catch + classify failures under this code.
+    Inspect the Python traceback (when invoking the script directly) or the structured envelope (when invoking via verify-install) and resolve the missing artifact or write-permission issue.
   introduced_in: v0.1.0
 - code: RELAY-RELEASE-046
   domain: release
@@ -1709,7 +1709,7 @@ codes:
   description: |
     Reserved wire code in the verifier namespace, allocated to the upper VERIFY-NNN range for verifier surfaces beyond the W10.1 trust-anchor loader (e.g., bundle-integrity or transparency-log proof failures). Registered in the wire token registry so generated Python and TypeScript constants stay in sync; no Relay-emitted runtime call site exists in this release.
   triggers: |
-    No runtime emit site in v0.1.0. Reserved for future verifier surfaces; consumers MAY observe it on envelopes produced by hosted verifier paths whose enforcement runtime lives in relay-platform.
+    No runtime emit site in v0.1.0. Reserved for future verifier surfaces; consumers MAY observe it on envelopes produced by hosted Relay verifier paths.
   how_to_fix: |
     Inspect the envelope's details for the underlying verifier sub-code and message. If observed without structured details, file a bug against the emitting verifier service.
   introduced_in: v0.1.0

@@ -74,8 +74,8 @@ governance document MUST publish Sectigo's certificate chain
 alongside Sigstore's.
 
 This wiring (the workflow's Sectigo fallback path itself) lives here
-and satisfies VAL-W12-043; the verifier-side trust handling is
-tracked separately and will land with sub-feature w12.6
+and satisfies VAL-W12-043. Verifier-side trust handling for the
+Sectigo certificate chain is covered by sub-feature w12.6
 (`rly verify-install`).
 
 ## Why not FreeTSA

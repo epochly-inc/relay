@@ -32,11 +32,10 @@ containment** at the driver level: refusing to dispatch tool calls whose
 `side_effect_class` (spec §E.3) would be inappropriate for the current
 replay mode (cassette vs. live).
 
-Per CEO plan D10, the v0.1 P0 driver is `local-docker`. This represents
-the elevation of `local-docker` to P0 status. Spec §E.4 (lines 3939-4005)
-currently names `e2b` as P0; this document resolves the contradiction in
-favor of `local-docker` for v0.1, and the spec hygiene TODO that updates
-§E.4 is filed and tracked outside this milestone. The `e2b` driver
+Per CEO plan D10, the v0.1 P0 driver is `local-docker`. This document
+is the authoritative source for that decision. Spec §E.4 (lines
+3939-4005) originally named `e2b` as P0; this document resolves the
+contradiction in favor of `local-docker` for v0.1. The `e2b` driver
 remains a documented opt-in for users who need stronger kernel-level
 isolation than `local-docker` provides.
 
@@ -263,26 +262,16 @@ implementation lands in week 6-7. The forward reference is intentional:
 doc-first design is the workspace's standard operating procedure
 (CW-005 action; see eng plan A4 / L2).
 
-## Spec Hygiene TODO (§E.4 contradiction)
+## §E.4 reconciliation
 
-Spec §E.4 (lines 3939-4005) currently lists `e2b` as the P0 replay
-sandbox driver. CEO plan D10 elevates `local-docker` to P0 instead.
-This document **resolves** that contradiction for v0.1 in favor of
-`local-docker` as P0, with `e2b` as a documented opt-in.
-
-The spec hygiene TODO that updates §E.4 to match D10 is **filed and
-tracked** outside this milestone. The W15 doc you are reading is the
-authoritative resolution for v0.1: where §E.4 disagrees with this
-doc, this doc wins for v0.1 only; the spec text itself will be
-updated by the spec hygiene TODO before v0.2. The stable line range
-form (§E.4 lines 3939-4005) is used here per the C-MIN-005
-reconciliation, dropping the prior "line ~3941" hedging that drifted
-as the spec was edited.
-
-This section exists so that future readers can trace why W15 documents
-`local-docker P0` while §E.4 still says `e2b P0` until the spec hygiene
-TODO closes; the discrepancy is intentional and resolved here for v0.1,
-not a doc-drift bug.
+Spec §E.4 (lines 3939-4005) lists `e2b` as the P0 replay sandbox
+driver. CEO plan D10 elevates `local-docker` to P0 instead. **This
+document is the authoritative resolution** for v0.1: where §E.4
+disagrees with the text here, this document wins for v0.1. The
+spec text reconciliation is tracked in the spec maintenance
+schedule. The stable line range form (§E.4 lines 3939-4005) is used
+per the C-MIN-005 reconciliation, replacing the earlier "line ~3941"
+form that drifted as the spec was edited.
 
 ## Out-of-Scope Use Cases
 
@@ -302,7 +291,7 @@ choose a different driver (e2b, microvm) or a different tool entirely.
   organizations on the same host with only the local-docker P0 driver
   between them is NOT supported. The hosted Relay platform uses a
   different sandbox stack (out of scope for this OSS-side doc; see
-  `relay-platform/services/replay-workers/`).
+  hosted Relay replay-worker service).
 
 - **Security-critical isolation against malicious code.** Any use case
   whose threat model assumes an adversary has read or write access to

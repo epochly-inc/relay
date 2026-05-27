@@ -7,11 +7,11 @@ two MUST stay in lockstep. CI guards (see
 `scripts/check-pypi-publish-workflow.py`) verify that the workflow's
 behavior matches what this runbook declares.
 
-**Status:** initial scaffold for feature `w12.1-release-pypi-trusted-publish`.
-Sister sub-features `w12.2` (npm provenance), `w12.3` (SLSA L3), `w12.4`
-(in-toto), `w12.5` (sidecar bundle), and `w12.6` (verify-install) will
-each extend this runbook with their own sections. The structure below
-satisfies VAL-W12-001..006, 038, 039, 040, 046.
+Covers the v0.1 OSS release pipeline: PyPI trusted publishing
+(w12.1), npm provenance and trusted publishing (w12.2), SLSA L3
+attestations (w12.3), in-toto layout and link metadata (w12.4),
+sidecar bundle signing (w12.5), and verify-install (w12.6). The
+structure satisfies VAL-W12-001..006, 038, 039, 040, 046.
 
 ---
 
@@ -263,13 +263,14 @@ incident ticket AND a time-boxed (max 72-hour) window.
 
 ## Trust-anchor governance cross-reference
 
-Per VAL-W12-042 the trust-anchor governance document at
-`docs/release/trust-anchor-governance.md` (OSS-facing stub) and the
-companion private document at
-`relay-platform/ops/runbooks/trust-anchor-governance.md` reference the
-release pipeline (PyPI trusted publishing + npm provenance + SLSA L3 +
-in-toto + Sigstore + Sectigo fallback) as the operational basis for
-"how Relay-Inc protects signing-identity binding."
+Per VAL-W12-042 the trust-anchor governance documents at
+[`docs/release/trust-anchor-governance.md`](trust-anchor-governance.md)
+(release-engineering view) and
+[`docs/legal/trust-anchor-governance.md`](../legal/trust-anchor-governance.md)
+(comprehensive legal view) reference the release pipeline (PyPI
+trusted publishing + npm provenance + SLSA L3 + in-toto + Sigstore +
+Sectigo fallback) as the operational basis for signing-identity
+binding.
 
 The governance document is reviewed by counsel and security counsel;
 updated semi-annually. CI guard `scripts/check-sidecar-bundle.py`
@@ -287,7 +288,10 @@ pipeline (Sigstore, in-toto, SLSA).
   w12.3 SLSA L3, w12.4 in-toto, w12.5 sidecar bundle, w12.6
   verify-install
 - Trust-anchor governance: extended under w12.5; see
-  `relay-platform/ops/runbooks/trust-anchor-governance.md` (private)
+  [`docs/legal/trust-anchor-governance.md`](../legal/trust-anchor-governance.md)
+  for the comprehensive document and
+  [`trust-anchor-governance.md`](trust-anchor-governance.md) for the
+  release-pipeline view.
 - Workflow file: `.github/workflows/release-pypi.yml`
 - Sidecar bundle workflow: `.github/workflows/release-sidecar-bundle.yml`
 - Guard script: `scripts/check-pypi-publish-workflow.py`

@@ -5,7 +5,7 @@
 These routes are exposed by the OSS local sidecar. Routes marked
 `[OUT-OF-SCOPE-PRIVATE]` are stubs that return HTTP 501 with
 `RELAY-HOSTED-ONLY` in the OSS sidecar; they are provided by the hosted
-Relay control plane in the private `relay-platform` repository.
+Relay control plane in the Epochly's hosted Relay infrastructure.
 
 The live OpenAPI render below comes from `packages/schemas/raw/openapi.yaml`
 via `mkdocs-render-swagger-plugin`. The plain-markdown route enumeration
@@ -130,7 +130,7 @@ for how contracts bind to `manifest_commit_hash`.
 
 ## Hosted-only routes [OUT-OF-SCOPE-PRIVATE]
 
-The following routes belong to the private `relay-platform` hosted control
+The following routes belong to the hosted Relay control
 plane. The OSS sidecar exposes them only as 501 stubs returning the
 `RELAY-HOSTED-ONLY` error code with `blocked_surface=hosted_control_plane`.
 Implementing the actual hosted logic in OSS would be a P0 boundary

@@ -55,18 +55,17 @@ category the system sits in (prohibited, high-risk Annex III, high-risk
 Annex I safety component, limited-risk transparency, minimal risk, GPAI,
 GPAI systemic risk).
 
-The public stub at
-[`../compliance/eu-ai-act.md`](../compliance/eu-ai-act.md) is the
-pointer page. It enumerates the operational scope Relay supports today
-(the ACEF template at
-`packages/acef/upstream/src/acef/templates/eu-ai-act-2024.json` is the
-machine-readable list of Annex IV section identifiers and per-section
-evidence claim shapes Relay recognises). The counsel-grade Annex IV
-mapping that interprets the AI Act for your specific system is
-publication-gated and lives in the private `relay-platform` tree per
-spec section J. Until that mapping ships publicly, you complete the
-role and risk-category classification with counsel and record the
-decision outside of this OSS workflow.
+[`../compliance/eu-ai-act.md`](../compliance/eu-ai-act.md) describes
+the operational scope of what Relay produces and lists the AI Act
+articles the ACEF template covers. The machine-readable mapping lives
+at
+`packages/acef/upstream/src/acef/templates/eu-ai-act-2024.json` and
+enumerates every provision Relay's evidence pipeline emits structured
+claims for, along with the normative text reference and the applicable
+system types. The role and risk-category classification for your
+specific system remains a counsel exercise: record the decision
+outside of Relay and hand it to the auditor alongside the evidence
+bundle.
 
 The output of this step is a written role + risk-category
 classification you can hand to the auditor alongside the evidence
@@ -209,7 +208,7 @@ What this workflow does not do:
   the auditor and counsel reach the determination.
 - It does not include the counsel-grade Annex IV interpretation that
   maps your specific system to specific clauses; that ships behind
-  spec section J as part of `relay-platform`.
+  spec section J as part of the hosted Relay runtime.
 - It does not make any claim about the legal status of a deployed
   model or AI system.
 
