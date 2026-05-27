@@ -147,23 +147,28 @@ jobs:
 
       - name: "Install PyInstaller and sidecar deps"
         shell: bash
-        # The Relay workspace forms a 3-way cycle:
+        # The Relay workspace forms a 4-way cycle:
         #   apps/local-sidecar      -> epochly-relay-schemas, epochly-relay
-        #   packages/sdk-python     -> epochly-relay-sidecar, epochly-relay-schemas
+        #   packages/sdk-python     -> epochly-relay-sidecar, epochly-relay-schemas, epochly-relay-cli
         #   packages/schemas        -> (no workspace deps)
+        #   packages/cli            -> epochly-relay, epochly-relay-schemas, epochly-relay-sidecar
         #
         # Plain pip does not read uv's [tool.uv.sources] table, so
         # installing these one-at-a-time causes pip to query PyPI for
         # the workspace siblings of whichever package it sees first.
-        # Pass ALL editable paths to a single `pip install` so pip
+        # Pass ALL FOUR editable paths to a single `pip install` so pip
         # registers each workspace package in its build environment
-        # BEFORE attempting dependency resolution.
+        # BEFORE attempting dependency resolution. Omitting any one
+        # package (e.g. `packages/cli` before v0.1.9 added the CLI to
+        # the SDK's runtime deps) makes pip fall through to PyPI for
+        # that name and fail with "No matching distribution found".
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller==6.11.0
           python -m pip install \
             -e packages/schemas \
             -e packages/sdk-python \
+            -e packages/cli \
             -e apps/local-sidecar
 
       - name: "Build sidecar binary for ${{ matrix.cell }}"
