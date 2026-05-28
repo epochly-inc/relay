@@ -17,6 +17,33 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.19] - 2026-05-28
+
+CI-infrastructure patch: pragmatic mix of self-hosted + GitHub-hosted
+runners. Self-hosted dispatch in v0.1.18 confirmed that:
+
+- macos-arm64 self-hosted (Mac Studio M1, openssl@3 from Homebrew):
+  WORKS — built the sidecar binary successfully.
+- linux-x86_64 self-hosted (Ubuntu 25.10): FAILS because
+  `actions/setup-python@v5` has no Python builds for Ubuntu 25.10
+  in its `actions/python-versions` manifest, and `tc.find` is
+  bypassed for unsupported OS. Fix requires custom Python provisioning
+  on the host or replacing setup-python with a manual install step.
+  Deferred to a follow-up dedicated investigation.
+- windows-x86_64 self-hosted (Windows 11 Pro): FAILS because the
+  workflow's `shell: bash` steps trigger Git Bash path-mangling on
+  the host (e.g. `C:\actions-runner-relay\_work\_temp\...` becomes
+  `C:actions-runner-relay_work_temp...`). Fix requires either
+  switching the affected steps to `pwsh` on Windows or configuring
+  `MSYS_NO_PATHCONV` on the host. Deferred.
+
+v0.1.19's runner matrix:
+- macos-arm64 -> self-hosted Mac Studio (the win we keep)
+- linux-x86_64, linux-arm64, windows-x86_64 -> GitHub-hosted
+  (proven good through v0.1.16)
+
+No SDK, CLI, schema, or sidecar runtime behavior changes from v0.1.18.
+
 ## [v0.1.18] - 2026-05-28
 
 CI-infrastructure patch: re-tries the v0.1.17 self-hosted runner

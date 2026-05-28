@@ -134,16 +134,20 @@ jobs:
           #   - relay-macos-arm64-self  (chandlervaughn@192.168.1.11)
           #   - relay-windows-x64-self  (chand@192.168.1.52)
           - cell: "macos-arm64"
-            runner: "macos-arm64"        # self-hosted (Mac Studio M1)
+            runner: "macos-arm64"        # self-hosted (Mac Studio M1) - working as of v0.1.18
             python: "3.12"
           - cell: "linux-x86_64"
-            runner: "linux-x86_64"       # self-hosted (Ubuntu 25.10)
+            runner: "ubuntu-latest"      # GitHub-hosted: self-hosted Ubuntu 25.10 needs
+                                         # actions/setup-python compatibility work (manifest
+                                         # has no 25.10 builds). Deferred to follow-up.
             python: "3.12"
           - cell: "linux-arm64"
             runner: "ubuntu-24.04-arm"   # GitHub-hosted (no self-hosted arm64 Linux)
             python: "3.12"
           - cell: "windows-x86_64"
-            runner: "windows-x86_64"     # self-hosted (Windows 11 Pro)
+            runner: "windows-latest"     # GitHub-hosted: self-hosted Windows needs Git Bash
+                                         # path-translation workaround for the workflow's
+                                         # `shell: bash` steps. Deferred to follow-up.
             python: "3.12"
     runs-on: ${{ matrix.runner }}
     outputs:
