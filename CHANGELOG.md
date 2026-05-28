@@ -17,6 +17,30 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.15] - 2026-05-28
+
+Windows-portability patch: ships the last two Windows tier-1 fixes
+that v0.1.14 surfaced (after the O_CLOEXEC/SIGKILL/HOME fixes cut
+the Windows failure count from 66+171 to just 2+0):
+
+- `test_zombie_port_terminates_only_lockfile_pid` — `pid_is_alive`
+  on Windows returned True for zombie processes (TerminateProcess'd
+  but kernel object still alive because of parent / multiprocessing
+  handle references). Fix: `pid_is_alive` now additionally calls
+  `GetExitCodeProcess` and returns False when the exit code is not
+  `STILL_ACTIVE`.
+- `test_grep_subprocess_matches_only_state_engine` — git-bash grep
+  on Windows emits mixed-slash paths
+  (`D:\a\repo\path/file.py:N:...`) so the exempt-path markers
+  (forward-slash form) did not substring-match. Fix: normalize each
+  grep output line with `line.replace("\\", "/")` before marker
+  checks. POSIX behavior unchanged.
+
+This release should produce green binaries on all 5 sidecar-bundle
+platforms (linux-x86_64, linux-arm64, macos-x86_64, macos-arm64,
+windows-x86_64). No SDK, CLI, schema, or sidecar runtime behavior
+changes from v0.1.14.
+
 ## [v0.1.14] - 2026-05-28
 
 Release-infrastructure patch: ships the docstring-token fix that
