@@ -289,7 +289,7 @@ def force_kill_pid(pid: int) -> bool:
     PROCESS SAFETY: PID-only; never name-based. Callers MUST only
     pass a PID they themselves started (test subprocess, owned spawn,
     etc.). Per CLAUDE.md process-safety rules, name-based kill
-    (``pkill``, ``killall``) is FORBIDDEN.
+    variants are forbidden.
     """
     if pid <= 0:
         raise ValueError(f"force_kill_pid: pid must be positive; got {pid}")
