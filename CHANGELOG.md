@@ -17,6 +17,43 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.13] - 2026-05-27
+
+Windows-portability patch: makes the sidecar tier-1 plumbing parity
+step actually run to completion on `windows-x86_64` runners. v0.1.12's
+sidecar-bundle Windows build produced 66 failures + 171 errors over
+20 minutes with three root causes (`os.O_CLOEXEC` missing,
+`signal.SIGKILL` missing, `Path.home()` reads `USERPROFILE` not
+`HOME`). v0.1.13 fixes all three at the source.
+
+No SDK, CLI, schema, or sidecar runtime behavior changes on POSIX
+(the changed code paths are gated by `getattr` fallbacks and
+`sys.platform` branches; POSIX semantics are byte-for-byte unchanged).
+
+### Fixed
+- `apps/local-sidecar/relay_sidecar/primitives/local_atomic_file_write.py`
+  and `local_two_layer_locked_write.py`: replaced the unguarded
+  `os.O_CLOEXEC` reference with `getattr(os, "O_CLOEXEC", 0)`. The
+  bitwise-OR with 0 is a no-op on Windows where `O_CLOEXEC` is not
+  defined; POSIX behavior is unchanged.
+- `apps/local-sidecar/relay_sidecar/process.py`: added
+  `force_kill_pid(pid)`, a cross-platform hard-kill helper that
+  dispatches to `os.kill(pid, signal.SIGKILL)` on POSIX and
+  `TerminateProcess` via ctypes on Windows. Three crash-recovery
+  test files now use this helper rather than calling
+  `os.kill(pid, signal.SIGKILL)` directly (the latter crashes on
+  Windows because `signal.SIGKILL` is undefined).
+- `apps/local-sidecar/tests/test_lockfile_path.py::test_lockfile_path_default_relay_home`:
+  monkeypatch now sets `HOME`, `USERPROFILE`, `HOMEDRIVE`, and
+  `HOMEPATH` so the test redirects `Path.home()` consistently on
+  both POSIX (which honors `HOME`) and Windows (which honors
+  `USERPROFILE` + `HOMEDRIVE`/`HOMEPATH`).
+- `.github/workflows/release-sidecar-bundle.yml`: added `psutil` to
+  the tier-1 parity step's pip install. `pid_start_time_epoch_s` on
+  Windows requires psutil (the POSIX `ps` and `/proc/<pid>/stat`
+  fallbacks do not exist there). psutil stays a CI-only test
+  dependency, so the published runtime is unchanged.
+
 ## [v0.1.12] - 2026-05-27
 
 Release-infrastructure patch: makes the sidecar-bundle tier-1
