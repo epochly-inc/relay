@@ -21,7 +21,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "epochly-relay-cli"
-version = "0.1.13"
+version = "0.1.14"
 description = "Relay CLI (rly): Apache 2.0 control surface for the Relay agent reliability OS."
 readme = "README.md"
 requires-python = ">=3.12"

@@ -17,6 +17,29 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.14] - 2026-05-28
+
+Release-infrastructure patch: ships the docstring-token fix that
+v0.1.13 sidecar-bundle linux + macos builds tripped over. v0.1.13's
+new `force_kill_pid` helper in `apps/local-sidecar/relay_sidecar/process.py`
+contained the literal tokens `pkill` and `killall` inside its
+docstring's banned-pattern enumeration, and the VAL-W2-010 grep
+guard in `test_zombie_port.py` scans every source file for those
+tokens — so the docstring itself tripped the guard on every
+platform.
+
+v0.1.14 reshapes the docstring to convey the same constraint
+("name-based kill variants are forbidden") without containing the
+specific tokens the grep regex matches.
+
+No SDK, CLI, schema, or sidecar runtime behavior changes from v0.1.13.
+
+### Fixed
+- `apps/local-sidecar/relay_sidecar/process.py::force_kill_pid`:
+  rephrased the PROCESS SAFETY note to avoid the literal `pkill` /
+  `killall` tokens. Readers consult CLAUDE.md for the full
+  enumeration.
+
 ## [v0.1.13] - 2026-05-27
 
 Windows-portability patch: makes the sidecar tier-1 plumbing parity
