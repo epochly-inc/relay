@@ -119,14 +119,16 @@ def test_requests_get_external_blocked_under_replay() -> None:
 @pytest.mark.fulfills("VAL-W7-080")
 # Narrow to the specific socket-cleanup unraisable we expect from
 # urllib3 / socket.socket GC after an ECONNREFUSED tear-down -- not
-# every PytestUnraisableExceptionWarning. The actual warning emitted
-# by pytest in this scenario has the form
-#   "Exception ignored in: <socket.socket fd=N, family=N, type=N, proto=N, laddr=(...)>"
-# so the message-prefix regex below is `Exception ignored in.*socket\.socket`.
+# every PytestUnraisableExceptionWarning. The wording depends on
+# CPython version:
+#   3.13 and earlier: "Exception ignored in: <socket.socket fd=N, ...>"
+#   3.14+:            "Exception ignored while finalizing socket
+#                      <socket.socket fd=N, ...>: None"
+# The alternation ``(in.*|while finalizing) socket`` matches both.
 # A bare `ignore::pytest.PytestUnraisableExceptionWarning` would weaken
 # the repo-wide ``filterwarnings = ["error", ...]`` policy for this test.
 @pytest.mark.filterwarnings(
-    "ignore:Exception ignored in.*socket\\.socket"
+    "ignore:Exception ignored (in.*|while finalizing) socket"
     ":pytest.PytestUnraisableExceptionWarning"
 )
 def test_requests_get_loopback_passes_through() -> None:
