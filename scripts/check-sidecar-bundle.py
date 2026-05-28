@@ -88,10 +88,14 @@ SHA_PIN_REQUIRED_ACTIONS: tuple[str, ...] = (
     "slsa-framework/slsa-github-generator",
 )
 
-# Canonical five-arch matrix per VAL-W12-020. Adding to this requires a
-# board-level decision; removing is never allowed.
+# Canonical four-arch matrix per VAL-W12-020 (revised 2026-05-28).
+# Adding to this requires a board-level decision. macos-x86_64 was
+# removed on 2026-05-28 by board-level decision: GitHub's free
+# Intel-macOS runner pool is perpetually queue-starved, Apple stopped
+# shipping Intel Macs in 2022, and the remaining install base runs
+# the arm64 binary through Rosetta. Subsequent removals require an
+# equivalent board-level decision documented in CHANGELOG.
 CANONICAL_MATRIX: tuple[str, ...] = (
-    "macos-x86_64",
     "macos-arm64",
     "linux-x86_64",
     "linux-arm64",

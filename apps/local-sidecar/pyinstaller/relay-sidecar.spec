@@ -64,13 +64,17 @@ REPO_ROOT = SPEC_DIR.parent.parent.parent
 
 # ----------------------------------------------------------------------------
 # Output name. The workflow sets PYINSTALLER_OUTPUT_NAME per (OS, arch)
-# matrix cell so a single spec produces correctly-named binaries:
+# matrix cell so a single spec produces correctly-named binaries.
+# Canonical 4-arch matrix (revised 2026-05-28, see CHANGELOG v0.1.16):
 #
-#   relay-sidecar-macos-x86_64
 #   relay-sidecar-macos-arm64
 #   relay-sidecar-linux-x86_64
 #   relay-sidecar-linux-arm64
 #   relay-sidecar-windows-x86_64.exe   (Windows; .exe suffix added by PyInstaller)
+#
+# macos-x86_64 was removed by board-level decision (GitHub Intel-macOS
+# runner pool starvation, Apple 2022 Intel discontinuation, Rosetta
+# fallback).
 #
 # Default (for local dev builds) is platform-agnostic "relay-sidecar".
 # ----------------------------------------------------------------------------

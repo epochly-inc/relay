@@ -48,11 +48,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-# Canonical five-arch matrix per VAL-W12-020. Adding to this requires
-# board-level decision (orchestrator sidecar-bundle-arch pin). Removing
-# is never allowed.
+# Canonical four-arch matrix per VAL-W12-020 (revised 2026-05-28).
+# Adding to this requires a board-level decision (orchestrator
+# sidecar-bundle-arch pin). macos-x86_64 was removed on 2026-05-28 by
+# board-level decision (GitHub Intel-macOS runner pool starvation,
+# Apple 2022 Intel discontinuation, Rosetta fallback). See CHANGELOG
+# v0.1.16. Further removals require an equivalent board-level decision.
 CANONICAL_MATRIX: tuple[tuple[str, str], ...] = (
-    ("macos", "x86_64"),
     ("macos", "arm64"),
     ("linux", "x86_64"),
     ("linux", "arm64"),

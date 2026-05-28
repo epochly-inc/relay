@@ -24,7 +24,8 @@ REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 BUILD_DRIVER: Path = REPO_ROOT / "scripts" / "build-sidecar-bundle.py"
 
 CANONICAL_MATRIX: tuple[tuple[str, str], ...] = (
-    ("macos", "x86_64"),
+    # macos-x86_64 removed 2026-05-28 by board-level decision.
+    # See CHANGELOG v0.1.16.
     ("macos", "arm64"),
     ("linux", "x86_64"),
     ("linux", "arm64"),

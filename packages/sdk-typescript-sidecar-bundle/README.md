@@ -7,14 +7,17 @@ running it.
 ## What this package is
 
 `@epochly/relay-sidecar-bundle` is the npm distribution channel for the
-canonical five-arch matrix of Relay sidecar binaries built by the
-`release-sidecar-bundle` GitHub Actions workflow (sub-feature w12.5):
+canonical four-arch matrix of Relay sidecar binaries built by the
+`release-sidecar-bundle` GitHub Actions workflow (sub-feature w12.5;
+revised 2026-05-28 to drop `macos-x86_64` per CHANGELOG v0.1.16):
 
-  1. `macos-x86_64`
-  2. `macos-arm64`
-  3. `linux-x86_64`
-  4. `linux-arm64`
-  5. `windows-x86_64`
+  1. `macos-arm64`
+  2. `linux-x86_64`
+  3. `linux-arm64`
+  4. `windows-x86_64`
+
+Intel-Mac users get the `macos-arm64` binary via Rosetta, which Apple
+ships on every macOS since Big Sur (11.0, 2020).
 
 The package's `relay-sidecar-bundle` bin entry (the launcher) detects
 the host OS/arch, downloads the matching binary from the published

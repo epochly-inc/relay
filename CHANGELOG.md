@@ -17,6 +17,54 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.16] - 2026-05-28
+
+Release-infrastructure patch: drops `macos-x86_64` from the sidecar
+binary matrix + broadens the Python 3.14 socket-finalizer filter so
+the matrix-release-gate passes on the 3.14 runner.
+
+**Board-level decision**: removing `macos-x86_64` from VAL-W12-020's
+canonical sidecar matrix. The cell was the bottleneck on every
+release-sidecar-bundle run since v0.1.9 because GitHub's free
+Intel-macOS runner pool is perpetually queue-starved (40+ minute
+waits made the pipeline non-deterministic). Apple stopped shipping
+Intel Macs in 2022; the remaining Intel-Mac install base runs the
+arm64 binary through Rosetta, which Apple has shipped on every macOS
+since Big Sur (11.0, 2020). The contract assertion VAL-W12-020 was
+previously enforced as "5-arch matrix, removing never allowed";
+this release revises it to "4-arch matrix, removing requires
+board-level decision". Future removals require an equivalent
+board-level decision documented here.
+
+The matrix change touches eight source-of-truth files (workflow,
+guard, build driver, two test files, both npm package files, the
+PyInstaller spec comment) so the 4-arch matrix is consistent across
+the entire repo.
+
+No SDK, CLI, schema, or sidecar runtime behavior changes.
+
+### Changed
+- `.github/workflows/release-sidecar-bundle.yml`: matrix
+  `include:` block no longer contains the `macos-x86_64` cell.
+  `RELAY_SIDECAR_MATRIX` env var also updated. The `notarize-macos`
+  job no longer downloads a `relay-sidecar-macos-x86_64` artifact.
+- `scripts/check-sidecar-bundle.py::CANONICAL_MATRIX`,
+  `scripts/build-sidecar-bundle.py::CANONICAL_MATRIX`,
+  `tests/release/test_w12_5_sidecar_bundle_workflow.py::CANONICAL_MATRIX`,
+  `tests/release/test_w12_5_build_driver.py::CANONICAL_MATRIX`,
+  `packages/sdk-typescript-sidecar-bundle/src/index.ts::CANONICAL_MATRIX`:
+  4-cell tuples; comments document the board-level decision.
+- `packages/sdk-typescript-sidecar-bundle/README.md`,
+  `apps/local-sidecar/pyinstaller/relay-sidecar.spec`: documentation
+  reflects the 4-arch matrix.
+
+### Fixed
+- `apps/replay-proxy/tests/test_w7_5_egress_denial_python.py::test_requests_get_loopback_passes_through`:
+  CPython 3.14 changed the unraisable socket-finalizer warning text
+  from "Exception ignored in: <socket.socket ...>" to "Exception
+  ignored while finalizing socket <socket.socket ...>". The test's
+  filter regex now matches both wordings.
+
 ## [v0.1.15] - 2026-05-28
 
 Windows-portability patch: ships the last two Windows tier-1 fixes

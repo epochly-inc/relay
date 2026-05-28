@@ -24,14 +24,18 @@ export const DEFAULT_TRUST_ANCHOR_URL: string =
   "https://relay.epochly.com/.well-known/jwks.json";
 
 /**
- * Canonical five-arch matrix per contract assertion VAL-W12-020.
+ * Canonical four-arch matrix per contract assertion VAL-W12-020
+ * (revised 2026-05-28).
  *
  * Adding to this matrix requires a board-level decision (orchestrator
- * sidecar-bundle-arch pin). Removing from it is never allowed.
+ * sidecar-bundle-arch pin). macos-x86_64 was removed on 2026-05-28 by
+ * board-level decision (GitHub Intel-macOS runner pool starvation,
+ * Apple 2022 Intel discontinuation, Rosetta fallback). See CHANGELOG
+ * v0.1.16. Subsequent removals require an equivalent board-level
+ * decision.
  */
 export const CANONICAL_MATRIX: ReadonlyArray<{ os: string; arch: string }> =
   Object.freeze([
-    { os: "macos", arch: "x86_64" },
     { os: "macos", arch: "arm64" },
     { os: "linux", arch: "x86_64" },
     { os: "linux", arch: "arm64" },

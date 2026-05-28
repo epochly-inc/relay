@@ -59,9 +59,10 @@ TRUST_ANCHOR_GOV_DOC: Path = (
 )
 RUNBOOK_PATH: Path = REPO_ROOT / "docs" / "release" / "runbook.md"
 
-# Canonical five-arch matrix pinned in the contract (VAL-W12-020).
+# Canonical four-arch matrix pinned in the contract (VAL-W12-020,
+# revised 2026-05-28). macos-x86_64 removed by board-level decision
+# documented in CHANGELOG v0.1.16.
 CANONICAL_MATRIX: tuple[str, ...] = (
-    "macos-x86_64",
     "macos-arm64",
     "linux-x86_64",
     "linux-arm64",

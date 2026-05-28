@@ -46,7 +46,7 @@ permissions: {}
 env:
   TSA_PRIMARY: "sigstore"
   RELAY_SIDECAR_MATRIX: >-
-    macos-x86_64 macos-arm64 linux-x86_64 linux-arm64 windows-x86_64
+    macos-arm64 linux-x86_64 linux-arm64 windows-x86_64
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -118,9 +118,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - cell: "macos-x86_64"
-            runner: "macos-13"
-            python: "3.12"
+          # macos-x86_64 dropped from matrix on 2026-05-28 (board-level
+          # decision documented in CHANGELOG v0.1.16). GitHub's free
+          # Intel-macOS runner pool is perpetually queue-starved (40+ min
+          # waits make releases non-deterministic); Apple stopped
+          # shipping Intel Macs in 2022; the remaining Intel-Mac install
+          # base runs the arm64 binary through Rosetta.
           - cell: "macos-arm64"
             runner: "macos-14"
             python: "3.12"
@@ -228,12 +231,8 @@ jobs:
       - name: "Checkout"
         uses: actions/checkout@v4
 
-      - name: "Download macOS-x86_64 artifact"
-        uses: actions/download-artifact@v4
-        with:
-          name: relay-sidecar-macos-x86_64
-          path: dist/macos-x86_64/
-
+      # macos-x86_64 dropped from matrix on 2026-05-28 (see build job).
+      # Only the arm64 artifact is downloaded for notarization.
       - name: "Download macOS-arm64 artifact"
         uses: actions/download-artifact@v4
         with:
