@@ -446,7 +446,17 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         # See _PERMITTED_EXPLAIN_HEURISTIC_FILE.
         "/packages/explain/src/relay_explain/heuristic.py:"
     )
-    for line in result.stdout.splitlines():
+    for raw_line in result.stdout.splitlines():
+        # Normalize path separators so the forward-slash markers above match
+        # on Windows. git-bash's grep emits paths whose absolute prefix uses
+        # Windows backslashes (e.g.,
+        # ``D:\a\relay\relay\apps\local-sidecar\relay_sidecar/db.py:1077:...``)
+        # while the relative descent portion uses forward slashes. Without
+        # this normalization, ``"/relay_sidecar/db.py:"`` (forward slash
+        # before the relay_sidecar segment) does not match the line because
+        # the actual separator before ``relay_sidecar`` is a backslash on
+        # Windows. POSIX behavior is unchanged (replace is a no-op).
+        line = raw_line.replace("\\", "/")
         if state_engine_marker in line:
             continue
         if db_py_marker in line:

@@ -201,16 +201,36 @@ def pid_is_alive(pid: int) -> bool:
     if sys.platform == "win32":  # pragma: no cover (POSIX-tested branch)
         # Delegate to ctypes; pywin32 would also work but adds a hard dep
         # we don't otherwise need for W2.1.
+        #
+        # OpenProcess succeeding is NOT sufficient: Windows keeps the
+        # process kernel object alive while any handle (parent, ours,
+        # multiprocessing's internal bookkeeping) references it, even
+        # AFTER TerminateProcess has marked the process exited. A zombie
+        # in this state will report OpenProcess-success but is logically
+        # dead. We must additionally check GetExitCodeProcess and treat
+        # any value other than STILL_ACTIVE (259) as "dead".
         import ctypes
 
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
         h = ctypes.windll.kernel32.OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION, False, pid
         )
         if not h:
             return False
-        ctypes.windll.kernel32.CloseHandle(h)
-        return True
+        try:
+            exit_code = ctypes.c_ulong()
+            ok = ctypes.windll.kernel32.GetExitCodeProcess(
+                h, ctypes.byref(exit_code)
+            )
+            if not ok:
+                # GetExitCodeProcess failed; conservative answer is "alive"
+                # so callers do not delete a process they cannot verify
+                # is dead.
+                return True
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
