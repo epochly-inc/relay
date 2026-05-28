@@ -17,6 +17,45 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.20] - 2026-05-28
+
+CI-infrastructure patch: ships the all-self-hosted sidecar-bundle
+matrix after fixing the v0.1.18 Linux + Windows self-hosted runner
+failures at the host level.
+
+**Linux fix (chandler@192.168.1.17)**: v0.1.18's setup-python failure
+was caused by the Listener process NOT having `RUNNER_TOOL_CACHE`
+in its environment (the `.env` file was correct on disk but the
+runner was still running with the pre-`.env` env). Hard-restarted
+the runner with explicit `RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache` env exports. The new
+Listener now has these vars, and `actions/setup-python@v5`'s
+`tc.find('Python', '3.12', 'x64')` resolves
+`/opt/hostedtoolcache/Python/3.12.13/x64/` (which has the
+`x64.complete` marker).
+
+**Windows fix (chand@192.168.1.52)**: v0.1.18's `shell: bash` steps
+failed with `/bin/bash: C:actions-runner-relay_work_temp...sh: No
+such file or directory` because the host's `bash` was resolving to
+`C:\WINDOWS\system32\bash.exe` — Windows Subsystem for Linux's
+bash, which mangles Windows-style paths. The runner agent expected
+Git Bash. Updated the runner `.env` to put
+`C:\Program Files\Git\bin` first in `PATH`, so `bash` now
+resolves to Git Bash; Windows-style script paths from the runner
+agent are handled natively by MSYS2 path conversion.
+
+v0.1.20 matrix is fully self-hosted (with linux-arm64 the only
+exception because no self-hosted arm64 Linux host is available):
+- macos-arm64    -> self-hosted Mac Studio M1
+- linux-x86_64   -> self-hosted Ubuntu 25.10
+- linux-arm64    -> GitHub-hosted ubuntu-24.04-arm
+- windows-x86_64 -> self-hosted Windows 11 Pro
+
+Expected pipeline time: ~10 min (no GitHub queue waits, dedicated
+hardware) vs ~35 min on GitHub-hosted.
+
+No SDK, CLI, schema, or sidecar runtime behavior changes from v0.1.19.
+
 ## [v0.1.19] - 2026-05-28
 
 CI-infrastructure patch: pragmatic mix of self-hosted + GitHub-hosted

@@ -15,7 +15,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "epochly-relay-schemas"
-version = "0.1.19"
+version = "0.1.20"
 description = "Canonical control-plane schemas for the Relay agent reliability OS."
 readme = "README.md"
 requires-python = ">=3.12"

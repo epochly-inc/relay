@@ -134,20 +134,21 @@ jobs:
           #   - relay-macos-arm64-self  (chandlervaughn@192.168.1.11)
           #   - relay-windows-x64-self  (chand@192.168.1.52)
           - cell: "macos-arm64"
-            runner: "macos-arm64"        # self-hosted (Mac Studio M1) - working as of v0.1.18
+            runner: "macos-arm64"        # self-hosted (Mac Studio M1, openssl@3 from brew)
             python: "3.12"
           - cell: "linux-x86_64"
-            runner: "ubuntu-latest"      # GitHub-hosted: self-hosted Ubuntu 25.10 needs
-                                         # actions/setup-python compatibility work (manifest
-                                         # has no 25.10 builds). Deferred to follow-up.
+            runner: "linux-x86_64"       # self-hosted (Ubuntu 25.10) - RUNNER_TOOL_CACHE
+                                         # in runner .env points actions/setup-python@v5
+                                         # at /opt/hostedtoolcache/Python/3.12.13/x64/
             python: "3.12"
           - cell: "linux-arm64"
-            runner: "ubuntu-24.04-arm"   # GitHub-hosted (no self-hosted arm64 Linux)
+            runner: "ubuntu-24.04-arm"   # GitHub-hosted (no self-hosted arm64 Linux host)
             python: "3.12"
           - cell: "windows-x86_64"
-            runner: "windows-latest"     # GitHub-hosted: self-hosted Windows needs Git Bash
-                                         # path-translation workaround for the workflow's
-                                         # `shell: bash` steps. Deferred to follow-up.
+            runner: "windows-x86_64"     # self-hosted (Windows 11 Pro) - runner .env PATH
+                                         # puts C:\Program Files\Git\bin first so `bash`
+                                         # invokes Git Bash, not WSL bash (the latter
+                                         # mangles Windows paths in shell: bash steps).
             python: "3.12"
     runs-on: ${{ matrix.runner }}
     outputs:
