@@ -124,11 +124,15 @@ def test_requests_get_external_blocked_under_replay() -> None:
 #   3.13 and earlier: "Exception ignored in: <socket.socket fd=N, ...>"
 #   3.14+:            "Exception ignored while finalizing socket
 #                      <socket.socket fd=N, ...>: None"
-# The alternation ``(in.*|while finalizing) socket`` matches both.
-# A bare `ignore::pytest.PytestUnraisableExceptionWarning` would weaken
-# the repo-wide ``filterwarnings = ["error", ...]`` policy for this test.
+# Both wordings contain the literal ``socket.socket`` substring
+# (referencing the socket.socket class repr in the warning body), so
+# match on ``Exception ignored.*socket\.socket`` to cover both forms
+# without the brittleness of needing a space-prefixed " socket" after
+# the wording prefix. A bare
+# `ignore::pytest.PytestUnraisableExceptionWarning` would weaken the
+# repo-wide ``filterwarnings = ["error", ...]`` policy for this test.
 @pytest.mark.filterwarnings(
-    "ignore:Exception ignored (in.*|while finalizing) socket"
+    "ignore:Exception ignored.*socket\\.socket"
     ":pytest.PytestUnraisableExceptionWarning"
 )
 def test_requests_get_loopback_passes_through() -> None:
