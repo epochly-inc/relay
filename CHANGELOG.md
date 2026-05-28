@@ -17,6 +17,25 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.17] - 2026-05-28
+
+CI-infrastructure patch: dispatches 3 of 4 sidecar-bundle matrix
+cells to self-hosted runners. linux-x86_64, macos-arm64, and
+windows-x86_64 now run on dedicated hardware (registered 2026-05-28);
+linux-arm64 stays on GitHub-hosted ubuntu-24.04-arm because no
+self-hosted arm64 Linux host is available.
+
+Expected build time drops from ~35 min (GitHub-hosted, Windows
+tier-1 dominates) to ~10 min (dedicated hardware + no queue waits).
+
+No SDK, CLI, schema, or sidecar runtime behavior changes from v0.1.16.
+
+### Changed
+- `.github/workflows/release-sidecar-bundle.yml`: matrix runners
+  now reference the self-hosted labels `linux-x86_64`,
+  `macos-arm64`, `windows-x86_64`. notarize-macos also switched to
+  `macos-arm64` for consistency.
+
 ## [v0.1.16] - 2026-05-28
 
 Release-infrastructure patch: drops `macos-x86_64` from the sidecar
