@@ -190,11 +190,18 @@ jobs:
       - name: "Tier-1 plumbing parity (VAL-W12-023, functional equivalence)"
         # Run the same tier-1 plumbing suite the Python-installed sidecar
         # runs, against the PyInstaller-built binary. Divergence FAILS.
+        #
+        # psutil is required by relay_sidecar.process.pid_start_time_epoch_s
+        # on Windows (where the POSIX ``ps`` and ``/proc/<pid>/stat``
+        # fallbacks do not exist). Without psutil the helper returns None
+        # on Windows and the VAL-V3-BUGA3 PID-identity tests fail with
+        # ``assert None is not None``. Install it as a CI-only test dep
+        # so we do not couple psutil into the published runtime.
         shell: bash
         env:
           RELAY_SIDECAR_BINARY: dist/sidecar-bundle/${{ matrix.cell }}/dist/relay-sidecar-${{ matrix.cell }}
         run: |
-          python -m pip install pytest pytest-asyncio pytest-timeout
+          python -m pip install pytest pytest-asyncio pytest-timeout psutil
           pytest -m plumbing apps/local-sidecar/tests --timeout=60 -q
 
       - name: "Upload binary artifact"

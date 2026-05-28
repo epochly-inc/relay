@@ -272,4 +272,57 @@ def terminate_pid(pid: int, *, timeout_s: float = 5.0) -> bool:
     return not pid_is_alive(pid)
 
 
-__all__ = ["pid_is_alive", "terminate_pid"]
+def force_kill_pid(pid: int) -> bool:
+    """Immediately terminate ``pid`` with no graceful path.
+
+    POSIX: ``os.kill(pid, signal.SIGKILL)``.
+    Windows: ``TerminateProcess`` via ctypes (no portable SIGKILL).
+
+    Unlike :func:`terminate_pid` this does NOT send SIGTERM first or
+    wait for a graceful exit window; it is the equivalent of
+    ``kill -9`` and exists for test fixtures that need to simulate a
+    hard crash mid-transaction (e.g. WAL recovery contract tests).
+
+    Returns True if the PID is dead at function return, False
+    otherwise. Raises ``ValueError`` if ``pid <= 0``.
+
+    PROCESS SAFETY: PID-only; never name-based. Callers MUST only
+    pass a PID they themselves started (test subprocess, owned spawn,
+    etc.). Per CLAUDE.md process-safety rules, name-based kill
+    (``pkill``, ``killall``) is FORBIDDEN.
+    """
+    if pid <= 0:
+        raise ValueError(f"force_kill_pid: pid must be positive; got {pid}")
+
+    if not pid_is_alive(pid):
+        return True
+
+    if sys.platform == "win32":  # pragma: no cover (POSIX-tested branch)
+        import ctypes
+
+        PROCESS_TERMINATE = 0x0001
+        h = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+        if not h:
+            return not pid_is_alive(pid)
+        try:
+            ctypes.windll.kernel32.TerminateProcess(h, 1)
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return True
+
+    # Brief settle period; both SIGKILL and TerminateProcess are
+    # near-immediate but the OS bookkeeping (zombie reap on POSIX,
+    # handle table cleanup on Windows) is asynchronous.
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if not pid_is_alive(pid):
+            return True
+        time.sleep(0.02)
+    return not pid_is_alive(pid)
+
+
+__all__ = ["pid_is_alive", "terminate_pid", "force_kill_pid"]

@@ -160,9 +160,13 @@ def local_atomic_file_write(
         # Create the stable lock file once. It is intentionally never
         # unlinked: it carries no data, only the advisory lock.
         with contextlib.suppress(FileExistsError):
+            # ``os.O_CLOEXEC`` is POSIX-only; Windows lacks the
+            # exec-inheritance model the flag controls. Use 0 (no-op)
+            # on Windows so the open succeeds without the attribute.
+            cloexec_flag = getattr(os, "O_CLOEXEC", 0)
             fd = os.open(
                 str(lock_path),
-                os.O_CREAT | os.O_RDWR | os.O_CLOEXEC,
+                os.O_CREAT | os.O_RDWR | cloexec_flag,
                 0o600 if os.name != "nt" else 0o666,
             )
             os.close(fd)

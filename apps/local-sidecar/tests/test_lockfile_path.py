@@ -32,10 +32,16 @@ def test_lockfile_path_default_relay_home(
 ) -> None:
     """Without RELAY_HOME the default is ``~/.relay/sidecar.lock``."""
     monkeypatch.delenv("RELAY_HOME", raising=False)
-    # Redirect HOME so we don't depend on the developer's real home.
+    # Redirect the platform's home-dir resolver. ``Path.home()`` reads
+    # ``HOME`` on POSIX and ``USERPROFILE`` (with HOMEDRIVE+HOMEPATH
+    # fallback) on Windows. Set ALL three so the test does not depend on
+    # the developer's real home, regardless of host OS.
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("HOMEDRIVE", "")
+    monkeypatch.setenv("HOMEPATH", str(fake_home))
     resolved = resolve_lockfile_path()
     assert resolved == fake_home / ".relay" / "sidecar.lock"
 

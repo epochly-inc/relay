@@ -170,15 +170,21 @@ def _spawn_uncommitted_writer(
 
 
 def _kill_and_reap(pid: int, proc: subprocess.Popen) -> None:
-    """SIGKILL ``pid`` and reap via proc.wait(); close stdio pipes.
+    """Force-kill ``pid`` and reap via proc.wait(); close stdio pipes.
+
+    Uses ``relay_sidecar.process.force_kill_pid`` which dispatches to
+    ``os.kill(pid, signal.SIGKILL)`` on POSIX and ``TerminateProcess``
+    via ctypes on Windows (where ``signal.SIGKILL`` does not exist).
 
     Reaping (proc.wait) clears the zombie entry in the OS process table
-    so subsequent ``os.kill(pid, 0)`` raises ProcessLookupError. Closing
+    so subsequent ``pid_is_alive(pid)`` returns False. Closing
     proc.stdout / proc.stderr suppresses pytest's ResourceWarning.
     """
-    # ProcessLookupError = already dead; proceed to reap.
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
+    # force_kill_pid swallows ProcessLookupError internally; no contextlib
+    # suppression needed at the call site.
+    from relay_sidecar.process import force_kill_pid
+
+    force_kill_pid(pid)
     # proc.wait() reads the exit status and reaps the zombie. Without
     # this, the kernel keeps the PID slot occupied; os.kill(pid, 0)
     # would still report alive.

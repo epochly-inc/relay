@@ -211,9 +211,15 @@ def _spawn_kill_target(tmp_path: Path) -> tuple[int, Path, subprocess.Popen]:
 
 
 def _kill_and_reap(pid: int, proc: subprocess.Popen) -> None:
-    """SIGKILL ``pid`` (PID-only; never name-based) and reap via proc.wait()."""
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
+    """Force-kill ``pid`` (PID-only; never name-based) and reap via proc.wait().
+
+    Uses ``relay_sidecar.process.force_kill_pid`` which dispatches to
+    ``os.kill(pid, signal.SIGKILL)`` on POSIX and ``TerminateProcess``
+    via ctypes on Windows (where ``signal.SIGKILL`` does not exist).
+    """
+    from relay_sidecar.process import force_kill_pid
+
+    force_kill_pid(pid)
     try:
         proc.wait(timeout=5.0)
     except subprocess.TimeoutExpired:
