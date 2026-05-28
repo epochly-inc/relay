@@ -17,6 +17,40 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+## [v0.1.18] - 2026-05-28
+
+CI-infrastructure patch: re-tries the v0.1.17 self-hosted runner
+dispatch after correcting environment variables on each self-hosted
+host.
+
+The v0.1.17 run dispatched to the self-hosted runners successfully
+but each cell failed for distinct environment reasons:
+
+- **linux-x86_64** (chandler@192.168.1.17): `actions/setup-python@v5`
+  could not locate Python 3.12 because `RUNNER_TOOL_CACHE` was unset
+  on the runner. The host has `/opt/hostedtoolcache/Python/3.12.13/x64/`
+  with the `x64.complete` marker; setting `RUNNER_TOOL_CACHE=/opt/hostedtoolcache`
+  in the runner's `.env` file makes `tc.find` resolve the existing
+  Python install.
+- **macos-arm64** (chandlervaughn@192.168.1.11): the rfc3161_client
+  Python package failed to load because its Rust extension's dyld
+  needed `/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib`, which
+  Homebrew had not yet installed. Installed `openssl@3` via
+  `/opt/homebrew/bin/brew install openssl@3` (no sudo required).
+  Also added `RUNNER_TOOL_CACHE=/Users/chandlervaughn/hostedtoolcache`
+  and `PATH=/opt/homebrew/bin:/opt/homebrew/sbin:...` to the runner
+  `.env` so brew-installed tools are on PATH for jobs.
+- **windows-x86_64** (chand@192.168.1.52): `setup-python` was
+  confused by a Microsoft Store Python alias at
+  `C:\Users\chand\AppData\Local\Microsoft\WindowsApps\python.exe`
+  while `RUNNER_TOOL_CACHE` was unset. Set
+  `RUNNER_TOOL_CACHE=C:\hostedtoolcache` in the runner `.env`;
+  setup-python will download Python on first run and cache it there.
+  Also installed the Windows runner as a true Windows service (via
+  `config.cmd --runasservice`) so the runner survives reboot.
+
+No SDK, CLI, schema, or sidecar runtime behavior changes from v0.1.17.
+
 ## [v0.1.17] - 2026-05-28
 
 CI-infrastructure patch: dispatches 3 of 4 sidecar-bundle matrix
