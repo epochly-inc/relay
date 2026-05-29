@@ -142,6 +142,67 @@ def _sha256_canonical(body: bytes) -> str:
     return "sha256-" + hashlib.sha256(body).hexdigest()
 
 
+# Fields appended to an evidence-bundle record AFTER its canonical digest
+# was computed (see the POST /v1/evidence-bundles create handler). The
+# digest is taken over the record EXCLUDING these mutable/derived/alias
+# fields, so the integrity check at /verify must exclude the same set to
+# reconstruct the original canonical bytes (VAL-CRYPTO-007).
+_EVIDENCE_DIGEST_EXCLUDED_FIELDS: frozenset[str] = frozenset(
+    {
+        "bundle_digest",
+        "claims_count",
+        "state",
+        "bundle_id",
+        "digest",
+        "scope_kind",
+    }
+)
+
+
+def _recompute_bundle_digest(record: dict[str, Any]) -> str | None:
+    """Recompute the canonical digest of the CURRENT live bundle record.
+
+    VAL-CRYPTO-007 fix: the prior /verify implementation re-hashed the
+    immutable stored blob whose hash IS the recorded digest -- a tautology
+    that can never detect record tampering. Instead, re-serialize the
+    current record (excluding the mutable digest/claims_count/state and the
+    legacy alias fields that were added after the digest was computed) with
+    the exact canonicalization used at create time, so a divergence between
+    the live record and its claimed digest is detected.
+
+    Returns the ``sha256-<hex>`` wire form, or ``None`` if the record is
+    not a mapping.
+    """
+    if not isinstance(record, dict):
+        return None
+    reduced = {
+        k: v
+        for k, v in record.items()
+        if k not in _EVIDENCE_DIGEST_EXCLUDED_FIELDS
+    }
+    canonical = json.dumps(
+        reduced, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return _sha256_canonical(canonical)
+
+
+async def _parse_verify_body(request: Request) -> dict[str, Any]:
+    """Parse the optional JSON body of the public /verify endpoint.
+
+    The endpoint is callable with no body at all. Any non-object or
+    malformed body degrades to an empty mapping so the verification path is
+    deterministic regardless of caller input.
+    """
+    try:
+        raw = await request.body()
+        body = json.loads(raw) if raw else {}
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    return body
+
+
 # Audit fix (2026-05-17 P0): legacy X-Relay-Scopes header gate. The
 # header was treated as authoritative without any cryptographic binding,
 # which is an auth-bypass risk. The header is now disabled by default
@@ -4513,49 +4574,73 @@ def build_runtime_app(
                 ),
                 headers=_rate_limit_headers_for(request),
             )
-        # Recompute digest over the stored canonical bytes (excluding the
-        # mutable ``digest``/``claims_count``/``state`` fields we tacked
-        # on after signing). For OSS sidecar this reduces to comparing
-        # the stored blob's sha256 against the bundle's recorded digest.
-        stored_blob = runtime.evidence_bundle_blobs.get(bundle_id, b"")
-        # Audit fix (2026-05-17 P0): canonical sha256 wire form is the
-        # hyphen prefix per VAL-W1-009 / envelopes.yaml.
-        recomputed = (
-            _sha256_canonical(stored_blob) if stored_blob else None
-        )
-        digest_ok = recomputed == record.get("digest")
-        # Body may carry ``tampered=True`` to exercise the bad-signature
-        # path deterministically (VAL-V2M02-056); otherwise honour the
-        # signature's ``valid`` flag (default True for OSS-issued bundles).
-        try:
-            body = await request.json() if (await request.body()) else {}
-        except Exception:  # noqa: BLE001
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        # Fail-honest / fail-closed (VAL-CRYPTO-006, VAL-CRYPTO-007).
+        #
+        # This is the documented local OSS sidecar stub. It does NOT hold
+        # trust-anchor key material and does NOT perform offline JWS/ed25519
+        # verification (the real verifier lives in ``packages/verifier`` and
+        # the hosted control plane). Issued bundles carry a fabricated
+        # ``sig-<sha256-prefix>`` value and ``verification_status:
+        # "unverified"`` (set at create time). It is therefore dishonest for
+        # this route to ever report ``signatures_ok: true`` -- doing so would
+        # let a consumer treat an un-cryptographically-verified bundle as
+        # verified, breaching keystone invariants #2 ("pass without evidence
+        # is not a pass") and #11 (trust anchor). We surface the unverified
+        # state explicitly instead of stamping green.
+        #
+        # ``digest_ok`` is an INTEGRITY check, not a signature check: we
+        # re-serialize the CURRENT live record (excluding the mutable
+        # digest/claims_count/state/legacy-alias fields that were tacked on
+        # after the digest was computed) and compare to the recorded
+        # ``bundle_digest``. This detects divergence between the live record
+        # and its claimed digest -- unlike the prior tautology which
+        # re-hashed the same immutable stored bytes the digest was taken from.
+        body = await _parse_verify_body(request)
         tampered = bool(body.get("tampered"))
+
+        recomputed = _recompute_bundle_digest(record)
+        recorded_digest = record.get("bundle_digest") or record.get("digest")
+        digest_ok = (
+            recomputed is not None and recomputed == recorded_digest
+        )
+
+        # Signatures: NEVER green without real cryptographic verification.
+        # The OSS stub performs none, so signatures_ok is always false here
+        # (and explicitly so when the caller asserts ``tampered``).
+        signatures_reason = (
+            "signature validation failed"
+            if tampered
+            else (
+                "OSS local sidecar does not perform cryptographic signature "
+                "verification; use the offline verifier (packages/verifier) "
+                "or the hosted control plane to verify signatures"
+            )
+        )
         sigs_checked: list[dict[str, Any]] = []
-        signatures_ok = True
         for sig in record.get("signatures", []):
-            valid = bool(sig.get("valid", True)) and not tampered
-            if not valid:
-                signatures_ok = False
             sigs_checked.append(
                 {
                     "signer_key_id": sig.get("signer_key_id"),
                     "algorithm": sig.get("algorithm", "ed25519"),
-                    "valid": valid,
-                    "failure_reason": (
-                        None if valid else "signature validation failed"
-                    ),
+                    # Honest: this signature was not cryptographically
+                    # verified by this route. ``null`` (not true) signals
+                    # "not verified here", false signals an explicit failure.
+                    "valid": False if tampered else None,
+                    "failure_reason": signatures_reason,
                 }
             )
+        signatures_ok = False if tampered else None
+
         verify_result = {
             "bundle_id": bundle_id,
             "verifier_engine_version": __version__,
+            # The bundle was never cryptographically verified by this route.
+            # Closed enum per VAL-W1-019: unverified|verified|tampered|revoked.
+            "verification_status": "tampered" if tampered else "unverified",
             "structure_ok": True,
             "digest_ok": digest_ok,
             "signatures_ok": signatures_ok,
+            "signatures_reason": signatures_reason,
             "signatures_checked": sigs_checked,
             "claims_count": record.get("claims_count", 0),
         }

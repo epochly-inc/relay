@@ -219,3 +219,75 @@ async def test_verify_evidence_bundle_bad_signature(
     assert any(
         sig["valid"] is False for sig in payload["signatures_checked"]
     )
+
+
+# ---- VAL-CRYPTO-006: verify never reports signatures_ok=true without
+#      real cryptographic signature verification --------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CRYPTO-006")
+@pytest.mark.asyncio
+async def test_verify_no_green_signatures_without_real_crypto(
+    v2m02_client: tuple[httpx.AsyncClient, object, object],
+) -> None:
+    """Regression for VAL-CRYPTO-006.
+
+    POST /verify with no body against a freshly created OSS-stub bundle
+    MUST NOT report ``signatures_ok: true``. The OSS sidecar fabricates a
+    ``sig-<sha256...>`` value with no ed25519 key material and never
+    performs cryptographic verification, so a green ``signatures_ok``
+    derived from a self-asserted ``valid`` flag is dishonest. The response
+    must fail closed: ``signatures_ok`` is not true, the bundle is surfaced
+    as ``verification_status: unverified``, and a reason is given.
+    """
+    c, _db, _app = v2m02_client
+    bid = await _create_bundle(c)
+    # No body whatsoever -- the original tautology returned signatures_ok=true.
+    r = await c.post(f"/v1/evidence-bundles/{bid}/verify")
+    payload = json.loads(r.text)
+    # The core invariant: a consumer can NEVER receive a green
+    # signatures_ok for a bundle that was not cryptographically verified.
+    assert payload["signatures_ok"] is not True, payload
+    # Honest surfacing of the unverified state.
+    assert payload.get("verification_status") == "unverified", payload
+    # Every per-signature entry must be honest too: none claims valid=true.
+    assert all(
+        sig.get("valid") is not True
+        for sig in payload.get("signatures_checked", [])
+    ), payload
+    # A human-readable reason must explain why it is not verified.
+    assert payload.get("signatures_reason"), payload
+
+
+# ---- VAL-CRYPTO-007: digest check compares against an independent
+#      expected digest, not a tautological re-hash of stored bytes -------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CRYPTO-007")
+@pytest.mark.asyncio
+async def test_verify_digest_detects_record_tampering(
+    v2m02_client: tuple[httpx.AsyncClient, object, object],
+) -> None:
+    """Regression for VAL-CRYPTO-007.
+
+    The original digest check recomputed sha256 over the SAME immutable
+    stored blob whose hash IS the recorded digest -- a tautology that is
+    always true and can never detect record tampering. The honest check
+    re-serializes the CURRENT live record (excluding mutable
+    digest/claims_count/state/alias fields) and compares it to the recorded
+    bundle_digest, so mutating the live record flips digest_ok to false.
+    """
+    c, _db, app = v2m02_client
+    bid = await _create_bundle(c)
+    runtime = app.state.runtime
+    # Tamper with the live record AFTER its digest was recorded.
+    runtime.evidence_bundles[bid]["claims"] = [
+        {"assertion_id": "VAL-INJECTED-999", "result": "pass"}
+    ]
+    r = await c.post(f"/v1/evidence-bundles/{bid}/verify")
+    payload = json.loads(r.text)
+    # The divergence between the live record and its claimed digest MUST
+    # be detected -- the tautology could never do this.
+    assert payload["digest_ok"] is False, payload
