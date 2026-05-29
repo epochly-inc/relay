@@ -71,6 +71,7 @@ TRUST_ANCHOR_GOV_RELPATHS = (
     "docs/legal/trust-anchor-governance.md",
 )
 BUILD_DRIVER_RELPATH = "scripts/build-sidecar-bundle.py"
+ASSEMBLE_MANIFEST_RELPATH = "scripts/assemble-release-manifest.py"
 SIDECAR_BUNDLE_PKG_RELDIR = "packages/sdk-typescript-sidecar-bundle"
 
 # ---------------------------------------------------------------------------
@@ -680,6 +681,74 @@ def check_val_w12_043(repo_root: Path, raw_text: str) -> CheckResult:
     return CheckResult("VAL-W12-043", "RELAY-RELEASE-043", True)
 
 
+def check_val_crypto_003(repo_root: Path, raw_text: str) -> CheckResult:
+    """Release pipeline assembles AND keyless-signs the aggregated manifest.
+
+    VAL-CRYPTO-003 (producer side): the npx wrapper trusts the aggregated
+    ``manifest.json`` (per-entry sha256 + trust_root) to decide which bundle
+    to run, so the manifest itself MUST be signed and the wrapper verifies
+    the signature over the exact manifest bytes before trusting any field.
+    This guard asserts the workflow:
+      1. assembles the aggregated ``manifest.json`` (via the assemble script);
+      2. keyless-signs it producing ``manifest.json.sigstore`` (mirroring the
+         per-binary sigstore signing step);
+      3. and that the assemble script exists in the repo.
+    """
+    code = "RELAY-RELEASE-MANIFEST-SIG"
+    assertion = "VAL-CRYPTO-003"
+    assemble = repo_root / ASSEMBLE_MANIFEST_RELPATH
+    if not assemble.is_file():
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            f"aggregated-manifest assembler missing at {assemble}",
+        )
+    # The workflow must invoke the assembler and produce the wrapper-facing
+    # manifest.json (the assemble step references the script).
+    if "assemble-release-manifest.py" not in raw_text:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "workflow does not invoke scripts/assemble-release-manifest.py "
+            "to build the aggregated manifest.json",
+        )
+    # The workflow must keyless-sign manifest.json itself, producing
+    # manifest.json.sigstore. We require both the signing invocation over
+    # manifest.json AND the manifest.json.sigstore bundle name.
+    if "manifest.json.sigstore" not in raw_text:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "workflow does not produce a 'manifest.json.sigstore' signature "
+            "over the aggregated manifest",
+        )
+    # The signing step must run sigstore sign over dist/manifest.json with a
+    # bundle output (mirror of the per-binary keyless-sign step). Match the
+    # sign invocation + the bundle flag near manifest.json.sigstore.
+    if "python -m sigstore sign" not in raw_text:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "workflow does not invoke 'python -m sigstore sign' for keyless "
+            "manifest signing",
+        )
+    # The aggregated manifest must be published as a release asset (the
+    # wrapper fetches it from the pinned URL; the GitHub release is the
+    # canonical signed source the hosted manifest service mirrors).
+    if "-name 'manifest.json'" not in raw_text and '-name "manifest.json"' not in raw_text:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "publish step does not upload the aggregated manifest.json asset",
+        )
+    return CheckResult(assertion, code, True)
+
+
 def check_no_long_lived_secrets(raw_text: str) -> CheckResult:
     """Defensive check (covers VAL-W12-035 secret-name surface)."""
     for name in LONG_LIVED_SECRET_NAMES:
@@ -724,6 +793,10 @@ def build_report(repo_root: Path) -> GuardReport:
     report.checks.append(check_val_w12_041(repo_root))
     report.checks.append(check_val_w12_042(repo_root))
     report.checks.append(check_val_w12_043(repo_root, raw_text))
+    # VAL-CRYPTO-003 producer side: the aggregated manifest is assembled
+    # AND keyless-signed (manifest.json.sigstore) so the wrapper can verify
+    # the manifest signature over the exact bytes before trusting any entry.
+    report.checks.append(check_val_crypto_003(repo_root, raw_text))
     return report
 
 

@@ -162,6 +162,99 @@ export async function fetchReleaseManifest(
   return parseReleaseManifest(body, url);
 }
 
+/** Manifest fetched as both the parsed object AND the exact bytes received. */
+export interface RawReleaseManifest {
+  /** The parsed + validated manifest. */
+  readonly manifest: ReleaseManifest;
+  /**
+   * The EXACT bytes received over the wire. The release-manifest Sigstore
+   * signature is computed over these bytes, so VAL-CRYPTO-003 verification
+   * MUST use them verbatim (not a re-serialization of the parsed object,
+   * which would not be byte-identical). VAL-CRYPTO-003.
+   */
+  readonly rawBytes: Buffer;
+  /** The URL the manifest was fetched from (for deriving the .sigstore URL). */
+  readonly url: string;
+}
+
+/**
+ * Fetch the release manifest AND retain the exact bytes received.
+ *
+ * Identical fetch + validation semantics to :func:`fetchReleaseManifest`
+ * but returns the raw response bytes alongside the parsed manifest so the
+ * caller can verify a Sigstore signature over the EXACT bytes (the
+ * signature does not bind a JSON re-serialization). VAL-CRYPTO-003.
+ */
+export async function fetchReleaseManifestRaw(
+  options: ManifestFetchOptions = {},
+): Promise<RawReleaseManifest> {
+  const url = options.manifestUrl ?? readCanonicalManifestUrl();
+  if (!url.startsWith("https://")) {
+    throw new RelaySidecarBundleUnavailable(
+      `manifest URL must be HTTPS; got ${JSON.stringify(url)}`,
+      {
+        code: RELAY_SIDECAR_BUNDLE_UNAVAILABLE_CODE,
+        details: { reason: "manifest_url_not_https", url },
+      },
+    );
+  }
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const timeoutMs = options.httpTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let resp: Response;
+  try {
+    resp = await fetchImpl(url, { method: "GET", signal: controller.signal });
+  } catch (cause) {
+    throw new RelaySidecarBundleUnavailable(
+      `network error fetching manifest from ${url}: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+      {
+        code: RELAY_SIDECAR_BUNDLE_UNAVAILABLE_CODE,
+        details: {
+          reason: "network_error",
+          url,
+          cause_message: cause instanceof Error ? cause.message : String(cause),
+        },
+        cause,
+      },
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+  if (resp.status !== 200) {
+    throw new RelaySidecarBundleUnavailable(
+      `manifest fetch returned HTTP ${resp.status} from ${url}`,
+      {
+        code: RELAY_SIDECAR_BUNDLE_UNAVAILABLE_CODE,
+        details: { reason: "non_200", url, http_status: resp.status },
+      },
+    );
+  }
+  // Read the EXACT bytes; parse from the same bytes so the parsed object
+  // and the signed-over bytes are guaranteed to be the same wire payload.
+  const rawBytes = Buffer.from(await resp.arrayBuffer());
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBytes.toString("utf8"));
+  } catch (cause) {
+    throw new RelaySidecarBundleUnverified(
+      `manifest at ${url} was not valid JSON`,
+      {
+        code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
+        details: {
+          reason: "manifest_not_json",
+          url,
+          cause_message: cause instanceof Error ? cause.message : String(cause),
+        },
+        cause,
+      },
+    );
+  }
+  return { manifest: parseReleaseManifest(body, url), rawBytes, url };
+}
+
 /** Parse a manifest JSON value; throws ``RelaySidecarBundleUnverified`` on malformed input. */
 export function parseReleaseManifest(value: unknown, sourceUrl?: string): ReleaseManifest {
   const refuse = (reason: string, extra: Record<string, unknown> = {}): never => {

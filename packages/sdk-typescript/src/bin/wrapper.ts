@@ -53,15 +53,51 @@ import {
   writeVerifiedMarker,
 } from "./cache.js";
 import {
-  fetchReleaseManifest,
+  fetchReleaseManifestRaw,
   resolveBundleEntry,
   type ManifestFetchOptions,
+  type RawReleaseManifest,
 } from "./manifest.js";
-import type { BundleEntry, ReleaseManifest } from "./types.js";
+import type { BundleEntry } from "./types.js";
 import { DEFAULT_TRUST_ROOT } from "./types.js";
+import {
+  RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
+  RelaySidecarBundleUnverified,
+} from "../errors.js";
 import { verifyDigest, verifySigstoreBundle } from "./verify.js";
 
 export const ALLOW_CUSTOM_TRUST_ROOT_ENV = "RELAY_ALLOW_CUSTOM_TRUST_ROOT";
+
+/**
+ * Transition flag for VAL-CRYPTO-003 release-manifest signing rollout.
+ *
+ * The release pipeline (.github/workflows/release-sidecar-bundle.yml) now
+ * keyless-signs the aggregated ``manifest.json`` and publishes
+ * ``manifest.json.sigstore`` alongside it. The wrapper ALWAYS enforces a
+ * signature that is PRESENT: a present-but-invalid manifest signature
+ * fails closed. The remaining question is what to do when NO signature is
+ * present (a legacy release cut before the signing step shipped):
+ *
+ *   - With ``RELAY_REQUIRE_SIGNED_MANIFEST`` unset/!="1" (the transition
+ *     default): an ABSENT manifest signature is tolerated so existing
+ *     legacy releases keep launching via ``npx`` -- the per-binary digest +
+ *     Sigstore checks still run. This is a DEGRADED trust mode and is the
+ *     ONLY path that trusts an unsigned manifest.
+ *   - With ``RELAY_REQUIRE_SIGNED_MANIFEST=1`` (the end state): an ABSENT
+ *     manifest signature is REJECTED fail-closed.
+ *
+ * PRODUCTION ROLLOUT NOTE: once signed releases exist for all supported
+ * cells and the oldest still-fetchable manifest is signed, the DEFAULT of
+ * this flag MUST flip to enforce-by-default (require a manifest signature
+ * unconditionally). That flip is a coordinated change tracked with the
+ * orchestrator; until then the transition default keeps npx working.
+ */
+export const REQUIRE_SIGNED_MANIFEST_ENV = "RELAY_REQUIRE_SIGNED_MANIFEST";
+
+/** Derive the manifest's cosign-bundle URL: ``<manifestUrl>.sigstore``. */
+export function manifestSignatureUrl(manifestUrl: string): string {
+  return `${manifestUrl}.sigstore`;
+}
 
 export interface LaunchSidecarOptions {
   /** Relay home directory; test seam. */
@@ -88,6 +124,14 @@ export interface LaunchSidecarOptions {
   fetchBundleImpl?: (url: string) => Promise<Buffer>;
   /** Cosign-bundle fetcher (test seam). */
   fetchSigstoreImpl?: (url: string) => Promise<string>;
+  /**
+   * Release-manifest cosign-bundle fetcher (test seam, VAL-CRYPTO-003).
+   * Resolves with the ``manifest.json.sigstore`` text. MUST reject (throw)
+   * when the signature is absent (e.g. a 404 for a legacy release) so the
+   * caller can distinguish "absent" (transition policy) from
+   * "present-but-invalid" (always fail closed).
+   */
+  fetchManifestSigstoreImpl?: (url: string) => Promise<string>;
   /** Override the launch time (test seam for TTL boundary tests). */
   now?: Date;
   /** When provided, override the TTL in seconds for VAL-W4-011b tests. */
@@ -181,6 +225,113 @@ function defaultSigstoreFetcher(
 }
 
 /**
+ * Default fetcher for the release-manifest cosign-bundle
+ * (``manifest.json.sigstore``). VAL-CRYPTO-003.
+ *
+ * A non-200 (e.g. 404 for a legacy release that predates manifest signing)
+ * THROWS ``ManifestSignatureAbsent`` so the caller can apply the transition
+ * policy; any other status throws the generic unavailable leaf.
+ */
+function defaultManifestSigstoreFetcher(
+  fetchImpl: ManifestFetchOptions["fetchImpl"] | undefined,
+): (url: string) => Promise<string> {
+  const impl = fetchImpl ?? globalThis.fetch.bind(globalThis);
+  return async (url: string) => {
+    let resp: Response;
+    try {
+      resp = await impl(url, { method: "GET" });
+    } catch (cause) {
+      // A network/transport error fetching the manifest signature is
+      // treated as "absent" so a transient outage on the signature object
+      // does not harden into a launch failure under the transition policy.
+      throw new ManifestSignatureAbsent(
+        cause instanceof Error ? cause.message : String(cause),
+      );
+    }
+    if (resp.status === 200) {
+      return await resp.text();
+    }
+    throw new ManifestSignatureAbsent(`manifest signature fetch returned HTTP ${resp.status}`);
+  };
+}
+
+/**
+ * Sentinel thrown by a manifest-signature fetcher when NO signature object
+ * exists (404 / network error). Distinguishes the transition-policy
+ * "absent" case from a "present-but-invalid" signature (which always fails
+ * closed). VAL-CRYPTO-003.
+ */
+export class ManifestSignatureAbsent extends Error {
+  constructor(reason: string) {
+    super(`release manifest signature absent: ${reason}`);
+    this.name = "ManifestSignatureAbsent";
+  }
+}
+
+/**
+ * Verify a Sigstore signature over the EXACT release-manifest bytes
+ * (VAL-CRYPTO-003), applying the signed-release transition policy.
+ *
+ * Trust model:
+ *   - A signature that is PRESENT is ALWAYS cryptographically verified over
+ *     ``raw.rawBytes`` (the bytes received), rooted in ``trustRoot``,
+ *     reusing the real crypto in :func:`verifySigstoreBundle`. A
+ *     present-but-invalid signature fails closed (RELAY-SIDECAR-020).
+ *   - A signature that is ABSENT (404 / network error -> ManifestSignatureAbsent)
+ *     is tolerated ONLY when ``RELAY_REQUIRE_SIGNED_MANIFEST`` is not "1"
+ *     (the transition default that keeps legacy unsigned releases working);
+ *     when the flag is "1" an absent signature is REJECTED fail-closed.
+ *
+ * Note: we deliberately do NOT bind ``expectedSha256`` here -- the
+ * manifest's own digest is not pinned anywhere external; the binding that
+ * matters is the signature-over-the-manifest-bytes + the cert issuer
+ * chaining to the trust root. The per-binary digest binding still happens
+ * downstream in :func:`verifyDigest` + :func:`verifySigstoreBundle`.
+ */
+async function verifyManifestSignature(
+  options: LaunchSidecarOptions,
+  raw: RawReleaseManifest,
+  trustRoot: string,
+): Promise<void> {
+  const sigUrl = manifestSignatureUrl(raw.url);
+  const fetcher =
+    options.fetchManifestSigstoreImpl ?? defaultManifestSigstoreFetcher(options.fetchImpl);
+  let manifestSigstoreJson: string;
+  try {
+    manifestSigstoreJson = await fetcher(sigUrl);
+  } catch (cause) {
+    if (cause instanceof ManifestSignatureAbsent) {
+      const required = process.env[REQUIRE_SIGNED_MANIFEST_ENV] === "1";
+      if (!required) {
+        // Transition default: tolerate a legacy unsigned manifest. The
+        // per-binary digest + Sigstore checks still run downstream.
+        return;
+      }
+      throw new RelaySidecarBundleUnverified(
+        "release manifest has no Sigstore signature and " +
+          `${REQUIRE_SIGNED_MANIFEST_ENV}=1 requires one; refusing to trust the manifest`,
+        {
+          code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
+          details: {
+            reason: "manifest_signature_absent_under_enforcement",
+            manifest_url: raw.url,
+            manifest_signature_url: sigUrl,
+            cause_message: cause.message,
+          },
+        },
+      );
+    }
+    // Any other fetch error (a non-absent transport failure surfaced by a
+    // custom fetcher) propagates unchanged.
+    throw cause;
+  }
+  // A signature is PRESENT -> ALWAYS enforce. The signature is verified
+  // over the EXACT manifest bytes (not a re-serialization). A forged or
+  // non-binding signature fails closed inside verifySigstoreBundle.
+  verifySigstoreBundle(raw.rawBytes, manifestSigstoreJson, { trustRoot });
+}
+
+/**
  * Top-level orchestrator. Returns a launch decision; the CLI shim emits
  * its JSON to stdout. Does NOT spawn the binary itself -- spawn happens
  * in the CLI shim after this returns successfully.
@@ -203,14 +354,14 @@ async function launchFresh(
 ): Promise<LaunchDecision> {
   const hostOs = options.hostOs ?? process.platform;
   const hostArch = options.hostArch ?? process.arch;
-  // Step A: fetch the manifest. Failure paths route through
-  // RelaySidecarBundleUnavailable.
-  let manifest: ReleaseManifest;
+  // Step A: fetch the manifest AND its exact wire bytes. Failure paths
+  // route through RelaySidecarBundleUnavailable.
+  let raw: RawReleaseManifest;
   try {
     const fetchOpts: ManifestFetchOptions = {};
     if (options.fetchImpl !== undefined) fetchOpts.fetchImpl = options.fetchImpl;
     if (options.manifestUrl !== undefined) fetchOpts.manifestUrl = options.manifestUrl;
-    manifest = await fetchReleaseManifest(fetchOpts);
+    raw = await fetchReleaseManifestRaw(fetchOpts);
   } catch (cause) {
     // Fall back to cache if any verified bundle exists for this host's
     // (os, arch) tuple. This handles "manifest URL transiently 503" with
@@ -219,6 +370,16 @@ async function launchFresh(
     if (fallback !== null) return fallback;
     throw cause;
   }
+  const manifest = raw.manifest;
+  // Step A2 (VAL-CRYPTO-003): cryptographically verify a Sigstore signature
+  // over the EXACT manifest bytes BEFORE trusting any manifest field (the
+  // per-entry sha256 digests and the trust_root claim). Without this, an
+  // attacker who serves/MITMs the manifest URL ships a malicious bundle by
+  // pinning entry.sha256 = SHA-256(malicious) and a matching trust_root.
+  // Signing only the leaf binaries is insufficient: the manifest is the
+  // trust root for the whole chain. Reuses the real crypto in verify.ts
+  // (VAL-CRYPTO-002) -- no new crypto here.
+  await verifyManifestSignature(options, raw, trustRoot);
   const entry: BundleEntry = resolveBundleEntry(manifest, hostOs, hostArch);
   // Manifest's claimed trust_root must equal the resolved trust root.
   // VAL-W4-008.

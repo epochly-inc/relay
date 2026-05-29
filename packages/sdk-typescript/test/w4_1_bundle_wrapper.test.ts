@@ -532,8 +532,13 @@ describe("VAL-W4-011b: bundle re-verification cache TTL", () => {
         now: t0,
       });
       expect(first.action).toBe("launched_fresh");
+      // Count only the PER-BINARY sigstore re-verification download (URL
+      // ends in ``.sigstore.json``). After VAL-CRYPTO-003 the wrapper also
+      // fetches the release-manifest signature (``.json.sigstore``); that
+      // is a manifest-side fetch and is not what this cache short-circuit
+      // is about, so exclude it from the count.
       const sigstoreCallsBefore = f.observedRequests.filter((u) =>
-        u.includes("sigstore"),
+        u.endsWith(".sigstore.json"),
       ).length;
       // Second launch within TTL: same network path BUT cache should
       // short-circuit; no additional Sigstore network calls.
@@ -549,7 +554,7 @@ describe("VAL-W4-011b: bundle re-verification cache TTL", () => {
       expect(second.action).toBe("launched_from_cache");
       expect(second.cache_hit).toBe(true);
       const sigstoreCallsAfter = f.observedRequests.filter((u) =>
-        u.includes("sigstore"),
+        u.endsWith(".sigstore.json"),
       ).length;
       expect(sigstoreCallsAfter).toBe(sigstoreCallsBefore);
     } finally {
@@ -573,8 +578,11 @@ describe("VAL-W4-011b: bundle re-verification cache TTL", () => {
       });
       // Forward time past the TTL.
       const t1 = new Date(t0.getTime() + 120_000);
+      // Count only the PER-BINARY sigstore download (``.sigstore.json``);
+      // see the cache-hit test above for why the manifest signature
+      // (``.json.sigstore``, VAL-CRYPTO-003) is excluded.
       const sigstoreCallsBefore = f.observedRequests.filter((u) =>
-        u.includes("sigstore"),
+        u.endsWith(".sigstore.json"),
       ).length;
       const after = await launchSidecar({
         home: tmp.home,
@@ -587,7 +595,7 @@ describe("VAL-W4-011b: bundle re-verification cache TTL", () => {
       });
       expect(after.action).toBe("launched_fresh");
       const sigstoreCallsAfter = f.observedRequests.filter((u) =>
-        u.includes("sigstore"),
+        u.endsWith(".sigstore.json"),
       ).length;
       expect(sigstoreCallsAfter).toBe(sigstoreCallsBefore + 1);
       // Marker refreshed: last_verified ~ t1.

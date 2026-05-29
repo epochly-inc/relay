@@ -467,6 +467,57 @@ jobs:
               "${ARTIFACT}"
           done
 
+      - name: "Assemble aggregated release manifest (wrapper-facing)"
+        # VAL-CRYPTO-003: build the SINGLE aggregated manifest.json that the
+        # npx wrapper (packages/sdk-typescript/src/bin/manifest.ts) fetches
+        # from the pinned manifest URL. The wrapper trusts this manifest's
+        # per-entry sha256 digests and trust_root to decide which bundle to
+        # download and run -- so the manifest itself MUST be signed (the
+        # next step). Schema is relay.sidecar_bundle_manifest.v1, matching
+        # parseReleaseManifest in the wrapper.
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          MANIFEST_TRUST_ROOT: "relay.epochly.com"
+        run: |
+          python scripts/assemble-release-manifest.py \
+            --dist-root dist \
+            --sidecar-version "${RELEASE_TAG#v}" \
+            --trust-root "${MANIFEST_TRUST_ROOT}" \
+            --out dist/manifest.json
+
+      - name: "Keyless-sign the aggregated manifest.json (VAL-CRYPTO-003)"
+        # Mirror the per-binary keyless-signing step above: obtain an
+        # ambient GitHub OIDC token, mint a short-lived Fulcio cert, sign
+        # the EXACT manifest.json bytes, record the signature in Rekor, and
+        # attach the Sigstore TSA RFC 3161 timestamp. The produced
+        # manifest.json.sigstore is what the wrapper fetches at
+        # <manifestUrl>.sigstore and verifies over the exact manifest bytes
+        # BEFORE trusting any entry digest -- closing the manifest-MITM RCE.
+        shell: bash
+        env:
+          TSA_PRIMARY: ${{ env.TSA_PRIMARY }}
+        run: |
+          set -euo pipefail
+          python -m sigstore sign \
+            --identity-token "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
+            --bundle "dist/manifest.json.sigstore" \
+            "dist/manifest.json"
+
+      - name: "Verify aggregated manifest Rekor inclusion OFFLINE"
+        # VAL-W12-037 / VAL-CRYPTO-003: the manifest signature is itself
+        # offline-verifiable via Merkle inclusion against the pinned Rekor
+        # checkpoint, exactly like the per-binary signatures.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m sigstore verify identity \
+            --offline \
+            --bundle "dist/manifest.json.sigstore" \
+            --cert-identity "https://github.com/epochly-inc/relay/.github/workflows/release-sidecar-bundle.yml@${GITHUB_REF}" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "dist/manifest.json"
+
       - name: "Upload signed bundle"
         uses: actions/upload-artifact@v4
         with:
@@ -497,7 +548,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
+        # The aggregated manifest.json and its manifest.json.sigstore
+        # (VAL-CRYPTO-003) are published alongside the per-binary assets:
+        # the npx wrapper fetches the manifest and its signature from the
+        # pinned manifest URL and verifies the signature over the exact
+        # manifest bytes before trusting any entry digest. The 'manifest.json'
+        # name pattern is listed explicitly so the signed manifest is
+        # uploaded (it does not match 'relay-sidecar-*').
         run: |
           gh release upload "${RELEASE_TAG}" \
-            $(find dist -type f \( -name 'relay-sidecar-*' -o -name '*.sigstore' -o -name '*.intoto.jsonl' \)) \
+            $(find dist -type f \( -name 'relay-sidecar-*' -o -name 'manifest.json' -o -name '*.sigstore' -o -name '*.intoto.jsonl' \)) \
             --clobber
