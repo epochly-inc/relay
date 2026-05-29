@@ -42,5 +42,10 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "@sigstore/bundle": "^4.0.0",
+    "@sigstore/core": "^3.2.1",
+    "@sigstore/verify": "^3.1.1"
   }
 }

@@ -41,7 +41,10 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { RelaySidecarBundleUnverified } from "../src/errors.js";
-import { verifySigstoreBundle } from "../src/bin/verify.js";
+import {
+  REAL_SIGSTORE_HAPPY_PATH_POLICY,
+  verifySigstoreBundle,
+} from "../src/bin/verify.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -226,14 +229,26 @@ describe("VAL-CRYPTO-002: real-crypto happy path and tamper rejection", () => {
     expect(cert.issuer).toContain(TRUST_ROOT);
   });
 
-  it("happy path: a real signature over the real bundle bytes VERIFIES", () => {
-    if (material === null) throw new Error("toolchain unavailable");
-    const sigstoreJson = buildRealSigstoreJson(material);
-    const parsed = verifySigstoreBundle(BUNDLE_BYTES, sigstoreJson, {
-      trustRoot: TRUST_ROOT,
-      expectedSha256: BUNDLE_DIGEST_HEX,
+  it("happy path: a real, fully-valid production Sigstore bundle VERIFIES", () => {
+    // Post the W4.7 trust-chain hardening, a SELF-SIGNED leaf (as minted
+    // above for the negative cases) is correctly REJECTED -- it does not
+    // chain to the pinned Fulcio root and lacks a real Rekor inclusion proof.
+    // The genuine happy path is a REAL recorded production Sigstore bundle
+    // (sigstore-js's keyless-signed provenance attestation) verified against
+    // the pinned public-good trusted root with FULL thresholds. The
+    // comprehensive per-hardening-item coverage lives in
+    // w4_7_sigstore_trust_chain.test.ts; this asserts the positive case here.
+    const realBundleJson = fs.readFileSync(
+      path.join(__dirname, "fixtures", "sigstore", "real-provenance.sigstore.json"),
+      "utf8",
+    );
+    const signer = verifySigstoreBundle(undefined, realBundleJson, {
+      identityPolicy: REAL_SIGSTORE_HAPPY_PATH_POLICY,
     });
-    expect(parsed).toBeTruthy();
+    expect(signer).toBeTruthy();
+    expect(signer.identity?.extensions?.issuer).toBe(
+      "https://token.actions.githubusercontent.com",
+    );
   });
 
   it("tampered bundle bytes (signature no longer matches) is REJECTED", () => {

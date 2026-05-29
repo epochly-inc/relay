@@ -64,7 +64,26 @@ import {
   RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
   RelaySidecarBundleUnverified,
 } from "../errors.js";
-import { verifyDigest, verifySigstoreBundle } from "./verify.js";
+import {
+  verifyDigest,
+  verifySigstoreBundle,
+  type SigstoreVerifyOptions,
+} from "./verify.js";
+
+/**
+ * Sigstore-verification seam. Production binds this to the real fail-closed
+ * :func:`verifySigstoreBundle` (which delegates to ``@sigstore/verify``
+ * against the pinned public-good trusted root). It is exposed as an option
+ * ONLY so orchestration tests (cache/TTL/digest-ordering) can drive the
+ * wrapper deterministically without a live OIDC/Rekor round trip; the
+ * cryptographic correctness of the verifier itself is proven directly in
+ * test/w4_7_sigstore_trust_chain.test.ts against REAL recorded bundles.
+ */
+export type VerifySigstoreBundleFn = (
+  artifactBytes: Buffer | string | undefined,
+  sigstoreJson: string | Buffer,
+  options: SigstoreVerifyOptions,
+) => unknown;
 
 export const ALLOW_CUSTOM_TRUST_ROOT_ENV = "RELAY_ALLOW_CUSTOM_TRUST_ROOT";
 
@@ -136,6 +155,14 @@ export interface LaunchSidecarOptions {
   now?: Date;
   /** When provided, override the TTL in seconds for VAL-W4-011b tests. */
   ttlSec?: number;
+  /**
+   * Sigstore-verification seam (test only). Defaults to the real fail-closed
+   * :func:`verifySigstoreBundle`. Orchestration tests inject a deterministic
+   * verifier so the cache/TTL/digest-ordering behavior can be exercised
+   * without a live Rekor/Fulcio round trip; the verifier's cryptographic
+   * correctness is proven directly in w4_7_sigstore_trust_chain.test.ts.
+   */
+  verifyBundleImpl?: VerifySigstoreBundleFn;
 }
 
 export interface LaunchDecision {
@@ -328,7 +355,8 @@ async function verifyManifestSignature(
   // A signature is PRESENT -> ALWAYS enforce. The signature is verified
   // over the EXACT manifest bytes (not a re-serialization). A forged or
   // non-binding signature fails closed inside verifySigstoreBundle.
-  verifySigstoreBundle(raw.rawBytes, manifestSigstoreJson, { trustRoot });
+  const verify = options.verifyBundleImpl ?? verifySigstoreBundle;
+  verify(raw.rawBytes, manifestSigstoreJson, { trustRoot });
 }
 
 /**
@@ -432,8 +460,11 @@ async function launchFresh(
   });
   // Step E: Sigstore check (VAL-W4-004 / VAL-CRYPTO-002). Pass the ACTUAL
   // bundle bytes so the signature is cryptographically verified over them
-  // and bound to the manifest-pinned digest.
-  verifySigstoreBundle(bundleBytes, sigstoreJson, {
+  // (fail-closed: Fulcio chain to the pinned root, Rekor inclusion proof,
+  // SCT, validity window, P-256 curve pin) and the messageDigest is bound to
+  // the manifest-pinned entry.sha256.
+  const verify = options.verifyBundleImpl ?? verifySigstoreBundle;
+  verify(bundleBytes, sigstoreJson, {
     trustRoot,
     expectedSha256: entry.sha256,
   });

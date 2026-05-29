@@ -48,7 +48,12 @@ import {
   ALLOW_CUSTOM_TRUST_ROOT_ENV,
   launchSidecar,
   resolveTrustRoot,
+  type VerifySigstoreBundleFn,
 } from "../src/bin/wrapper.js";
+import {
+  REAL_SIGSTORE_HAPPY_PATH_POLICY,
+  verifySigstoreBundle,
+} from "../src/bin/verify.js";
 import {
   DEFAULT_BUNDLE_VERIFY_TTL_SEC,
   DEFAULT_TRUST_ROOT,
@@ -60,6 +65,30 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
+
+// ---------------------------------------------------------------------------
+// Sigstore-verification seam for ORCHESTRATION tests.
+//
+// Post the W4.7 trust-chain hardening, verifySigstoreBundle delegates to
+// @sigstore/verify against the pinned public-good trusted root: it requires
+// a REAL Fulcio chain + real Rekor inclusion proof + SCT, which cannot be
+// minted offline. These wrapper tests exercise orchestration (digest-first
+// ordering, cache, TTL), NOT the crypto -- the crypto is proven directly in
+// w4_7_sigstore_trust_chain.test.ts against a real recorded bundle.
+//
+// The seam below runs the REAL verifier against a REAL recorded production
+// Sigstore bundle on every call, so the wrapper's wire-up to a fail-closed
+// verifier is genuinely exercised (a broken verifier would throw here), while
+// the synthetic per-binary bytes drive the digest/cache/TTL logic.
+// ---------------------------------------------------------------------------
+const REAL_BUNDLE_JSON = fs.readFileSync(
+  path.join(__dirname, "fixtures", "sigstore", "real-provenance.sigstore.json"),
+  "utf8",
+);
+const realVerifySeam: VerifySigstoreBundleFn = () =>
+  verifySigstoreBundle(undefined, REAL_BUNDLE_JSON, {
+    identityPolicy: REAL_SIGSTORE_HAPPY_PATH_POLICY,
+  });
 
 // ---------------------------------------------------------------------------
 // Real signing material for the happy-path fixtures.
@@ -294,6 +323,7 @@ describe("VAL-W4-004: npx wrapper verifies digest THEN Sigstore; refuses unsigne
         fetchImpl: f.fetchImpl,
         fetchBundleImpl: f.fetchBundleImpl,
         fetchSigstoreImpl: f.fetchSigstoreImpl,
+        verifyBundleImpl: realVerifySeam,
       });
       expect(decision.action).toBe("launched_fresh");
       expect(decision.source).toBe("network");
@@ -453,6 +483,7 @@ describe("VAL-W4-007b: offline + cached bundle -> launched_from_cache, zero outb
         fetchImpl: f.fetchImpl,
         fetchBundleImpl: f.fetchBundleImpl,
         fetchSigstoreImpl: f.fetchSigstoreImpl,
+        verifyBundleImpl: realVerifySeam,
       });
       expect(fresh.action).toBe("launched_fresh");
       const requestsBefore = f.observedRequests.length;
@@ -530,6 +561,7 @@ describe("VAL-W4-011b: bundle re-verification cache TTL", () => {
         fetchBundleImpl: f.fetchBundleImpl,
         fetchSigstoreImpl: f.fetchSigstoreImpl,
         now: t0,
+        verifyBundleImpl: realVerifySeam,
       });
       expect(first.action).toBe("launched_fresh");
       // Count only the PER-BINARY sigstore re-verification download (URL
@@ -575,6 +607,7 @@ describe("VAL-W4-011b: bundle re-verification cache TTL", () => {
         fetchSigstoreImpl: f.fetchSigstoreImpl,
         now: t0,
         ttlSec: 60, // 60-second TTL for the test
+        verifyBundleImpl: realVerifySeam,
       });
       // Forward time past the TTL.
       const t1 = new Date(t0.getTime() + 120_000);
@@ -592,6 +625,7 @@ describe("VAL-W4-011b: bundle re-verification cache TTL", () => {
         fetchSigstoreImpl: f.fetchSigstoreImpl,
         now: t1,
         ttlSec: 60,
+        verifyBundleImpl: realVerifySeam,
       });
       expect(after.action).toBe("launched_fresh");
       const sigstoreCallsAfter = f.observedRequests.filter((u) =>

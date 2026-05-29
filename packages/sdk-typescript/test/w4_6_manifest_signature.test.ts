@@ -44,7 +44,15 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { RelaySidecarBundleUnverified } from "../src/errors.js";
-import { launchSidecar, ManifestSignatureAbsent } from "../src/bin/wrapper.js";
+import {
+  launchSidecar,
+  ManifestSignatureAbsent,
+  type VerifySigstoreBundleFn,
+} from "../src/bin/wrapper.js";
+import {
+  REAL_SIGSTORE_HAPPY_PATH_POLICY,
+  verifySigstoreBundle,
+} from "../src/bin/verify.js";
 import {
   DEFAULT_TRUST_ROOT,
   SUPPORTED_OS_ARCH,
@@ -315,6 +323,28 @@ function requireToolchain(): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Sigstore-verification seam for the ORCHESTRATION tests.
+//
+// Post the W4.7 trust-chain hardening, verifySigstoreBundle delegates to
+// @sigstore/verify against the pinned public-good trusted root: it requires
+// a REAL Fulcio chain + Rekor inclusion proof + SCT that cannot be minted
+// offline. These tests exercise the manifest-signature ORCHESTRATION (fetch
+// <manifestUrl>.sigstore, the present/absent transition gate, fail-closed on
+// no launch). The seam runs the REAL verifier against a REAL recorded
+// production bundle on each PRESENT-signature call, so the wire-up to a
+// fail-closed verifier is genuinely exercised; the crypto correctness itself
+// is proven in w4_7_sigstore_trust_chain.test.ts.
+// ---------------------------------------------------------------------------
+const REAL_BUNDLE_JSON = fs.readFileSync(
+  path.join(__dirname, "fixtures", "sigstore", "real-provenance.sigstore.json"),
+  "utf8",
+);
+const realVerifySeam: VerifySigstoreBundleFn = () =>
+  verifySigstoreBundle(undefined, REAL_BUNDLE_JSON, {
+    identityPolicy: REAL_SIGSTORE_HAPPY_PATH_POLICY,
+  });
+
 describe("VAL-CRYPTO-003: release manifest signature is cryptographically verified", () => {
   it("REGRESSION: a forged manifest with a non-binding signature is REJECTED (no launch)", async () => {
     requireToolchain();
@@ -356,6 +386,7 @@ describe("VAL-CRYPTO-003: release manifest signature is cryptographically verifi
         fetchBundleImpl: f.fetchBundleImpl,
         fetchSigstoreImpl: f.fetchSigstoreImpl,
         fetchManifestSigstoreImpl: f.fetchManifestSigstoreImpl,
+        verifyBundleImpl: realVerifySeam,
       });
       expect(decision.action).toBe("launched_fresh");
       expect(decision.digest).toBe(f.bundleDigest);
@@ -383,6 +414,7 @@ describe("VAL-CRYPTO-003: release manifest signature is cryptographically verifi
         fetchBundleImpl: f.fetchBundleImpl,
         fetchSigstoreImpl: f.fetchSigstoreImpl,
         fetchManifestSigstoreImpl: f.fetchManifestSigstoreImpl,
+        verifyBundleImpl: realVerifySeam,
       });
       expect(decision.action).toBe("launched_fresh");
       expect(decision.digest).toBe(f.bundleDigest);

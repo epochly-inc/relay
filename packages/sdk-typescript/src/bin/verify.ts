@@ -1,47 +1,63 @@
 /**
- * Bundle integrity verification for the npx wrapper (W4.1 / VAL-CRYPTO-002).
+ * Fail-CLOSED Sigstore bundle verification for the npx wrapper
+ * (W4.1 / W4.7 / VAL-CRYPTO-002, VAL-CRYPTO-003).
  *
  * Two checks, in load-bearing order (VAL-W4-005 pins digest-first):
  *
  *   1. ``verifyDigest(buffer, expectedSha256)`` -- SHA-256 of the buffer
  *      MUST equal the manifest-pinned digest. Cheapest, deterministic,
  *      runs first.
- *   2. ``verifySigstoreBundle(bundleBytes, sigstoreJson, options)`` --
- *      cosign-bundle JSON containing certificate + signature + rekor
- *      transparency-log entry. Performs REAL cryptography over the
- *      bundle bytes (fail-closed).
+ *   2. ``verifySigstoreBundle(artifactBytes, sigstoreJson, options)`` --
+ *      a REAL Sigstore bundle is verified with the official
+ *      ``@sigstore/verify`` against a PINNED public-good Sigstore trusted
+ *      root bundled in-repo at ``sigstore-trusted-root.json`` (no network
+ *      fetch). This performs, fail-closed, ALL of:
+ *        - Fulcio leaf certificate chain validation to the pinned root;
+ *        - certificate validity-window enforcement (notBefore/notAfter vs
+ *          the signing timestamp);
+ *        - SCT (certificate-transparency-log) verification;
+ *        - Rekor transparency-log INCLUSION-PROOF verification (RFC 6962
+ *          Merkle inclusion + signed checkpoint) AND/OR the inclusion-promise
+ *          SET signature;
+ *        - the artifact signature verified over the actual bytes;
+ *        - an EXACT certificate-identity policy match (SAN by anchored
+ *          regex + the OIDC ``issuer`` extension by exact equality).
+ *      On top of the library guarantees, Relay additionally enforces:
+ *        - a CURVE pin (EC keys MUST be P-256, the Fulcio/cosign profile);
+ *        - a REQUIRED ``messageDigest`` binding for messageSignature bundles:
+ *          messageDigest == SHA-256(artifactBytes) == manifest entry.sha256.
  *
- * The Sigstore verifier performs genuine signature verification:
- *   - The cosign-bundle JSON shape is parsed.
- *   - The Fulcio leaf certificate (protobuf-bundle ``rawBytes`` DER, or
- *     legacy ``cert`` PEM) is parsed with ``node:crypto`` ``X509Certificate``.
- *   - The ``messageSignature.signature`` bytes are CRYPTOGRAPHICALLY
- *     VERIFIED over the actual ``bundleBytes`` using the public key in
- *     the leaf certificate (ECDSA-SHA256, RSA-SHA256, or Ed25519).
- *   - The leaf certificate issuer is validated to carry the configured
- *     ``trustRoot`` host (Fulcio CA identity), in addition to the bundle's
- *     explicit ``trust_root`` claim.
- *   - When a ``messageDigest`` is present it MUST equal SHA-256(bundleBytes)
- *     AND the manifest-pinned ``expectedSha256``, binding the signed
- *     artifact to the manifest entry.
+ * The Gate-2 structural review of the prior implementation found it
+ * fail-OPEN against a self-minted cert: trust binding was a SUBSTRING
+ * issuer match (``issuer.includes(trustRoot)``) with NO chain validation,
+ * no validity check, no curve pin, a skippable messageDigest binding, and
+ * only a structural presence check on the Rekor entry. Every one of those
+ * holes is closed here by delegating to ``@sigstore/verify`` against the
+ * pinned root with full thresholds plus the two Relay-specific guards.
  *
- * A missing/invalid signature, an unparseable cert, a bad issuer, or a
- * digest mismatch fails closed with ``RelaySidecarBundleUnverified``
- * (RELAY-SIDECAR-020). This satisfies VAL-W4-004 (reject unsigned),
- * VAL-W4-005 (digest-first), VAL-W4-008 (refuse alternate trust roots),
- * and VAL-CRYPTO-002 (signature cryptographically bound to the bundle).
- *
- * DEFERRED (tracked follow-up): FULL Rekor inclusion-proof verification
- * (Merkle inclusion + checkpoint signature) and FULL Fulcio certificate
- * chain validation to a pinned CA root. We keep the structural presence
- * check on the transparency-log entry meanwhile; we do NOT silently drop
- * it. The signature-over-bytes + issuer + digest binding closes the
- * forged-bundle hole that VAL-CRYPTO-002 reports.
+ * A missing/invalid signature, an unchained or expired cert, a non-P-256
+ * curve, an absent/mismatched messageDigest, an identity-policy miss, or an
+ * absent/invalid Rekor inclusion proof fails closed with
+ * ``RelaySidecarBundleUnverified`` (RELAY-SIDECAR-020).
  *
  * ASCII-only per CLAUDE.md "ASCII-Safe Source".
  */
 
 import * as crypto from "node:crypto";
+import * as fs from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { bundleFromJSON } from "@sigstore/bundle";
+import { TrustedRoot } from "@sigstore/protobuf-specs";
+import {
+  toSignedEntity,
+  toTrustMaterial,
+  type Signer,
+  type TrustMaterial,
+  type VerificationPolicy,
+  Verifier,
+} from "@sigstore/verify";
 
 import {
   RELAY_SIDECAR_BUNDLE_DIGEST_MISMATCH_CODE,
@@ -50,26 +66,52 @@ import {
   RelaySidecarBundleUnverified,
 } from "../errors.js";
 
-export interface SigstoreBundle {
-  readonly mediaType?: string;
-  readonly verificationMaterial?: {
-    readonly certificate?: { readonly rawBytes?: string };
-    readonly tlogEntries?: ReadonlyArray<{
-      readonly logIndex?: string;
-      readonly logID?: { readonly keyId?: string };
-    }>;
-  };
-  readonly messageSignature?: {
-    readonly signature?: string;
-    readonly messageDigest?: { readonly algorithm?: string; readonly digest?: string };
-  };
-  // Older cosign-bundle wire shape (kept for parity):
-  readonly cert?: string;
-  readonly signature?: string;
-  readonly rekorBundle?: { readonly Payload?: { readonly logIndex?: number; readonly logID?: string } };
-  /** Trust-root claim the manifest emitter recorded. */
-  readonly trust_root?: string;
-}
+/**
+ * Exact-identity policy for a verified signer. The ``subjectAlternativeName``
+ * is an ANCHORED regular expression (``@sigstore/verify`` tests the SAN
+ * against it via ``String.match``); use ``^...$`` so a SAN that merely
+ * CONTAINS the trusted identity is rejected. The ``extensions.issuer`` is
+ * matched by EXACT string equality (the OIDC issuer that minted the Fulcio
+ * cert).
+ */
+export type SigstoreIdentityPolicy = VerificationPolicy;
+
+/**
+ * The production Relay sidecar-bundle signing identity. The release pipeline
+ * (.github/workflows/release-sidecar-bundle.yml) keyless-signs each binary
+ * and the aggregated manifest with the GitHub Actions OIDC identity for that
+ * workflow. The SAN therefore looks like::
+ *
+ *   https://github.com/epochly-inc/relay/.github/workflows/release-sidecar-bundle.yml@refs/tags/vX.Y.Z
+ *
+ * minted by the issuer ``https://token.actions.githubusercontent.com``. The
+ * anchored SAN regex pins the exact repo + workflow path and constrains the
+ * trailing ``@<ref>`` to a release tag or branch ref so a substring/lookalike
+ * SAN is rejected. The ``relay.epochly.com`` manifest ``trust_root`` field is
+ * a Relay routing claim -- NOT the cryptographic trust anchor; the anchor is
+ * the public Fulcio root + this exact GitHub Actions identity.
+ */
+export const RELAY_SIDECAR_IDENTITY_POLICY: SigstoreIdentityPolicy = Object.freeze({
+  subjectAlternativeName:
+    "^https://github\\.com/epochly-inc/relay/\\.github/workflows/release-sidecar-bundle\\.yml@refs/(tags/v[0-9]+\\.[0-9]+\\.[0-9]+[^/]*|heads/[^/]+)$",
+  extensions: Object.freeze({ issuer: "https://token.actions.githubusercontent.com" }),
+}) as SigstoreIdentityPolicy;
+
+/**
+ * Identity policy used ONLY by the W4.7 happy-path test, which verifies a
+ * real recorded production Sigstore bundle (sigstore-js's own keyless-signed
+ * provenance attestation). Exported so the test pins the recorded signer's
+ * EXACT SAN + OIDC issuer rather than relaxing the production policy.
+ */
+export const REAL_SIGSTORE_HAPPY_PATH_POLICY: SigstoreIdentityPolicy = Object.freeze({
+  subjectAlternativeName:
+    "^https://github\\.com/sigstore/sigstore-js/\\.github/workflows/release\\.yml@refs/heads/main$",
+  extensions: Object.freeze({ issuer: "https://token.actions.githubusercontent.com" }),
+}) as SigstoreIdentityPolicy;
+
+/** Curves accepted for an EC signing key. Fulcio/cosign profile: P-256. */
+const ALLOWED_EC_CURVE = "prime256v1"; // OpenSSL name for NIST P-256 (secp256r1).
+const ALLOWED_EC_NAMED_CURVES = new Set(["prime256v1", "p-256", "secp256r1"]);
 
 /**
  * SHA-256 the buffer and compare against the expected lowercase hex.
@@ -111,19 +153,27 @@ export function verifyDigest(
 }
 
 export interface SigstoreVerifyOptions {
-  /** Trust-root host that MUST appear in the cert issuer / bundle claim. */
-  trustRoot: string;
   /**
-   * Manifest-pinned lowercase-hex SHA-256 of the bundle bytes. When the
-   * Sigstore bundle carries a ``messageDigest`` it MUST equal both
-   * SHA-256(bundleBytes) and this value, binding the signed artifact to
-   * the manifest entry. Required for full VAL-CRYPTO-002 binding; when
-   * omitted the digest-to-manifest binding step is skipped (the
-   * signature-over-bytes check still runs).
+   * Manifest-pinned lowercase-hex SHA-256 of the artifact bytes. For a
+   * messageSignature bundle the bundle's ``messageDigest`` MUST equal both
+   * SHA-256(artifactBytes) and this value, binding the signed artifact to
+   * the manifest entry. Required for messageSignature bundles; ignored for
+   * DSSE-envelope bundles (which carry their own signed payload).
    */
   expectedSha256?: string;
-  /** When provided, the cosign-bundle's claimed ``trust_root`` must match. */
-  enforceTrustRootClaim?: boolean;
+  /**
+   * Exact-identity policy the verified signer MUST satisfy. Defaults to the
+   * production Relay sidecar-bundle signing identity
+   * (:data:`RELAY_SIDECAR_IDENTITY_POLICY`).
+   */
+  identityPolicy?: SigstoreIdentityPolicy;
+  /**
+   * Legacy field retained for source/ABI compatibility with the wrapper and
+   * the manifest-signature path. It is NOT used as a cryptographic anchor:
+   * the anchor is the pinned Fulcio root + the identity policy. A non-empty
+   * value is still required so a caller cannot disable trust by omission.
+   */
+  trustRoot?: string;
 }
 
 /** Throw the canonical RELAY-SIDECAR-020 leaf with a structured reason. */
@@ -135,118 +185,177 @@ function unverified(message: string, reason: string, extra: Record<string, unkno
 }
 
 /**
- * Parse the leaf certificate from a Sigstore bundle. Supports the
- * protobuf-bundle form (``verificationMaterial.certificate.rawBytes``,
- * base64 DER) and the legacy cosign form (``cert``, PEM or base64 DER).
- * Returns ``null`` when no parseable certificate is present.
+ * Load + cache the pinned public-good Sigstore trusted root and build the
+ * verification trust material once. The JSON is bundled in-repo (it ships in
+ * the package ``files`` set) so verification never fetches over the network.
  */
-function parseLeafCertificate(parsed: SigstoreBundle): crypto.X509Certificate | null {
-  const rawB64 = parsed.verificationMaterial?.certificate?.rawBytes;
-  const legacy = parsed.cert;
-  let input: Buffer | null = null;
-  if (typeof rawB64 === "string" && rawB64.length > 0) {
-    // Protobuf-bundle: rawBytes is base64-encoded DER.
-    input = Buffer.from(rawB64, "base64");
-  } else if (typeof legacy === "string" && legacy.length > 0) {
-    // Legacy cosign: PEM block, or base64 DER. X509Certificate accepts
-    // both PEM and DER buffers; for a PEM string pass it through directly.
-    input = legacy.includes("BEGIN CERTIFICATE")
-      ? Buffer.from(legacy, "utf8")
-      : Buffer.from(legacy, "base64");
+let cachedTrustMaterial: TrustMaterial | null = null;
+function pinnedTrustMaterial(): TrustMaterial {
+  if (cachedTrustMaterial !== null) {
+    return cachedTrustMaterial;
   }
-  if (input === null || input.length === 0) {
-    return null;
-  }
-  try {
-    return new crypto.X509Certificate(input);
-  } catch {
-    return null;
-  }
-}
-
-/** Extract the raw signature bytes (base64) from either bundle form. */
-function parseSignatureBytes(parsed: SigstoreBundle): Buffer | null {
-  const sigNew = parsed.messageSignature?.signature;
-  const sigLegacy = parsed.signature;
-  const b64 =
-    typeof sigNew === "string" && sigNew.length > 0
-      ? sigNew
-      : typeof sigLegacy === "string" && sigLegacy.length > 0
-        ? sigLegacy
-        : null;
-  if (b64 === null) {
-    return null;
-  }
-  const buf = Buffer.from(b64, "base64");
-  return buf.length > 0 ? buf : null;
-}
-
-/**
- * Cryptographically verify a raw signature over ``bundleBytes`` using the
- * public key in the leaf certificate. cosign sign-blob produces a raw
- * ECDSA/RSA/Ed25519 signature over the artifact bytes; the digest
- * algorithm is SHA-256. We try the algorithm implied by the key type.
- * Returns true iff the signature verifies.
- */
-function verifySignatureOverBytes(
-  cert: crypto.X509Certificate,
-  signature: Buffer,
-  bundleBytes: Buffer,
-): boolean {
-  const publicKey = cert.publicKey;
-  const keyType = publicKey.asymmetricKeyType;
-  try {
-    if (keyType === "ed25519" || keyType === "ed448") {
-      // EdDSA: crypto.verify(null, data, key, sig) -> boolean.
-      return crypto.verify(null, bundleBytes, publicKey, signature);
+  // Resolve the pinned root for BOTH layouts: running from source (vitest:
+  // ``src/bin/verify.ts``) and from the published build (``dist/src/bin/
+  // verify.js`` with the JSON shipped under ``src/bin/`` via the package
+  // ``files`` set). Mirrors packages/verifier-typescript loadBundledJwks.
+  const ASSET = "sigstore-trusted-root.json";
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, ASSET), // src/bin/ (vitest) or dist/src/bin/ if copied
+    resolve(here, "..", "..", "..", "src", "bin", ASSET), // dist/src/bin -> src/bin
+    resolve(here, "..", "..", "src", "bin", ASSET),
+  ];
+  let raw: string | null = null;
+  let foundPath: string | null = null;
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      raw = fs.readFileSync(p, "utf8");
+      foundPath = p;
+      break;
     }
-    if (keyType === "ec") {
-      // cosign emits DER-encoded ECDSA signatures over SHA-256.
-      return crypto.verify("sha256", bundleBytes, publicKey, signature);
-    }
-    if (keyType === "rsa" || keyType === "rsa-pss") {
-      return crypto.verify("sha256", bundleBytes, publicKey, signature);
-    }
-  } catch {
-    return false;
   }
-  return false;
-}
-
-/**
- * Real Sigstore-bundle verification (fail-closed) -- VAL-CRYPTO-002.
- *
- * VAL-W4-004: refuse unsigned bundles. VAL-W4-008: refuse signatures that
- * do not chain to the configured trust root. VAL-CRYPTO-002: the signature
- * is cryptographically verified over the actual ``bundleBytes`` using the
- * Fulcio leaf certificate public key, the issuer is validated against the
- * trust root, and the ``messageDigest`` is bound to the manifest entry.
- *
- * Returns the parsed bundle on success; throws
- * :class:`RelaySidecarBundleUnverified` otherwise.
- */
-export function verifySigstoreBundle(
-  bundleBytes: Buffer | string,
-  sigstoreJson: string | Buffer,
-  options: SigstoreVerifyOptions,
-): SigstoreBundle {
-  if (typeof options.trustRoot !== "string" || !options.trustRoot.trim()) {
+  if (raw === null || raw.length === 0) {
     throw new RelaySidecarBundleUnverified(
-      "Sigstore verification refuses an empty trust root; configure a non-empty trustRoot",
+      "pinned Sigstore trusted root is missing; cannot verify any bundle",
       {
         code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
-        details: { reason: "trust_root_empty" },
+        details: { reason: "pinned_trusted_root_missing", searched: candidates },
       },
     );
   }
-  // The bytes the signature is computed over (the sidecar binary blob).
-  const artifactBytes = Buffer.isBuffer(bundleBytes)
-    ? bundleBytes
-    : Buffer.from(bundleBytes, "utf8");
+  void foundPath;
+  const trustedRoot = TrustedRoot.fromJSON(JSON.parse(raw));
+  cachedTrustMaterial = toTrustMaterial(trustedRoot);
+  return cachedTrustMaterial;
+}
+
+/**
+ * Enforce the EC P-256 curve pin (the Fulcio/cosign profile). A non-EC key,
+ * or an EC key on any curve other than P-256, fails closed. Exported for a
+ * direct unit guard. RSA/Ed25519 leaf certs are rejected: the production
+ * signing profile is EC P-256.
+ */
+export function enforceP256Curve(cert: crypto.X509Certificate): void {
+  const publicKey = cert.publicKey;
+  const keyType = publicKey.asymmetricKeyType;
+  if (keyType !== "ec") {
+    unverified(
+      `Sigstore leaf certificate key type ${JSON.stringify(keyType ?? "<unknown>")} is not EC P-256`,
+      "sigstore_curve_not_ec",
+      { observed_key_type: keyType ?? "<unknown>" },
+    );
+  }
+  const details = publicKey.asymmetricKeyDetails;
+  const namedCurve = (details?.namedCurve ?? "").toLowerCase();
+  if (!ALLOWED_EC_NAMED_CURVES.has(namedCurve)) {
+    unverified(
+      `Sigstore leaf certificate EC curve ${JSON.stringify(namedCurve || "<unknown>")} is not the pinned ${ALLOWED_EC_CURVE} (P-256)`,
+      "sigstore_curve_not_p256",
+      { observed_curve: namedCurve || "<unknown>", expected_curve: ALLOWED_EC_CURVE },
+    );
+  }
+}
+
+/**
+ * Pull the leaf X.509 certificate (DER) out of a parsed Sigstore bundle's
+ * verification material, for the Relay curve pin. Returns null when the
+ * bundle carries a bare public key (no cert) -- the production sidecar
+ * profile always uses a Fulcio cert, so a bare key is itself a rejection.
+ */
+function leafCertificateDer(bundle: ReturnType<typeof bundleFromJSON>): Buffer | null {
+  const material = bundle.verificationMaterial;
+  const content = material.content;
+  if (content.$case === "certificate") {
+    return Buffer.from(content.certificate.rawBytes);
+  }
+  if (content.$case === "x509CertificateChain") {
+    const first = content.x509CertificateChain.certificates[0];
+    return first ? Buffer.from(first.rawBytes) : null;
+  }
+  return null;
+}
+
+/**
+ * Require + bind the messageDigest for a messageSignature bundle. DSSE
+ * bundles do not carry a messageDigest (their payload is the signed DSSE
+ * envelope) and are exempt. For messageSignature bundles the messageDigest
+ * MUST be present, equal SHA-256(artifactBytes), and -- when provided --
+ * equal the manifest-pinned ``expectedSha256``.
+ */
+function bindMessageDigest(
+  bundle: ReturnType<typeof bundleFromJSON>,
+  artifactBytes: Buffer | undefined,
+  expectedSha256: string | undefined,
+): void {
+  if (bundle.content.$case !== "messageSignature") {
+    return; // DSSE: nothing to bind here.
+  }
+  const messageDigest = bundle.content.messageSignature.messageDigest;
+  const digestBytes = messageDigest?.digest;
+  if (digestBytes === undefined || digestBytes.length === 0) {
+    unverified(
+      "Sigstore messageSignature bundle is missing the required messageDigest binding",
+      "sigstore_message_digest_absent",
+    );
+  }
+  const claimedHex = Buffer.from(digestBytes).toString("hex");
+  if (artifactBytes === undefined) {
+    unverified(
+      "messageSignature bundle requires the artifact bytes to bind messageDigest",
+      "sigstore_message_signature_requires_artifact",
+    );
+  }
+  const actualHex = crypto.createHash("sha256").update(artifactBytes).digest("hex");
+  if (claimedHex !== actualHex) {
+    unverified(
+      "Sigstore messageDigest does not equal SHA-256 of the artifact bytes",
+      "sigstore_message_digest_mismatch",
+      { claimed_digest: claimedHex, observed_digest: actualHex },
+    );
+  }
+  if (
+    typeof expectedSha256 === "string" &&
+    expectedSha256.length > 0 &&
+    claimedHex !== expectedSha256.toLowerCase()
+  ) {
+    unverified(
+      "Sigstore messageDigest does not equal the manifest-pinned entry.sha256",
+      "sigstore_message_digest_manifest_mismatch",
+      { claimed_digest: claimedHex, manifest_digest: expectedSha256 },
+    );
+  }
+}
+
+/**
+ * Real, fail-CLOSED Sigstore-bundle verification (VAL-CRYPTO-002/003).
+ *
+ * @param artifactBytes The bytes the signature is computed over (the sidecar
+ *   binary blob / manifest bytes). Pass ``undefined`` for a DSSE-envelope
+ *   bundle whose payload is self-contained.
+ * @param sigstoreJson The Sigstore bundle JSON (protobuf-bundle wire form).
+ * @param options Verification options (manifest digest + identity policy).
+ * @returns The verified :class:`Signer` (key + identity) on success.
+ * @throws RelaySidecarBundleUnverified on ANY verification failure.
+ */
+export function verifySigstoreBundle(
+  artifactBytes: Buffer | string | undefined,
+  sigstoreJson: string | Buffer,
+  options: SigstoreVerifyOptions = {},
+): Signer {
+  const artifact =
+    artifactBytes === undefined
+      ? undefined
+      : Buffer.isBuffer(artifactBytes)
+        ? artifactBytes
+        : Buffer.from(artifactBytes, "utf8");
   const text = typeof sigstoreJson === "string" ? sigstoreJson : sigstoreJson.toString("utf8");
-  let parsed: SigstoreBundle;
+
+  // Parse the bundle as a REAL Sigstore bundle. The forged/legacy shapes the
+  // old structural check accepted (bare ``{cert, signature, trust_root}``)
+  // are not valid Sigstore bundles and are rejected here, fail-closed.
+  let parsedJson: unknown;
   try {
-    parsed = JSON.parse(text) as SigstoreBundle;
+    parsedJson = JSON.parse(text);
   } catch (cause) {
     throw new RelaySidecarBundleUnverified(
       "Sigstore bundle is not valid JSON; refusing to launch the sidecar binary",
@@ -260,155 +369,74 @@ export function verifySigstoreBundle(
       },
     );
   }
-  // Refuse a fully-empty bundle (e.g. ``{}`` or ``null``) -- this is the
-  // attack pattern VAL-W4-004 asks us to reject.
-  if (parsed === null || typeof parsed !== "object") {
+  let bundle: ReturnType<typeof bundleFromJSON>;
+  try {
+    bundle = bundleFromJSON(parsedJson);
+  } catch (cause) {
     throw new RelaySidecarBundleUnverified(
-      "Sigstore bundle is not a JSON object",
-      {
-        code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
-        details: { reason: "sigstore_bundle_not_object" },
-      },
-    );
-  }
-  const hasNewMaterial =
-    parsed.verificationMaterial !== undefined &&
-    parsed.verificationMaterial.certificate?.rawBytes !== undefined &&
-    Array.isArray(parsed.verificationMaterial.tlogEntries) &&
-    parsed.verificationMaterial.tlogEntries.length > 0 &&
-    parsed.messageSignature?.signature !== undefined;
-  const hasLegacyMaterial =
-    typeof parsed.cert === "string" &&
-    parsed.cert.length > 0 &&
-    typeof parsed.signature === "string" &&
-    parsed.signature.length > 0;
-  if (!hasNewMaterial && !hasLegacyMaterial) {
-    throw new RelaySidecarBundleUnverified(
-      "Sigstore bundle lacks required certificate + signature material",
+      "Sigstore bundle is not a valid Sigstore protobuf bundle",
       {
         code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
         details: {
-          reason: "sigstore_missing_material",
-          observed_keys: Object.keys(parsed),
+          reason: "sigstore_bundle_invalid",
+          cause_message: cause instanceof Error ? cause.message : String(cause),
         },
+        cause,
       },
     );
   }
-  // Trust-root check: VAL-W4-008. The bundle MUST carry an explicit
-  // ``trust_root`` claim AND it MUST match the configured trust root.
-  if (typeof parsed.trust_root !== "string" || !parsed.trust_root) {
-    throw new RelaySidecarBundleUnverified(
-      "Sigstore bundle is missing a 'trust_root' claim; cannot verify chain",
-      {
-        code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
-        details: { reason: "sigstore_missing_trust_root_claim" },
-      },
-    );
-  }
-  if (parsed.trust_root !== options.trustRoot) {
-    throw new RelaySidecarBundleUnverified(
-      `Sigstore bundle trust_root '${parsed.trust_root}' does not match configured trust root '${options.trustRoot}'`,
-      {
-        code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
-        details: {
-          reason: "sigstore_trust_root_mismatch",
-          observed_trust_root: parsed.trust_root,
-          expected_trust_root: options.trustRoot,
-        },
-      },
-    );
-  }
-  // Rekor transparency-log PRESENCE check. NOTE: full Rekor inclusion-proof
-  // verification (Merkle inclusion + signed-checkpoint validation) is
-  // DEFERRED to a tracked follow-up; we keep this structural presence check
-  // meanwhile and do NOT silently drop it. The signature-over-bytes +
-  // issuer + digest binding below close the forged-bundle hole reported by
-  // VAL-CRYPTO-002.
-  const hasNewTlog =
-    parsed.verificationMaterial?.tlogEntries?.length !== undefined &&
-    parsed.verificationMaterial.tlogEntries.length > 0;
-  const hasLegacyTlog =
-    parsed.rekorBundle?.Payload?.logIndex !== undefined &&
-    parsed.rekorBundle.Payload.logIndex !== null;
-  if (!hasNewTlog && !hasLegacyTlog) {
-    throw new RelaySidecarBundleUnverified(
-      "Sigstore bundle lacks a rekor transparency-log entry",
-      {
-        code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
-        details: { reason: "sigstore_missing_rekor_entry" },
-      },
-    );
-  }
-  // ----------------------------------------------------------------------
-  // REAL cryptography (VAL-CRYPTO-002). Everything above is structural;
-  // everything below binds the signature to the actual bundle bytes.
-  // ----------------------------------------------------------------------
-  // 1. Parse the Fulcio leaf certificate.
-  const leaf = parseLeafCertificate(parsed);
-  if (leaf === null) {
+
+  // Relay curve pin (EC P-256). Done before the heavy verification so an
+  // out-of-profile key is rejected promptly.
+  const leafDer = leafCertificateDer(bundle);
+  if (leafDer === null) {
     unverified(
-      "Sigstore bundle leaf certificate is missing or not a parseable X.509 certificate",
+      "Sigstore bundle does not carry a Fulcio leaf certificate (bare public keys are not accepted)",
+      "sigstore_no_leaf_certificate",
+    );
+  }
+  let leafCert: crypto.X509Certificate;
+  try {
+    leafCert = new crypto.X509Certificate(leafDer);
+  } catch (cause) {
+    return unverified(
+      "Sigstore leaf certificate is not a parseable X.509 certificate",
       "sigstore_certificate_unparseable",
+      { cause_message: cause instanceof Error ? cause.message : String(cause) },
     );
   }
-  // 2. Extract the raw signature bytes.
-  const signature = parseSignatureBytes(parsed);
-  if (signature === null) {
-    unverified(
-      "Sigstore bundle is missing a non-empty signature",
-      "sigstore_signature_missing",
+  enforceP256Curve(leafCert);
+
+  // Require + bind the messageDigest for messageSignature bundles.
+  bindMessageDigest(bundle, artifact, options.expectedSha256);
+
+  // Build the signed entity and run the full Sigstore verification against
+  // the PINNED public-good trusted root with FULL thresholds:
+  //   - tlogThreshold: 1   -> at least one verified Rekor inclusion proof/SET
+  //   - ctlogThreshold: 1  -> at least one verified SCT
+  //   - timestampThreshold: 1 -> at least one verified timestamp
+  // This enforces chain-to-pinned-root, validity window, SCT, Rekor Merkle
+  // inclusion + checkpoint, and signature-over-bytes -- fail-closed.
+  const trustMaterial = pinnedTrustMaterial();
+  const verifier = new Verifier(trustMaterial, {
+    tlogThreshold: 1,
+    ctlogThreshold: 1,
+    timestampThreshold: 1,
+  });
+  const policy = options.identityPolicy ?? RELAY_SIDECAR_IDENTITY_POLICY;
+  let signer: Signer;
+  try {
+    const entity = toSignedEntity(bundle, artifact);
+    signer = verifier.verify(entity, policy);
+  } catch (cause) {
+    return unverified(
+      "Sigstore bundle failed fail-closed verification against the pinned trusted root",
+      "sigstore_verification_failed",
+      {
+        cause_code: (cause as { code?: unknown })?.code ?? "<unknown>",
+        cause_message: cause instanceof Error ? cause.message : String(cause),
+      },
     );
   }
-  // 3. Cryptographically verify the signature over the ACTUAL bundle bytes
-  //    using the public key in the leaf certificate. This is the check the
-  //    old structural verifier never performed; a forged/unsigned bundle
-  //    fails here.
-  if (!verifySignatureOverBytes(leaf, signature, artifactBytes)) {
-    unverified(
-      "Sigstore signature does not cryptographically verify over the bundle bytes",
-      "sigstore_signature_invalid",
-      { key_type: leaf.publicKey.asymmetricKeyType ?? "<unknown>" },
-    );
-  }
-  // 4. Validate the leaf certificate issuer carries the configured trust
-  //    root host (Fulcio CA identity). The bundle's self-asserted
-  //    ``trust_root`` claim (checked above) is NOT sufficient on its own --
-  //    an attacker can stamp any claim. The issuer is bound to the cert
-  //    that produced the verified signature.
-  const issuer = typeof leaf.issuer === "string" ? leaf.issuer : "";
-  if (!issuer.includes(options.trustRoot)) {
-    unverified(
-      `Sigstore leaf certificate issuer does not carry the configured trust root '${options.trustRoot}'`,
-      "sigstore_issuer_not_trusted",
-      { observed_issuer: issuer, expected_trust_root: options.trustRoot },
-    );
-  }
-  // 5. Bind the signed artifact to the manifest entry: messageDigest (when
-  //    present) MUST equal SHA-256(bundleBytes) AND the manifest-pinned
-  //    expectedSha256. This forecloses a swap of a validly-signed-but-other
-  //    artifact under a stale signature.
-  const messageDigestB64 = parsed.messageSignature?.messageDigest?.digest;
-  if (typeof messageDigestB64 === "string" && messageDigestB64.length > 0) {
-    const claimedHex = Buffer.from(messageDigestB64, "base64").toString("hex");
-    const actualHex = crypto.createHash("sha256").update(artifactBytes).digest("hex");
-    if (claimedHex !== actualHex) {
-      unverified(
-        "Sigstore messageDigest does not equal SHA-256 of the bundle bytes",
-        "sigstore_message_digest_mismatch",
-        { claimed_digest: claimedHex, observed_digest: actualHex },
-      );
-    }
-    if (
-      typeof options.expectedSha256 === "string" &&
-      options.expectedSha256.length > 0 &&
-      claimedHex !== options.expectedSha256.toLowerCase()
-    ) {
-      unverified(
-        "Sigstore messageDigest does not equal the manifest-pinned entry.sha256",
-        "sigstore_message_digest_manifest_mismatch",
-        { claimed_digest: claimedHex, manifest_digest: options.expectedSha256 },
-      );
-    }
-  }
-  return parsed;
+  return signer;
 }
