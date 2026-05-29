@@ -134,5 +134,12 @@ dev = [
     # AM.6 60s budget). With -n auto on ubuntu-latest (4 cores) the run
     # completes in ~2-3 minutes -- still over the strict 60s budget but
     # safely under the workflow's timeout-minutes ceiling.
+    # pyright is the static type checker invoked by the manifest `lint`,
+    # `lint-python` commands (`uv run pyright`). It ships a bundled
+    # node-based binary (resolved via the nodeenv dependency) so the only
+    # external prerequisite is a Python interpreter; Node is already a
+    # manifest-declared required tool. Floor pinned conservatively; the
+    # lockfile records the resolved patch version.
+    "pyright>=1.1.390",
     "pytest-xdist>=3.6",
 ]
