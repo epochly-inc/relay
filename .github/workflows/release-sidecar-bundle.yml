@@ -263,18 +263,44 @@ jobs:
         # secrets per CLAUDE.md banned pattern #14; the GitHub OIDC
         # token-exchange path that brokers access is documented in
         # docs/release/runbook.md (Notarization Credentials section).
+        #
+        # Iterate ONLY over the macOS cells actually built and downloaded.
+        # macos-x86_64 was dropped from the build matrix on 2026-05-28
+        # (board-level decision; see the build job), so only the arm64
+        # artifact exists under dist/. The arch list is derived from the
+        # downloaded `dist/macos-*` directories rather than hard-coded so
+        # that a future re-add (or removal) of a macOS cell needs no edit
+        # here: a hard-coded `x86_64 arm64` loop aborts the whole job under
+        # `set -euo pipefail` on the first (nonexistent) cell, leaving the
+        # arm64 binary un-notarized. The static guard
+        # (scripts/check-sidecar-bundle.py) refuses any hard-coded arch
+        # list in this step.
         env:
           NOTARY_PROFILE: ${{ secrets.APPLE_NOTARYTOOL_KEYCHAIN_PROFILE }}
         run: |
           set -euo pipefail
-          for arch in x86_64 arm64; do
+          shopt -s nullglob
+          notarized=0
+          for cell_dir in dist/macos-*/; do
+            arch="${cell_dir#dist/macos-}"
+            arch="${arch%/}"
             BIN="dist/macos-${arch}/dist/relay-sidecar-macos-${arch}"
+            if [ ! -f "${BIN}" ]; then
+              echo "RELAY-RELEASE-NOTARIZE-SKIP: no binary at ${BIN}; skipping ${arch}"
+              continue
+            fi
             ditto -c -k --keepParent "${BIN}" "${BIN}.zip"
             xcrun notarytool submit "${BIN}.zip" \
               --keychain-profile "${NOTARY_PROFILE}" \
               --wait
             xcrun stapler staple "${BIN}"
+            notarized=$((notarized + 1))
           done
+          if [ "${notarized}" -eq 0 ]; then
+            echo "RELAY-RELEASE-NOTARIZE-EMPTY: no macOS binaries found to notarize" >&2
+            exit 1
+          fi
+          echo "Notarized ${notarized} macOS binary(ies)."
 
       - name: "Re-upload notarized artifacts"
         uses: actions/upload-artifact@v4
@@ -333,25 +359,62 @@ jobs:
   # ---------------------------------------------------------------------------
   collect-hashes:
     name: "Collect digest manifest across all cells"
-    needs: [build]
+    # PROVENANCE-INTEGRITY (G4-F2): the SLSA subjects MUST be computed over
+    # the EXACT bytes that `publish` ships, which are the post-signing
+    # artifacts -- macOS notarized + stapled (notarize-macos), Windows
+    # Authenticode-signed (codesign-windows), and the raw Linux binaries.
+    # Notarization and Authenticode signing mutate the binary's bytes
+    # (notarization staples a ticket; signtool appends an Authenticode
+    # signature), so hashing the pre-signing `build` artifacts would emit
+    # provenance digests that do NOT match the shipped artifacts.
+    # Therefore this job downloads the SAME post-signing artifact set the
+    # `sign` job downloads (relay-sidecar-macos-notarized,
+    # relay-sidecar-windows-signed, and the raw linux artifacts) and never
+    # the pre-signing relay-sidecar-<cell> build artifacts. In
+    # dry_run_unsigned (fork) mode the notarize/codesign jobs are skipped;
+    # provenance is gated off in that mode too, so the missing post-signing
+    # artifacts are never required.
+    needs: [detect-fork, build, notarize-macos, codesign-windows]
+    if: needs.detect-fork.outputs.dry_run_unsigned == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
-      - name: "Download all per-cell artifacts"
+      - name: "Download notarized macOS artifacts"
         uses: actions/download-artifact@v4
         with:
-          path: dist/all
-          pattern: relay-sidecar-*
+          name: relay-sidecar-macos-notarized
+          path: dist/
+
+      - name: "Download Authenticode-signed Windows artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-windows-signed
+          path: dist/windows-x86_64/dist/
+
+      - name: "Download linux-x86_64 artifact (unsigned, shipped as built)"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-linux-x86_64
+          path: dist/linux-x86_64/
+
+      - name: "Download linux-arm64 artifact (unsigned, shipped as built)"
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-sidecar-linux-arm64
+          path: dist/linux-arm64/
 
       - name: "Aggregate base64-encoded hashes (SLSA base64-subjects)"
+        # Hashes the POST-signing bytes (see job-level note). These are the
+        # bytes the `sign` job signs and the `publish` job uploads, so the
+        # SLSA provenance subjects bind to the shipped artifacts.
         id: hash
         shell: bash
         run: |
           set -euo pipefail
-          find dist/all -type f -name 'relay-sidecar-*' -not -name '*.json' -not -name '*.sigstore' -print > files.txt
+          find dist -type f -name 'relay-sidecar-*' -not -name '*.json' -not -name '*.sigstore' -not -name '*.zip' -print > files.txt
           HASHES=$(while read -r f; do sha256sum "$f"; done < files.txt | base64 -w0)
           echo "hashes=${HASHES}" >> "$GITHUB_OUTPUT"
 
@@ -444,9 +507,20 @@ jobs:
           TSA_PRIMARY: ${{ env.TSA_PRIMARY }}
         run: |
           set -euo pipefail
+          # Keyless OIDC: do NOT pass --identity-token. The previous code
+          # passed ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}, which is the BEARER
+          # token used to CALL the OIDC token-request endpoint -- not an
+          # OIDC identity JWT. Passing it (or the empty fallback) makes
+          # Fulcio reject the request or bind the wrong identity. The
+          # correct keyless idiom is to let sigstore-python detect the
+          # ambient GitHub Actions OIDC credential from
+          # ACTIONS_ID_TOKEN_REQUEST_URL + ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          # (it calls the request endpoint itself with audience=sigstore
+          # and mints a real identity token). This requires
+          # permissions.id-token: write on this job (granted above) and
+          # mirrors how release-npm.yml relies on ambient OIDC detection.
           for f in $(find dist -type f -name 'relay-sidecar-*' -not -name '*.json' -not -name '*.sigstore'); do
             python -m sigstore sign \
-              --identity-token "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
               --bundle "${f}.sigstore" \
               "${f}"
           done
@@ -475,15 +549,45 @@ jobs:
         # download and run -- so the manifest itself MUST be signed (the
         # next step). Schema is relay.sidecar_bundle_manifest.v1, matching
         # parseReleaseManifest in the wrapper.
+        #
+        # G4-F5 (asset-URL <-> publish-location coherence). The `publish`
+        # job below uploads every asset to the GitHub Release via
+        # `gh release upload`. The npx wrapper and the CLI sidecar installer
+        # do NOT fetch from the GitHub Release directly -- they fetch from
+        # the hosted mirror at
+        # https://relay.epochly.com/.well-known/relay-sidecar-bundle/<vX.Y.Z>/
+        # (see packages/sdk-typescript/release-manifest.url and
+        # packages/cli/src/sidecar_install/bundle_manifest.json, which both
+        # use that versioned .well-known path). The hosted mirror is part of
+        # relay-platform infrastructure: it syncs the signed GitHub Release
+        # assets (binaries + .sigstore bundles + this manifest.json + its
+        # .sigstore) into the versioned .well-known prefix after each
+        # release. The mirror is therefore the INTENDED distribution source,
+        # not a defect.
+        #
+        # The fix is to pin --asset-base-url to that versioned mirror prefix
+        # explicitly so every bundle `url`/`sigstore_url` in the manifest
+        # carries the /<vX.Y.Z>/ segment the wrapper expects. The previous
+        # invocation passed no --asset-base-url, defaulting to the
+        # UNVERSIONED https://relay.epochly.com/.well-known/relay-sidecar-bundle
+        # prefix, which produced bundle URLs lacking the /<version>/ segment
+        # and thus not resolving to where the mirror actually stores the
+        # assets. The static guard refuses an assemble step that omits an
+        # explicit, version-pinned --asset-base-url.
         shell: bash
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           MANIFEST_TRUST_ROOT: "relay.epochly.com"
+          # Versioned hosted-mirror prefix (relay-platform syncs the signed
+          # GitHub Release assets here). Matches the .well-known/<version>/
+          # convention used by release-manifest.url and the CLI installer.
+          MANIFEST_ASSET_BASE_URL: "https://relay.epochly.com/.well-known/relay-sidecar-bundle/${{ github.ref_name }}"
         run: |
           python scripts/assemble-release-manifest.py \
             --dist-root dist \
             --sidecar-version "${RELEASE_TAG#v}" \
             --trust-root "${MANIFEST_TRUST_ROOT}" \
+            --asset-base-url "${MANIFEST_ASSET_BASE_URL}" \
             --out dist/manifest.json
 
       - name: "Keyless-sign the aggregated manifest.json (VAL-CRYPTO-003)"
@@ -499,8 +603,13 @@ jobs:
           TSA_PRIMARY: ${{ env.TSA_PRIMARY }}
         run: |
           set -euo pipefail
+          # Keyless OIDC, same idiom as the per-binary signing step above:
+          # do NOT pass --identity-token (that passed the OIDC *request*
+          # bearer token, not an identity JWT). sigstore-python detects the
+          # ambient GitHub Actions OIDC credential and mints a real identity
+          # token itself. Requires permissions.id-token: write (granted on
+          # this job).
           python -m sigstore sign \
-            --identity-token "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
             --bundle "dist/manifest.json.sigstore" \
             "dist/manifest.json"
 

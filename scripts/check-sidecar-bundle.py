@@ -215,6 +215,72 @@ def _read_text(path: Path) -> str | None:
         return None
 
 
+def _strip_shell_comments(script: str) -> str:
+    """Drop full-line shell comments from a ``run:`` body.
+
+    A line whose first non-whitespace character is ``#`` is a comment and is
+    removed, so explanatory comments (e.g. text describing a banned idiom)
+    cannot trip a token-presence check. Inline trailing comments are left
+    intact because stripping them safely would require a shell tokenizer
+    (``#`` may appear inside quotes or URLs); the checks that use this only
+    look for command-flag tokens that never legitimately appear after an
+    inline ``#``.
+    """
+    kept: list[str] = []
+    for line in script.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _find_job(workflow: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """Return the job mapping for ``name`` (exact key match), else None."""
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict):
+        return None
+    job = jobs.get(name)
+    return job if isinstance(job, dict) else None
+
+
+def _job_needs(job: dict[str, Any]) -> list[str]:
+    """Normalize a job's ``needs`` (scalar or list) to a list of strings."""
+    needs = job.get("needs")
+    if isinstance(needs, str):
+        return [needs]
+    if isinstance(needs, list):
+        return [n for n in needs if isinstance(n, str)]
+    return []
+
+
+def _find_step_run(
+    job: dict[str, Any], name_substr: str
+) -> str | None:
+    """Return the ``run:`` body of the first step whose name contains
+    ``name_substr`` (case-insensitive). None if not found or it has no run.
+    """
+    target = name_substr.lower()
+    for step in _iter_steps(job):
+        step_name = (step.get("name") or "").lower()
+        if target in step_name:
+            run = step.get("run")
+            return run if isinstance(run, str) else None
+    return None
+
+
+def _step_env(job: dict[str, Any], name_substr: str) -> dict[str, Any]:
+    """Return the ``env:`` mapping of the first step whose name contains
+    ``name_substr`` (case-insensitive). Empty dict if absent.
+    """
+    target = name_substr.lower()
+    for step in _iter_steps(job):
+        step_name = (step.get("name") or "").lower()
+        if target in step_name:
+            env = step.get("env")
+            return env if isinstance(env, dict) else {}
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Individual assertion checks.
 # ---------------------------------------------------------------------------
@@ -749,6 +815,308 @@ def check_val_crypto_003(repo_root: Path, raw_text: str) -> CheckResult:
     return CheckResult(assertion, code, True)
 
 
+def check_g4_f1_notarize_built_cells(workflow: dict[str, Any]) -> CheckResult:
+    """G4-F1: notarize step must iterate ONLY the macOS cells actually
+    built/downloaded, never a hard-coded multi-arch list.
+
+    The bug: the notarize step looped ``for arch in x86_64 arm64`` while
+    only the arm64 artifact was downloaded; under ``set -euo pipefail`` the
+    first (nonexistent x86_64) iteration aborted the job and arm64 was never
+    notarized. This check fails if the notarize step's ``run`` body contains
+    a hard-coded multi-arch iteration list, and requires it to derive the
+    arch list from the downloaded ``dist/macos-*`` directories instead.
+    """
+    code = "RELAY-RELEASE-NOTARIZE-CELLS"
+    assertion = "VAL-W12-026"
+    job = _find_job(workflow, "notarize-macos")
+    if job is None:
+        return CheckResult(
+            assertion, code, False, "notarize-macos job not found"
+        )
+    run = _find_step_run(job, "notariz")
+    if run is None:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "notarize-macos has no notarization step with a run body",
+        )
+    # The board-dropped cell must not be re-introduced as a hard-coded
+    # iteration target. Reject any literal multi-arch loop list that names
+    # a cell not present in the build matrix (notably x86_64 for macOS).
+    hard_coded = re.search(
+        r"for\s+\w+\s+in\s+[^\n;]*\bx86_64\b[^\n;]*\barm64\b",
+        run,
+    ) or re.search(
+        r"for\s+\w+\s+in\s+[^\n;]*\barm64\b[^\n;]*\bx86_64\b",
+        run,
+    )
+    if hard_coded:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "notarize step hard-codes a macOS multi-arch loop "
+            "('x86_64 arm64'); it must iterate only the downloaded "
+            "dist/macos-* cells (macos-x86_64 was board-dropped 2026-05-28)",
+        )
+    # Positive requirement: the step must derive its cell list from the
+    # downloaded dist/macos-* directories (glob), so a dropped/added cell
+    # needs no edit and a missing cell cannot abort the whole job.
+    if "dist/macos-*" not in run:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "notarize step must iterate the downloaded 'dist/macos-*' "
+            "directories rather than a hard-coded arch list",
+        )
+    return CheckResult(assertion, code, True)
+
+
+def check_g4_f2_provenance_post_signing(workflow: dict[str, Any]) -> CheckResult:
+    """G4-F2: SLSA provenance subjects must be computed over the FINAL
+    signed/notarized bytes that ``publish`` ships, not the pre-signing
+    ``build`` artifacts.
+
+    Notarization (macOS) and Authenticode signing (Windows) mutate the
+    binary bytes; hashing the pre-signing build artifacts would emit
+    provenance digests that do not match the shipped artifacts. The
+    ``collect-hashes`` job (whose output feeds the SLSA generator's
+    base64-subjects) must therefore depend on the post-signing jobs
+    (notarize-macos + codesign-windows) and download the post-signing
+    artifacts (relay-sidecar-macos-notarized + relay-sidecar-windows-signed),
+    NOT the pre-signing relay-sidecar-<cell> build artifacts via a bare
+    ``pattern: relay-sidecar-*`` download.
+    """
+    code = "RELAY-RELEASE-PROVENANCE-POSTSIGN"
+    assertion = "VAL-W12-024"
+    collect = _find_job(workflow, "collect-hashes")
+    if collect is None:
+        return CheckResult(
+            assertion, code, False, "collect-hashes job not found"
+        )
+    needs = _job_needs(collect)
+    for required in ("notarize-macos", "codesign-windows"):
+        if required not in needs:
+            return CheckResult(
+                assertion,
+                code,
+                False,
+                f"collect-hashes must 'needs: [{required}]' so SLSA subjects "
+                "are hashed over post-signing bytes (got needs="
+                f"{needs})",
+            )
+    # The download steps must pull the post-signing artifact names; a bare
+    # 'pattern: relay-sidecar-*' download (the bug) pulls pre-signing build
+    # artifacts.
+    step_names = " ".join(
+        (s.get("name") or "") for s in _iter_steps(collect)
+    )
+    download_names: list[str] = []
+    for step in _iter_steps(collect):
+        uses = step.get("uses")
+        if isinstance(uses, str) and "download-artifact" in uses:
+            with_block = step.get("with")
+            if isinstance(with_block, dict):
+                name = with_block.get("name")
+                pattern = with_block.get("pattern")
+                if isinstance(name, str):
+                    download_names.append(name)
+                if isinstance(pattern, str):
+                    download_names.append(f"pattern:{pattern}")
+    joined = " ".join(download_names)
+    if "relay-sidecar-macos-notarized" not in joined:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "collect-hashes does not download the notarized macOS artifact "
+            "(relay-sidecar-macos-notarized); it would hash pre-signing "
+            f"bytes (downloads={download_names}, step_names='{step_names}')",
+        )
+    if "relay-sidecar-windows-signed" not in joined:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "collect-hashes does not download the Authenticode-signed "
+            "Windows artifact (relay-sidecar-windows-signed)",
+        )
+    # The bare 'pattern: relay-sidecar-*' download (the original defect) must
+    # be gone: it pulls the pre-signing build artifacts.
+    if "pattern:relay-sidecar-*" in joined:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "collect-hashes still downloads the pre-signing build artifacts "
+            "via 'pattern: relay-sidecar-*'; remove it and download the "
+            "post-signing artifacts instead",
+        )
+    return CheckResult(assertion, code, True)
+
+
+def check_g4_f3_keyless_identity_token(workflow: dict[str, Any]) -> CheckResult:
+    """G4-F3: sigstore signing must use the correct keyless OIDC idiom.
+
+    The bug passed ``--identity-token "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"``,
+    which is the OIDC *request* bearer token (or empty), not an OIDC identity
+    JWT. The correct keyless idiom is to omit --identity-token and let
+    sigstore-python detect the ambient GitHub OIDC credential. This check
+    inspects BOTH the per-binary signing step and the manifest signing step
+    and fails if either passes ACTIONS_ID_TOKEN_REQUEST_TOKEN as the
+    --identity-token value.
+    """
+    code = "RELAY-RELEASE-KEYLESS-OIDC"
+    assertion = "VAL-W12-021"
+    sign = _find_job(workflow, "sign")
+    if sign is None:
+        return CheckResult(assertion, code, False, "sign job not found")
+
+    # Collect every 'python -m sigstore sign' run body in the sign job.
+    sign_runs: list[tuple[str, str]] = []
+    for step in _iter_steps(sign):
+        run = step.get("run")
+        if isinstance(run, str) and "sigstore sign" in run:
+            sign_runs.append((step.get("name") or "<unnamed>", run))
+    if not sign_runs:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "sign job has no 'python -m sigstore sign' step",
+        )
+    # The bad idiom: --identity-token bound to the OIDC request bearer token.
+    # Match only EFFECTIVE shell lines -- a comment line (first non-space
+    # char is '#') explaining the wrong idiom must not trip the guard.
+    bad = re.compile(
+        r"--identity-token\s+[\"']?\$\{?ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    )
+    for step_name, run in sign_runs:
+        effective = _strip_shell_comments(run)
+        if bad.search(effective):
+            return CheckResult(
+                assertion,
+                code,
+                False,
+                f"sign step {step_name!r} passes "
+                "--identity-token ${ACTIONS_ID_TOKEN_REQUEST_TOKEN} (the OIDC "
+                "request bearer token, not an identity JWT); omit "
+                "--identity-token and use ambient OIDC detection",
+            )
+        # Any --identity-token derived from ACTIONS_ID_TOKEN_REQUEST_TOKEN is
+        # wrong regardless of quoting/spacing.
+        if (
+            "--identity-token" in effective
+            and "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in effective
+        ):
+            return CheckResult(
+                assertion,
+                code,
+                False,
+                f"sign step {step_name!r} still derives --identity-token from "
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN; use ambient OIDC detection",
+            )
+    # Both the per-binary and the manifest signing steps must be present
+    # (so we know we actually inspected both, not just one).
+    per_binary = any(
+        "manifest.json" not in run and "relay-sidecar" in run.lower()
+        or "for f in" in run
+        for _, run in sign_runs
+    )
+    manifest = any("manifest.json" in run for _, run in sign_runs)
+    if not (per_binary and manifest):
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "expected BOTH a per-binary and a manifest 'sigstore sign' step; "
+            f"found steps={[n for n, _ in sign_runs]}",
+        )
+    return CheckResult(assertion, code, True)
+
+
+def check_g4_f5_manifest_asset_base_url(workflow: dict[str, Any]) -> CheckResult:
+    """G4-F5: the aggregated manifest's bundle asset URLs must resolve to
+    where the artifacts actually exist.
+
+    ``publish`` uploads to the GitHub Release; the wrapper + CLI installer
+    fetch from the versioned hosted mirror
+    ``https://relay.epochly.com/.well-known/relay-sidecar-bundle/<vX.Y.Z>/``.
+    The assemble step must therefore pass an EXPLICIT, version-pinned
+    ``--asset-base-url`` so the bundle url/sigstore_url entries carry the
+    /<version>/ segment the wrapper expects (the unversioned default does
+    not). This check fails if the assemble step omits an explicit
+    --asset-base-url or if that URL is not version-pinned (no ref_name /
+    version interpolation).
+    """
+    code = "RELAY-RELEASE-MANIFEST-ASSET-URL"
+    assertion = "VAL-CRYPTO-003"
+    sign = _find_job(workflow, "sign")
+    if sign is None:
+        return CheckResult(assertion, code, False, "sign job not found")
+    run = _find_step_run(sign, "assemble aggregated release manifest")
+    if run is None:
+        # Fall back to any step invoking the assembler.
+        for step in _iter_steps(sign):
+            r = step.get("run")
+            if isinstance(r, str) and "assemble-release-manifest.py" in r:
+                run = r
+                break
+    if run is None:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "sign job has no assemble-release-manifest.py step",
+        )
+    if "--asset-base-url" not in run:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "assemble step omits --asset-base-url; the unversioned default "
+            "does not resolve to the versioned hosted-mirror path where the "
+            "wrapper/CLI fetch bundles",
+        )
+    # The asset base URL must be version-pinned. The workflow interpolates
+    # the release tag into it (github.ref_name or a step env that does).
+    env = _step_env(sign, "assemble aggregated release manifest")
+    base_url_value = ""
+    for key, val in env.items():
+        if "ASSET_BASE_URL" in key.upper() and isinstance(val, str):
+            base_url_value = val
+            break
+    haystack = run + "\n" + base_url_value
+    version_pinned = (
+        "github.ref_name" in haystack
+        or "${RELEASE_TAG}" in haystack
+        or "sidecar-version" in haystack
+    )
+    if not version_pinned:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "assemble --asset-base-url is not version-pinned (no release-tag "
+            "interpolation); the hosted mirror stores assets under a "
+            "/<version>/ prefix",
+        )
+    # The base URL must target the hosted mirror the wrapper actually reads
+    # (relay.epochly.com/.well-known/relay-sidecar-bundle), matching
+    # packages/sdk-typescript/release-manifest.url.
+    if "relay-sidecar-bundle" not in haystack:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "assemble --asset-base-url does not target the canonical "
+            "relay-sidecar-bundle mirror prefix",
+        )
+    return CheckResult(assertion, code, True)
+
+
 def check_no_long_lived_secrets(raw_text: str) -> CheckResult:
     """Defensive check (covers VAL-W12-035 secret-name surface)."""
     for name in LONG_LIVED_SECRET_NAMES:
@@ -797,6 +1165,12 @@ def build_report(repo_root: Path) -> GuardReport:
     # AND keyless-signed (manifest.json.sigstore) so the wrapper can verify
     # the manifest signature over the exact bytes before trusting any entry.
     report.checks.append(check_val_crypto_003(repo_root, raw_text))
+    # Gate-2 remediation (G4-F1/F2/F3/F5): structural invariants that the
+    # earlier guard did not assert. Each fails if its defect is reintroduced.
+    report.checks.append(check_g4_f1_notarize_built_cells(workflow))
+    report.checks.append(check_g4_f2_provenance_post_signing(workflow))
+    report.checks.append(check_g4_f3_keyless_identity_token(workflow))
+    report.checks.append(check_g4_f5_manifest_asset_base_url(workflow))
     return report
 
 

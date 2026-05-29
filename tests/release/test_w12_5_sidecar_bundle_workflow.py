@@ -29,12 +29,15 @@ CLAUDE.md.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 # Repository root: tests/release/test_*.py -> tests/release -> tests -> repo.
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
@@ -494,4 +497,193 @@ def test_guard_exit_code_matches_aggregate_status() -> None:
     assert proc.returncode == expected, (
         f"guard exit code {proc.returncode} != expected {expected}; "
         f"stderr={proc.stderr!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gate-2 remediation: G4-F1/F2/F3/F5 release-pipeline defect fixes.
+#
+# Each test asserts the corrected workflow PASSES the guard's new check AND
+# proves the check is NON-VACUOUS by mutating the workflow to reintroduce the
+# defect and asserting the guard then FAILS (the RED state). The guard module
+# is loaded directly so a mutated workflow dict can be fed to build_report
+# without touching the committed file.
+# ---------------------------------------------------------------------------
+
+
+def _load_guard_module() -> Any:
+    """Import scripts/check-sidecar-bundle.py as a module (hyphenated name).
+
+    The module must be registered in sys.modules BEFORE exec_module so the
+    @dataclass machinery (Python 3.12+) can resolve cls.__module__ during
+    class creation; otherwise it raises AttributeError on a None module.
+    """
+    mod_name = "_check_sidecar_bundle_guard"
+    cached = sys.modules.get(mod_name)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(mod_name, str(GUARD_SCRIPT))
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        sys.modules.pop(mod_name, None)
+        raise
+    return mod
+
+
+def _load_workflow_dict() -> dict[str, Any]:
+    data = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return data
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-026")
+def test_g4_f1_notarize_iterates_only_built_cells() -> None:
+    """G4-F1: notarize must iterate only the built/downloaded macOS cells.
+
+    GREEN: the corrected workflow passes RELAY-RELEASE-NOTARIZE-CELLS.
+    RED (non-vacuity): a workflow whose notarize step hard-codes
+    'for arch in x86_64 arm64' is rejected.
+    """
+    guard = _load_guard_module()
+    wf = _load_workflow_dict()
+    ok = guard.check_g4_f1_notarize_built_cells(wf)
+    assert ok.passed, ok.message
+    assert ok.error_code == "RELAY-RELEASE-NOTARIZE-CELLS"
+
+    # Mutate: reintroduce the hard-coded multi-arch loop in the notarize step.
+    mutated = _load_workflow_dict()
+    notarize = mutated["jobs"]["notarize-macos"]
+    for step in notarize["steps"]:
+        if "notariz" in (step.get("name") or "").lower() and "run" in step:
+            step["run"] = (
+                "set -euo pipefail\n"
+                "for arch in x86_64 arm64; do\n"
+                '  BIN="dist/macos-${arch}/dist/relay-sidecar-macos-${arch}"\n'
+                '  xcrun stapler staple "${BIN}"\n'
+                "done\n"
+            )
+    bad = guard.check_g4_f1_notarize_built_cells(mutated)
+    assert not bad.passed, (
+        "guard accepted a hard-coded 'x86_64 arm64' notarize loop "
+        "(G4-F1 defect); check is vacuous"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-024")
+def test_g4_f2_provenance_hashes_post_signing_bytes() -> None:
+    """G4-F2: SLSA subjects must be hashed over post-signing artifacts.
+
+    GREEN: collect-hashes depends on notarize/codesign and downloads the
+    post-signing artifacts. RED: a collect-hashes that only needs [build] and
+    downloads the bare relay-sidecar-* pattern is rejected.
+    """
+    guard = _load_guard_module()
+    wf = _load_workflow_dict()
+    ok = guard.check_g4_f2_provenance_post_signing(wf)
+    assert ok.passed, ok.message
+    assert ok.error_code == "RELAY-RELEASE-PROVENANCE-POSTSIGN"
+
+    mutated = _load_workflow_dict()
+    mutated["jobs"]["collect-hashes"]["needs"] = ["build"]
+    mutated["jobs"]["collect-hashes"]["steps"] = [
+        {
+            "name": "Download all per-cell artifacts",
+            "uses": "actions/download-artifact@v4",
+            "with": {"path": "dist/all", "pattern": "relay-sidecar-*"},
+        },
+        {
+            "name": "Aggregate base64-encoded hashes",
+            "id": "hash",
+            "shell": "bash",
+            "run": "find dist/all -type f -name 'relay-sidecar-*'",
+        },
+    ]
+    bad = guard.check_g4_f2_provenance_post_signing(mutated)
+    assert not bad.passed, (
+        "guard accepted collect-hashes hashing pre-signing build artifacts "
+        "(G4-F2 defect); check is vacuous"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-021")
+def test_g4_f3_sigstore_uses_ambient_oidc_not_request_token() -> None:
+    """G4-F3: sigstore sign must not pass the OIDC request bearer token as
+    --identity-token; it must use ambient OIDC detection.
+
+    GREEN: neither sign step passes --identity-token derived from
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN. RED: a step that does is rejected.
+    """
+    guard = _load_guard_module()
+    wf = _load_workflow_dict()
+    ok = guard.check_g4_f3_keyless_identity_token(wf)
+    assert ok.passed, ok.message
+    assert ok.error_code == "RELAY-RELEASE-KEYLESS-OIDC"
+
+    mutated = _load_workflow_dict()
+    sign = mutated["jobs"]["sign"]
+    patched = False
+    for step in sign["steps"]:
+        run = step.get("run")
+        if isinstance(run, str) and "sigstore sign" in run and "for f in" in run:
+            step["run"] = run.replace(
+                "python -m sigstore sign \\",
+                "python -m sigstore sign \\\n"
+                '              --identity-token "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \\',
+                1,
+            )
+            patched = True
+            break
+    assert patched, "could not locate per-binary sign step to mutate"
+    bad = guard.check_g4_f3_keyless_identity_token(mutated)
+    assert not bad.passed, (
+        "guard accepted --identity-token bound to "
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN (G4-F3 defect); check is vacuous"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CRYPTO-003")
+def test_g4_f5_manifest_asset_base_url_is_explicit_and_versioned() -> None:
+    """G4-F5: the assemble step must pass an explicit, version-pinned
+    --asset-base-url pointing at the hosted-mirror prefix.
+
+    GREEN: the assemble step passes a version-pinned --asset-base-url. RED:
+    an assemble step that omits --asset-base-url (unversioned default that
+    does not resolve to the mirror layout) is rejected.
+    """
+    guard = _load_guard_module()
+    wf = _load_workflow_dict()
+    ok = guard.check_g4_f5_manifest_asset_base_url(wf)
+    assert ok.passed, ok.message
+    assert ok.error_code == "RELAY-RELEASE-MANIFEST-ASSET-URL"
+
+    mutated = _load_workflow_dict()
+    sign = mutated["jobs"]["sign"]
+    patched = False
+    for step in sign["steps"]:
+        run = step.get("run")
+        if isinstance(run, str) and "assemble-release-manifest.py" in run:
+            # Drop the --asset-base-url line and its env.
+            new_lines = [
+                ln
+                for ln in run.splitlines()
+                if "--asset-base-url" not in ln
+            ]
+            step["run"] = "\n".join(new_lines)
+            if isinstance(step.get("env"), dict):
+                step["env"].pop("MANIFEST_ASSET_BASE_URL", None)
+            patched = True
+            break
+    assert patched, "could not locate assemble step to mutate"
+    bad = guard.check_g4_f5_manifest_asset_base_url(mutated)
+    assert not bad.passed, (
+        "guard accepted an assemble step with no explicit --asset-base-url "
+        "(G4-F5 defect); check is vacuous"
     )
