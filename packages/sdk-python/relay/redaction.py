@@ -855,13 +855,31 @@ class RedactionEngine:
                 spans.append((start, end, replacement))
         if not spans:
             return normalised
-        # Sort by start, then by end descending so longer overlapping
-        # spans win; collapse overlaps deterministically.
+        # Sort by start, then by end descending so the span that OPENS each
+        # overlap group is the earliest-starting and (among equal starts)
+        # longest match -- a deterministic, replacement-defining "highest
+        # priority" span. Overlapping spans are then merged into their
+        # INTERVAL UNION rather than dropped.
+        #
+        # VAL-REDACT-002 (HIGH / security): the prior logic skipped any span
+        # that overlapped the kept span. When a later span started inside the
+        # kept span but extended BEYOND its end, the tail between the two ends
+        # was spliced back in as plaintext -- leaking the unredacted tail of a
+        # matched secret. Proper interval merging extends the open interval's
+        # end to max(end) so the entire union of matched ranges is redacted by
+        # a single replacement and no matched byte is ever emitted in clear.
         spans.sort(key=lambda t: (t[0], -t[1]))
         merged: list[tuple[int, int, str]] = []
         for start, end, repl in spans:
             if merged and start < merged[-1][1]:
-                # Overlap: keep the earlier-starting span; skip this.
+                # Overlap: extend the open interval to the union end, keeping
+                # the replacement of the span that opened the interval (the
+                # earliest-starting / longest-at-that-start match). The end is
+                # max() because a fully-contained later span (end <= prev_end)
+                # must not shrink the redacted range.
+                prev_start, prev_end, prev_repl = merged[-1]
+                if end > prev_end:
+                    merged[-1] = (prev_start, end, prev_repl)
                 continue
             merged.append((start, end, repl))
         # Splice replacements into the NORMALIZED string at the offsets

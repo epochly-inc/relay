@@ -486,3 +486,72 @@ def test_hash_matcher_uses_distinct_salt_for_distinct_salt_ref() -> None:
     body_a = redact_capture_payload(engine_a, raw)
     body_b = redact_capture_payload(engine_b, raw)
     assert body_a != body_b
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-002 -- overlapping spans must be merged into their interval
+# union; the unredacted tail of a longer overlapping match MUST NOT leak.
+# ---------------------------------------------------------------------------
+
+# Two regex matchers whose spans overlap such that the LATER-sorted span
+# starts inside the earlier (kept) span but extends BEYOND its end. On the
+# input "alphabravosecret":
+#   * matcher "left"  matches "alphabra"    -> span [0, 8)
+#   * matcher "right" matches "bravosecret" -> span [5, 16)
+# Sort key (start, -end) keeps "left" (start 0); the pre-fix skip-on-overlap
+# branch drops "right" entirely because 5 < 8, splicing normalised[8:]
+# ("secret") back in as plaintext -- leaking the tail of a matched secret.
+_OVERLAP_POLICY: dict = {
+    "schema_version": "relay.redaction.v1",
+    "policy_version": "2026-05-29.overlap",
+    "raw_capture": False,
+    "retention_days": 30,
+    "dpa_ref": None,
+    "approver_user_id": None,
+    "matchers": [
+        {"id": "left", "kind": "regex", "pattern": "alphabra", "action": "redact"},
+        {"id": "right", "kind": "regex", "pattern": "bravosecret", "action": "redact"},
+    ],
+    "action_policy": {
+        "hash": {"algorithm": "hmac-sha256", "salt_ref": "tenant_salt_v3"},
+        "redact": {"placeholder": "<redacted>"},
+        "drop": {"placeholder": None},
+    },
+    "applies_to_fields": list(DEFAULT_APPLIES_TO_FIELDS),
+}
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-REDACT-002")
+def test_overlapping_spans_merge_to_union_no_tail_leak() -> None:
+    """When a later overlapping span extends past the kept span's end,
+    the engine MUST redact the full interval union, never emit the tail.
+
+    Pre-fix the skip-on-overlap branch dropped the longer span and the
+    bytes between the two ends ("secret") survived in plaintext.
+    """
+    policy = RedactionPolicy.load(_OVERLAP_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    # Direct string-level assertion against the merge logic.
+    out = engine._apply_matchers_to_string("alphabravosecret")
+    # The full union [0, 16) is one redaction; no residual plaintext.
+    assert out == "<redacted>"
+    assert "secret" not in out
+    assert "bravo" not in out
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-REDACT-002")
+def test_overlapping_spans_tail_never_crosses_http_boundary() -> None:
+    """The unredacted tail of an overlapping match MUST NOT appear in the
+    serialised wire body (keystone invariant #7: plaintext never crosses).
+    """
+    policy = RedactionPolicy.load(_OVERLAP_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    raw_payload = {"model_call": {"input": "alphabravosecret"}}
+    body_bytes = redact_capture_payload(engine, raw_payload)
+    # Neither the leaked tail nor any matched fragment survives.
+    assert b"secret" not in body_bytes
+    assert b"bravo" not in body_bytes
+    assert b"alpha" not in body_bytes
+    assert b"<redacted>" in body_bytes
