@@ -1209,7 +1209,23 @@ function canonicalJsonStringify(value: unknown): string {
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
-      throw new Error("canonicalJsonStringify: non-finite number not allowed");
+      // VAL-REDACT-005 (MEDIUM / determinism; byte-identical fail-closed with
+      // the Python ``redact_capture_payload`` non-finite guard): RFC 8785 JCS
+      // forbids non-finite numbers (Infinity/-Infinity/NaN). Pre-fix this
+      // threw a bare ``Error`` while Python ``json.dumps(..., allow_nan=True)``
+      // emitted invalid ``Infinity``/``NaN`` tokens -- the two SDKs diverged
+      // on both outcome and error shape. We now raise a typed
+      // ``RelayRedactionPolicyError`` (code RELAY-SDK-010,
+      // ``details.reason = "non_finite_number"``) so both runtimes report the
+      // rejection identically and fail closed on a non-finite leaf.
+      throw new RelayRedactionPolicyError(
+        "non-finite number (Infinity/-Infinity/NaN) is not permitted in a " +
+          "capture payload; RFC 8785 JCS forbids non-finite numbers",
+        {
+          code: RELAY_SDK_POLICY_INVALID_CODE,
+          details: { reason: "non_finite_number" },
+        },
+      );
     }
     return String(value);
   }

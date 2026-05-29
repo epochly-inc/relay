@@ -1143,12 +1143,30 @@ def redact_capture_payload(
     # rather than ``\uXXXX`` escapes. Together these guarantee
     # byte-equality with TS for the cross-language parity corpus
     # (VAL-W4-020).
-    return json.dumps(
-        redacted,
-        sort_keys=True,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    #
+    # VAL-REDACT-005 (MEDIUM / determinism; byte-identical fail-closed with
+    # the TS ``canonicalJsonStringify`` non-finite guard): RFC 8785 JCS
+    # forbids non-finite numbers (Infinity/-Infinity/NaN). ``allow_nan=False``
+    # makes ``json.dumps`` raise ``ValueError`` instead of emitting the
+    # default literal ``Infinity``/``NaN`` tokens (invalid JSON). Pre-fix
+    # Python emitted those tokens while TS threw -- the two SDKs diverged.
+    # We surface a typed ``RelayPolicyError`` (code RELAY-SDK-010,
+    # ``reason="non_finite_number"``) so both runtimes report the rejection
+    # identically and fail closed on a non-finite leaf.
+    try:
+        return json.dumps(
+            redacted,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except ValueError as exc:
+        raise RelayPolicyError(
+            "non-finite number (Infinity/-Infinity/NaN) is not permitted in a "
+            "capture payload; RFC 8785 JCS forbids non-finite numbers",
+            details={"reason": "non_finite_number"},
+        ) from exc
 
 
 def iter_known_applies_to_fields() -> Iterable[str]:

@@ -140,6 +140,100 @@ def _find_node() -> str | None:
     return shutil.which("node")
 
 
+def _ts_redact_outcome_via_node(
+    policy_body: dict, payload: dict, tenant_salt: bytes
+) -> dict | None:
+    """Invoke the TS engine via Node and report its OUTCOME (not bytes).
+
+    Returns a dict ``{"ok": True, "hex": "<canonical-bytes-hex>"}`` when the
+    TS ``redactCapturePayload`` succeeds, or ``{"ok": False, "code": "...",
+    "reason": "...", "message": "..."}`` when it raises. This lets a parity
+    test assert that BOTH runtimes fail closed on the same input (e.g. a
+    non-finite numeric leaf), capturing the typed rejection shape rather than
+    only the success bytes.
+
+    Returns ``None`` when Node or the TS build are unavailable; the caller
+    should skip rather than fail in that case (offline / pre-build).
+    """
+    node = _find_node()
+    if node is None:
+        return None
+    repo_root = Path(__file__).resolve().parents[3]
+    ts_dist = (
+        repo_root / "packages" / "sdk-typescript" / "dist" / "src" / "redaction.js"
+    )
+    if not ts_dist.exists():
+        return None
+    ts_dist_json = json.dumps(str(ts_dist))
+    script = f"""
+import {{ loadRedactionPolicy, RedactionEngine, redactCapturePayload }} from {ts_dist_json};
+
+const stdin = await new Promise((resolve) => {{
+  let buf = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (c) => {{ buf += c; }});
+  process.stdin.on('end', () => resolve(buf));
+}});
+const input = JSON.parse(stdin, (key, value) => {{
+  // Rehydrate the non-finite sentinels the Python side encodes as strings
+  // (JSON has no Infinity/NaN literal): "__RELAY_INFINITY__" etc. become
+  // the real JS numeric values so the TS engine sees a non-finite leaf.
+  if (value === '__RELAY_INFINITY__') return Infinity;
+  if (value === '__RELAY_NEG_INFINITY__') return -Infinity;
+  if (value === '__RELAY_NAN__') return NaN;
+  return value;
+}});
+const saltBytes = Buffer.from(input.salt_b64, 'base64');
+const policy = loadRedactionPolicy(input.policy);
+const engine = new RedactionEngine({{
+  policy,
+  saltProvider: () => new Uint8Array(saltBytes),
+}});
+try {{
+  const bytes = redactCapturePayload(engine, input.payload);
+  process.stdout.write(JSON.stringify({{
+    ok: true,
+    hex: Buffer.from(bytes).toString('hex'),
+  }}));
+}} catch (err) {{
+  process.stdout.write(JSON.stringify({{
+    ok: false,
+    code: err && err.code ? err.code : null,
+    reason: err && err.details ? (err.details.reason ?? null) : null,
+    message: err && err.message ? err.message : String(err),
+    name: err && err.name ? err.name : null,
+  }}));
+}}
+"""
+    import base64
+
+    payload_in = {
+        "policy": policy_body,
+        "payload": payload,
+        "salt_b64": base64.b64encode(tenant_salt).decode("ascii"),
+    }
+
+    def _default(o: object) -> object:
+        raise TypeError(f"unexpected type in payload: {type(o)!r}")
+
+    proc = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        # ``allow_nan=True`` would emit bare Infinity/NaN tokens that JS
+        # JSON.parse rejects, so encode them as sentinel strings the Node
+        # reviver above rehydrates into real non-finite numbers.
+        input=json.dumps(payload_in, allow_nan=False, default=_default),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"node TS subprocess failed: rc={proc.returncode} stderr={proc.stderr!r}"
+        )
+    return json.loads(proc.stdout.strip())
+
+
 def _ts_canonicalize_via_node(
     policy_body: dict, payload: dict, tenant_salt: bytes
 ) -> bytes | None:
@@ -761,3 +855,146 @@ def test_overlapping_spans_union_byte_equal_typescript_via_node_subprocess() -> 
     assert b"bravo" not in py_bytes
     assert b"alpha" not in py_bytes
     assert b"<redacted>" in py_bytes
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-005 (MEDIUM / determinism): a non-finite numeric leaf
+# (Infinity/-Infinity/NaN) at a non-pointer-matched path must FAIL CLOSED
+# IDENTICALLY on both runtimes.
+#
+# Pre-fix divergence: ``_walk`` returns the number leaf unchanged (no pointer
+# match), then the canonicalizers diverged:
+#   * Python ``redact_capture_payload`` used ``json.dumps(...)`` with the
+#     default ``allow_nan=True``, emitting literal ``Infinity``/``-Infinity``/
+#     ``NaN`` tokens -- NON-canonical JSON, forbidden by RFC 8785 JCS.
+#   * TS ``canonicalJsonStringify`` THREW a bare ``Error``
+#     ("non-finite number not allowed").
+# So the same payload produced invalid-but-accepted output on Python and an
+# untyped throw on TS -- the two SDKs disagreed on outcome AND error shape.
+#
+# Post-fix (preferred per contract): BOTH reject non-finite numbers with a
+# typed error carrying ``code == RELAY-SDK-010`` and
+# ``details.reason == "non_finite_number"``.
+# ---------------------------------------------------------------------------
+
+# The marker the canonicalizers must surface in their structured details so
+# both runtimes report the rejection identically.
+_NON_FINITE_REASON = "non_finite_number"
+_POLICY_INVALID_CODE = "RELAY-SDK-010"
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("positive-infinity", float("inf")),
+        ("negative-infinity", float("-inf")),
+        ("nan", float("nan")),
+    ],
+)
+def test_non_finite_number_leaf_rejected_python(name: str, value: float) -> None:
+    """``redact_capture_payload`` MUST reject a non-finite numeric leaf with a
+    typed ``RelayPolicyError`` instead of emitting ``Infinity``/``NaN`` tokens.
+
+    RED at base commit c911607: ``json.dumps`` with the default
+    ``allow_nan=True`` emitted the literal token (invalid JSON). GREEN after
+    the fail-closed fix.
+    """
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    # The leaf is at a non-pointer-matched path (the base policy declares no
+    # json_pointer matchers), so ``_walk`` passes the number through unchanged.
+    payload = {"metrics": {"score": value}}
+    with pytest.raises(RelayPolicyError) as excinfo:
+        redact_capture_payload(engine, payload)
+    assert excinfo.value.code == _POLICY_INVALID_CODE, (
+        f"unexpected code: {excinfo.value.code!r}"
+    )
+    assert excinfo.value.details.get("reason") == _NON_FINITE_REASON, (
+        f"unexpected reason: {excinfo.value.details!r}"
+    )
+    # And it MUST NOT have emitted a non-canonical token into wire bytes (the
+    # pre-fix defect): the call raised before returning, so no body exists.
+    # ``pytest.raises`` already guarantees no return value escaped; assert the
+    # encoded reason marker drives the fail-closed path, not a serialized token.
+    assert excinfo.value.code == _POLICY_INVALID_CODE
+
+
+@pytest.mark.plumbing
+def test_non_finite_number_in_array_rejected_python() -> None:
+    """A non-finite number nested inside an array leaf is also rejected."""
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    payload = {"series": [1.0, 2.0, float("inf"), 4.0]}
+    with pytest.raises(RelayPolicyError) as excinfo:
+        redact_capture_payload(engine, payload)
+    assert excinfo.value.details.get("reason") == _NON_FINITE_REASON
+
+
+@pytest.mark.plumbing
+def test_finite_number_leaf_still_serialized_python() -> None:
+    """Regression guard: finite numbers (incl. large/negative/zero) still
+    serialize unchanged -- the fail-closed check rejects ONLY non-finite.
+    """
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    payload = {"a": 0, "b": -17, "c": 1.5, "d": 1e308}
+    body = redact_capture_payload(engine, payload)
+    assert body == b'{"a":0,"b":-17,"c":1.5,"d":1e+308}'
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "name,sentinel,py_value",
+    [
+        ("positive-infinity", "__RELAY_INFINITY__", float("inf")),
+        ("negative-infinity", "__RELAY_NEG_INFINITY__", float("-inf")),
+        ("nan", "__RELAY_NAN__", float("nan")),
+    ],
+)
+def test_non_finite_number_rejected_both_runtimes_via_node_subprocess(
+    name: str, sentinel: str, py_value: float
+) -> None:
+    """Python and TS MUST BOTH fail closed on a non-finite numeric leaf, with
+    the SAME typed code (RELAY-SDK-010) and reason ("non_finite_number").
+
+    This is the VAL-REDACT-005 parity surface: pre-fix the TS engine threw a
+    bare Error while Python emitted invalid ``Infinity``/``NaN`` tokens -- the
+    SDKs diverged. Post-fix both reject identically.
+
+    Skipped when Node or the TS dist are unavailable (offline tier-1); when
+    present the test is authoritative.
+    """
+    # The TS payload uses a sentinel string the Node reviver rehydrates into a
+    # real non-finite number (JSON cannot carry Infinity/NaN literals).
+    ts_payload = {"metrics": {"score": sentinel}}
+    outcome = _ts_redact_outcome_via_node(_BASE_POLICY, ts_payload, _TENANT_SALT)
+    if outcome is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language fail-closed parity cannot be checked "
+            "in this environment"
+        )
+    # TS must REJECT (not emit bytes) with the shared typed shape.
+    assert outcome["ok"] is False, (
+        f"TS did not reject a non-finite leaf for {name!r}: {outcome!r}"
+    )
+    assert outcome["code"] == _POLICY_INVALID_CODE, (
+        f"TS rejection code mismatch for {name!r}: {outcome!r}"
+    )
+    assert outcome["reason"] == _NON_FINITE_REASON, (
+        f"TS rejection reason mismatch for {name!r}: {outcome!r}"
+    )
+    # Python must REJECT the equivalent payload with the SAME typed shape.
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    with pytest.raises(RelayPolicyError) as excinfo:
+        redact_capture_payload(engine, {"metrics": {"score": py_value}})
+    assert excinfo.value.code == outcome["code"], (
+        f"Py/TS code divergence for {name!r}: "
+        f"py={excinfo.value.code!r} ts={outcome['code']!r}"
+    )
+    assert excinfo.value.details.get("reason") == outcome["reason"], (
+        f"Py/TS reason divergence for {name!r}: "
+        f"py={excinfo.value.details!r} ts={outcome['reason']!r}"
+    )

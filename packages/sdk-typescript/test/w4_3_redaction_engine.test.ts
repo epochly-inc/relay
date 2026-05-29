@@ -27,6 +27,10 @@ import {
   type SaltProvider,
 } from "../src/redaction.js";
 import { RedactionPolicy } from "../src/index.js";
+import {
+  RelayRedactionPolicyError,
+  RELAY_SDK_POLICY_INVALID_CODE,
+} from "../src/errors.js";
 
 // -----------------------------------------------------------------------------
 // Test fixtures (mirrors packages/sdk-python/tests/test_redaction.py).
@@ -374,5 +378,69 @@ describe("VAL-REDACT-004: overlapping spans merge to interval union (no tail lea
       model_call: { input: "alphabravosecret" },
     }) as { model_call: { input: string } };
     expect(redacted.model_call.input).toBe("<redacted>");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// VAL-REDACT-005: non-finite number leaves (Infinity/-Infinity/NaN) at a
+// non-pointer-matched path FAIL CLOSED with a typed error, matching Python.
+//
+// Pre-fix: walk() returned the number leaf unchanged, then
+// canonicalJsonStringify threw a bare ``Error`` ("non-finite number not
+// allowed") -- while the Python ``json.dumps(..., allow_nan=True)`` emitted
+// literal Infinity/NaN tokens (invalid JSON, forbidden by RFC 8785 JCS). The
+// two runtimes diverged on outcome AND error shape. Post-fix both reject with
+// a typed RelayRedactionPolicyError carrying code RELAY-SDK-010 and
+// details.reason "non_finite_number".
+// -----------------------------------------------------------------------------
+
+describe("VAL-REDACT-005: non-finite number leaves fail closed (Python parity)", () => {
+  const NON_FINITE_REASON = "non_finite_number";
+
+  for (const [label, value] of [
+    ["positive Infinity", Infinity],
+    ["negative Infinity", -Infinity],
+    ["NaN", NaN],
+  ] as const) {
+    it(`rejects a ${label} numeric leaf with a typed RelayRedactionPolicyError`, () => {
+      const policy = loadRedactionPolicy(BASE_POLICY);
+      const engine = new RedactionEngine({ policy, saltProvider });
+      // The leaf is at a non-pointer-matched path (base policy declares no
+      // json_pointer matchers), so walk() passes the number through unchanged.
+      const payload = { metrics: { score: value } };
+      let caught: unknown;
+      try {
+        redactCapturePayload(engine, payload);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(RelayRedactionPolicyError);
+      const e = caught as RelayRedactionPolicyError;
+      expect(e.code).toBe(RELAY_SDK_POLICY_INVALID_CODE);
+      expect((e.details as { reason?: string }).reason).toBe(NON_FINITE_REASON);
+    });
+  }
+
+  it("rejects a non-finite number nested inside an array leaf", () => {
+    const policy = loadRedactionPolicy(BASE_POLICY);
+    const engine = new RedactionEngine({ policy, saltProvider });
+    const payload = { series: [1, 2, Infinity, 4] };
+    let caught: unknown;
+    try {
+      redactCapturePayload(engine, payload);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(RelayRedactionPolicyError);
+    expect(((caught as RelayRedactionPolicyError).details as { reason?: string }).reason).toBe(
+      NON_FINITE_REASON,
+    );
+  });
+
+  it("finite numbers (zero, negative, fractional, large) still serialize", () => {
+    const policy = loadRedactionPolicy(BASE_POLICY);
+    const engine = new RedactionEngine({ policy, saltProvider });
+    const body = redactCapturePayload(engine, { a: 0, b: -17, c: 1.5, d: 1e308 });
+    expect(Buffer.from(body).toString("utf8")).toBe('{"a":0,"b":-17,"c":1.5,"d":1e+308}');
   });
 });
