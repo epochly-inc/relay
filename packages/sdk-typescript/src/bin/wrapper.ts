@@ -269,8 +269,13 @@ async function launchFresh(
     bundleUrl: entry.url,
     bundleEntry: { os: entry.os, arch: entry.arch },
   });
-  // Step E: Sigstore check (VAL-W4-004).
-  verifySigstoreBundle(sigstoreJson, { trustRoot });
+  // Step E: Sigstore check (VAL-W4-004 / VAL-CRYPTO-002). Pass the ACTUAL
+  // bundle bytes so the signature is cryptographically verified over them
+  // and bound to the manifest-pinned digest.
+  verifySigstoreBundle(bundleBytes, sigstoreJson, {
+    trustRoot,
+    expectedSha256: entry.sha256,
+  });
   // Step F: persist cache.
   writeCachedBundle(entry.sha256, bundleBytes, options.home);
   writeCachedSigstoreBundle(entry.sha256, sigstoreJson, options.home);

@@ -24,11 +24,13 @@
  * ASCII-only per CLAUDE.md "ASCII-Safe Source".
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   RelaySidecarBundleArchUnsupported,
@@ -54,6 +56,87 @@ import {
   type BundleEntry,
   type ReleaseManifest,
 } from "../src/bin/types.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
+
+// ---------------------------------------------------------------------------
+// Real signing material for the happy-path fixtures.
+//
+// Post VAL-CRYPTO-002 the wrapper performs REAL Sigstore verification: the
+// signature is cryptographically checked over the bundle bytes using the
+// public key in the Fulcio leaf certificate, and the issuer is validated
+// against the trust root. The previous forged fixture (FAKE_CERT_PEM /
+// FAKE_SIGNATURE_BASE64) is intentionally NO LONGER accepted; the happy
+// paths now sign over the real bundle bytes with a real leaf cert minted
+// via Python's ``cryptography`` (the established repo pattern -- no new npm
+// dependency). The leaf is minted ONCE for the whole suite.
+// ---------------------------------------------------------------------------
+interface RealSigningMaterial {
+  certDerB64: string;
+  privateKeyPem: string;
+}
+
+function mintRealLeafCert(trustRootHost: string): RealSigningMaterial | null {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-w4w-cert-"));
+  const script = path.join(tmpDir, "mint.py");
+  const derOut = path.join(tmpDir, "leaf.der");
+  const keyOut = path.join(tmpDir, "leaf.key.pem");
+  const code = `import datetime
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+
+key = ec.generate_private_key(ec.SECP256R1())
+subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'relay-sidecar-release')])
+issuer = x509.Name([
+    x509.NameAttribute(NameOID.COMMON_NAME, ${JSON.stringify("sigstore-intermediate." + trustRootHost)}),
+    x509.NameAttribute(NameOID.ORGANIZATION_NAME, ${JSON.stringify(trustRootHost)}),
+])
+cert = (
+    x509.CertificateBuilder()
+    .subject_name(subject)
+    .issuer_name(issuer)
+    .public_key(key.public_key())
+    .serial_number(x509.random_serial_number())
+    .not_valid_before(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
+    .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+    .sign(key, hashes.SHA256())
+)
+with open(${JSON.stringify(derOut)}, 'wb') as f:
+    f.write(cert.public_bytes(serialization.Encoding.DER))
+with open(${JSON.stringify(keyOut)}, 'wb') as f:
+    f.write(key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ))
+`;
+  fs.writeFileSync(script, code, "utf-8");
+  try {
+    const r = spawnSync("uv", ["run", "python3", script], {
+      cwd: REPO_ROOT,
+      encoding: "utf-8",
+      timeout: 60_000,
+    });
+    if (r.status !== 0) return null;
+    return {
+      certDerB64: fs.readFileSync(derOut).toString("base64"),
+      privateKeyPem: fs.readFileSync(keyOut, "utf-8"),
+    };
+  } catch {
+    return null;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+let SIGNING_MATERIAL: RealSigningMaterial | null = null;
+beforeAll(() => {
+  SIGNING_MATERIAL = mintRealLeafCert(DEFAULT_TRUST_ROOT);
+});
 
 interface MockFixture {
   bundleBytes: Buffer;
@@ -100,15 +183,43 @@ function buildMockFixture(
       sigstore_url: `https://relay.epochly.com/relay-sidecar-bundle/${cell.os}-${cell.arch}.sigstore.json`,
     })),
   };
-  // Refuse to materialize a sigstore bundle if requested (VAL-W4-004 unsigned-bundle test).
-  const sigstoreBundle = overrides.omitSigstoreMaterial
-    ? JSON.stringify({})
-    : JSON.stringify({
-        cert: "FAKE_CERT_PEM",
-        signature: "FAKE_SIGNATURE_BASE64",
-        rekorBundle: { Payload: { logIndex: 12345, logID: "fake-log-id" } },
-        trust_root: trustRootForSigstore,
-      });
+  // Build the sigstore bundle. Post VAL-CRYPTO-002 the happy path MUST be a
+  // real, cryptographically-valid cosign protobuf-bundle: a real signature
+  // over the real bundle bytes under a real Fulcio-style leaf cert.
+  //   - omitSigstoreMaterial -> empty {} (VAL-W4-004 unsigned-bundle reject).
+  //   - otherwise -> real signed bundle (when the local toolchain minted a
+  //     cert in beforeAll); falls back to forged material only when the
+  //     toolchain is unavailable, in which case the suite is expected to
+  //     surface that gap loudly rather than silently passing.
+  let sigstoreBundle: string;
+  if (overrides.omitSigstoreMaterial) {
+    sigstoreBundle = JSON.stringify({});
+  } else if (SIGNING_MATERIAL !== null) {
+    const privateKey = crypto.createPrivateKey(SIGNING_MATERIAL.privateKeyPem);
+    const sigDer = crypto.sign("sha256", bundleBytes, privateKey);
+    const digestB64 = crypto.createHash("sha256").update(bundleBytes).digest("base64");
+    sigstoreBundle = JSON.stringify({
+      mediaType: "application/vnd.dev.sigstore.bundle+json;version=0.2",
+      verificationMaterial: {
+        certificate: { rawBytes: SIGNING_MATERIAL.certDerB64 },
+        tlogEntries: [{ logIndex: "12345", logID: { keyId: "fake-log-id" } }],
+      },
+      messageSignature: {
+        signature: sigDer.toString("base64"),
+        messageDigest: { algorithm: "SHA2_256", digest: digestB64 },
+      },
+      trust_root: trustRootForSigstore,
+    });
+  } else {
+    // Toolchain unavailable: emit the historical forged material so the
+    // dependency gap is visible (these tests will fail real verification).
+    sigstoreBundle = JSON.stringify({
+      cert: "FAKE_CERT_PEM",
+      signature: "FAKE_SIGNATURE_BASE64",
+      rekorBundle: { Payload: { logIndex: 12345, logID: "fake-log-id" } },
+      trust_root: trustRootForSigstore,
+    });
+  }
   const observedRequests: string[] = [];
   const fetchImpl = async (url: string, _init?: RequestInit): Promise<Response> => {
     observedRequests.push(url);
