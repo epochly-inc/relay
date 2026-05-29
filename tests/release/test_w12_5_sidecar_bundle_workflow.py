@@ -687,3 +687,91 @@ def test_g4_f5_manifest_asset_base_url_is_explicit_and_versioned() -> None:
         "guard accepted an assemble step with no explicit --asset-base-url "
         "(G4-F5 defect); check is vacuous"
     )
+
+
+# ---------------------------------------------------------------------------
+# Gate-2-r2 remediation SR2-001: the publish step must upload the AGGREGATED
+# wrapper-facing manifest by an unambiguous path so no per-cell build
+# manifest can clobber it.
+#
+# The defect: `gh release upload "${RELEASE_TAG}" $(find dist -type f
+# \( ... -o -name 'manifest.json' -o ... \)) --clobber` matched THREE files
+# named manifest.json -- the aggregated dist/manifest.json (signed as
+# manifest.json.sigstore) AND the two per-cell build manifests
+# dist/<cell>/manifest.json. `gh release upload` keys assets by BASENAME and
+# --clobber lets the last one in (filesystem-dependent) find order win, so the
+# published manifest.json could be a per-cell build manifest while
+# manifest.json.sigstore signed the aggregated one. The fail-closed wrapper
+# then rejects the mismatched manifest -> breaks every npx launch.
+# ---------------------------------------------------------------------------
+
+
+def _find_publish_run() -> str:
+    """Return the `gh release upload` run body from the publish job."""
+    wf = _load_workflow_dict()
+    publish = wf["jobs"]["publish"]
+    for step in publish["steps"]:
+        run = step.get("run")
+        if isinstance(run, str) and "gh release upload" in run:
+            return run
+    raise AssertionError("publish job has no 'gh release upload' step")
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CRYPTO-003")
+def test_sr2_001_publish_uploads_aggregated_manifest_unambiguously() -> None:
+    """SR2-001: publish must upload the aggregated manifest by explicit path.
+
+    GREEN: the corrected publish step uploads dist/manifest.json and
+    dist/manifest.json.sigstore by explicit path and does NOT use the broad
+    `-name 'manifest.json'` find glob that caused the basename collision.
+    RED (non-vacuity): a publish step that reintroduces the broad glob is
+    rejected by the guard.
+    """
+    guard = _load_guard_module()
+    wf = _load_workflow_dict()
+    ok = guard.check_sr2_001_manifest_no_basename_collision(wf)
+    assert ok.passed, ok.message
+    assert ok.error_code == "RELAY-RELEASE-MANIFEST-COLLISION"
+
+    # File-level assertion (independent of the guard): the published find
+    # glob must not match per-cell manifest.json files by basename, and the
+    # aggregated manifest + its sigstore must be uploaded by explicit path.
+    run = _find_publish_run()
+    assert "-name 'manifest.json'" not in run and '-name "manifest.json"' not in run, (
+        "publish step still uses the broad -name 'manifest.json' find glob; a "
+        "per-cell dist/<cell>/manifest.json can clobber the aggregated "
+        "dist/manifest.json by basename (SR2-001)"
+    )
+    assert "dist/manifest.json" in run, (
+        "publish step does not upload the aggregated dist/manifest.json by "
+        "explicit path"
+    )
+    assert "dist/manifest.json.sigstore" in run, (
+        "publish step does not upload dist/manifest.json.sigstore by explicit "
+        "path"
+    )
+
+    # Mutate: reintroduce the broad -name 'manifest.json' find glob in the
+    # publish step. The guard MUST reject it (proves non-vacuity).
+    mutated = _load_workflow_dict()
+    publish = mutated["jobs"]["publish"]
+    patched = False
+    for step in publish["steps"]:
+        run = step.get("run")
+        if isinstance(run, str) and "gh release upload" in run:
+            step["run"] = (
+                'gh release upload "${RELEASE_TAG}" \\\n'
+                "  $(find dist -type f \\( -name 'relay-sidecar-*' "
+                "-o -name 'manifest.json' -o -name '*.sigstore' "
+                "-o -name '*.intoto.jsonl' \\)) \\\n"
+                "  --clobber\n"
+            )
+            patched = True
+            break
+    assert patched, "could not locate publish step to mutate"
+    bad = guard.check_sr2_001_manifest_no_basename_collision(mutated)
+    assert not bad.passed, (
+        "guard accepted a publish step with the broad -name 'manifest.json' "
+        "find glob (SR2-001 defect); check is vacuous"
+    )

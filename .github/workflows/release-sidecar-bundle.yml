@@ -657,14 +657,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
-        # The aggregated manifest.json and its manifest.json.sigstore
-        # (VAL-CRYPTO-003) are published alongside the per-binary assets:
-        # the npx wrapper fetches the manifest and its signature from the
-        # pinned manifest URL and verifies the signature over the exact
-        # manifest bytes before trusting any entry digest. The 'manifest.json'
-        # name pattern is listed explicitly so the signed manifest is
-        # uploaded (it does not match 'relay-sidecar-*').
+        # SR2-001 (Gate-2-r2): publish the AGGREGATED wrapper-facing manifest
+        # by its EXPLICIT path, never via a broad basename glob.
+        #
+        # The dist/ tree contains THREE files named manifest.json: the
+        # aggregated wrapper-facing dist/manifest.json (schema
+        # relay.sidecar_bundle_manifest.v1, the one signed as
+        # dist/manifest.json.sigstore) AND the two per-cell build manifests
+        # dist/linux-x86_64/manifest.json + dist/linux-arm64/manifest.json
+        # (schema relay.sidecar-bundle-manifest.v1, downloaded from the
+        # relay-sidecar-<cell> build artifacts). `gh release upload` keys
+        # assets by BASENAME and --clobber makes the last in
+        # (filesystem-dependent) find order win, so a broad
+        # `find ... -name 'manifest.json'` could publish a per-cell build
+        # manifest under the manifest.json asset name while
+        # manifest.json.sigstore still signed the aggregated one. The
+        # fail-closed npx wrapper would then reject the mismatched manifest
+        # and break every npx launch.
+        #
+        # Fix: the find glob below uploads ONLY the per-binary binaries,
+        # their .sigstore bundles, and the SLSA .intoto.jsonl attestations
+        # (none of which is named manifest.json). The aggregated manifest and
+        # its detached signature are uploaded by explicit path in a second
+        # call so exactly the signed, wrapper-facing manifest is published and
+        # no per-cell build manifest can clobber it by basename.
         run: |
+          set -euo pipefail
           gh release upload "${RELEASE_TAG}" \
-            $(find dist -type f \( -name 'relay-sidecar-*' -o -name 'manifest.json' -o -name '*.sigstore' -o -name '*.intoto.jsonl' \)) \
+            $(find dist -type f \( -name 'relay-sidecar-*' -o -name '*.sigstore' -o -name '*.intoto.jsonl' \) -not -name 'manifest.json.sigstore') \
+            --clobber
+          gh release upload "${RELEASE_TAG}" \
+            dist/manifest.json \
+            dist/manifest.json.sigstore \
             --clobber

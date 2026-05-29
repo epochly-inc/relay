@@ -804,13 +804,21 @@ def check_val_crypto_003(repo_root: Path, raw_text: str) -> CheckResult:
         )
     # The aggregated manifest must be published as a release asset (the
     # wrapper fetches it from the pinned URL; the GitHub release is the
-    # canonical signed source the hosted manifest service mirrors).
-    if "-name 'manifest.json'" not in raw_text and '-name "manifest.json"' not in raw_text:
+    # canonical signed source the hosted manifest service mirrors). It must
+    # be uploaded by its EXPLICIT path -- SR2-001 (Gate-2-r2) showed that a
+    # broad `find ... -name 'manifest.json'` glob also matched the per-cell
+    # build manifests (dist/<cell>/manifest.json) and, because gh release
+    # upload keys assets by basename with --clobber, a per-cell manifest
+    # could clobber the aggregated one. The unambiguous-path check
+    # (check_sr2_001_manifest_no_basename_collision) enforces the precise
+    # publish shape; here we only require that the aggregated dist/manifest.json
+    # is referenced as a published asset somewhere in the workflow.
+    if "dist/manifest.json" not in raw_text:
         return CheckResult(
             assertion,
             code,
             False,
-            "publish step does not upload the aggregated manifest.json asset",
+            "publish step does not upload the aggregated dist/manifest.json asset",
         )
     return CheckResult(assertion, code, True)
 
@@ -1117,6 +1125,105 @@ def check_g4_f5_manifest_asset_base_url(workflow: dict[str, Any]) -> CheckResult
     return CheckResult(assertion, code, True)
 
 
+def check_sr2_001_manifest_no_basename_collision(
+    workflow: dict[str, Any],
+) -> CheckResult:
+    """SR2-001 (Gate-2-r2): the publish step must upload the AGGREGATED
+    wrapper-facing manifest by an unambiguous path so no per-cell build
+    manifest can clobber it.
+
+    The defect: the publish step ran ::
+
+        gh release upload "${RELEASE_TAG}" \\
+          $(find dist -type f \\( -name 'relay-sidecar-*' \\
+            -o -name 'manifest.json' -o -name '*.sigstore' \\
+            -o -name '*.intoto.jsonl' \\)) --clobber
+
+    The ``dist/`` tree carries THREE files named ``manifest.json``: the
+    aggregated wrapper-facing ``dist/manifest.json`` (schema
+    relay.sidecar_bundle_manifest.v1, the one signed as
+    ``manifest.json.sigstore``) AND two per-cell build manifests
+    (``dist/linux-x86_64/manifest.json`` + ``dist/linux-arm64/manifest.json``,
+    schema relay.sidecar-bundle-manifest.v1). ``gh release upload`` keys
+    assets by BASENAME and ``--clobber`` makes the last in
+    (filesystem-dependent) ``find`` order win, so the published
+    ``manifest.json`` could be a per-cell build manifest while
+    ``manifest.json.sigstore`` signed the aggregated one -- and the
+    fail-closed wrapper then rejects the mismatched manifest, breaking
+    every npx launch.
+
+    This check fails if:
+      1. the publish step reintroduces a broad ``find ... -name
+         'manifest.json'`` glob (which matches per-cell build manifests by
+         basename), OR
+      2. the publish step does not upload the aggregated ``dist/manifest.json``
+         by its explicit path, OR
+      3. the publish step does not upload ``dist/manifest.json.sigstore`` by
+         its explicit path (the signature over the exact aggregated bytes
+         must ship alongside it).
+
+    It is NON-VACUOUS: a publish step that reintroduces the broad glob is
+    rejected (see the paired test's mutation case).
+    """
+    code = "RELAY-RELEASE-MANIFEST-COLLISION"
+    assertion = "VAL-CRYPTO-003"
+    publish = _find_job(workflow, "publish")
+    if publish is None:
+        return CheckResult(assertion, code, False, "publish job not found")
+    run: str | None = None
+    for step in _iter_steps(publish):
+        body = step.get("run")
+        if isinstance(body, str) and "gh release upload" in body:
+            run = body
+            break
+    if run is None:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "publish job has no 'gh release upload' step",
+        )
+    effective = _strip_shell_comments(run)
+    # 1. The broad basename glob must be gone. Either quoting form is a
+    # collision: find matches per-cell dist/<cell>/manifest.json too.
+    if "-name 'manifest.json'" in effective or '-name "manifest.json"' in effective:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "publish step uses the broad \"-name 'manifest.json'\" find glob; "
+            "it matches the per-cell build manifests "
+            "(dist/<cell>/manifest.json) too, and gh release upload --clobber "
+            "keys by basename so a per-cell manifest can clobber the "
+            "aggregated dist/manifest.json (SR2-001). Upload the aggregated "
+            "manifest by explicit path instead.",
+        )
+    # 2. The aggregated manifest must be uploaded by its explicit path. Use a
+    # word-boundary match so 'dist/manifest.json.sigstore' does not satisfy
+    # the requirement for 'dist/manifest.json' on its own.
+    has_aggregated = bool(
+        re.search(r"dist/manifest\.json(?![\w.])", effective)
+    )
+    if not has_aggregated:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "publish step does not upload the aggregated 'dist/manifest.json' "
+            "by explicit path",
+        )
+    # 3. The detached signature over the exact aggregated bytes must ship too.
+    if "dist/manifest.json.sigstore" not in effective:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "publish step does not upload 'dist/manifest.json.sigstore' "
+            "(the signature over the aggregated manifest) by explicit path",
+        )
+    return CheckResult(assertion, code, True)
+
+
 def check_no_long_lived_secrets(raw_text: str) -> CheckResult:
     """Defensive check (covers VAL-W12-035 secret-name surface)."""
     for name in LONG_LIVED_SECRET_NAMES:
@@ -1171,6 +1278,10 @@ def build_report(repo_root: Path) -> GuardReport:
     report.checks.append(check_g4_f2_provenance_post_signing(workflow))
     report.checks.append(check_g4_f3_keyless_identity_token(workflow))
     report.checks.append(check_g4_f5_manifest_asset_base_url(workflow))
+    # Gate-2-r2 remediation (SR2-001): the publish step must upload the
+    # aggregated wrapper-facing manifest by an unambiguous path so no per-cell
+    # build manifest can clobber it via gh release upload's basename keying.
+    report.checks.append(check_sr2_001_manifest_no_basename_collision(workflow))
     return report
 
 
