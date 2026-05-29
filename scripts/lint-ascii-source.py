@@ -233,8 +233,46 @@ def scan_python(path: Path) -> list[dict[str, object]]:
     return violations
 
 
+def _regex_allowed_after(prev_significant: str) -> bool:
+    """Whether a ``/`` after ``prev_significant`` begins a regex literal.
+
+    JS/TS overloads ``/`` as both the division operator and the start of a
+    regex literal. The standard disambiguation is positional: a regex is
+    valid wherever an *expression* may begin, i.e. when the previous
+    significant (non-whitespace, non-comment) character does NOT close a
+    value. After a value-producing token -- an identifier or number
+    character, or a closing ``)`` / ``]`` / ``}`` -- a ``/`` is division;
+    everywhere else (after ``=``, ``(``, ``,``, ``;``, ``:``, an operator,
+    ``return``/``typeof``-style keywords, or at the very start of input)
+    it begins a regex.
+
+    ``prev_significant`` is the empty string at start-of-input, where a
+    regex is allowed. We classify on the single previous significant
+    character; this is the same conservative heuristic shipped by mature
+    JS tokenizers (e.g. the esprima/acorn "regex allowed" rule reduced to
+    its character-level core) and is sufficient here because the only
+    consequence of a misclassification is whether a ``/...//`` span is
+    treated as an exempt literal or as code -- and we additionally guard
+    the false-positive direction by never flagging inside a regex body.
+
+    ``}`` is treated as value-closing (block/object close). A regex
+    immediately after ``}`` (e.g. ``if (c) {} /re/.test(x)``) is vanishingly
+    rare in real source and erring toward "division" here only risks
+    treating a would-be regex as code, which the regex-body exemption and
+    the live-tree clean check both bound.
+
+    Pure: no clock / network / randomness. Deterministic.
+    """
+    if prev_significant == "":
+        return True
+    if prev_significant in (")", "]", "}"):
+        return False
+    # Identifier or numeric continuation closes a value -> division.
+    return not (prev_significant.isalnum() or prev_significant in ("_", "$"))
+
+
 def _strip_js_comments_and_strings(text: str) -> str:
-    """Replace JS/TS comments and string/template literals with spaces.
+    """Replace JS/TS comments, string/template, and regex literals.
 
     Single-pass lexer. Newlines are preserved so line numbers in the
     residual line up with the source. Handles:
@@ -247,12 +285,20 @@ def _strip_js_comments_and_strings(text: str) -> str:
         unicode identifier inside an interpolation is rare and erring
         toward NOT flagging avoids false positives, matching the
         "string literals are exempt" rule).
+      * regex literals ``/.../flags`` -- disambiguated from the division
+        operator by :func:`_regex_allowed_after` (a ``/`` begins a regex
+        only where an expression may begin). The regex body honors
+        backslash escapes and character classes ``[...]`` (inside which an
+        unescaped ``/`` is a literal slash, not the terminator, and a
+        quote does NOT start a string). Treating the whole regex as one
+        exempt literal is what stops a quote inside it from desyncing
+        string state and silently swallowing later code tokens.
 
     The residual string contains only code tokens (and whitespace);
     any non-ASCII byte remaining in it is a code-token violation.
 
-    A regex DSL is deliberately avoided: comment/string boundaries do
-    not nest regularly, and a hand-written state machine is the correct
+    A regex DSL is deliberately avoided: comment/string/regex boundaries
+    do not nest regularly, and a hand-written state machine is the correct
     tool. This is pure (no clock / network / randomness), satisfying the
     determinism requirement for lint tooling.
     """
@@ -260,8 +306,14 @@ def _strip_js_comments_and_strings(text: str) -> str:
     i = 0
     n = len(text)
     # State: 'code', 'line', 'block', 'sq' (single), 'dq' (double),
-    # 'tpl' (template/backtick).
+    # 'tpl' (template/backtick), 'regex'.
     state = "code"
+    # Last significant (non-whitespace, non-comment) source character seen
+    # while in 'code' state. Drives regex-vs-division disambiguation.
+    prev_significant = ""
+    # Whether the regex lexer is currently inside a ``[...]`` char class
+    # (where ``/`` is literal). Reset on each regex entry.
+    in_char_class = False
     while i < n:
         ch = text[i]
         nxt = text[i + 1] if i + 1 < n else ""
@@ -275,6 +327,17 @@ def _strip_js_comments_and_strings(text: str) -> str:
                 out.append("  ")
                 i += 2
                 state = "block"
+                continue
+            if ch == "/" and _regex_allowed_after(prev_significant):
+                # Regex literal start. Blank the opening delimiter; the
+                # body is consumed in the 'regex' state below.
+                out.append(" ")
+                i += 1
+                state = "regex"
+                in_char_class = False
+                # A regex literal is itself a value: a following ``/`` is
+                # division. Record that now so state restoration is correct.
+                prev_significant = "/"
                 continue
             if ch == "'":
                 out.append(" ")
@@ -291,7 +354,45 @@ def _strip_js_comments_and_strings(text: str) -> str:
                 i += 1
                 state = "tpl"
                 continue
+            if not ch.isspace():
+                prev_significant = ch
             out.append(ch)
+            i += 1
+            continue
+        if state == "regex":
+            if ch == "\\":
+                # Escape: blank the backslash and the escaped char. Inside
+                # or outside a char class, ``\/`` / ``\]`` / etc. are
+                # literal and never terminate the regex or the class.
+                out.append(" ")
+                if nxt:
+                    out.append("\n" if nxt == "\n" else " ")
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if ch == "[":
+                in_char_class = True
+                out.append(" ")
+                i += 1
+                continue
+            if ch == "]" and in_char_class:
+                in_char_class = False
+                out.append(" ")
+                i += 1
+                continue
+            if ch == "/" and not in_char_class:
+                # Regex terminator. Following identifier chars are flags;
+                # let the 'code' state consume them normally (flags are
+                # ASCII per the grammar, and a homoglyph there would be a
+                # genuine code-token violation worth flagging).
+                out.append(" ")
+                i += 1
+                state = "code"
+                continue
+            # Any other char (including quotes, which must NOT start a
+            # string here) is exempt regex-body content.
+            out.append("\n" if ch == "\n" else " ")
             i += 1
             continue
         if state == "line":
