@@ -50,7 +50,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-from .errors import RelayPolicyError
+from .errors import RELAY_SDK_REGEX_REDOS_CODE, RelayPolicyError
 
 # The schema_version literal the policy MUST carry (spec G.2 + W1.4
 # envelopes RedactionPolicy.schema_version). Anything else is refused.
@@ -130,6 +130,156 @@ def _compile_regex_pattern(raw_pattern: str) -> re.Pattern[str]:
             "of the supported cross-language regex dialect"
         )
     return re.compile(raw_pattern)
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-006: regex ReDoS / complexity guard.
+# ---------------------------------------------------------------------------
+# Two deterministic layers protect the matcher loop from a policy-supplied
+# regex causing catastrophic backtracking against a long leaf:
+#
+#   (1) A static load-time heuristic (:func:`_check_regex_redos_safety`)
+#       rejects the classic ReDoS shape -- a quantifier applied to a group
+#       whose body itself contains a quantifier (``(a+)+``, ``(a*)*``,
+#       ``(.*a){10,}``). Such a pattern is never compiled or executed;
+#       :meth:`RedactionPolicy.load` raises ``RelayPolicyError`` with code
+#       ``RELAY-SDK-017`` and ``details["reason"] == "redos_pattern"``.
+#
+#   (2) An input-length CLAMP: a leaf longer than ``MAX_REDACTION_LEAF_LENGTH``
+#       code points is truncated to the cap before matching, with the removed
+#       tail replaced by ``REDACTION_TRUNCATION_MARKER``. This bounds total
+#       matcher work even for linear-but-slow patterns over very large inputs
+#       (and keeps raw plaintext beyond the cap from ever crossing the wire).
+#
+# BOTH constants and the marker are identical on the TypeScript SDK
+# (``MAX_REDACTION_LEAF_LENGTH`` / ``REDACTION_TRUNCATION_MARKER`` in
+# packages/sdk-typescript/src/redaction.ts) so cross-language byte-equality
+# holds for a clamped leaf (Pattern B/C parity).
+
+#: Maximum length (in code points) of a single string leaf the matcher loop
+#: will scan. Leaves longer than this are clamped before matching. Must stay
+#: byte-for-byte equal to the TypeScript SDK constant.
+MAX_REDACTION_LEAF_LENGTH: Final[int] = 1_048_576  # 1 MiB of code points.
+
+#: Deterministic marker spliced in where a leaf was truncated at the cap.
+#: ASCII per CLAUDE.md "ASCII-Safe Source"; identical to the TS marker.
+REDACTION_TRUNCATION_MARKER: Final[str] = "[relay:truncated]"
+
+#: Well-formed ``{n}`` / ``{n,}`` / ``{n,m}`` interval-quantifier body.
+_INTERVAL_BODY_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9]+(,[0-9]*)?$")
+
+_REDOS_REASON: Final[str] = "redos_pattern"
+
+
+def _interval_quantifier_end(raw_pattern: str, start: int) -> int | None:
+    """Return the index just past a well-formed ``{...}`` interval quantifier.
+
+    ``raw_pattern[start]`` MUST be ``{``. Returns the index after the closing
+    ``}`` for a well-formed ``{n}`` / ``{n,}`` / ``{n,m}`` interval, else
+    ``None`` (a bare ``{`` is a literal). Mirrors the TS ``intervalQuantifierEnd``.
+    """
+    if start >= len(raw_pattern) or raw_pattern[start] != "{":
+        return None
+    j = start + 1
+    n = len(raw_pattern)
+    body_chars: list[str] = []
+    while j < n and raw_pattern[j] != "}":
+        body_chars.append(raw_pattern[j])
+        j += 1
+    if j < n and _INTERVAL_BODY_RE.match("".join(body_chars)):
+        return j + 1
+    return None
+
+
+def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
+    """Reject a catastrophic-backtracking (ReDoS) regex BEFORE compilation.
+
+    Deterministic static scan of the raw pattern -- no compilation, no
+    execution, no wall clock. The dangerous class is a quantifier applied to a
+    GROUP whose body itself CONTAINS a quantifier (nested quantifiers), e.g.
+    ``(a+)+``, ``(a*)*``, ``(a+)*``, ``(\\w+\\s?)*``, ``(.*a){2,}``. A single
+    quantifier (``a+``, ``[A-Za-z0-9]{20,}``) or an optional inside a group with
+    no OUTER quantifier (``(?i)api[_-]?key``) is linear and accepted.
+
+    Returns ``None`` when the pattern is accepted, else a structured
+    ``{"reason": ..., "error": ...}`` dict. Mirrors the TypeScript
+    ``checkRegexRedosSafety`` byte-for-byte so the same policy is rejected (or
+    accepted) identically on both runtimes.
+    """
+    redos = {
+        "reason": _REDOS_REASON,
+        "error": (
+            "regex pattern has nested quantifiers (a quantifier applied to a "
+            "group whose body itself contains a quantifier), e.g. '(a+)+'; "
+            "this is a catastrophic-backtracking (ReDoS) risk and is rejected "
+            "before compilation"
+        ),
+    }
+    # Per open group: does its body (so far) contain a quantifier?
+    group_body_has_quantifier: list[bool] = []
+
+    def mark_current_group_quantifier() -> None:
+        if group_body_has_quantifier:
+            group_body_has_quantifier[-1] = True
+
+    i = 0
+    n = len(raw_pattern)
+    while i < n:
+        ch = raw_pattern[i]
+        if ch == "\\":
+            # Escaped metacharacter: one literal token; not a quantifier.
+            i += 2
+            continue
+        if ch == "[":
+            # Character class: one atom; skip to ``]`` respecting escapes.
+            i += 1
+            while i < n and raw_pattern[i] != "]":
+                if raw_pattern[i] == "\\":
+                    i += 1
+                i += 1
+            i += 1  # consume ']'
+            continue
+        if ch == "(":
+            group_body_has_quantifier.append(False)
+            i += 1
+            continue
+        if ch == ")":
+            inner_had_quantifier = (
+                group_body_has_quantifier.pop()
+                if group_body_has_quantifier
+                else False
+            )
+            nxt = raw_pattern[i + 1] if i + 1 < n else None
+            group_immediately_quantified = nxt in ("*", "+", "?", "{")
+            group_is_quantified = group_immediately_quantified and (
+                nxt != "{" or _interval_quantifier_end(raw_pattern, i + 1) is not None
+            )
+            if inner_had_quantifier and group_is_quantified:
+                return redos
+            # Propagate the "contains a quantifier" signal to the ENCLOSING
+            # group when either the inner body had a quantifier OR the group
+            # itself is quantified, so a deeper nesting (e.g. ``((a+))+``) is
+            # still detected when an outer quantifier applies.
+            if inner_had_quantifier or group_is_quantified:
+                mark_current_group_quantifier()
+            i += 1
+            continue
+        if ch in ("*", "+", "?"):
+            mark_current_group_quantifier()
+            i += 1
+            continue
+        if ch == "{":
+            end = _interval_quantifier_end(raw_pattern, i)
+            if end is not None:
+                mark_current_group_quantifier()
+                i = end  # consume through '}'
+                continue
+            # Literal '{': a normal token.
+            i += 1
+            continue
+        # Any other literal/metacharacter is a plain token.
+        i += 1
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -582,6 +732,23 @@ class RedactionPolicy:
                             "error": "named groups are not supported",
                         },
                     )
+                # VAL-REDACT-006: reject catastrophic-backtracking (ReDoS)
+                # structure BEFORE compiling, with the dedicated code
+                # RELAY-SDK-017. The TS SDK surfaces the identical code +
+                # reason for cross-language parity (Pattern B/C).
+                redos = _check_regex_redos_safety(raw_pattern)
+                if redos is not None:
+                    raise RelayPolicyError(
+                        f"regex matcher #{idx} pattern is invalid: "
+                        f"{redos['error']}",
+                        code=RELAY_SDK_REGEX_REDOS_CODE,
+                        details={
+                            "reason": redos["reason"],
+                            "index": idx,
+                            "pattern": raw_pattern,
+                            "error": redos["error"],
+                        },
+                    )
                 try:
                     pattern = _compile_regex_pattern(raw_pattern)
                 except re.error as exc:
@@ -888,6 +1055,27 @@ class RedactionEngine:
         """
         if not value:
             return value
+        # VAL-REDACT-006: clamp an over-cap leaf BEFORE matching. A leaf longer
+        # than MAX_REDACTION_LEAF_LENGTH code points is truncated to the cap;
+        # the removed tail is replaced by REDACTION_TRUNCATION_MARKER, appended
+        # AFTER matching so the marker is never scanned or redacted. This bounds
+        # total matcher work (defense against ReDoS via huge inputs as well as
+        # linear-but-slow patterns) and guarantees raw plaintext beyond the cap
+        # never crosses the wire. Byte-identical to the TS SDK clamp (the TS
+        # side clamps by UTF-16 code units; for ASCII/BMP leaves -- the parity
+        # surface -- code points and code units coincide).
+        if len(value) > MAX_REDACTION_LEAF_LENGTH:
+            clamped = value[:MAX_REDACTION_LEAF_LENGTH]
+            return (
+                self._apply_matchers_to_clamped_string(clamped)
+                + REDACTION_TRUNCATION_MARKER
+            )
+        return self._apply_matchers_to_clamped_string(value)
+
+    def _apply_matchers_to_clamped_string(self, value: str) -> str:
+        """Run matchers on an already length-clamped string (see
+        :meth:`_apply_matchers_to_string`). The normalize-match-splice logic
+        is identical to the pre-VAL-REDACT-006 implementation."""
         normalised = _normalise_for_matching(value)
         # Walk matchers, collecting (start, end, replacement) tuples.
         spans: list[tuple[int, int, str]] = []

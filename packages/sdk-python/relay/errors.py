@@ -80,6 +80,14 @@ RELAY_SDK_HANDOFF_INCOMPLETE_CODE: Final[str] = "RELAY-SDK-007"
 RELAY_SDK_EVIDENCE_INCOMPLETE_CODE: Final[str] = "RELAY-SDK-008"
 RELAY_SDK_REPLAY_PRECONDITION_CODE: Final[str] = "RELAY-SDK-009"
 RELAY_SDK_POLICY_INVALID_CODE: Final[str] = "RELAY-SDK-010"
+# VAL-REDACT-006 (MEDIUM / resource-leak): a policy-supplied regex matcher
+# whose pattern has catastrophic-backtracking (ReDoS) structure -- a quantifier
+# applied to a group whose body itself contains a quantifier, e.g. ``(a+)+`` /
+# ``(a*)*`` / ``(.*a){10,}``. The SDK REJECTS such a pattern at policy LOAD time
+# (it is never compiled or executed). The TypeScript SDK surfaces the identical
+# code + ``details.reason`` ("redos_pattern") for cross-language parity
+# (Pattern B/C); see packages/sdk-typescript/src/errors.ts.
+RELAY_SDK_REGEX_REDOS_CODE: Final[str] = "RELAY-SDK-017"
 
 # Wire codes for sidecar-side ingest rejection the SDK surfaces back.
 RELAY_ING_001_CODE: Final[str] = "RELAY-ING-001"
@@ -709,6 +717,7 @@ __all__ = [
     "RELAY_SDK_NO_SIDECAR_CODE",
     "RELAY_SDK_POLICY_INVALID_CLASS",
     "RELAY_SDK_POLICY_INVALID_CODE",
+    "RELAY_SDK_REGEX_REDOS_CODE",
     "RELAY_SDK_REPLAY_PRECONDITION_CLASS",
     "RELAY_SDK_REPLAY_PRECONDITION_CODE",
     "RELAY_SDK_VERSION_MISMATCH_CLASS",

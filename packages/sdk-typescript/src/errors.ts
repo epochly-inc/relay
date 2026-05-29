@@ -80,6 +80,15 @@ export const RELAY_SDK_REPLAY_LIVE_MODE_UNACK_CODE = "RELAY-SDK-015";
 // code carries a distinct namespace from the generic policy-invalid code so
 // callers can branch on the specific failure class.
 export const RELAY_SDK_RAW_CAPTURE_DENIED_CODE = "RELAY-SDK-016";
+// VAL-REDACT-006 (MEDIUM / resource-leak): a policy-supplied regex matcher
+// whose pattern exhibits catastrophic-backtracking (ReDoS) structure -- a
+// quantifier applied to a group that itself ends in a quantifier, e.g.
+// ``(a+)+`` / ``(a*)*`` / ``(.*a){10,}``. The SDK REJECTS such a pattern at
+// policy LOAD time (it is never compiled or executed) so a long near-matching
+// leaf cannot drive the backtracking engine to exponential work and block the
+// caller. The Python SDK surfaces the identical code + ``details.reason``
+// ("redos_pattern") for cross-language parity (Pattern B/C).
+export const RELAY_SDK_REGEX_REDOS_CODE = "RELAY-SDK-017";
 
 // W4.5 adapter + replay-mode codes (descriptive tokens; VAL-W4-035, -036,
 // -036b, -040). The contract assertions specify the wire `code` field

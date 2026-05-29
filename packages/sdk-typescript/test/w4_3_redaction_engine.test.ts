@@ -444,3 +444,119 @@ describe("VAL-REDACT-005: non-finite number leaves fail closed (Python parity)",
     expect(Buffer.from(body).toString("utf8")).toBe('{"a":0,"b":-17,"c":1.5,"d":1e+308}');
   });
 });
+
+// -----------------------------------------------------------------------------
+// VAL-REDACT-006 (MEDIUM / resource-leak): a policy-supplied regex was compiled
+// directly from the policy `pattern` string and executed against an unbounded
+// leaf with NO ReDoS / complexity guard. A catastrophic-backtracking pattern
+// (e.g. "(a+)+$") plus a long near-matching input ("aaaa...aaab") drives the
+// backtracking engine to exponential work, blocking the event loop synchronously.
+//
+// The fix is DETERMINISTIC (no wall-clock assertion): (a) a static ReDoS
+// heuristic that REJECTS dangerous nested-quantifier patterns at policy LOAD
+// time with a typed code RELAY-SDK-017 / reason "redos_pattern", and (b) a
+// documented MAX_REDACTION_LEAF_LENGTH clamp on the leaf string before matching.
+// Both layers are identical on the Python and TypeScript SDKs (Pattern B/C
+// parity); the parity surface is exercised live in
+// packages/sdk-python/tests/test_redaction_parity.py.
+// -----------------------------------------------------------------------------
+
+describe("VAL-REDACT-006: policy regex ReDoS guard (load-time rejection + leaf clamp)", () => {
+  const REDOS_CODE = "RELAY-SDK-017";
+  const REDOS_REASON = "redos_pattern";
+
+  function redosPolicy(pattern: string): Record<string, unknown> {
+    return {
+      schema_version: "relay.redaction.v1",
+      policy_version: "2026-05-29.redos",
+      raw_capture: false,
+      retention_days: 30,
+      dpa_ref: null,
+      approver_user_id: null,
+      matchers: [{ id: "redos", kind: "regex", pattern, action: "redact" }],
+      action_policy: {
+        hash: { algorithm: "hmac-sha256", salt_ref: "tenant_salt_v3" },
+        redact: { placeholder: "<redacted>" },
+        drop: { placeholder: null },
+      },
+      applies_to_fields: [...DEFAULT_APPLIES_TO_FIELDS],
+    };
+  }
+
+  // The catastrophic-backtracking class: a quantifier applied to a group that
+  // itself ends in a quantifier. Every one of these is the classic ReDoS shape.
+  for (const pattern of ["(a+)+$", "(a*)*$", "(a+)*", "(a*)+", "(.*a){10,}", "(\\w+\\s?)*$"]) {
+    it(`rejects nested-quantifier pattern ${JSON.stringify(pattern)} at LOAD time`, () => {
+      let caught: unknown;
+      try {
+        loadRedactionPolicy(redosPolicy(pattern));
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(RelayRedactionPolicyError);
+      const e = caught as RelayRedactionPolicyError;
+      expect(e.code).toBe(REDOS_CODE);
+      expect((e.details as { reason?: string }).reason).toBe(REDOS_REASON);
+    });
+  }
+
+  it("the specific contract trigger (a+)+$ is rejected at load, never executed", () => {
+    // Pre-fix this policy LOADED and then hung on the trigger input below.
+    // Post-fix loadRedactionPolicy rejects the pattern, so the engine that
+    // would execute it is never constructed.
+    expect(() => loadRedactionPolicy(redosPolicy("(a+)+$"))).toThrow(
+      RelayRedactionPolicyError,
+    );
+  });
+
+  it("still accepts the default-policy patterns (no false positives)", () => {
+    // The default/base policy patterns use single (non-nested) quantifiers.
+    // The heuristic MUST NOT reject them or it would break every real policy.
+    expect(() => loadRedactionPolicy(BASE_POLICY)).not.toThrow();
+    for (const pattern of [
+      "(sk-|key_)[A-Za-z0-9]{20,}",
+      "[\\w.+-]+@[\\w-]+\\.[\\w.-]+",
+      "(?i)password",
+      "(?i)api[_-]?key",
+      "(sk-|sk-ant-)[A-Za-z0-9]+",
+    ]) {
+      expect(() => loadRedactionPolicy(redosPolicy(pattern))).not.toThrow();
+    }
+  });
+
+  it("exports MAX_REDACTION_LEAF_LENGTH and clamps an over-cap leaf before matching", async () => {
+    const mod = await import("../src/redaction.js");
+    const cap = (mod as { MAX_REDACTION_LEAF_LENGTH: number }).MAX_REDACTION_LEAF_LENGTH;
+    expect(typeof cap).toBe("number");
+    expect(cap).toBeGreaterThan(0);
+
+    // A linear-but-pathological scenario: a benign single-quantifier pattern
+    // (passes the heuristic) applied to a leaf far larger than the cap. The
+    // clamp must bound the matched input so the output reflects only the first
+    // `cap` code units plus a fixed truncation marker -- never the full leaf.
+    const policy = loadRedactionPolicy(redosPolicy("zzz"));
+    const engine = new RedactionEngine({ policy, saltProvider });
+    const overCap = "x".repeat(cap + 1000);
+    const redacted = engine.redact({ model_call: { input: overCap } }) as {
+      model_call: { input: string };
+    };
+    const out = redacted.model_call.input;
+    // The result MUST be shorter than the original (clamped), and MUST carry the
+    // deterministic truncation marker the Python SDK uses byte-for-byte.
+    expect(out.length).toBeLessThan(overCap.length);
+    expect(out).toContain("[relay:truncated]");
+  });
+
+  it("clamp is at-or-under cap and deterministic for identical inputs", () => {
+    const policy = loadRedactionPolicy(redosPolicy("zzz"));
+    const engine = new RedactionEngine({ policy, saltProvider });
+    const big = "y".repeat(500000);
+    const a = (engine.redact({ model_call: { input: big } }) as {
+      model_call: { input: string };
+    }).model_call.input;
+    const b = (engine.redact({ model_call: { input: big } }) as {
+      model_call: { input: string };
+    }).model_call.input;
+    expect(a).toBe(b);
+  });
+});

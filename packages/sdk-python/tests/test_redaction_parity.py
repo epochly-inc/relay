@@ -998,3 +998,256 @@ def test_non_finite_number_rejected_both_runtimes_via_node_subprocess(
         f"Py/TS reason divergence for {name!r}: "
         f"py={excinfo.value.details!r} ts={outcome['reason']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-006 (MEDIUM / resource-leak): a policy-supplied regex was compiled
+# directly from the policy ``pattern`` string and executed against an unbounded
+# leaf with NO ReDoS / complexity guard. A catastrophic-backtracking pattern
+# (e.g. ``(a+)+$``) plus a long near-matching input drives the backtracking
+# engine to exponential work, blocking the caller synchronously on BOTH runtimes
+# (Python ``re`` and V8 ``RegExp`` are both backtracking engines).
+#
+# The deterministic fix (no wall-clock assertions) has two layers, byte-for-byte
+# identical across SDKs:
+#   (a) a static ReDoS heuristic that REJECTS nested-quantifier patterns at
+#       policy LOAD time with code ``RELAY-SDK-017`` and reason
+#       ``redos_pattern``;
+#   (b) a documented ``MAX_REDACTION_LEAF_LENGTH`` clamp applied to the leaf
+#       string before matching, with a shared ``[relay:truncated]`` marker.
+#
+# These cases assert Python<->TypeScript parity: the same pattern is rejected
+# at load on BOTH runtimes with the same code + reason (via the live Node
+# subprocess), and the same cap constant clamps an over-cap leaf identically.
+# ---------------------------------------------------------------------------
+
+_REDOS_CODE = "RELAY-SDK-017"
+_REDOS_REASON = "redos_pattern"
+
+# The classic catastrophic-backtracking shape: a quantifier applied to a group
+# that itself ends in a quantifier. The contract trigger ``(a+)+$`` is first.
+_REDOS_PATTERNS = ["(a+)+$", "(a*)*$", "(a+)*", "(a*)+", "(.*a){10,}", r"(\w+\s?)*$"]
+
+
+def _redos_policy(pattern: str) -> dict:
+    return {
+        "schema_version": "relay.redaction.v1",
+        "policy_version": "2026-05-29.redos",
+        "raw_capture": False,
+        "retention_days": 30,
+        "dpa_ref": None,
+        "approver_user_id": None,
+        "matchers": [
+            {"id": "redos", "kind": "regex", "pattern": pattern, "action": "redact"}
+        ],
+        "action_policy": {
+            "hash": {"algorithm": "hmac-sha256", "salt_ref": "tenant_salt_v3"},
+            "redact": {"placeholder": "<redacted>"},
+            "drop": {"placeholder": None},
+        },
+        "applies_to_fields": list(DEFAULT_APPLIES_TO_FIELDS),
+    }
+
+
+def _ts_load_outcome_via_node(policy_body: dict) -> dict | None:
+    """Invoke the TS ``loadRedactionPolicy`` via Node and report its OUTCOME.
+
+    Returns ``{"ok": True}`` when the policy loads, or ``{"ok": False,
+    "code": ..., "reason": ..., "message": ...}`` when ``loadRedactionPolicy``
+    raises. Returns ``None`` when Node or the TS build are unavailable; the
+    caller should skip rather than fail (offline / pre-build).
+    """
+    node = _find_node()
+    if node is None:
+        return None
+    repo_root = Path(__file__).resolve().parents[3]
+    ts_dist = (
+        repo_root / "packages" / "sdk-typescript" / "dist" / "src" / "redaction.js"
+    )
+    if not ts_dist.exists():
+        return None
+    ts_dist_json = json.dumps(str(ts_dist))
+    script = f"""
+import {{ loadRedactionPolicy }} from {ts_dist_json};
+
+const stdin = await new Promise((resolve) => {{
+  let buf = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (c) => {{ buf += c; }});
+  process.stdin.on('end', () => resolve(buf));
+}});
+const input = JSON.parse(stdin);
+try {{
+  loadRedactionPolicy(input.policy);
+  process.stdout.write(JSON.stringify({{ ok: true }}));
+}} catch (err) {{
+  process.stdout.write(JSON.stringify({{
+    ok: false,
+    code: err && err.code ? err.code : null,
+    reason: err && err.details ? (err.details.reason ?? null) : null,
+    message: err && err.message ? err.message : String(err),
+    name: err && err.name ? err.name : null,
+  }}));
+}}
+"""
+    proc = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        input=json.dumps({"policy": policy_body}),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"node TS subprocess failed: rc={proc.returncode} stderr={proc.stderr!r}"
+        )
+    return json.loads(proc.stdout.strip())
+
+
+def _ts_max_leaf_length_via_node() -> int | None:
+    """Return the TS ``MAX_REDACTION_LEAF_LENGTH`` constant via Node.
+
+    Returns ``None`` when Node / the TS dist are unavailable.
+    """
+    node = _find_node()
+    if node is None:
+        return None
+    repo_root = Path(__file__).resolve().parents[3]
+    ts_dist = (
+        repo_root / "packages" / "sdk-typescript" / "dist" / "src" / "redaction.js"
+    )
+    if not ts_dist.exists():
+        return None
+    ts_dist_json = json.dumps(str(ts_dist))
+    script = f"""
+import {{ MAX_REDACTION_LEAF_LENGTH }} from {ts_dist_json};
+process.stdout.write(String(MAX_REDACTION_LEAF_LENGTH));
+"""
+    proc = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"node TS subprocess failed: rc={proc.returncode} stderr={proc.stderr!r}"
+        )
+    return int(proc.stdout.strip())
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _REDOS_PATTERNS)
+def test_redos_pattern_rejected_at_load_python(pattern: str) -> None:
+    """A nested-quantifier (catastrophic-backtracking) pattern MUST be rejected
+    by ``RedactionPolicy.load`` with code ``RELAY-SDK-017`` / reason
+    ``redos_pattern`` -- the pattern is never compiled or executed.
+    """
+    with pytest.raises(RelayPolicyError) as excinfo:
+        RedactionPolicy.load(_redos_policy(pattern))
+    assert excinfo.value.code == _REDOS_CODE, (
+        f"unexpected code for {pattern!r}: {excinfo.value.code!r}"
+    )
+    assert excinfo.value.details.get("reason") == _REDOS_REASON, (
+        f"unexpected reason for {pattern!r}: {excinfo.value.details!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "(sk-|key_)[A-Za-z0-9]{20,}",
+        r"[\w.+-]+@[\w-]+\.[\w.-]+",
+        "(?i)password",
+        "(?i)api[_-]?key",
+        "(sk-|sk-ant-)[A-Za-z0-9]+",
+    ],
+)
+def test_safe_patterns_not_rejected_python(pattern: str) -> None:
+    """The ReDoS heuristic MUST NOT reject the default-policy patterns (single,
+    non-nested quantifiers); rejecting them would break every real policy.
+    """
+    RedactionPolicy.load(_redos_policy(pattern))
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _REDOS_PATTERNS)
+def test_redos_pattern_rejected_both_runtimes_via_node_subprocess(
+    pattern: str,
+) -> None:
+    """Python and TS MUST BOTH reject a catastrophic-backtracking pattern at
+    LOAD time, with the SAME typed code (RELAY-SDK-017) and reason
+    ("redos_pattern").
+
+    Skipped when Node or the TS dist are unavailable (offline tier-1); when
+    present the test is authoritative.
+    """
+    outcome = _ts_load_outcome_via_node(_redos_policy(pattern))
+    if outcome is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language ReDoS-rejection parity cannot be "
+            "checked in this environment"
+        )
+    assert outcome["ok"] is False, (
+        f"TS did not reject ReDoS pattern {pattern!r}: {outcome!r}"
+    )
+    assert outcome["code"] == _REDOS_CODE, (
+        f"TS rejection code mismatch for {pattern!r}: {outcome!r}"
+    )
+    assert outcome["reason"] == _REDOS_REASON, (
+        f"TS rejection reason mismatch for {pattern!r}: {outcome!r}"
+    )
+    with pytest.raises(RelayPolicyError) as excinfo:
+        RedactionPolicy.load(_redos_policy(pattern))
+    assert excinfo.value.code == outcome["code"], (
+        f"Py/TS code divergence for {pattern!r}: "
+        f"py={excinfo.value.code!r} ts={outcome['code']!r}"
+    )
+    assert excinfo.value.details.get("reason") == outcome["reason"], (
+        f"Py/TS reason divergence for {pattern!r}: "
+        f"py={excinfo.value.details!r} ts={outcome['reason']!r}"
+    )
+
+
+@pytest.mark.plumbing
+def test_max_leaf_length_clamps_over_cap_leaf_python() -> None:
+    """An over-cap leaf is clamped to ``MAX_REDACTION_LEAF_LENGTH`` before
+    matching; the output carries the deterministic ``[relay:truncated]`` marker
+    and is shorter than the original (the full leaf is never matched).
+    """
+    from relay.redaction import MAX_REDACTION_LEAF_LENGTH
+
+    assert isinstance(MAX_REDACTION_LEAF_LENGTH, int)
+    assert MAX_REDACTION_LEAF_LENGTH > 0
+    policy = RedactionPolicy.load(_redos_policy("zzz"))
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    over_cap = "x" * (MAX_REDACTION_LEAF_LENGTH + 1000)
+    redacted = engine.redact({"model_call": {"input": over_cap}})
+    out = redacted["model_call"]["input"]
+    assert isinstance(out, str)
+    assert len(out) < len(over_cap)
+    assert "[relay:truncated]" in out
+
+
+@pytest.mark.plumbing
+def test_max_leaf_length_constant_matches_typescript_via_node_subprocess() -> None:
+    """The Python and TS ``MAX_REDACTION_LEAF_LENGTH`` constants MUST be equal
+    (Pattern B/C parity: same clamp on both SDKs).
+
+    Skipped when Node / the TS dist are unavailable.
+    """
+    from relay.redaction import MAX_REDACTION_LEAF_LENGTH
+
+    ts_cap = _ts_max_leaf_length_via_node()
+    if ts_cap is None:
+        pytest.skip(
+            "node binary or TS dist not available; cross-language clamp "
+            "constant parity cannot be checked in this environment"
+        )
+    assert ts_cap == MAX_REDACTION_LEAF_LENGTH, (
+        f"cap constant divergence: py={MAX_REDACTION_LEAF_LENGTH} ts={ts_cap}"
+    )

@@ -66,6 +66,7 @@ import {
   RelayRedactionRawCaptureDeniedError,
   RELAY_SDK_POLICY_INVALID_CODE,
   RELAY_SDK_RAW_CAPTURE_DENIED_CODE,
+  RELAY_SDK_REGEX_REDOS_CODE,
 } from "./errors.js";
 
 // The schema_version literal the policy MUST carry (spec G.2). Anything
@@ -88,6 +89,181 @@ const KNOWN_MATCHER_KINDS: ReadonlySet<string> = new Set([
   "json_path",
 ]);
 const KNOWN_ACTIONS: ReadonlySet<string> = new Set(["redact", "hash", "drop"]);
+
+// ---------------------------------------------------------------------------
+// VAL-REDACT-006: regex ReDoS / complexity guard.
+// ---------------------------------------------------------------------------
+// Two deterministic layers protect the matcher loop from a policy-supplied
+// regex causing catastrophic backtracking against a long leaf:
+//
+//   (1) A static load-time heuristic (``assertSafeRegexPattern``) rejects the
+//       classic ReDoS shape -- a quantifier applied to a group that itself
+//       ends in a quantifier (``(a+)+``, ``(a*)*``, ``(.*a){10,}``). Such a
+//       pattern is never compiled or executed; ``loadRedactionPolicy`` raises
+//       with code ``RELAY-SDK-017`` and ``details.reason == "redos_pattern"``.
+//
+//   (2) An input-length CLAMP: a leaf longer than ``MAX_REDACTION_LEAF_LENGTH``
+//       UTF-16 code units is truncated to the cap before matching, with the
+//       removed tail replaced by ``REDACTION_TRUNCATION_MARKER``. This bounds
+//       total matcher work even for linear-but-slow patterns over very large
+//       inputs (and keeps raw plaintext beyond the cap from ever crossing the
+//       wire). Trace leaves are bounded in practice; payloads larger than the
+//       cap are a denial-of-service vector, not a legitimate redaction target.
+//
+// BOTH constants and the marker are identical on the Python SDK
+// (``relay.redaction.MAX_REDACTION_LEAF_LENGTH`` /
+// ``REDACTION_TRUNCATION_MARKER``) so cross-language byte-equality holds for a
+// clamped leaf (Pattern B/C parity).
+
+/**
+ * Maximum length (in UTF-16 code units) of a single string leaf the matcher
+ * loop will scan. Leaves longer than this are clamped before matching. Must
+ * stay byte-for-byte equal to the Python SDK constant.
+ */
+export const MAX_REDACTION_LEAF_LENGTH = 1_048_576; // 1 MiB of UTF-16 code units.
+
+/**
+ * Deterministic marker spliced in where a leaf was truncated at the cap.
+ * ASCII per CLAUDE.md "ASCII-Safe Source"; identical to the Python marker.
+ */
+export const REDACTION_TRUNCATION_MARKER = "[relay:truncated]";
+
+/**
+ * Reject a policy-supplied regex whose structure is a catastrophic-backtracking
+ * (ReDoS) risk, BEFORE it is compiled. The check is a deterministic static
+ * scan of the raw pattern -- no compilation, no execution, no wall clock.
+ *
+ * The dangerous class is a quantifier applied to a GROUP whose body itself
+ * CONTAINS a quantifier (nested quantifiers), e.g. ``(a+)+``, ``(a*)*``,
+ * ``(a+)*``, ``(\\w+\\s?)*``, ``(.*a){2,}``. These cause exponential
+ * backtracking on a long near-matching input. A single quantifier (``a+``,
+ * ``[A-Za-z0-9]{20,}``) or an optional inside a group with no OUTER quantifier
+ * (``(?i)api[_-]?key``) is linear and accepted.
+ *
+ * Returns ``null`` when the pattern is accepted, or a structured rejection
+ * ``reason``/``error`` consumed by :func:`loadRedactionPolicy`. Mirrors
+ * :func:`relay.redaction._check_regex_redos_safety` (Python) byte-for-byte so
+ * the same policy is rejected (or accepted) identically on both runtimes.
+ */
+function checkRegexRedosSafety(
+  rawPattern: string,
+): { readonly reason: string; readonly error: string } | null {
+  // Walk the pattern token by token. For each currently-open group, track
+  // whether its body so far CONTAINS any quantifier. When a group closes, if
+  // its body contains a quantifier AND the group itself is then immediately
+  // quantified, that is the nested-quantifier (ReDoS) shape. A quantified
+  // inner group also counts as a quantifier for its enclosing group.
+  const REDOS = {
+    reason: "redos_pattern",
+    error:
+      "regex pattern has nested quantifiers (a quantifier applied to a group " +
+      "whose body itself contains a quantifier), e.g. '(a+)+'; this is a " +
+      "catastrophic-backtracking (ReDoS) risk and is rejected before compilation",
+  } as const;
+  // Per open group: does its body (so far) contain a quantifier?
+  const groupBodyHasQuantifier: boolean[] = [];
+
+  const markCurrentGroupQuantifier = (): void => {
+    if (groupBodyHasQuantifier.length > 0) {
+      groupBodyHasQuantifier[groupBodyHasQuantifier.length - 1] = true;
+    }
+  };
+
+  let i = 0;
+  const n = rawPattern.length;
+  while (i < n) {
+    const ch = rawPattern[i];
+    if (ch === "\\") {
+      // Escaped metacharacter: one literal token; not a quantifier.
+      i += 2;
+      continue;
+    }
+    if (ch === "[") {
+      // Character class: one atom; skip to ``]`` respecting escapes. A class is
+      // not itself a quantifier (any quantifier AFTER it is handled below).
+      i += 1;
+      while (i < n && rawPattern[i] !== "]") {
+        if (rawPattern[i] === "\\") i += 1;
+        i += 1;
+      }
+      i += 1; // consume ']'
+      continue;
+    }
+    if (ch === "(") {
+      groupBodyHasQuantifier.push(false);
+      i += 1;
+      continue;
+    }
+    if (ch === ")") {
+      const innerHadQuantifier =
+        groupBodyHasQuantifier.length > 0
+          ? (groupBodyHasQuantifier.pop() ?? false)
+          : false;
+      const next = i + 1 < n ? rawPattern[i + 1] : undefined;
+      const groupImmediatelyQuantified =
+        next === "*" || next === "+" || next === "?" || next === "{";
+      const groupIsQuantified =
+        groupImmediatelyQuantified &&
+        (next !== "{" || isIntervalQuantifierAt(rawPattern, i + 1));
+      if (innerHadQuantifier && groupIsQuantified) {
+        return REDOS;
+      }
+      // The closed group is part of its ENCLOSING group's body. Propagate the
+      // "contains a quantifier" signal upward when EITHER the inner body had a
+      // quantifier OR the group itself is quantified -- so a deeper nesting
+      // (e.g. ``((a+))+``) is still detected when an outer quantifier applies.
+      if (innerHadQuantifier || groupIsQuantified) {
+        markCurrentGroupQuantifier();
+      }
+      i += 1;
+      continue;
+    }
+    if (ch === "*" || ch === "+" || ch === "?") {
+      markCurrentGroupQuantifier();
+      i += 1;
+      continue;
+    }
+    if (ch === "{") {
+      const end = intervalQuantifierEnd(rawPattern, i);
+      if (end !== null) {
+        markCurrentGroupQuantifier();
+        i = end; // consume through '}'
+        continue;
+      }
+      // Literal '{': a normal token.
+      i += 1;
+      continue;
+    }
+    // Any other literal/metacharacter is a plain token.
+    i += 1;
+  }
+  return null;
+}
+
+/**
+ * If a well-formed ``{n}`` / ``{n,}`` / ``{n,m}`` interval quantifier starts at
+ * ``rawPattern[start]`` (which must be ``{``), return the index just past the
+ * closing ``}``; otherwise ``null``. Shared by :func:`checkRegexRedosSafety`.
+ */
+function intervalQuantifierEnd(rawPattern: string, start: number): number | null {
+  if (rawPattern[start] !== "{") return null;
+  let j = start + 1;
+  let body = "";
+  const n = rawPattern.length;
+  while (j < n && rawPattern[j] !== "}") {
+    body += rawPattern[j];
+    j += 1;
+  }
+  if (j < n && /^[0-9]+(,[0-9]*)?$/.test(body)) {
+    return j + 1;
+  }
+  return null;
+}
+
+/** True iff a well-formed interval quantifier begins at ``rawPattern[start]``. */
+function isIntervalQuantifierAt(rawPattern: string, start: number): boolean {
+  return intervalQuantifierEnd(rawPattern, start) !== null;
+}
 
 /**
  * Default ``applies_to_fields`` (spec G.2). Matches Python
@@ -263,6 +439,15 @@ function compileRegexPattern(rawPattern: string): RegexCompileResult {
         "Python named groups '(?P<name>...)' / '(?P=name)' are not part of " +
         "the supported cross-language regex dialect",
     };
+  }
+
+  // VAL-REDACT-006: reject catastrophic-backtracking (ReDoS) structure BEFORE
+  // compiling. Runs on the RAW pattern so both SDKs analyze the identical
+  // string (Python ``re`` keeps the leading inline-flag prefix; analyzing the
+  // raw form keeps the heuristic byte-identical across runtimes).
+  const redos = checkRegexRedosSafety(rawPattern);
+  if (redos !== null) {
+    return { ok: false, reason: redos.reason, error: redos.error };
   }
 
   let body = rawPattern;
@@ -570,10 +755,18 @@ export function loadRedactionPolicy(body: unknown): RedactionPolicyImpl {
       // on both runtimes.
       const compiled = compileRegexPattern(rawPattern);
       if (!compiled.ok) {
+        // VAL-REDACT-006: a catastrophic-backtracking (ReDoS) rejection carries
+        // the distinct code RELAY-SDK-017 so callers can branch on it; every
+        // other compile rejection keeps the generic policy-invalid code. The
+        // Python SDK surfaces the identical code + reason for the ReDoS case.
+        const code =
+          compiled.reason === "redos_pattern"
+            ? RELAY_SDK_REGEX_REDOS_CODE
+            : RELAY_SDK_POLICY_INVALID_CODE;
         throw new RelayRedactionPolicyError(
           `regex matcher #${idx} pattern is invalid: ${compiled.error}`,
           {
-            code: RELAY_SDK_POLICY_INVALID_CODE,
+            code,
             details: {
               reason: compiled.reason,
               index: idx,
@@ -984,6 +1177,24 @@ export class RedactionEngine {
 
   private applyMatchersToString(value: string): string {
     if (value.length === 0) return value;
+    // VAL-REDACT-006: clamp an over-cap leaf BEFORE matching. A leaf longer
+    // than MAX_REDACTION_LEAF_LENGTH is truncated to the cap; the removed tail
+    // is replaced by REDACTION_TRUNCATION_MARKER, which is appended AFTER
+    // matching so the marker itself is never scanned or redacted. This bounds
+    // total matcher work (defense against ReDoS via huge inputs as well as
+    // linear-but-slow patterns) and guarantees raw plaintext beyond the cap
+    // never crosses the wire. Byte-identical to the Python SDK clamp.
+    let truncated = false;
+    let leaf = value;
+    if (leaf.length > MAX_REDACTION_LEAF_LENGTH) {
+      leaf = leaf.slice(0, MAX_REDACTION_LEAF_LENGTH);
+      truncated = true;
+    }
+    const redacted = this.applyMatchersToClampedString(leaf);
+    return truncated ? redacted + REDACTION_TRUNCATION_MARKER : redacted;
+  }
+
+  private applyMatchersToClampedString(value: string): string {
     const normalised = normaliseForMatching(value);
     // Walk matchers, collecting (start, end, replacement) tuples.
     const spans: Array<[number, number, string]> = [];

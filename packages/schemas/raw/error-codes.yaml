@@ -1447,6 +1447,17 @@ codes:
     Record a signed DPA reference and an org-admin approver on the policy version; only then may `raw_capture` be enabled.
   spec_section: "G.1"
   introduced_in: v0.1.0
+- code: RELAY-SDK-017
+  domain: sdk
+  severity: error
+  description: |
+    Redaction policy regex rejected: the matcher pattern has a catastrophic-backtracking (ReDoS) structure and is refused at policy load time before it is ever compiled or executed.
+  triggers: |
+    A regex matcher pattern applies a quantifier to a group whose body itself contains a quantifier (nested quantifiers), e.g. `(a+)+`, `(a*)*`, or `(.*a){10,}`. Such a pattern can drive the backtracking engine to exponential work against a long near-matching input.
+  how_to_fix: |
+    Rewrite the matcher to avoid nested quantifiers (use a single quantifier or an explicit character class), or split the intent across multiple matchers. The SDK also clamps each redaction leaf to `MAX_REDACTION_LEAF_LENGTH` before matching.
+  spec_section: "G.2"
+  introduced_in: v0.1.0
 - code: RELAY-SIDECAR-001
   domain: sidecar
   severity: error
