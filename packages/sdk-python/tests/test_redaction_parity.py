@@ -557,3 +557,129 @@ def test_walk_combining_mark_redaction_no_offset_error() -> None:
     assert out == "my <redacted> is here", (
         f"unexpected splice result: out={out!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-003 (HIGH / correctness): Python inline-flag regex matchers
+# (e.g. the default policy's ``(?i)password``) load and match in Python; the
+# TS SDK threw on them with ``new RegExp(rawPattern, "g")`` because JS RegExp
+# does not understand Python's leading inline scoped flags. The fix
+# translates the supported ``(?i)``/``(?s)``/``(?m)`` subset to JS flags and
+# rejects Python named groups ``(?P<...>)`` consistently on BOTH SDKs.
+# ---------------------------------------------------------------------------
+
+# A policy whose ONLY regex matcher uses a leading Python inline flag, mirror
+# of the hosted default policy's ``(?i)password`` matcher. The TS SDK threw at
+# load on this exact pattern pre-fix.
+_INLINE_FLAG_POLICY: dict = {
+    "schema_version": "relay.redaction.v1",
+    "policy_version": "2026-05-29.inline-flags",
+    "raw_capture": False,
+    "retention_days": 30,
+    "dpa_ref": None,
+    "approver_user_id": None,
+    "matchers": [
+        {
+            "id": "password-field",
+            "kind": "regex",
+            "pattern": "(?i)password",
+            "action": "redact",
+        },
+    ],
+    "action_policy": {
+        "hash": {"algorithm": "hmac-sha256", "salt_ref": "tenant_salt_v3"},
+        "redact": {"placeholder": "<redacted>"},
+        "drop": {"placeholder": None},
+    },
+    "applies_to_fields": list(DEFAULT_APPLIES_TO_FIELDS),
+}
+
+
+@pytest.mark.plumbing
+def test_inline_flag_policy_loads_and_matches_case_insensitively() -> None:
+    """The ``(?i)password`` matcher must load and redact case-insensitively.
+
+    Python ``re.compile('(?i)password')`` sets IGNORECASE natively. This is
+    the parity baseline TS must reach (TS threw on this pattern pre-fix).
+    """
+    policy = RedactionPolicy.load(_INLINE_FLAG_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    out = engine.redact({"model_call": {"input": "my PASSWORD is here"}})
+    rendered = out["model_call"]["input"]
+    assert "PASSWORD" not in rendered
+    assert "<redacted>" in rendered
+
+
+@pytest.mark.plumbing
+def test_inline_flag_policy_byte_equal_typescript_via_node_subprocess() -> None:
+    """Python and TS MUST emit byte-identical canonical bytes for a policy
+    whose matcher uses a Python inline flag (``(?i)password``).
+
+    This is the VAL-REDACT-003 parity surface: pre-fix the TS subprocess
+    threw 'Invalid regular expression: /(?i)password/g: Invalid group' while
+    Python loaded and matched -- the SDKs diverged. Post-fix they agree.
+
+    Skipped when Node or the TS dist are unavailable (offline tier-1); when
+    present the test is authoritative.
+    """
+    payload = {"model_call": {"input": "my PASSWORD is the secret pAsSwOrD"}}
+    ts_bytes = _ts_canonicalize_via_node(
+        _INLINE_FLAG_POLICY, payload, _TENANT_SALT
+    )
+    if ts_bytes is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language byte equality cannot be checked "
+            "in this environment"
+        )
+    policy = RedactionPolicy.load(_INLINE_FLAG_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    py_bytes = redact_capture_payload(engine, payload)
+    assert py_bytes == ts_bytes, (
+        "cross-language byte mismatch on (?i) inline-flag policy: "
+        f"py={py_bytes!r} ts={ts_bytes!r}"
+    )
+
+
+@pytest.mark.plumbing
+def test_python_named_group_rejected_like_typescript() -> None:
+    """Python named groups ``(?P<...>)`` MUST be rejected on the Python side
+    so the supported regex dialect matches the TS SDK exactly.
+
+    Pre-fix Python ``re.compile`` accepted ``(?P<word>password)`` (the
+    matcher would silently match) while the TS SDK threw -- a parity defect.
+    Post-fix both reject it with a ``named_group_unsupported`` reason.
+    """
+    body = {
+        **_INLINE_FLAG_POLICY,
+        "matchers": [
+            {
+                "id": "named",
+                "kind": "regex",
+                "pattern": "(?P<word>password)",
+                "action": "redact",
+            }
+        ],
+    }
+    with pytest.raises(RelayPolicyError) as excinfo:
+        RedactionPolicy.load(body)
+    assert excinfo.value.details.get("reason") == "named_group_unsupported"
+
+
+@pytest.mark.plumbing
+def test_python_named_backreference_rejected() -> None:
+    """``(?P=name)`` named backreference is rejected as named-group syntax."""
+    body = {
+        **_INLINE_FLAG_POLICY,
+        "matchers": [
+            {
+                "id": "backref",
+                "kind": "regex",
+                "pattern": "(?P<a>x)(?P=a)",
+                "action": "redact",
+            }
+        ],
+    }
+    with pytest.raises(RelayPolicyError) as excinfo:
+        RedactionPolicy.load(body)
+    assert excinfo.value.details.get("reason") == "named_group_unsupported"

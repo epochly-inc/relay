@@ -99,6 +99,38 @@ DEFAULT_APPLIES_TO_FIELDS: Final[tuple[str, ...]] = (
     "retrieval.documents",
 )
 
+# Python named-group / named-backreference syntax (``(?P<name>...)`` and
+# ``(?P=name)``). Per VAL-REDACT-003 the supported cross-language regex
+# dialect rejects these on BOTH SDKs: Python's ``re`` accepts them while
+# JavaScript ``RegExp`` does not (JS uses ``(?<name>...)``), so a policy that
+# used them would match on Python and throw on TS. We reject them on the
+# Python side too so the same policy body loads (or is rejected) identically.
+_PYTHON_NAMED_GROUP_RE: Final[re.Pattern[str]] = re.compile(r"\(\?P[<=]")
+
+
+def _compile_regex_pattern(raw_pattern: str) -> re.Pattern[str]:
+    """Compile a policy regex matcher under the pinned cross-language dialect.
+
+    Mirrors the TypeScript ``compileRegexPattern`` bridge (VAL-REDACT-003):
+    Python's ``re`` natively understands leading inline flags such as
+    ``(?i)password`` (the default policy uses them), so we let ``re.compile``
+    handle flag translation. We additionally reject Python named groups
+    ``(?P<name>...)`` / ``(?P=name)`` so the supported dialect is identical
+    on both runtimes -- TS cannot compile that syntax, and a matcher must not
+    silently match on one SDK while throwing on the other.
+
+    Raises :class:`re.error` for invalid syntax (the caller maps it to a
+    ``bad_regex`` policy error). Named-group rejection raises
+    :class:`re.error` with a stable message so the caller can surface a
+    ``named_group_unsupported`` reason.
+    """
+    if _PYTHON_NAMED_GROUP_RE.search(raw_pattern):
+        raise re.error(
+            "Python named groups '(?P<name>...)' / '(?P=name)' are not part "
+            "of the supported cross-language regex dialect"
+        )
+    return re.compile(raw_pattern)
+
 
 # ---------------------------------------------------------------------------
 # Unicode confusables: a small explicit table.
@@ -534,8 +566,24 @@ class RedactionPolicy:
                         f"regex matcher #{idx} MUST have a non-empty pattern",
                         details={"reason": "regex_pattern_missing", "index": idx},
                     )
+                # Reject Python named groups consistently with the TS SDK so
+                # the same policy body loads (or is rejected) identically on
+                # both runtimes (VAL-REDACT-003).
+                if _PYTHON_NAMED_GROUP_RE.search(raw_pattern):
+                    raise RelayPolicyError(
+                        f"regex matcher #{idx} pattern is invalid: "
+                        "Python named groups '(?P<name>...)' / '(?P=name)' "
+                        "are not part of the supported cross-language regex "
+                        "dialect",
+                        details={
+                            "reason": "named_group_unsupported",
+                            "index": idx,
+                            "pattern": raw_pattern,
+                            "error": "named groups are not supported",
+                        },
+                    )
                 try:
-                    pattern = re.compile(raw_pattern)
+                    pattern = _compile_regex_pattern(raw_pattern)
                 except re.error as exc:
                     raise RelayPolicyError(
                         f"regex matcher #{idx} pattern is invalid: {exc}",

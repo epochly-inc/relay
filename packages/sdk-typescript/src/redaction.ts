@@ -201,6 +201,116 @@ function normaliseForMatching(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Regex dialect bridge (VAL-REDACT-003)
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of compiling a policy regex matcher. Either a ready ``RegExp`` or a
+ * structured rejection ``reason`` consumed by :func:`loadRedactionPolicy`.
+ */
+type RegexCompileResult =
+  | { readonly ok: true; readonly pattern: RegExp }
+  | { readonly ok: false; readonly reason: string; readonly error: string };
+
+// Supported leading inline-flag prefix, mirroring the Python ``re`` subset
+// we pin: a single ``(?flags)`` group at the very START of the expression,
+// with flags drawn from {i, s, m}. Python (>=3.11) requires global flags to
+// appear at the start of the pattern; we enforce the same so the two SDKs
+// accept the identical dialect.
+const INLINE_FLAG_PREFIX_RE = /^\(\?([a-zA-Z]+)\)/;
+const SUPPORTED_INLINE_FLAGS: ReadonlyMap<string, string> = new Map([
+  ["i", "i"], // IGNORECASE
+  ["s", "s"], // DOTALL  -> JS 's' (dotAll)
+  ["m", "m"], // MULTILINE
+]);
+
+/**
+ * Compile a policy-authored regex pattern into a JavaScript ``RegExp`` whose
+ * behaviour matches the Python SDK's ``re.compile(raw_pattern)`` for the
+ * pinned, cross-language dialect.
+ *
+ * The Python SDK compiles matcher patterns with ``re.compile`` and the
+ * default policy authors leading inline flags (e.g. ``(?i)password``).
+ * JavaScript ``RegExp`` does not understand Python's leading inline scoped
+ * flags and never sets the case-insensitive flag, so a raw
+ * ``new RegExp(rawPattern, "g")`` THREW on every default-policy regex while
+ * Python loaded and matched (VAL-REDACT-003). This bridge:
+ *
+ *   - Detects a leading ``(?flags)`` prefix (flags subset of {i, s, m}),
+ *     maps it to the JS flags string (always including ``g`` for the
+ *     finditer-style scan), and strips the prefix from the pattern body.
+ *   - Rejects Python named groups ``(?P<name>...)`` and named backreferences
+ *     ``(?P=name)`` with ``reason: "named_group_unsupported"`` so BOTH SDKs
+ *     reject them identically (Python's ``re`` would otherwise accept them).
+ *   - Rejects a mid-pattern global-flag group (``foo(?i)bar``) with
+ *     ``reason: "inline_flags_not_at_start"``, matching Python's "global
+ *     flags not at the start of the expression" error.
+ *   - Defers every other syntax decision to the JS engine (``bad_regex``).
+ *
+ * Mirrors :func:`relay.redaction._compile_regex_pattern` (Python).
+ */
+function compileRegexPattern(rawPattern: string): RegexCompileResult {
+  // Reject Python named-group syntax up front and consistently with the
+  // Python SDK. JS supports ``(?<name>...)`` but NOT Python's ``(?P<...>)``
+  // form; we reject the Python form on both runtimes so a policy that uses
+  // it fails the same way everywhere rather than silently matching on one
+  // runtime and throwing on the other.
+  if (/\(\?P[<=]/.test(rawPattern)) {
+    return {
+      ok: false,
+      reason: "named_group_unsupported",
+      error:
+        "Python named groups '(?P<name>...)' / '(?P=name)' are not part of " +
+        "the supported cross-language regex dialect",
+    };
+  }
+
+  let body = rawPattern;
+  let jsFlags = "g";
+  const prefixMatch = INLINE_FLAG_PREFIX_RE.exec(rawPattern);
+  if (prefixMatch !== null) {
+    const declared = prefixMatch[1] ?? "";
+    const seen = new Set<string>();
+    for (const ch of declared) {
+      const mapped = SUPPORTED_INLINE_FLAGS.get(ch);
+      if (mapped === undefined) {
+        return {
+          ok: false,
+          reason: "unsupported_inline_flag",
+          error:
+            `unsupported inline regex flag '(?${declared})': only ` +
+            "(?i), (?s), (?m) and combinations are supported",
+        };
+      }
+      seen.add(mapped);
+    }
+    for (const f of seen) jsFlags += f;
+    body = rawPattern.slice(prefixMatch[0].length);
+  }
+
+  // A global-flag group anywhere other than the start is a Python error
+  // ("global flags not at the start of the expression"). Reject the same
+  // way so the dialect is pinned identically on both SDKs.
+  if (/\(\?[ismLuxa]+\)/.test(body)) {
+    return {
+      ok: false,
+      reason: "inline_flags_not_at_start",
+      error: "inline global flags must appear at the start of the expression",
+    };
+  }
+
+  try {
+    return { ok: true, pattern: new RegExp(body, jsFlags) };
+  } catch (exc) {
+    return {
+      ok: false,
+      reason: "bad_regex",
+      error: exc instanceof Error ? exc.message : String(exc),
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Policy schema parsing
 // ---------------------------------------------------------------------------
 
@@ -452,23 +562,28 @@ export function loadRedactionPolicy(body: unknown): RedactionPolicyImpl {
           },
         );
       }
-      try {
-        pattern = new RegExp(rawPattern, "g");
-      } catch (exc) {
+      // Translate the supported Python regex-flag/syntax subset to JS before
+      // compiling (VAL-REDACT-003): a leading (?i)/(?s)/(?m) prefix maps to
+      // the JS flags string, Python named groups (?P<...>) are rejected
+      // consistently with the Python SDK, and mid-pattern global flags fail
+      // closed -- so the same policy body loads (or is rejected) identically
+      // on both runtimes.
+      const compiled = compileRegexPattern(rawPattern);
+      if (!compiled.ok) {
         throw new RelayRedactionPolicyError(
-          `regex matcher #${idx} pattern is invalid: ${exc instanceof Error ? exc.message : String(exc)}`,
+          `regex matcher #${idx} pattern is invalid: ${compiled.error}`,
           {
             code: RELAY_SDK_POLICY_INVALID_CODE,
             details: {
-              reason: "bad_regex",
+              reason: compiled.reason,
               index: idx,
               pattern: rawPattern,
-              error: exc instanceof Error ? exc.message : String(exc),
+              error: compiled.error,
             },
-            cause: exc,
           },
         );
       }
+      pattern = compiled.pattern;
     } else if (kind === "json_pointer") {
       const rawPaths = m["paths"];
       if (
