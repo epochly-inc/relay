@@ -167,6 +167,91 @@ def test_tampered_bundle_fails_closed_crypto_001() -> None:
     assert any(not c.ok for c in result.signature_checks)
 
 
+def test_tampered_bundle_flips_digest_ok_false_crypto_001() -> None:
+    """A tampered ACEF bundle MUST report digest_ok=False, not only
+    signatures_ok=False.
+
+    This is the Gate-2 G3-F1 regression. ``digest_ok`` documents content
+    integrity ("the bundle's canonical payload digest is bound ... no record
+    tamper"). The Relay-native verifier sets digest_ok=False on signing-input
+    drift (evidence_verifier.py), and the CLI ``rly evidence verify`` contract
+    (VAL-W5-028) requires a single-byte mutation to yield
+    ``digest_ok=false, signatures_ok=false``. Because the ACEF detached-JWS
+    form records no separate signing input, a record tamper that retains the
+    original signature is signalled SOLELY by the cryptographic verification
+    failing against the resolved trusted key. When a structurally-valid
+    signature against a resolved trusted key fails to verify, the canonical
+    content no longer matches what was signed -- that is a content-integrity
+    failure and digest_ok MUST be False.
+    """
+    bundle, jwks = _ed25519_signed_bundle()
+    untampered = verify_acef_bundle(bundle, jwks, offline=True)
+    assert untampered.digest_ok is True  # baseline: valid bundle stays True
+
+    tampered = copy.deepcopy(bundle)
+    # Mutate a record AFTER signing; the original signature is retained.
+    tampered["claims"][0]["value"] = "fail"
+    result = verify_acef_bundle(tampered, jwks, offline=True)
+    assert result.signatures_ok is False
+    assert result.digest_ok is False
+    assert result.verified_signature_count == 0
+
+
+def test_missing_trusted_key_does_not_flip_digest_ok_crypto_004() -> None:
+    """A trust failure (kid absent from JWKS) is NOT a content-tamper claim.
+
+    Mirrors the Relay-native verifier, which sets signatures_ok=False but
+    leaves digest_ok untouched when no JWK matches the kid (the bundle bytes
+    may be intact; we simply cannot verify against a trusted key). digest_ok
+    must remain True so the two failure modes (untrusted key vs. tampered
+    content) stay distinguishable.
+    """
+    bundle = _base_bundle()
+    attacker = ed25519.Ed25519PrivateKey.generate()
+    bundle["signatures"] = [_sign_ed(bundle, attacker, kid="attacker-001")]
+    # Trusted JWKS holds a DIFFERENT key; the attacker kid is absent.
+    legit = ed25519.Ed25519PrivateKey.generate()
+    trusted_jwks = {"keys": [_jwk_ed(legit.public_key(), kid="relay-prod-key")]}
+
+    result = verify_acef_bundle(bundle, trusted_jwks, offline=True)
+    assert result.signatures_ok is False
+    assert result.verified_signature_count == 0
+    # Content integrity is NOT asserted-failed by a missing trusted key.
+    assert result.digest_ok is True
+
+
+def test_malformed_trusted_jwk_fails_closed_not_escapes_crypto_004(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed TRUSTED-JWKS entry must fail CLOSED, not escape.
+
+    The trusted-key loader can raise exceptions outside ValueError (e.g.
+    ``cryptography.exceptions.UnsupportedAlgorithm`` or ``TypeError``) for a
+    malformed key. The verifier must catch the broadened set and record a
+    failed per-signature check rather than letting the exception propagate
+    out of ``verify_acef_bundle`` (which would crash the CLI instead of
+    emitting the fail-closed RELAY-EVID-014 envelope).
+    """
+    import relay_acef.bundle_verifier as bv
+    from cryptography.exceptions import UnsupportedAlgorithm
+
+    bundle, jwks = _ed25519_signed_bundle()
+
+    def _raise_unsupported(_jwk: dict[str, Any]) -> Any:
+        raise UnsupportedAlgorithm("malformed trusted JWK")
+
+    monkeypatch.setattr(bv, "_load_public_key_from_jwk", _raise_unsupported)
+
+    # Must NOT raise; must fail closed.
+    result = bv.verify_acef_bundle(bundle, jwks, offline=True)
+    assert result.signatures_ok is False
+    assert result.verified_signature_count == 0
+    assert any(
+        not c.ok and "trusted jwk load failed" in c.reason.lower()
+        for c in result.signature_checks
+    )
+
+
 def test_bundle_with_no_signatures_fails_closed_crypto_001() -> None:
     """A bundle that carries no signatures is NOT 'signed'."""
     bundle = _base_bundle()

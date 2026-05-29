@@ -81,7 +81,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import (
@@ -136,9 +136,19 @@ class ACEFVerificationResult:
     """Aggregate result of verifying a signed ACEF bundle.
 
     Attributes:
-        digest_ok: True iff the bundle's canonical payload digest is bound
-            and every recorded signature's signing input matches the
-            recomputed canonical bytes (no record tamper).
+        digest_ok: content-integrity flag. True iff the bundle's canonical
+            payload is intact relative to what was signed -- i.e. no
+            structurally-valid signature against a resolved TRUSTED key
+            failed to verify over the recomputed canonical bytes. Because
+            the ACEF detached-JWS form records no separate signing input, a
+            record tamper that retains the original signature is detectable
+            ONLY by the cryptographic verification failing; so a
+            verification failure against a resolved trusted key flips this
+            False (mirroring the Relay-native verifier's signing-input-drift
+            semantics and the CLI VAL-W5-028 contract). A missing/untrusted
+            key or a malformed trusted JWK is a TRUST failure, not a content
+            claim, and leaves digest_ok True. Starts True; a non-object
+            signature entry (malformed structure) also flips it False.
         signatures_ok: True iff there is at least one signature AND every
             signature verified cryptographically against its TRUSTED key.
             Fail-closed: any unverified signature flips this False.
@@ -587,7 +597,17 @@ def verify_acef_bundle(
             continue
         try:
             public_key = _load_public_key_from_jwk(jwk)
-        except ValueError as exc:
+        except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
+            # A malformed TRUSTED-JWKS entry must fail CLOSED on THIS
+            # signature, never escape the verifier (which would crash the
+            # caller instead of emitting the structured fail-closed
+            # envelope). ValueError covers bad b64url/field types and the
+            # cryptography numeric-range checks (n/e/point-on-curve);
+            # TypeError covers non-string/None fields slipping past the
+            # isinstance guards; UnsupportedAlgorithm covers a key type the
+            # backend refuses to construct. This is a TRUST failure, so
+            # digest_ok is deliberately left unchanged (see the verify
+            # branch below).
             sigs_ok = False
             result.signature_checks.append(
                 SignatureCheck(
@@ -608,6 +628,19 @@ def verify_acef_bundle(
         )
         if not verified:
             sigs_ok = False
+            # Content-integrity drift: a structurally-valid signature whose
+            # key was resolved from the TRUSTED JWKS by kid did not verify
+            # against the recomputed canonical bytes. Because the detached
+            # JWS records no separate signing input, a record tamper that
+            # retains the original signature is signalled SOLELY here -- the
+            # canonical content no longer matches what was signed. This
+            # mirrors the Relay-native verifier's signing-input-drift
+            # semantics (evidence_verifier.py sets digest_ok=False on drift)
+            # and the CLI VAL-W5-028 contract (a single-byte mutation yields
+            # digest_ok=false, signatures_ok=false). A missing/untrusted key
+            # or a malformed trusted JWK is a TRUST failure, not a content
+            # claim, and deliberately leaves digest_ok unchanged above.
+            digest_ok = False
             result.signature_checks.append(
                 SignatureCheck(
                     kid=kid,
