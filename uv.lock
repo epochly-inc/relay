@@ -706,7 +706,7 @@ wheels = [
 
 [[package]]
 name = "epochly-relay"
-version = "0.1.8"
+version = "0.1.20"
 source = { editable = "packages/sdk-python" }
 dependencies = [
     { name = "epochly-relay-cli" },
@@ -742,6 +742,10 @@ provides-extras = ["test"]
 name = "epochly-relay-acef"
 version = "0.0.0"
 source = { editable = "packages/acef" }
+dependencies = [
+    { name = "cryptography", version = "44.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "cryptography", version = "45.0.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+]
 
 [package.optional-dependencies]
 test = [
@@ -752,6 +756,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=44,<46" },
     { name = "jsonschema", marker = "extra == 'test'", specifier = ">=4.21" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
@@ -760,13 +765,14 @@ provides-extras = ["test"]
 
 [[package]]
 name = "epochly-relay-cli"
-version = "0.1.8"
+version = "0.1.20"
 source = { editable = "packages/cli" }
 dependencies = [
     { name = "click" },
     { name = "cryptography", version = "44.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
     { name = "cryptography", version = "45.0.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "epochly-relay" },
+    { name = "epochly-relay-acef" },
     { name = "epochly-relay-schemas" },
     { name = "epochly-relay-sidecar" },
     { name = "httpx" },
@@ -786,6 +792,7 @@ requires-dist = [
     { name = "click", specifier = "==8.1.7" },
     { name = "cryptography", specifier = ">=44,<46" },
     { name = "epochly-relay", editable = "packages/sdk-python" },
+    { name = "epochly-relay-acef", editable = "packages/acef" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
     { name = "epochly-relay-sidecar", editable = "apps/local-sidecar" },
     { name = "httpx", specifier = ">=0.27,<0.29" },
@@ -954,7 +961,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "epochly-relay-schemas"
-version = "0.1.8"
+version = "0.1.20"
 source = { editable = "packages/schemas" }
 dependencies = [
     { name = "pydantic" },
@@ -982,7 +989,7 @@ provides-extras = ["test", "codegen"]
 
 [[package]]
 name = "epochly-relay-sidecar"
-version = "0.1.8"
+version = "0.1.20"
 source = { editable = "apps/local-sidecar" }
 dependencies = [
     { name = "aiosqlite" },

@@ -41,7 +41,16 @@ license = { text = "Apache-2.0" }
 authors = [
   { name = "Epochly, Inc.", email = "engineering@epochly.com" },
 ]
-dependencies = []
+dependencies = [
+  # W11.4 / VAL-CRYPTO-001/004/005: the Relay-owned fail-closed ACEF bundle
+  # JWS verifier (src/relay_acef/bundle_verifier.py) performs real asymmetric
+  # signature verification (EdDSA / ES256 / RS256) against a trusted JWKS.
+  # Stdlib has no asymmetric public-key primitives; ``cryptography`` is the
+  # canonical dependency shared with packages/cli and packages/verifier.
+  # Pinned conservatively across the supported Python matrix (3.12/3.13/3.14)
+  # to match the CLI/verifier pins.
+  "cryptography>=44,<46",
+]
 
 [project.optional-dependencies]
 test = [

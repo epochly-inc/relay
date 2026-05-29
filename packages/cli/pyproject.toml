@@ -77,6 +77,14 @@ dependencies = [
   # ``sigstore``; pinning conservatively keeps the CLI footprint
   # deterministic.
   "PyYAML>=6.0,<7",
+  # W11.4 / VAL-CRYPTO-001/004/005: ``rly evidence verify`` routes ACEF
+  # bundles (schema_version "v0.3" / x-relay namespace shape) to the
+  # Relay-owned fail-closed verifier ``relay_acef.bundle_verifier`` instead
+  # of the Relay-native ``verify_bundle``. Workspace dependency: per
+  # CLAUDE.md import-boundary rule the CLI consumes the OSS ACEF package via
+  # uv workspace resolution rather than importing the dormant vendored acef
+  # tree.
+  "epochly-relay-acef",
 ]
 
 [project.optional-dependencies]
@@ -104,3 +112,4 @@ include = [
 epochly-relay = { workspace = true }
 epochly-relay-schemas = { workspace = true }
 epochly-relay-sidecar = { workspace = true }
+epochly-relay-acef = { workspace = true }

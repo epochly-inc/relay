@@ -40,6 +40,10 @@ from pathlib import Path
 from typing import Any, Final
 
 import typer
+from relay_acef.bundle_verifier import (
+    is_acef_bundle,
+    verify_acef_bundle,
+)
 from relay_sidecar.lockfile import relay_home
 
 from ..errors import build_envelope, emit_envelope
@@ -538,39 +542,76 @@ def _cmd_evidence_verify(
         emit_envelope(envelope)
         raise typer.Exit(code=EXIT_4XX_BLOCK)
 
-    result = verify_bundle(bundle, jwks)
+    # W11.4 / VAL-CRYPTO-001/004/005: ACEF bundles (ACEF Core schema_version
+    # "v0.3" / x-relay namespace shape) are verified by the Relay-OWNED
+    # fail-closed ACEF verifier, which resolves keys ONLY from the trusted
+    # JWKS by kid (never a header-embedded jwk/x5c) and counts only
+    # cryptographically-verified signatures. Relay-native evidence bundles
+    # keep using the existing ``verify_bundle``.
+    is_acef = is_acef_bundle(bundle)
+    if is_acef:
+        acef_result = verify_acef_bundle(
+            bundle,
+            jwks,
+            trust_anchor_url=anchor_url,
+            offline=True,
+        )
+        result_digest_ok = acef_result.digest_ok
+        result_signatures_ok = acef_result.signatures_ok
+        result_structure_ok = acef_result.structure_ok
+        result_checks = acef_result.signature_checks
+        result_claims_count = acef_result.claims_count
+        result_digest = acef_result.bundle_digest_sha256
+        result_errors = list(acef_result.errors)
+        extra_fields: dict[str, Any] = {
+            "bundle_kind": "acef",
+            "verified_signature_count": acef_result.verified_signature_count,
+            "verified_algorithms": list(acef_result.verified_algorithms),
+        }
+    else:
+        result = verify_bundle(bundle, jwks)
+        result_digest_ok = result.digest_ok
+        result_signatures_ok = result.signatures_ok
+        result_structure_ok = result.structure_ok
+        result_checks = result.signature_checks
+        result_claims_count = result.claims_count
+        result_digest = result.bundle_digest_sha256
+        result_errors = list(result.errors)
+        extra_fields = {"bundle_kind": "relay-native"}
 
     payload: dict[str, Any] = {
         "schema_version": EVIDENCE_VERIFY_SCHEMA,
-        "digest_ok": result.digest_ok,
-        "signatures_ok": result.signatures_ok,
-        "structure_ok": result.structure_ok,
+        "digest_ok": result_digest_ok,
+        "signatures_ok": result_signatures_ok,
+        "structure_ok": result_structure_ok,
         "signatures_checked": [
             {"kid": s.kid, "alg": s.alg, "ok": s.ok, "reason": s.reason}
-            for s in result.signature_checks
+            for s in result_checks
         ],
-        "claims_count": result.claims_count,
+        "claims_count": result_claims_count,
         "trust_anchor": anchor_url,
         "trust_anchor_overridden": overridden,
         "bundle_path": str(bundle_path),
-        "bundle_digest_sha256": result.bundle_digest_sha256,
-        "errors": list(result.errors),
+        "bundle_digest_sha256": result_digest,
+        "errors": result_errors,
+        **extra_fields,
     }
 
     emit_json(payload)
 
-    if result.digest_ok and result.signatures_ok and result.structure_ok:
+    if result_digest_ok and result_signatures_ok and result_structure_ok:
         raise typer.Exit(code=EXIT_SUCCESS)
 
-    # Tamper detected (or signature crypto failure, or missing JWK).
-    # Emit RELAY-EVID-014 stderr envelope and exit non-zero.
+    # Tamper detected (or signature crypto failure, or missing/untrusted
+    # JWK). Emit RELAY-EVID-014 stderr envelope and exit non-zero. The same
+    # fail-closed envelope is emitted for ACEF and Relay-native bundles.
     failed_reasons = [
         f"{s.kid}/{s.alg}: {s.reason}"
-        for s in result.signature_checks
+        for s in result_checks
         if not s.ok
     ]
     if not failed_reasons:
-        failed_reasons = list(result.errors) or ["verification failed"]
+        failed_reasons = list(result_errors) or ["verification failed"]
     envelope = build_envelope(
         code=RELAY_EVID_014,
         http_status=422,
@@ -582,13 +623,14 @@ def _cmd_evidence_verify(
         retry_advice="do_not_retry",
         details={
             "path": str(bundle_path),
-            "digest_ok": result.digest_ok,
-            "signatures_ok": result.signatures_ok,
-            "structure_ok": result.structure_ok,
+            "bundle_kind": "acef" if is_acef else "relay-native",
+            "digest_ok": result_digest_ok,
+            "signatures_ok": result_signatures_ok,
+            "structure_ok": result_structure_ok,
             "trust_anchor": anchor_url,
             "trust_anchor_overridden": overridden,
             "failed_signature_count": sum(
-                1 for s in result.signature_checks if not s.ok
+                1 for s in result_checks if not s.ok
             ),
         },
     )
