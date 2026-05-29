@@ -93,15 +93,52 @@ const SECRET_KEY_SUFFIXES: readonly string[] = [
 ];
 
 /**
- * True when the lowercased key name denotes a credential: either an exact
- * match against {@link SECRET_KEY_HINTS} or an endswith match against
- * {@link SECRET_KEY_SUFFIXES}. Lockstep with Python ``_is_secret_key``.
+ * De-camelCase a key name: insert ``_`` at every boundary where a
+ * lowercase letter or digit is immediately followed by an uppercase
+ * letter, then lowercase the whole string. JS/TS tool-call args are
+ * commonly camelCase (``accessToken``, ``clientSecret``), so the bare
+ * lowercase form (``accesstoken``) misses them. Normalizing
+ * ``accessToken`` -> ``access_token`` lets the existing hint-set and
+ * ``_token``/``_secret`` suffix rules catch them WITHOUT introducing
+ * false positives: ``tokenCount`` -> ``token_count`` (no credential
+ * suffix), ``secretaryName`` -> ``secretary_name`` (not a hint).
+ *
+ * MUST stay byte-identical to the Python ``_decamel_key`` helper
+ * (VAL-REDACT-008 lockstep).
  */
-function isSecretKey(lk: string): boolean {
-  if (SECRET_KEY_HINTS.has(lk)) return true;
+function decamelKey(key: string): string {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+/** Test a single normalized candidate against the hint set + suffix rules. */
+function matchesCredentialForm(cand: string): boolean {
+  if (SECRET_KEY_HINTS.has(cand)) return true;
   for (const suffix of SECRET_KEY_SUFFIXES) {
-    if (lk.endsWith(suffix)) return true;
+    if (cand.endsWith(suffix)) return true;
   }
+  return false;
+}
+
+/**
+ * True when ``key`` denotes a credential. The original (possibly
+ * camelCase) key is normalized two ways and either match wins:
+ *   1. plain lowercase            -- ``Authorization`` -> ``authorization``
+ *   2. de-camelCase then lowercase -- ``accessToken``  -> ``access_token``
+ * Each candidate is tested against {@link SECRET_KEY_HINTS} (exact) and
+ * {@link SECRET_KEY_SUFFIXES} (endswith). The de-camelCase candidate is
+ * what catches camelCase credential keys (``accessToken``,
+ * ``clientSecret``, ``privateKey``) WITHOUT false positives
+ * (``tokenCount`` -> ``token_count`` has no credential suffix).
+ *
+ * Takes the ORIGINAL key (not a pre-lowercased one) so camelCase
+ * boundaries survive for {@link decamelKey}. Lockstep with Python
+ * ``_is_secret_key``.
+ */
+function isSecretKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  if (matchesCredentialForm(lower)) return true;
+  const decamel = decamelKey(key);
+  if (decamel !== lower && matchesCredentialForm(decamel)) return true;
   return false;
 }
 
@@ -122,8 +159,7 @@ export function scrubSecretShape(value: unknown): unknown {
   if (typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      const lk = k.toLowerCase();
-      if (isSecretKey(lk)) {
+      if (isSecretKey(k)) {
         out[k] = "[REDACTED]";
       } else {
         out[k] = scrubSecretShape(v);

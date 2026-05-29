@@ -272,7 +272,7 @@ describe("VAL-W4-038: adapter routes tool args through the redaction engine (bou
       client_secret: "GOCSPX-client-secret",
       cookie: "session=abc123; csrf=def456",
       "set-cookie": "session=abc123; HttpOnly",
-      private_key: "-----BEGIN PRIVATE KEY-----MIIE",
+      private_key: "pk-test-REDACTME-0123456789",
       // benign keys that MUST NOT be scrubbed (no false positives)
       city: "Paris",
       token_count: 42,
@@ -312,6 +312,39 @@ describe("VAL-W4-038: adapter routes tool args through the redaction engine (bou
     expect(scrubbed["app-secret"]).toBe("[REDACTED]");
     expect(scrubbed["token_count"]).toBe(7);
     expect(scrubbed["secretary_name"]).toBe("Bob");
+  });
+
+  // VAL-REDACT-008: camelCase credential key names are common in JS/TS
+  // tool-call arguments. The scrubber lowercased the key only, so
+  // `accessToken` -> `accesstoken` (neither a hint-set member nor
+  // `*_token`-suffixed) and was recorded verbatim -- a real leak. The
+  // de-camelCase normalization rule maps `accessToken` -> `access_token`
+  // before the check. Lockstep with the Python `_scrub`.
+  it("scrubSecretShape masks camelCase credential key names (VAL-REDACT-008)", () => {
+    const scrubbed = scrubSecretShape({
+      accessToken: "ya29.A0ARrdaM-real-token",
+      refreshToken: "1//refresh-token-value",
+      sessionToken: "FQoGZXIvYXdzED",
+      idToken: "eyJid",
+      clientSecret: "GOCSPX-client-secret",
+      privateKey: "pk-test-REDACTME-0123456789",
+      // benign camelCase keys that MUST NOT be scrubbed (no false positives)
+      tokenCount: 42,
+      secretaryName: "Bob",
+      authorizedUser: "alice",
+      bearings: "north",
+    }) as Record<string, unknown>;
+    expect(scrubbed["accessToken"]).toBe("[REDACTED]");
+    expect(scrubbed["refreshToken"]).toBe("[REDACTED]");
+    expect(scrubbed["sessionToken"]).toBe("[REDACTED]");
+    expect(scrubbed["idToken"]).toBe("[REDACTED]");
+    expect(scrubbed["clientSecret"]).toBe("[REDACTED]");
+    expect(scrubbed["privateKey"]).toBe("[REDACTED]");
+    // no false positives on benign camelCase keys
+    expect(scrubbed["tokenCount"]).toBe(42);
+    expect(scrubbed["secretaryName"]).toBe("Bob");
+    expect(scrubbed["authorizedUser"]).toBe("alice");
+    expect(scrubbed["bearings"]).toBe("north");
   });
 });
 

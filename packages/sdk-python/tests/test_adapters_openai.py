@@ -395,7 +395,7 @@ def test_scrub_masks_common_credential_key_names() -> None:
             "client_secret": "GOCSPX-client-secret",
             "cookie": "session=abc123; csrf=def456",
             "set-cookie": "session=abc123; HttpOnly",
-            "private_key": "-----BEGIN PRIVATE KEY-----MIIE",
+            "private_key": "pk-test-REDACTME-0123456789",
             # benign keys that MUST NOT be scrubbed (no false positives)
             "city": "Paris",
             "token_count": 42,
@@ -443,3 +443,44 @@ def test_scrub_suffix_rules_token_and_secret() -> None:
     assert scrubbed["app-secret"] == "[REDACTED]"
     assert scrubbed["token_count"] == 7
     assert scrubbed["secretary_name"] == "Bob"
+
+
+def test_scrub_masks_camelcase_credential_key_names() -> None:
+    """VAL-REDACT-008: camelCase credential key names (common in JS/TS
+    tool-call args) are scrubbed via de-camelCase normalization, while
+    benign camelCase keys stay verbatim (no false positives).
+
+    Reproducing trigger: ``accessToken`` lowercased to ``accesstoken``,
+    which is neither a hint-set member nor ``*_token``-suffixed, so the
+    credential value was recorded verbatim. The de-camelCase rule maps
+    ``accessToken`` -> ``access_token`` (suffix match) before the check.
+    Lockstep with the TypeScript ``scrubSecretShape``.
+    """
+    from relay.adapters.openai_adapter import _scrub
+
+    scrubbed = _scrub(
+        {
+            "accessToken": "ya29.A0ARrdaM-real-token",
+            "refreshToken": "1//refresh-token-value",
+            "sessionToken": "FQoGZXIvYXdzED",
+            "idToken": "eyJid",
+            "clientSecret": "GOCSPX-client-secret",
+            "privateKey": "pk-test-REDACTME-0123456789",
+            # benign camelCase keys that MUST NOT be scrubbed
+            "tokenCount": 42,
+            "secretaryName": "Bob",
+            "authorizedUser": "alice",
+            "bearings": "north",
+        }
+    )
+    assert scrubbed["accessToken"] == "[REDACTED]"
+    assert scrubbed["refreshToken"] == "[REDACTED]"
+    assert scrubbed["sessionToken"] == "[REDACTED]"
+    assert scrubbed["idToken"] == "[REDACTED]"
+    assert scrubbed["clientSecret"] == "[REDACTED]"
+    assert scrubbed["privateKey"] == "[REDACTED]"
+    # no false positives on benign camelCase keys
+    assert scrubbed["tokenCount"] == 42
+    assert scrubbed["secretaryName"] == "Bob"
+    assert scrubbed["authorizedUser"] == "alice"
+    assert scrubbed["bearings"] == "north"

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -171,16 +172,53 @@ _SECRET_KEY_SUFFIXES: tuple[str, ...] = (
 )
 
 
-def _is_secret_key(lk: str) -> bool:
-    """True when the lowercased key name denotes a credential.
+# Boundary where a lowercase letter or digit is immediately followed by an
+# uppercase letter; the de-camelCase normalizer inserts ``_`` there. MUST
+# match the TypeScript ``decamelKey`` regex ``/([a-z0-9])([A-Z])/g``
+# (VAL-REDACT-008 lockstep).
+_CAMEL_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
 
-    Either an exact match against :data:`_SECRET_KEY_HINTS` or an endswith
-    match against :data:`_SECRET_KEY_SUFFIXES`. Lockstep with TypeScript
-    ``isSecretKey``.
+
+def _decamel_key(key: str) -> str:
+    """De-camelCase a key name: insert ``_`` at every lowercase/digit ->
+    uppercase boundary, then lowercase.
+
+    JS/TS tool-call args are commonly camelCase (``accessToken``,
+    ``clientSecret``), so the bare lowercase form (``accesstoken``) misses
+    them. Normalizing ``accessToken`` -> ``access_token`` lets the existing
+    hint-set and ``_token``/``_secret`` suffix rules catch them WITHOUT
+    false positives: ``tokenCount`` -> ``token_count`` (no credential
+    suffix), ``secretaryName`` -> ``secretary_name`` (not a hint). MUST stay
+    byte-identical to the TypeScript ``decamelKey`` helper.
     """
-    if lk in _SECRET_KEY_HINTS:
+    return _CAMEL_BOUNDARY.sub(r"\1_\2", key).lower()
+
+
+def _matches_credential_form(cand: str) -> bool:
+    """Test a single normalized candidate against the hint set + suffixes."""
+    if cand in _SECRET_KEY_HINTS:
         return True
-    return lk.endswith(_SECRET_KEY_SUFFIXES)
+    return cand.endswith(_SECRET_KEY_SUFFIXES)
+
+
+def _is_secret_key(key: str) -> bool:
+    """True when ``key`` denotes a credential.
+
+    The original (possibly camelCase) key is normalized two ways and either
+    match wins: (1) plain lowercase, (2) de-camelCase then lowercase. Each
+    candidate is tested against :data:`_SECRET_KEY_HINTS` (exact) and
+    :data:`_SECRET_KEY_SUFFIXES` (endswith). The de-camelCase candidate is
+    what catches camelCase credential keys (``accessToken``,
+    ``clientSecret``, ``privateKey``) WITHOUT false positives
+    (``tokenCount`` -> ``token_count`` has no credential suffix). Takes the
+    ORIGINAL key (not a pre-lowercased one) so camelCase boundaries survive
+    for :func:`_decamel_key`. Lockstep with TypeScript ``isSecretKey``.
+    """
+    lower = key.lower()
+    if _matches_credential_form(lower):
+        return True
+    decamel = _decamel_key(key)
+    return decamel != lower and _matches_credential_form(decamel)
 
 
 def _scrub(value: Any) -> Any:
@@ -195,8 +233,7 @@ def _scrub(value: Any) -> Any:
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
-            lk = str(k).lower()
-            if _is_secret_key(lk):
+            if _is_secret_key(str(k)):
                 out[k] = "[REDACTED]"
             else:
                 out[k] = _scrub(v)
