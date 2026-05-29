@@ -44,6 +44,7 @@ import pytest
 from relay.errors import RelayPolicyError
 from relay.redaction import (
     DEFAULT_APPLIES_TO_FIELDS,
+    HOSTED_DEFAULT_POLICY,
     RedactionEngine,
     RedactionPolicy,
     redact_capture_payload,
@@ -348,6 +349,136 @@ def test_schema_version_primary_still_accepted() -> None:
     body = {**_BASE_POLICY, "schema_version": "relay.redaction.v1"}
     policy = RedactionPolicy.load(body)
     assert policy.policy_version == _BASE_POLICY["policy_version"]
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-001 (HIGH / security): the hosted default policy declares a
+# json_pointer matcher path ``/messages/*/content/text``. Real chat payloads
+# produce array-indexed leaf pointers like ``/messages/0/content/text``.
+# Pre-fix, ``_find_json_pointer_match`` tested ``pointer in matcher.json_paths``
+# with an exact-membership comparison, so the literal-``*`` path never matched
+# an indexed pointer and the default policy redacted NOTHING -- prompt content
+# (SSNs, etc.) was emitted verbatim. The fix interprets a ``*`` token in a
+# ``json_pointer`` matcher path as a single-segment wildcard matching any one
+# array index or object key.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+def test_hosted_default_policy_redacts_indexed_message_content() -> None:
+    """The contract trigger: the default policy MUST redact the SSN at
+    ``/messages/0/content/text`` even though the matcher path uses ``*``.
+
+    RED at base commit b4fd821: the literal ``*`` segment never equals the
+    concrete array index ``0``, so the SSN leaks verbatim. GREEN after the
+    wildcard fix.
+    """
+    policy = RedactionPolicy.load(HOSTED_DEFAULT_POLICY)
+    engine = RedactionEngine(
+        policy=policy, salt_provider=lambda _ref: b"hosted-default-salt"
+    )
+    payload = {"messages": [{"content": {"text": "my SSN is 123-45-6789"}}]}
+    body = redact_capture_payload(engine, payload)
+    assert b"123-45-6789" not in body, (
+        "default policy leaked prompt content verbatim: "
+        f"{body!r}"
+    )
+    assert b"<redacted>" in body, (
+        f"expected the redact placeholder in {body!r}"
+    )
+
+
+@pytest.mark.plumbing
+def test_hosted_default_policy_redacts_every_message_index() -> None:
+    """The ``*`` wildcard matches ANY single array index, not just 0.
+
+    A multi-message payload must have every ``messages[*].content.text``
+    leaf redacted.
+    """
+    policy = RedactionPolicy.load(HOSTED_DEFAULT_POLICY)
+    engine = RedactionEngine(
+        policy=policy, salt_provider=lambda _ref: b"hosted-default-salt"
+    )
+    # Inputs deliberately avoid the default policy's regex matchers
+    # (password/api_key/secret/token) so the assertion isolates the
+    # json_pointer wildcard behavior: a pointer match replaces the WHOLE
+    # leaf with the placeholder (pointer match wins over regex per _walk).
+    redacted = engine.redact(
+        {
+            "messages": [
+                {"content": {"text": "first ssn 111-11-1111"}},
+                {"content": {"text": "second ssn 222-22-2222"}},
+                {"content": {"text": "third ssn 333-33-3333"}},
+            ]
+        }
+    )
+    for idx in range(3):
+        assert (
+            redacted["messages"][idx]["content"]["text"] == "<redacted>"
+        ), f"message index {idx} not redacted: {redacted!r}"
+
+
+@pytest.mark.plumbing
+def test_hosted_default_policy_redacts_output_text_exact_pointer() -> None:
+    """Regression guard: a json_pointer matcher with NO ``*`` segment
+    (``/output/text``) still matches by exact pointer, unchanged by the
+    wildcard fix.
+    """
+    policy = RedactionPolicy.load(HOSTED_DEFAULT_POLICY)
+    engine = RedactionEngine(
+        policy=policy, salt_provider=lambda _ref: b"hosted-default-salt"
+    )
+    redacted = engine.redact({"output": {"text": "agent said 444-44-4444"}})
+    assert redacted["output"]["text"] == "<redacted>"
+
+
+@pytest.mark.plumbing
+def test_json_pointer_wildcard_does_not_overmatch_segment_count() -> None:
+    """A ``*`` matches exactly ONE segment, never spans multiple.
+
+    ``/messages/*/content/text`` must NOT fire on a deeper or shallower
+    pointer such as ``/messages/0/extra/content/text`` (an extra segment)
+    or ``/messages/0/content`` (a missing trailing segment): the wildcard
+    is single-segment, not a recursive-descent glob.
+    """
+    policy = RedactionPolicy.load(HOSTED_DEFAULT_POLICY)
+    engine = RedactionEngine(
+        policy=policy, salt_provider=lambda _ref: b"hosted-default-salt"
+    )
+    # Extra intervening segment: pointer is /messages/0/extra/content/text.
+    # Input avoids the regex matchers so only the pointer logic is exercised.
+    redacted = engine.redact(
+        {"messages": [{"extra": {"content": {"text": "plain value here"}}}]}
+    )
+    leaf = redacted["messages"][0]["extra"]["content"]["text"]
+    assert leaf == "plain value here", (
+        f"wildcard over-matched a deeper pointer: {leaf!r}"
+    )
+
+
+@pytest.mark.plumbing
+def test_base_policy_parity_unchanged_by_wildcard_fix() -> None:
+    """Parity regression guard for VAL-REDACT-001: the regex-only base
+    policy (which contains no ``json_pointer`` ``*`` matcher) MUST still
+    produce byte-identical output on Python and TypeScript after the
+    wildcard fix. Skipped when Node / TS dist are unavailable.
+    """
+    payload = {
+        "messages": [{"content": {"text": "key is sk-ABCDEFGHIJKLMNOPQRSTUV"}}],
+        "model_call": {"input": "ok", "output": "fine"},
+    }
+    ts_bytes = _ts_canonicalize_via_node(_BASE_POLICY, payload, _TENANT_SALT)
+    if ts_bytes is None:
+        pytest.skip(
+            "node binary or TS dist not available; cross-language byte "
+            "equality cannot be checked in this environment"
+        )
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    py_bytes = redact_capture_payload(engine, payload)
+    assert py_bytes == ts_bytes, (
+        f"wildcard fix broke base-policy parity: py={py_bytes!r} ts={ts_bytes!r}"
+    )
 
 
 @pytest.mark.plumbing

@@ -282,6 +282,58 @@ def _jsonpath_to_pointer(selector: str) -> str:
     return "/" + "/".join(parts) if parts else ""
 
 
+def _json_pointer_matches(matcher_path: str, pointer: str) -> bool:
+    """Return ``True`` if RFC 6901 ``pointer`` matches a ``json_pointer``
+    matcher path, honoring a single-segment ``*`` wildcard (VAL-REDACT-001).
+
+    Both arguments are RFC 6901 JSON Pointers built by the same
+    convention used in :meth:`RedactionEngine._walk`: a leading ``/``
+    then ``/``-separated reference tokens, each token escaped per RFC
+    6901 sec 4 (``~`` -> ``~0``, ``/`` -> ``~1``). Splitting on ``/``
+    therefore yields aligned, identically-escaped segments on both
+    sides, so exact tokens compare correctly and a ``*`` token in the
+    matcher path matches any single concrete segment.
+
+    Wildcard semantics:
+
+      * A matcher token equal to ``*`` matches exactly one concrete
+        segment (any array index or object key) at that position.
+      * Every other matcher token must equal the concrete token exactly.
+      * The wildcard is single-segment, never a recursive-descent glob,
+        so the matcher path and the concrete pointer MUST have the same
+        number of segments to match. ``/messages/*/content/text`` does
+        not match ``/messages/0/extra/content/text``.
+
+    A matcher path with no ``*`` token reduces to exact string equality,
+    preserving prior behavior (and cross-runtime parity) for every
+    non-wildcard ``json_pointer`` matcher.
+    """
+    if "*" not in matcher_path:
+        # Fast path: no wildcard -> exact membership, identical to the
+        # pre-VAL-REDACT-001 behavior and to the TS exact-match compare.
+        return matcher_path == pointer
+    matcher_tokens = matcher_path.split("/")
+    pointer_tokens = pointer.split("/")
+    if len(matcher_tokens) != len(pointer_tokens):
+        return False
+    for matcher_token, pointer_token in zip(
+        matcher_tokens, pointer_tokens, strict=True
+    ):
+        if matcher_token == "*":
+            # Single-segment wildcard. The empty string only occurs as
+            # the synthetic leading segment (both sides share it); a
+            # leading-segment ``*`` would require the matcher path to
+            # start with ``*`` rather than ``/``, which never occurs for
+            # a well-formed RFC 6901 pointer, so an empty concrete token
+            # here would be a malformed pointer -- reject it.
+            if pointer_token == "":
+                return False
+            continue
+        if matcher_token != pointer_token:
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class _CompiledMatcher:
     """A single matcher prepared for engine consumption.
@@ -950,10 +1002,18 @@ class RedactionEngine:
         Two matcher kinds participate in pointer-level evaluation:
 
           * ``json_pointer`` (RFC 6901) -- raw pointers stored in
-            ``matcher.json_paths``.
+            ``matcher.json_paths``. A ``*`` reference token in a matcher
+            path is a single-segment wildcard (VAL-REDACT-001): it
+            matches any one array index or object key at that position.
+            All other tokens must match exactly. The wildcard is
+            single-segment, never a recursive-descent glob, so the
+            matcher path and the concrete pointer must have the same
+            segment count to match.
           * ``json_path`` (RFC 9535 subset, VAL-V3M5-018) -- selectors
             compiled to RFC 6901 pointer form at policy load and stored
-            in ``matcher.json_pointers``.
+            in ``matcher.json_pointers``. ``_jsonpath_to_pointer`` rejects
+            ``*`` selectors, so these compiled pointers contain no
+            wildcards and are compared by exact membership.
 
         Matchers are evaluated in declaration order; the first hit
         wins. ``pointer`` is the empty string at the root and never
@@ -963,7 +1023,10 @@ class RedactionEngine:
         if not pointer:
             return None
         for matcher in self._policy.matchers:
-            if matcher.kind == "json_pointer" and pointer in matcher.json_paths:
+            if matcher.kind == "json_pointer" and any(
+                _json_pointer_matches(path, pointer)
+                for path in matcher.json_paths
+            ):
                 return matcher
             if matcher.kind == "json_path" and pointer in matcher.json_pointers:
                 return matcher
@@ -1038,8 +1101,11 @@ def iter_known_applies_to_fields() -> Iterable[str]:
 #
 # Matcher set:
 #   - json_pointer ``/messages/*/content/text``: prompt content path used by
-#     chat-completion-style payloads. RFC 6901 treats ``*`` as a literal
-#     reference token; the path is reserved for future wildcard expansion.
+#     chat-completion-style payloads. The ``*`` reference token is a
+#     single-segment wildcard (VAL-REDACT-001) matching any one array index
+#     or object key, so concrete leaf pointers like
+#     ``/messages/0/content/text`` are redacted. See
+#     :func:`_json_pointer_matches`.
 #   - json_pointer ``/output/text``: agent output path.
 #   - regex ``(?i)password``: field-value pattern.
 #   - regex ``(?i)api[_-]?key``: field-value pattern.
