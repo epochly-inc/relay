@@ -255,9 +255,28 @@ function defaultSigstoreFetcher(
  * Default fetcher for the release-manifest cosign-bundle
  * (``manifest.json.sigstore``). VAL-CRYPTO-003.
  *
- * A non-200 (e.g. 404 for a legacy release that predates manifest signing)
- * THROWS ``ManifestSignatureAbsent`` so the caller can apply the transition
- * policy; any other status throws the generic unavailable leaf.
+ * Trust-downgrade hardening (G1-F5): the caller's transition policy tolerates
+ * an ABSENT manifest signature when ``RELAY_REQUIRE_SIGNED_MANIFEST`` != "1"
+ * (so legacy unsigned releases keep launching via npx). That tolerance is
+ * ONLY safe for a signature that is GENUINELY not published. We therefore
+ * distinguish:
+ *
+ *   - a CLEAN HTTP 404 -> ``ManifestSignatureAbsent``. This is the only
+ *     status that means "the signer never published a signature for this
+ *     (legacy) release"; the transition policy may tolerate it.
+ *   - a TRANSPORT / connection error (fetch rejects, e.g. ECONNRESET) ->
+ *     ``RelaySidecarBundleUnverified`` (FAIL CLOSED). We cannot conclude the
+ *     signature is absent -- an active MITM that serves a forged manifest but
+ *     DROPS/RESETS the ``.sigstore`` request would otherwise strip manifest-
+ *     signature enforcement entirely. This fails closed even under the
+ *     transition default.
+ *   - any OTHER non-200 status (403, 500, ...) ->
+ *     ``RelaySidecarBundleUnverified`` (FAIL CLOSED). A 5xx/403 is an
+ *     indeterminate answer, NOT a definitive "not published"; treating it as
+ *     absent would be the same downgrade. Fails closed even under the
+ *     transition default.
+ *
+ * A status 200 returns the signature body for cryptographic verification.
  */
 function defaultManifestSigstoreFetcher(
   fetchImpl: ManifestFetchOptions["fetchImpl"] | undefined,
@@ -268,17 +287,47 @@ function defaultManifestSigstoreFetcher(
     try {
       resp = await impl(url, { method: "GET" });
     } catch (cause) {
-      // A network/transport error fetching the manifest signature is
-      // treated as "absent" so a transient outage on the signature object
-      // does not harden into a launch failure under the transition policy.
-      throw new ManifestSignatureAbsent(
-        cause instanceof Error ? cause.message : String(cause),
+      // Transport / connection error: NOT "absent". We could not obtain a
+      // definitive answer about the signature, so we must fail closed rather
+      // than silently downgrade to an unsigned-manifest launch.
+      throw new RelaySidecarBundleUnverified(
+        `transport error fetching the release manifest signature from ${url}: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }; refusing to treat an unreachable signature as absent`,
+        {
+          code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
+          details: {
+            reason: "manifest_signature_transport_error",
+            manifest_signature_url: url,
+            cause_message: cause instanceof Error ? cause.message : String(cause),
+          },
+          cause,
+        },
       );
     }
     if (resp.status === 200) {
       return await resp.text();
     }
-    throw new ManifestSignatureAbsent(`manifest signature fetch returned HTTP ${resp.status}`);
+    if (resp.status === 404) {
+      // Clean 404: the signer legitimately never published a signature for
+      // this (legacy) release. ONLY this status maps to the tolerated-absent
+      // transition path.
+      throw new ManifestSignatureAbsent("manifest signature fetch returned HTTP 404");
+    }
+    // Any other non-200 (403, 500, ...) is indeterminate, not "absent".
+    // Fail closed -- a non-404 HTTP error must never strip enforcement.
+    throw new RelaySidecarBundleUnverified(
+      `release manifest signature fetch returned HTTP ${resp.status} from ${url}; ` +
+        "a non-404 status is indeterminate and is not treated as an absent signature",
+      {
+        code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
+        details: {
+          reason: "manifest_signature_fetch_indeterminate",
+          manifest_signature_url: url,
+          http_status: resp.status,
+        },
+      },
+    );
   };
 }
 

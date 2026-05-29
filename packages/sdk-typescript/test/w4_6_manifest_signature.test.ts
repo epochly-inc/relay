@@ -174,12 +174,24 @@ interface ManifestFixture {
  */
 function buildManifestFixture(
   opts: {
-    /** When set, no manifest.json.sigstore is served (legacy / 404). */
+    /** When set, no manifest.json.sigstore is served (clean 404 / legacy). */
     omitManifestSignature?: boolean;
     /** When set, the manifest.json.sigstore is over DIFFERENT bytes (forgery). */
     tamperManifestSignature?: boolean;
     /** Override the manifest bytes the attacker serves vs. signs. */
     forgedManifestText?: string;
+    /**
+     * When set, ``fetchImpl`` REJECTS (throws) on the ``.sigstore`` request --
+     * a transport error / connection reset (e.g. an active MITM that drops the
+     * signature object). VAL-CRYPTO-003 downgrade hardening.
+     */
+    manifestSigstoreTransportError?: boolean;
+    /**
+     * When set, ``fetchImpl`` returns this HTTP status (e.g. 500/403) on the
+     * ``.sigstore`` request -- a non-404 status that must NOT be read as
+     * "absent". VAL-CRYPTO-003 downgrade hardening.
+     */
+    manifestSigstoreStatus?: number;
   } = {},
 ): ManifestFixture {
   const material = SIGNING_MATERIAL;
@@ -243,6 +255,15 @@ function buildManifestFixture(
       return new Response(servedManifestText, { status: 200 });
     }
     if (url === manifestSigstoreUrl) {
+      if (opts.manifestSigstoreTransportError) {
+        // Simulate a connection reset / dropped request on the signature
+        // object (e.g. an active MITM stripping manifest-signature
+        // enforcement). fetch() rejects rather than returning a Response.
+        throw new TypeError("fetch failed: ECONNRESET");
+      }
+      if (opts.manifestSigstoreStatus !== undefined) {
+        return new Response("error", { status: opts.manifestSigstoreStatus });
+      }
       if (opts.omitManifestSignature) {
         return new Response("not found", { status: 404 });
       }
@@ -464,6 +485,165 @@ describe("VAL-CRYPTO-003: release manifest signature is cryptographically verifi
           fetchManifestSigstoreImpl: f.fetchManifestSigstoreImpl,
         }),
       ).rejects.toThrow(RelaySidecarBundleUnverified);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-CRYPTO-003 (G1-F5): manifest-signature DOWNGRADE hardening.
+//
+// The default manifest-signature fetcher (defaultManifestSigstoreFetcher in
+// wrapper.ts) must distinguish a GENUINE 404 (signature legitimately not
+// published for a legacy release) from a TRANSPORT error / connection reset
+// or a non-404 HTTP status. Under the transition default
+// (RELAY_REQUIRE_SIGNED_MANIFEST unset), an ABSENT signature is tolerated --
+// so if a transport error or 5xx were misclassified as "absent", an active
+// MITM that serves a forged manifest but DROPS/RESETS the .sigstore request
+// would strip manifest-signature enforcement entirely (a trust downgrade).
+//
+// These tests deliberately OMIT fetchManifestSigstoreImpl so the REAL
+// defaultManifestSigstoreFetcher runs against the mock transport (fetchImpl);
+// that is the code path that carried the downgrade bug.
+// ---------------------------------------------------------------------------
+describe("VAL-CRYPTO-003 (G1-F5): transport/non-404 errors on the manifest signature FAIL CLOSED", () => {
+  it("a TRANSPORT error on the .sigstore request FAILS CLOSED even with the require flag UNSET", async () => {
+    requireToolchain();
+    const tmp = setupTmpHome();
+    try {
+      // RELAY_REQUIRE_SIGNED_MANIFEST is unset (transition default). A
+      // connection reset on the .sigstore request must NOT be treated as a
+      // tolerated "absent" signature; it must fail closed and not launch.
+      const f = buildManifestFixture({ manifestSigstoreTransportError: true });
+      await expect(
+        launchSidecar({
+          home: tmp.home,
+          manifestUrl: f.manifestUrl,
+          fetchImpl: f.fetchImpl,
+          fetchBundleImpl: f.fetchBundleImpl,
+          fetchSigstoreImpl: f.fetchSigstoreImpl,
+          verifyBundleImpl: realVerifySeam,
+        }),
+      ).rejects.toThrow(RelaySidecarBundleUnverified);
+      // Fail-closed: nothing cached.
+      const cacheBase = path.join(tmp.home, "sidecar-bundles");
+      expect(fs.existsSync(cacheBase) ? fs.readdirSync(cacheBase).length : 0).toBe(0);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  it("a 500 status on the .sigstore request FAILS CLOSED even with the require flag UNSET", async () => {
+    requireToolchain();
+    const tmp = setupTmpHome();
+    try {
+      const f = buildManifestFixture({ manifestSigstoreStatus: 500 });
+      await expect(
+        launchSidecar({
+          home: tmp.home,
+          manifestUrl: f.manifestUrl,
+          fetchImpl: f.fetchImpl,
+          fetchBundleImpl: f.fetchBundleImpl,
+          fetchSigstoreImpl: f.fetchSigstoreImpl,
+          verifyBundleImpl: realVerifySeam,
+        }),
+      ).rejects.toThrow(RelaySidecarBundleUnverified);
+      const cacheBase = path.join(tmp.home, "sidecar-bundles");
+      expect(fs.existsSync(cacheBase) ? fs.readdirSync(cacheBase).length : 0).toBe(0);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  it("a 403 status on the .sigstore request FAILS CLOSED even with the require flag UNSET", async () => {
+    requireToolchain();
+    const tmp = setupTmpHome();
+    try {
+      const f = buildManifestFixture({ manifestSigstoreStatus: 403 });
+      await expect(
+        launchSidecar({
+          home: tmp.home,
+          manifestUrl: f.manifestUrl,
+          fetchImpl: f.fetchImpl,
+          fetchBundleImpl: f.fetchBundleImpl,
+          fetchSigstoreImpl: f.fetchSigstoreImpl,
+          verifyBundleImpl: realVerifySeam,
+        }),
+      ).rejects.toThrow(RelaySidecarBundleUnverified);
+      const cacheBase = path.join(tmp.home, "sidecar-bundles");
+      expect(fs.existsSync(cacheBase) ? fs.readdirSync(cacheBase).length : 0).toBe(0);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  it("a CLEAN 404 on the .sigstore request is tolerated under the transition default (legacy still launches)", async () => {
+    requireToolchain();
+    const tmp = setupTmpHome();
+    try {
+      // RELAY_REQUIRE_SIGNED_MANIFEST unset: a genuine 404 means the
+      // signature was legitimately never published for this legacy release.
+      // npx must keep working via the per-binary digest + Sigstore checks.
+      // The DEFAULT fetcher must map this clean 404 (and only a clean 404)
+      // to the tolerated-absent path.
+      const f = buildManifestFixture({ omitManifestSignature: true });
+      const decision = await launchSidecar({
+        home: tmp.home,
+        manifestUrl: f.manifestUrl,
+        fetchImpl: f.fetchImpl,
+        fetchBundleImpl: f.fetchBundleImpl,
+        fetchSigstoreImpl: f.fetchSigstoreImpl,
+        verifyBundleImpl: realVerifySeam,
+      });
+      expect(decision.action).toBe("launched_fresh");
+      expect(decision.digest).toBe(f.bundleDigest);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  it("a CLEAN 404 on the .sigstore request is REJECTED under RELAY_REQUIRE_SIGNED_MANIFEST=1", async () => {
+    requireToolchain();
+    const tmp = setupTmpHome();
+    try {
+      process.env[REQUIRE_SIGNED_MANIFEST_ENV] = "1";
+      const f = buildManifestFixture({ omitManifestSignature: true });
+      await expect(
+        launchSidecar({
+          home: tmp.home,
+          manifestUrl: f.manifestUrl,
+          fetchImpl: f.fetchImpl,
+          fetchBundleImpl: f.fetchBundleImpl,
+          fetchSigstoreImpl: f.fetchSigstoreImpl,
+          verifyBundleImpl: realVerifySeam,
+        }),
+      ).rejects.toThrow(RelaySidecarBundleUnverified);
+      const cacheBase = path.join(tmp.home, "sidecar-bundles");
+      expect(fs.existsSync(cacheBase) ? fs.readdirSync(cacheBase).length : 0).toBe(0);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  it("a TRANSPORT error on the .sigstore request FAILS CLOSED under RELAY_REQUIRE_SIGNED_MANIFEST=1 too", async () => {
+    requireToolchain();
+    const tmp = setupTmpHome();
+    try {
+      process.env[REQUIRE_SIGNED_MANIFEST_ENV] = "1";
+      const f = buildManifestFixture({ manifestSigstoreTransportError: true });
+      await expect(
+        launchSidecar({
+          home: tmp.home,
+          manifestUrl: f.manifestUrl,
+          fetchImpl: f.fetchImpl,
+          fetchBundleImpl: f.fetchBundleImpl,
+          fetchSigstoreImpl: f.fetchSigstoreImpl,
+          verifyBundleImpl: realVerifySeam,
+        }),
+      ).rejects.toThrow(RelaySidecarBundleUnverified);
+      const cacheBase = path.join(tmp.home, "sidecar-bundles");
+      expect(fs.existsSync(cacheBase) ? fs.readdirSync(cacheBase).length : 0).toBe(0);
     } finally {
       tmp.cleanup();
     }

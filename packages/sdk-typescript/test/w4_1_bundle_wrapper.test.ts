@@ -249,11 +249,23 @@ function buildMockFixture(
       trust_root: trustRootForSigstore,
     });
   }
+  const manifestSigstoreUrl = manifestUrl + ".sigstore";
   const observedRequests: string[] = [];
   const fetchImpl = async (url: string, _init?: RequestInit): Promise<Response> => {
     observedRequests.push(url);
     if (url === manifestUrl) {
       return new Response(JSON.stringify(manifest), { status: 200 });
+    }
+    if (url === manifestSigstoreUrl) {
+      // These orchestration fixtures model a LEGACY release that predates
+      // manifest signing: the release-manifest signature was never published,
+      // so the signature object returns a CLEAN 404. Under the transition
+      // default (RELAY_REQUIRE_SIGNED_MANIFEST unset) the wrapper tolerates a
+      // genuinely-absent signature and proceeds with the per-binary digest +
+      // Sigstore checks (VAL-CRYPTO-003 / G1-F5). We deliberately do NOT throw
+      // a transport error here: a transport error must FAIL CLOSED and would
+      // mask the digest/trust-root/cache behavior these tests exercise.
+      return new Response("not found", { status: 404 });
     }
     throw new Error(`unexpected fetch URL in test: ${url}`);
   };
