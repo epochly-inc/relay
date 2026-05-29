@@ -142,4 +142,33 @@ dev = [
     # lockfile records the resolved patch version.
     "pyright>=1.1.390",
     "pytest-xdist>=3.6",
+    # Test plugins + test-only runtime deps consumed by the plumbing tier.
+    #
+    # Background: each workspace member declares these under its own
+    # `[project.optional-dependencies] test` extra. The manifest's
+    # `bootstrap-python` command is `uv sync --all-packages`, which installs
+    # every member's MAIN dependencies plus this root dev group, but does NOT
+    # install per-member optional-dependency extras (that needs `--all-extras`
+    # or `--extra test`). The result was a bootstrapped environment missing
+    # these plugins, which broke the manifest's own `test-tier-1`/`test-tier-2`
+    # commands:
+    #   - pytest-timeout supplies the `--timeout=` flag those commands pass;
+    #     absent, pytest exits 4 with "unrecognized arguments: --timeout".
+    #   - pytest-asyncio registers the `asyncio` marker; absent, the strict
+    #     `@pytest.mark.asyncio` raises PytestUnknownMarkWarning which the
+    #     `filterwarnings = error` config escalates to COLLECTION ERRORS across
+    #     packages/gate, apps/local-sidecar, and root tests.
+    #   - aiohttp + requests are required by the replay-proxy egress-denial
+    #     coverage sentinel (VAL-W7-082, VAL-W7-080) which asserts both are
+    #     importable so the replay sandbox's socket-layer deny is exercised
+    #     for every HTTP transport.
+    # Pinning these in the dev group (installed by `uv sync` unconditionally)
+    # makes the bootstrap self-sufficient: `uv sync --all-packages` alone yields
+    # a runnable plumbing tier. Bounds mirror the per-member `test` extras so
+    # the single workspace lockfile resolves one consistent version of each.
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+    "pytest-asyncio>=0.24,<0.26",
+    "aiohttp>=3.9",
+    "requests>=2.31",
 ]

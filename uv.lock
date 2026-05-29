@@ -1073,10 +1073,15 @@ docs = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiohttp" },
     { name = "datamodel-code-generator" },
     { name = "jsonschema" },
     { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-timeout" },
     { name = "pytest-xdist" },
+    { name = "requests" },
 ]
 
 [package.metadata]
@@ -1092,10 +1097,15 @@ provides-extras = ["docs"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiohttp", specifier = ">=3.9" },
     { name = "datamodel-code-generator", specifier = ">=0.57.0" },
     { name = "jsonschema", specifier = ">=4.21" },
     { name = "pyright", specifier = ">=1.1.390" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.24,<0.26" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "requests", specifier = ">=2.31" },
 ]
 
 [[package]]
