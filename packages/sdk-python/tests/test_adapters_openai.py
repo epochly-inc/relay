@@ -365,3 +365,81 @@ def test_openai_adapter_model_signature_without_system_fingerprint(
     sig = span.attributes["model_signature"]
     assert sig.startswith("openai:gpt-4o-2024-08-06:")
     assert len(sig.split(":")) == 3
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-008: adapter-boundary scrubber must mask common credential
+# key names (lockstep with the TypeScript ``scrubSecretShape``).
+# ---------------------------------------------------------------------------
+
+
+def test_scrub_masks_common_credential_key_names() -> None:
+    """VAL-REDACT-008: high-risk credential key names beyond the original
+    8-name exact-match set are scrubbed; benign keys are not.
+
+    Reproducing trigger: tool-call arguments carrying HTTP/OAuth credential
+    headers (``authorization``, ``access_token``, ``cookie`` ...) were
+    recorded verbatim because the key name did not equal one of the
+    original hints.
+    """
+    from relay.adapters.openai_adapter import _scrub
+
+    scrubbed = _scrub(
+        {
+            "authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.payload",
+            "auth": "Basic dXNlcjpwYXNz",
+            "bearer": "eyJabc",
+            "access_token": "ya29.A0ARrdaM-real-token",
+            "refresh_token": "1//refresh-token-value",
+            "session_token": "FQoGZXIvYXdzED",
+            "client_secret": "GOCSPX-client-secret",
+            "cookie": "session=abc123; csrf=def456",
+            "set-cookie": "session=abc123; HttpOnly",
+            "private_key": "-----BEGIN PRIVATE KEY-----MIIE",
+            # benign keys that MUST NOT be scrubbed (no false positives)
+            "city": "Paris",
+            "token_count": 42,
+            "authorized_user": "alice",
+            "bearings": "north",
+        }
+    )
+    assert scrubbed["authorization"] == "[REDACTED]"
+    assert scrubbed["auth"] == "[REDACTED]"
+    assert scrubbed["bearer"] == "[REDACTED]"
+    assert scrubbed["access_token"] == "[REDACTED]"
+    assert scrubbed["refresh_token"] == "[REDACTED]"
+    assert scrubbed["session_token"] == "[REDACTED]"
+    assert scrubbed["client_secret"] == "[REDACTED]"
+    assert scrubbed["cookie"] == "[REDACTED]"
+    assert scrubbed["set-cookie"] == "[REDACTED]"
+    assert scrubbed["private_key"] == "[REDACTED]"
+    # no false positives on benign keys
+    assert scrubbed["city"] == "Paris"
+    assert scrubbed["token_count"] == 42
+    assert scrubbed["authorized_user"] == "alice"
+    assert scrubbed["bearings"] == "north"
+
+
+def test_scrub_suffix_rules_token_and_secret() -> None:
+    """VAL-REDACT-008: ``*_token``/``*-token`` and ``*_secret``/``*-secret``
+    suffix rules cover provider-specific credential keys without scrubbing
+    benign substring matches (lockstep with TypeScript)."""
+    from relay.adapters.openai_adapter import _scrub
+
+    scrubbed = _scrub(
+        {
+            "id_token": "eyJid",
+            "x-csrf-token": "csrf-value",
+            "api_secret": "secret-value",
+            "app-secret": "another-secret",
+            # benign: substring 'token'/'secret' not in suffix position
+            "token_count": 7,
+            "secretary_name": "Bob",
+        }
+    )
+    assert scrubbed["id_token"] == "[REDACTED]"
+    assert scrubbed["x-csrf-token"] == "[REDACTED]"
+    assert scrubbed["api_secret"] == "[REDACTED]"
+    assert scrubbed["app-secret"] == "[REDACTED]"
+    assert scrubbed["token_count"] == 7
+    assert scrubbed["secretary_name"] == "Bob"

@@ -256,6 +256,63 @@ describe("VAL-W4-038: adapter routes tool args through the redaction engine (bou
     expect(scrubSecretShape("sk-ant-AAAAAAAAA")).toBe("[REDACTED]");
     expect(scrubSecretShape("regular text")).toBe("regular text");
   });
+
+  // VAL-REDACT-008: high-risk credential key names beyond the original
+  // exact-match set must also be scrubbed. Reproducing trigger: tool-call
+  // arguments carrying HTTP/OAuth credential headers were recorded verbatim
+  // because the key name was not equal to one of the original 8 hints.
+  it("scrubSecretShape masks common credential key names (VAL-REDACT-008)", () => {
+    const scrubbed = scrubSecretShape({
+      authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload",
+      auth: "Basic dXNlcjpwYXNz",
+      bearer: "eyJabc",
+      access_token: "ya29.A0ARrdaM-real-token",
+      refresh_token: "1//refresh-token-value",
+      session_token: "FQoGZXIvYXdzED",
+      client_secret: "GOCSPX-client-secret",
+      cookie: "session=abc123; csrf=def456",
+      "set-cookie": "session=abc123; HttpOnly",
+      private_key: "-----BEGIN PRIVATE KEY-----MIIE",
+      // benign keys that MUST NOT be scrubbed (no false positives)
+      city: "Paris",
+      token_count: 42,
+      authorized_user: "alice",
+      bearings: "north",
+    }) as Record<string, unknown>;
+    expect(scrubbed["authorization"]).toBe("[REDACTED]");
+    expect(scrubbed["auth"]).toBe("[REDACTED]");
+    expect(scrubbed["bearer"]).toBe("[REDACTED]");
+    expect(scrubbed["access_token"]).toBe("[REDACTED]");
+    expect(scrubbed["refresh_token"]).toBe("[REDACTED]");
+    expect(scrubbed["session_token"]).toBe("[REDACTED]");
+    expect(scrubbed["client_secret"]).toBe("[REDACTED]");
+    expect(scrubbed["cookie"]).toBe("[REDACTED]");
+    expect(scrubbed["set-cookie"]).toBe("[REDACTED]");
+    expect(scrubbed["private_key"]).toBe("[REDACTED]");
+    // no false positives on benign keys
+    expect(scrubbed["city"]).toBe("Paris");
+    expect(scrubbed["token_count"]).toBe(42);
+    expect(scrubbed["authorized_user"]).toBe("alice");
+    expect(scrubbed["bearings"]).toBe("north");
+  });
+
+  it("scrubSecretShape suffix rules cover *_token / *-token and *_secret / *-secret (VAL-REDACT-008)", () => {
+    const scrubbed = scrubSecretShape({
+      id_token: "eyJid",
+      "x-csrf-token": "csrf-value",
+      api_secret: "secret-value",
+      "app-secret": "another-secret",
+      // benign: substring 'token' / 'secret' inside a non-suffix position
+      token_count: 7,
+      secretary_name: "Bob",
+    }) as Record<string, unknown>;
+    expect(scrubbed["id_token"]).toBe("[REDACTED]");
+    expect(scrubbed["x-csrf-token"]).toBe("[REDACTED]");
+    expect(scrubbed["api_secret"]).toBe("[REDACTED]");
+    expect(scrubbed["app-secret"]).toBe("[REDACTED]");
+    expect(scrubbed["token_count"]).toBe(7);
+    expect(scrubbed["secretary_name"]).toBe("Bob");
+  });
 });
 
 describe("VAL-W4-040: adapter init refuses out-of-range provider SDK version", () => {

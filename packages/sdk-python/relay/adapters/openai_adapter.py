@@ -128,8 +128,12 @@ def _redact_tool_arguments(raw: str) -> tuple[Any, str]:
     return redacted, hashlib.sha256(canon).hexdigest()
 
 
+# Exact-match credential key names. A lowercased key equal to any member
+# masks the value. MUST stay byte-identical to the TypeScript
+# ``SECRET_KEY_HINTS`` set in ``openai.ts`` (VAL-REDACT-008 lockstep).
 _SECRET_KEY_HINTS: frozenset[str] = frozenset(
     {
+        # original W3/W4 set
         "api_key",
         "apikey",
         "secret",
@@ -138,17 +142,61 @@ _SECRET_KEY_HINTS: frozenset[str] = frozenset(
         "passphrase",
         "ssn",
         "credit_card",
+        # VAL-REDACT-008: common HTTP/OAuth/session credential names
+        "authorization",
+        "auth",
+        "bearer",
+        "access_token",
+        "refresh_token",
+        "session_token",
+        "id_token",
+        "client_secret",
+        "cookie",
+        "set-cookie",
+        "private_key",
     }
 )
 
+# Suffix rules applied to the lowercased key name. Any key ENDING in one of
+# these suffixes is treated as a credential. This catches the long tail of
+# provider-specific keys (``x-csrf-token``, ``app_secret``, ``id-token``)
+# without the false positives a bare substring match would cause (e.g.
+# ``token_count``, ``secretary_name``). MUST stay byte-identical to the
+# TypeScript ``SECRET_KEY_SUFFIXES`` array (VAL-REDACT-008 lockstep).
+_SECRET_KEY_SUFFIXES: tuple[str, ...] = (
+    "_token",
+    "-token",
+    "_secret",
+    "-secret",
+)
+
+
+def _is_secret_key(lk: str) -> bool:
+    """True when the lowercased key name denotes a credential.
+
+    Either an exact match against :data:`_SECRET_KEY_HINTS` or an endswith
+    match against :data:`_SECRET_KEY_SUFFIXES`. Lockstep with TypeScript
+    ``isSecretKey``.
+    """
+    if lk in _SECRET_KEY_HINTS:
+        return True
+    return lk.endswith(_SECRET_KEY_SUFFIXES)
+
 
 def _scrub(value: Any) -> Any:
-    """Recursively replace secret-looking strings with ``"[REDACTED]"``."""
+    """Recursively replace secret-looking strings with ``"[REDACTED]"``.
+
+    Keys whose lowercased name is a credential -- exact match in
+    :data:`_SECRET_KEY_HINTS` OR ending in a :data:`_SECRET_KEY_SUFFIXES`
+    suffix -- are masked (VAL-REDACT-008). String values starting with
+    ``sk-`` / ``sk-ant-`` are masked. Lockstep with TypeScript
+    ``scrubSecretShape``.
+    """
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
             lk = str(k).lower()
-            if lk in _SECRET_KEY_HINTS:
+            if _is_secret_key(lk):
                 out[k] = "[REDACTED]"
             else:
                 out[k] = _scrub(v)

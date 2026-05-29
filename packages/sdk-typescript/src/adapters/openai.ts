@@ -47,7 +47,14 @@ const OPENAI_PRICE_TABLE: ReadonlyMap<string, readonly [number, number]> = new M
   ["gpt-3.5-turbo", [0.5, 1.5]],
 ]);
 
+/**
+ * Exact-match credential key names. Lowercased key equality with any
+ * member masks the value. MUST stay byte-identical to the Python
+ * ``_SECRET_KEY_HINTS`` frozenset in ``openai_adapter.py`` (VAL-REDACT-008
+ * lockstep).
+ */
 const SECRET_KEY_HINTS: ReadonlySet<string> = new Set([
+  // original W4 set
   "api_key",
   "apikey",
   "secret",
@@ -56,17 +63,58 @@ const SECRET_KEY_HINTS: ReadonlySet<string> = new Set([
   "passphrase",
   "ssn",
   "credit_card",
+  // VAL-REDACT-008: common HTTP/OAuth/session credential header + field names
+  "authorization",
+  "auth",
+  "bearer",
+  "access_token",
+  "refresh_token",
+  "session_token",
+  "id_token",
+  "client_secret",
+  "cookie",
+  "set-cookie",
+  "private_key",
 ]);
+
+/**
+ * Suffix rules applied to the lowercased key name. Any key ENDING in one
+ * of these suffixes is treated as a credential. This catches the long tail
+ * of provider-specific keys (``x-csrf-token``, ``app_secret``, ``id-token``)
+ * without the false positives a bare substring match would cause (e.g.
+ * ``token_count``, ``secretary_name``). MUST stay byte-identical to the
+ * Python ``_SECRET_KEY_SUFFIXES`` tuple (VAL-REDACT-008 lockstep).
+ */
+const SECRET_KEY_SUFFIXES: readonly string[] = [
+  "_token",
+  "-token",
+  "_secret",
+  "-secret",
+];
+
+/**
+ * True when the lowercased key name denotes a credential: either an exact
+ * match against {@link SECRET_KEY_HINTS} or an endswith match against
+ * {@link SECRET_KEY_SUFFIXES}. Lockstep with Python ``_is_secret_key``.
+ */
+function isSecretKey(lk: string): boolean {
+  if (SECRET_KEY_HINTS.has(lk)) return true;
+  for (const suffix of SECRET_KEY_SUFFIXES) {
+    if (lk.endsWith(suffix)) return true;
+  }
+  return false;
+}
 
 /**
  * Recursively replace secret-looking strings with ``"[REDACTED]"``.
  *
- * Mirrors the Python ``_scrub`` helper: keys whose lowercased name is in
- * SECRET_KEY_HINTS get masked; string values starting with ``sk-`` or
- * ``sk-ant-`` get masked. This is the conservative adapter-boundary pass
- * that runs even when the run-level redaction engine has not been
- * configured (defense-in-depth per VAL-W4-038, CLAUDE.md keystone
- * invariant #7).
+ * Mirrors the Python ``_scrub`` helper: keys whose lowercased name is a
+ * credential -- exact match in SECRET_KEY_HINTS OR ending in a
+ * SECRET_KEY_SUFFIXES suffix -- get masked; string values starting with
+ * ``sk-`` or ``sk-ant-`` get masked. This is the conservative
+ * adapter-boundary pass that runs even when the run-level redaction engine
+ * has not been configured (defense-in-depth per VAL-W4-038, VAL-REDACT-008,
+ * CLAUDE.md keystone invariant #7).
  */
 export function scrubSecretShape(value: unknown): unknown {
   if (value === null || value === undefined) return value;
@@ -75,7 +123,7 @@ export function scrubSecretShape(value: unknown): unknown {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       const lk = k.toLowerCase();
-      if (SECRET_KEY_HINTS.has(lk)) {
+      if (isSecretKey(lk)) {
         out[k] = "[REDACTED]";
       } else {
         out[k] = scrubSecretShape(v);
