@@ -357,10 +357,11 @@ _CONFUSABLES_MAP: Final[dict[str, str]] = _build_confusables_map()
 def _normalise_for_matching(value: str) -> str:
     """Return the NFKC + confusables-folded form of ``value``.
 
-    The result is what the matcher regexes operate on. The original
-    string positions are also tracked separately (see :class:`_Span`)
-    so the engine can splice the placeholder back into the original
-    bytes at the right offset.
+    The result is what the matcher regexes operate on. This is the
+    DETECTION surface only; the engine never emits it directly. Output
+    for any unmatched region is reconstructed from the ORIGINAL code
+    points via :func:`_fold_with_origin` (VAL-REDACT-007), so legitimate
+    non-secret Cyrillic/Greek text round-trips unchanged.
     """
     # NFKC handles compatibility decomposition (full-width digits,
     # ligatures, presentation forms). It does NOT decompose Cyrillic
@@ -370,6 +371,56 @@ def _normalise_for_matching(value: str) -> str:
     if not _CONFUSABLES_MAP:
         return nfkc
     return "".join(_CONFUSABLES_MAP.get(ch, ch) for ch in nfkc)
+
+
+def _fold_with_origin(value: str) -> tuple[str, list[int], list[int]]:
+    """Return ``(folded, origin_starts, origin_ends)`` for ``value``.
+
+    ``folded`` is the NFKC + confusables-folded DETECTION surface,
+    byte-identical to :func:`_normalise_for_matching` for every input
+    (verified by an assertion in the engine and by the parity corpus).
+
+    ``origin_starts[i]`` / ``origin_ends[i]`` give the half-open slice
+    ``value[origin_starts[i]:origin_ends[i]]`` of the ORIGINAL string
+    that produced ``folded[i]``. This lets the engine map a matched span
+    detected on ``folded`` back onto the original code points, then
+    splice the placeholder over the original slice while every UNMATCHED
+    original code point is reproduced verbatim (VAL-REDACT-007).
+
+    NFKC is not per-character: a base character followed by combining
+    marks may compose into a single (or differently shaped) sequence
+    (e.g. ``"u" + U+0308`` -> ``U+00FC``). To keep a faithful
+    original-offset mapping under that non-length-preserving transform,
+    the input is split into segments of one base code point plus any
+    trailing combining marks (``unicodedata.combining(ch) != 0``); each
+    segment is NFKC-normalised and folded as a unit, and every folded
+    code point it yields maps to the segment's FULL original span. A
+    matched folded span therefore always maps to an original span that
+    fully covers each contributing original code point -- no plaintext
+    fragment of a matched secret can survive (the VAL-REDACT-002 / Bug 4
+    guarantee), while unmatched code points are reproduced from the
+    original string.
+    """
+    folded_parts: list[str] = []
+    origin_starts: list[int] = []
+    origin_ends: list[int] = []
+    n = len(value)
+    i = 0
+    while i < n:
+        seg_start = i
+        i += 1
+        # Absorb trailing combining marks into the same segment so the
+        # base+marks NFKC composition is computed as a unit.
+        while i < n and unicodedata.combining(value[i]) != 0:
+            i += 1
+        seg_end = i
+        segment = value[seg_start:seg_end]
+        nfkc_seg = unicodedata.normalize("NFKC", segment)
+        for ch in nfkc_seg:
+            folded_parts.append(_CONFUSABLES_MAP.get(ch, ch))
+            origin_starts.append(seg_start)
+            origin_ends.append(seg_end)
+    return "".join(folded_parts), origin_starts, origin_ends
 
 
 # ---------------------------------------------------------------------------
@@ -1032,26 +1083,28 @@ class RedactionEngine:
         """Return the redacted form of ``value`` after matcher application.
 
         Matchers run in declaration order on the NFKC + confusables-
-        folded form of the string. Match spans are spliced back into
-        that SAME normalized form (not the original), so the result is
-        the normalized form with matched substrings replaced.
+        folded DETECTION surface of the string so homograph-disguised
+        secrets are still caught (VAL-W3-022). The EMITTED output is
+        reconstructed from the ORIGINAL code points: only the original
+        spans corresponding to matched folded spans are replaced by the
+        placeholder, and every unmatched original code point is
+        reproduced verbatim.
 
-        Rationale (Bug 4 P1): NFKC is not length-preserving for
-        combining marks (e.g. ``"u" + U+0308`` collapses to U+00FC).
-        Splicing offsets computed against the normalized form into the
-        ORIGINAL string left fragments of the matched plaintext behind
-        when the two strings had different lengths. Matching and
-        splicing MUST operate on the same string to be correct under
-        the full Unicode input space the SDK accepts.
+        Rationale (VAL-REDACT-007 LOW / correctness): the engine
+        previously emitted the folded form itself -- even when NO matcher
+        fired -- silently transliterating legitimate non-secret
+        Cyrillic/Greek content (e.g. a Russian sentence) into ASCII
+        look-alikes via ``_CONFUSABLES_MAP``. The fold must remain a
+        DETECTION aid only; non-secret content round-trips unchanged.
 
-        Trade-off: for leaves that contained NFKC-decomposable code
-        points outside any match, the output now contains the composed
-        form instead of the original decomposed form. Since the leaf
-        was traversed because it is a candidate for redaction, the
-        composed-vs-decomposed distinction has no observable effect on
-        downstream consumers (which compare strings via Unicode
-        canonical equivalence or via raw byte SHA-256 of a downstream
-        canonicalized envelope).
+        The non-length-preserving NFKC obstacle (Bug 4 P1: ``"u" +
+        U+0308`` collapses to U+00FC) is handled by
+        :func:`_fold_with_origin`, which maps each folded code point back
+        to the half-open slice of the ORIGINAL string that produced it.
+        A matched folded span maps to an original span that fully covers
+        every contributing original code point, so no plaintext fragment
+        of a matched secret can survive (the VAL-REDACT-002 guarantee)
+        while unmatched original code points are emitted verbatim.
         """
         if not value:
             return value
@@ -1074,23 +1127,62 @@ class RedactionEngine:
 
     def _apply_matchers_to_clamped_string(self, value: str) -> str:
         """Run matchers on an already length-clamped string (see
-        :meth:`_apply_matchers_to_string`). The normalize-match-splice logic
-        is identical to the pre-VAL-REDACT-006 implementation."""
-        normalised = _normalise_for_matching(value)
-        # Walk matchers, collecting (start, end, replacement) tuples.
+        :meth:`_apply_matchers_to_string`).
+
+        Matching runs on the NFKC + confusables-folded DETECTION surface so
+        homograph-disguised secrets are still caught (VAL-W3-022). The
+        EMITTED output, however, is reconstructed from the ORIGINAL code
+        points: only the original spans that correspond to matched folded
+        spans are replaced by the placeholder; every unmatched original code
+        point is reproduced verbatim. This fixes VAL-REDACT-007 (the engine
+        previously emitted the folded string, silently transliterating
+        legitimate non-secret Cyrillic/Greek content into ASCII look-alikes)
+        WITHOUT weakening detection.
+
+        :func:`_fold_with_origin` supplies, for each folded code point, the
+        half-open slice of the ORIGINAL string that produced it. A matched
+        folded span ``[fs, fe)`` therefore maps to the original span
+        ``[origin_starts[fs], origin_ends[fe - 1])``. Because the origin map
+        is built over base+combining-mark segments, this span fully covers
+        every original code point that contributed to the match -- so no
+        plaintext fragment of a matched secret can survive even when NFKC is
+        not length-preserving (the VAL-REDACT-002 / Bug 4 guarantee).
+        """
+        folded, origin_starts, origin_ends = _fold_with_origin(value)
+        # Detection surface MUST equal _normalise_for_matching exactly so the
+        # match behavior (and Python<->TS parity) is unchanged by the origin
+        # tracking. If a pathological input made the per-segment fold diverge
+        # from the whole-string fold, fail closed by redacting the WHOLE leaf
+        # rather than risk a wrong-offset splice (no plaintext leak, no silent
+        # transliteration of a partial result).
+        if folded != _normalise_for_matching(value):
+            return self._policy.action_policy.redact_placeholder
+        # Walk matchers, collecting (orig_start, orig_end, replacement) tuples
+        # in ORIGINAL-string coordinates (mapped from folded match spans).
         spans: list[tuple[int, int, str]] = []
         for matcher in self._policy.matchers:
             if matcher.kind != "regex" or matcher.pattern is None:
                 # json_pointer matchers are applied at the leaf level
                 # in :meth:`_walk`, not at the string level.
                 continue
-            for m in matcher.pattern.finditer(normalised):
-                start, end = m.span()
-                matched_text = normalised[start:end]
+            for m in matcher.pattern.finditer(folded):
+                fstart, fend = m.span()
+                matched_text = folded[fstart:fend]
                 replacement = self._build_replacement(matcher, matched_text)
-                spans.append((start, end, replacement))
+                # Map folded span -> original span. A zero-width folded match
+                # (fend == fstart) maps to the zero-width original point at
+                # that folded index's origin start.
+                if fend > fstart:
+                    ostart = origin_starts[fstart]
+                    oend = origin_ends[fend - 1]
+                else:
+                    ostart = origin_starts[fstart] if fstart < len(origin_starts) else len(value)
+                    oend = ostart
+                spans.append((ostart, oend, replacement))
         if not spans:
-            return normalised
+            # No matcher fired: emit the ORIGINAL string verbatim (the fix --
+            # the folded/transliterated form is never emitted). VAL-REDACT-007.
+            return value
         # Sort by start, then by end descending so the span that OPENS each
         # overlap group is the earliest-starting and (among equal starts)
         # longest match -- a deterministic, replacement-defining "highest
@@ -1104,6 +1196,9 @@ class RedactionEngine:
         # matched secret. Proper interval merging extends the open interval's
         # end to max(end) so the entire union of matched ranges is redacted by
         # a single replacement and no matched byte is ever emitted in clear.
+        # Merging now happens in ORIGINAL coordinates; the mapping above
+        # guarantees each match span fully covers its contributing original
+        # code points, so the union still contains no clear matched byte.
         spans.sort(key=lambda t: (t[0], -t[1]))
         merged: list[tuple[int, int, str]] = []
         for start, end, repl in spans:
@@ -1118,16 +1213,17 @@ class RedactionEngine:
                     merged[-1] = (prev_start, end, prev_repl)
                 continue
             merged.append((start, end, repl))
-        # Splice replacements into the NORMALIZED string at the offsets
-        # we computed against the normalized form. This is correct
-        # under non-length-preserving normalization (Bug 4 fix).
+        # Splice replacements into the ORIGINAL string at the mapped offsets.
+        # Unmatched runs are copied from the original verbatim, so non-secret
+        # Cyrillic/Greek content round-trips unchanged (VAL-REDACT-007); matched
+        # secret spans are replaced by the placeholder.
         out_parts: list[str] = []
         cursor = 0
         for start, end, repl in merged:
-            out_parts.append(normalised[cursor:start])
+            out_parts.append(value[cursor:start])
             out_parts.append(repl)
             cursor = end
-        out_parts.append(normalised[cursor:])
+        out_parts.append(value[cursor:])
         return "".join(out_parts)
 
     def _build_replacement(

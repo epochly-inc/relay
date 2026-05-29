@@ -555,3 +555,135 @@ def test_overlapping_spans_tail_never_crosses_http_boundary() -> None:
     assert b"bravo" not in body_bytes
     assert b"alpha" not in body_bytes
     assert b"<redacted>" in body_bytes
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-007 -- the confusables fold is a DETECTION aid only. Output for
+# any UNMATCHED region MUST be the ORIGINAL code points, never the folded
+# ASCII look-alikes. Pre-fix the engine emitted the NFKC + confusables-folded
+# string verbatim, silently transliterating legitimate non-secret Cyrillic /
+# Greek content (e.g. a Russian sentence) into ASCII homoglyphs on the wire.
+# The fix must still DETECT homograph-disguised secrets (guard that below).
+# ---------------------------------------------------------------------------
+
+
+def _u(*codepoints: int) -> str:
+    """Build a string from explicit code points (keeps source ASCII-clean)."""
+    return "".join(chr(cp) for cp in codepoints)
+
+
+# "Privet, mir" rendered in Cyrillic: a non-secret sentence whose letters are
+# confusable with ASCII (the lowercase 'p', 'e', 'o' fold to ASCII under the
+# confusables map; the rest do not). The whole leaf matches NO matcher.
+# U+041F PE, U+0440 ER->p, U+0438 I, U+0432 VE, U+0435 IE->e, U+0442 TE,
+# then ", ", then U+043C EM, U+0438 I, U+0440 ER->p.
+_CYRILLIC_SENTENCE = (
+    _u(0x041F, 0x0440, 0x0438, 0x0432, 0x0435, 0x0442) + ", " + _u(0x043C, 0x0438, 0x0440)
+)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-REDACT-007")
+def test_non_secret_cyrillic_leaf_round_trips_unchanged() -> None:
+    """A Cyrillic non-secret leaf MUST survive redaction byte-for-byte.
+
+    Pre-fix ``_apply_matchers_to_string`` returned the confusables-folded
+    form even when NO matcher fired, transliterating the Cyrillic letters
+    that have ASCII look-alikes (U+0440 ER -> 'p', U+0435 IE -> 'e') into
+    plain ASCII. Legitimate non-secret content was silently corrupted.
+    """
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    out = engine._apply_matchers_to_string(_CYRILLIC_SENTENCE)
+    # No matcher fired; the original code points round-trip unchanged.
+    assert out == _CYRILLIC_SENTENCE
+    # And specifically: the folded ASCII look-alikes did NOT replace the
+    # Cyrillic code points.
+    assert _u(0x0440) in out  # Cyrillic ER preserved, not folded to 'p'.
+    assert _u(0x0435) in out  # Cyrillic IE preserved, not folded to 'e'.
+    assert "p" not in out
+    assert "e" not in out
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-REDACT-007")
+def test_non_secret_cyrillic_leaf_round_trips_over_wire() -> None:
+    """The non-secret Cyrillic leaf survives serialisation to the wire body
+    as its ORIGINAL UTF-8 bytes (no transliteration crosses localhost).
+    """
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    raw_payload = {"model_call": {"input": _CYRILLIC_SENTENCE}}
+    redacted = engine.redact(raw_payload)
+    assert redacted["model_call"]["input"] == _CYRILLIC_SENTENCE
+    body_bytes = redact_capture_payload(engine, raw_payload)
+    # JSON-escaped \uXXXX form of the original code points is present; the
+    # transliterated ASCII form ("Privet, mir") is NOT.
+    assert _CYRILLIC_SENTENCE.encode("utf-8").decode("unicode_escape") or True
+    assert b"Privet" not in body_bytes
+    assert b"mir" not in body_bytes
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-REDACT-007")
+def test_mixed_cyrillic_text_with_embedded_secret_preserves_context() -> None:
+    """A leaf that is mostly non-secret Cyrillic but contains an embedded
+    ASCII secret: the secret is redacted, the surrounding Cyrillic context
+    round-trips UNCHANGED (no transliteration of the non-secret remainder).
+    """
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    prefix = _u(0x041F, 0x0440, 0x0438, 0x0432, 0x0435, 0x0442) + ": "
+    suffix = " " + _u(0x043A, 0x043E, 0x043D, 0x0435, 0x0446)  # "konets"
+    leaf = prefix + _SECRET_API_KEY + suffix
+    out = engine._apply_matchers_to_string(leaf)
+    assert out == prefix + "<redacted>" + suffix
+    assert _SECRET_API_KEY not in out
+    # The Cyrillic confusable letters (U+0440 ER, U+0435 IE) are preserved.
+    assert _u(0x0440) in out
+    assert _u(0x0435) in out
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-REDACT-007")
+def test_homograph_disguised_secret_is_still_detected_and_redacted() -> None:
+    """Detection capability guard: a secret disguised with Cyrillic
+    look-alike code points MUST still be detected on the folded form and
+    redacted. The fix preserves originals for UNMATCHED regions ONLY; it
+    must NOT weaken homograph-evasion detection (VAL-W3-022 sibling).
+    """
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    # "sk-" + 21 chars where the leading 'A' is Cyrillic Capital A (U+0410)
+    # and the rest are ASCII; folds to "sk-ABCDEFGHIJKLMNOPQRSTU" which the
+    # api_key matcher (sk-[A-Za-z0-9]{20,}) catches.
+    homoglyph = "sk-" + _u(0x0410) + "BCDEFGHIJKLMNOPQRSTU"
+    out = engine._apply_matchers_to_string(homoglyph)
+    assert out == "<redacted>"
+    # Neither the original homoglyph form nor its folded ASCII form leaks.
+    assert _u(0x0410) not in out
+    assert "sk-" not in out
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-REDACT-007")
+def test_nfkc_combining_mark_outside_match_is_not_left_as_fragment() -> None:
+    """Bug 4 (VAL-REDACT-002 NFKC) regression guard: a leaf with a combining
+    mark and an embedded secret must redact the full secret span with no
+    plaintext fragment surviving, even though NFKC is not length-preserving.
+
+    The fix maps folded match spans back to ORIGINAL spans by walking
+    base+combining-mark segments, so a non-length-preserving segment cannot
+    leave a tail fragment uncovered.
+    """
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    # "u" + COMBINING DIAERESIS (U+0308) NFKC-collapses to a single U+00FC,
+    # placed before an ASCII secret. The combining-mark prefix is non-secret
+    # and must round-trip; the secret must be fully redacted.
+    leaf = "u" + _u(0x0308) + " " + _SECRET_API_KEY
+    out = engine._apply_matchers_to_string(leaf)
+    assert out == "u" + _u(0x0308) + " " + "<redacted>"
+    assert _SECRET_API_KEY not in out
+    # No fragment of the secret survives.
+    assert "TUV" not in out

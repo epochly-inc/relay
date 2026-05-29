@@ -353,9 +353,10 @@ const CONFUSABLES_MAP = buildConfusablesMap();
 /**
  * Return the NFKC + confusables-folded form of ``value``.
  *
- * The result is what the matcher regexes operate on. The original string
- * positions are also tracked separately so the engine can splice the
- * placeholder back into the original string at the right offset.
+ * The result is the DETECTION surface only; the engine never emits it
+ * directly. Output for any unmatched region is reconstructed from the
+ * ORIGINAL code points via :func:`foldWithOrigin` (VAL-REDACT-007), so
+ * legitimate non-secret Cyrillic/Greek text round-trips unchanged.
  *
  * NFKC handles compatibility decomposition (full-width digits, ligatures,
  * presentation forms). It does NOT decompose Cyrillic or Greek confusables
@@ -374,6 +375,73 @@ function normaliseForMatching(value: string): string {
     result += replacement ?? nfkc.charAt(i);
   }
   return result;
+}
+
+// A combining mark (Unicode general categories Mn/Mc/Me). NFKC may compose
+// a base code point + trailing combining marks into a single (or differently
+// shaped) code point, so a faithful original-offset map must group them.
+const COMBINING_MARK_RE = /\p{Mn}|\p{Mc}|\p{Me}/u;
+
+/**
+ * Return ``{ folded, originStarts, originEnds }`` for ``value``.
+ *
+ * ``folded`` is the NFKC + confusables-folded DETECTION surface,
+ * byte-identical to :func:`normaliseForMatching` for every input (verified
+ * by an assertion in the engine and by the parity corpus).
+ *
+ * ``originStarts[i]`` / ``originEnds[i]`` give the half-open UTF-16
+ * code-unit slice ``value.slice(originStarts[i], originEnds[i])`` of the
+ * ORIGINAL string that produced ``folded[i]``. This lets the engine map a
+ * matched span detected on ``folded`` back onto the original code units,
+ * then splice the placeholder over the original slice while every UNMATCHED
+ * original code unit is reproduced verbatim (VAL-REDACT-007).
+ *
+ * NFKC is not per-character: a base code point followed by combining marks
+ * may compose (e.g. ``"u" + U+0308`` -> ``U+00FC``). The input is therefore
+ * split into segments of one base code point plus any trailing combining
+ * marks; each segment is NFKC-normalised and folded as a unit, and every
+ * folded code unit it yields maps to the segment's FULL original span. A
+ * matched folded span thus maps to an original span that fully covers each
+ * contributing original code point -- no plaintext fragment of a matched
+ * secret can survive (the VAL-REDACT-004 / Bug 4 guarantee), while unmatched
+ * code points are reproduced from the original string. Mirrors the Python
+ * ``_fold_with_origin``.
+ */
+function foldWithOrigin(value: string): {
+  folded: string;
+  originStarts: number[];
+  originEnds: number[];
+} {
+  let folded = "";
+  const originStarts: number[] = [];
+  const originEnds: number[] = [];
+  const n = value.length;
+  let i = 0;
+  while (i < n) {
+    const segStart = i;
+    // Advance one code point (surrogate pair counts as one base unit).
+    const cp = value.codePointAt(i);
+    i += cp !== undefined && cp > 0xffff ? 2 : 1;
+    // Absorb trailing combining marks into the same segment.
+    while (i < n) {
+      const markCp = value.codePointAt(i);
+      if (markCp === undefined) break;
+      const mark = String.fromCodePoint(markCp);
+      if (!COMBINING_MARK_RE.test(mark)) break;
+      i += markCp > 0xffff ? 2 : 1;
+    }
+    const segEnd = i;
+    const segment = value.slice(segStart, segEnd);
+    const nfkcSeg = segment.normalize("NFKC");
+    // Fold per UTF-16 code unit; map every produced unit to the segment span.
+    for (let k = 0; k < nfkcSeg.length; k++) {
+      const code = nfkcSeg.charCodeAt(k);
+      folded += CONFUSABLES_MAP.get(code) ?? nfkcSeg.charAt(k);
+      originStarts.push(segStart);
+      originEnds.push(segEnd);
+    }
+  }
+  return { folded, originStarts, originEnds };
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,8 +1263,26 @@ export class RedactionEngine {
   }
 
   private applyMatchersToClampedString(value: string): string {
-    const normalised = normaliseForMatching(value);
-    // Walk matchers, collecting (start, end, replacement) tuples.
+    // Matching runs on the NFKC + confusables-folded DETECTION surface so
+    // homograph-disguised secrets are still caught. The EMITTED output is
+    // reconstructed from the ORIGINAL code points: only the original spans
+    // corresponding to matched folded spans are replaced by the placeholder,
+    // and every unmatched original code unit is reproduced verbatim. This
+    // fixes VAL-REDACT-007 (the engine previously emitted the folded string,
+    // silently transliterating legitimate non-secret Cyrillic/Greek content
+    // into ASCII look-alikes) WITHOUT weakening detection. Byte-identical to
+    // the Python ``_apply_matchers_to_clamped_string``.
+    const { folded, originStarts, originEnds } = foldWithOrigin(value);
+    // The folded detection surface MUST equal normaliseForMatching exactly so
+    // match behavior (and Python<->TS parity) is unchanged by origin tracking.
+    // If a pathological input made the per-segment fold diverge from the
+    // whole-string fold, fail closed by redacting the WHOLE leaf rather than
+    // risk a wrong-offset splice (no plaintext leak, no partial result).
+    if (folded !== normaliseForMatching(value)) {
+      return this._policy.actionPolicy.redactPlaceholder;
+    }
+    // Walk matchers, collecting (origStart, origEnd, replacement) tuples in
+    // ORIGINAL-string coordinates (mapped from folded match spans).
     const spans: Array<[number, number, string]> = [];
     for (const matcher of this._policy.matchers) {
       if (matcher.kind !== "regex" || matcher.pattern === null) {
@@ -1208,17 +1294,36 @@ export class RedactionEngine {
       // avoid sticky state between calls.
       const re = new RegExp(matcher.pattern.source, matcher.pattern.flags);
       let m: RegExpExecArray | null;
-      while ((m = re.exec(normalised)) !== null) {
-        const start = m.index;
-        const end = m.index + m[0].length;
-        const matchedText = normalised.slice(start, end);
+      while ((m = re.exec(folded)) !== null) {
+        const fstart = m.index;
+        const fend = m.index + m[0].length;
+        const matchedText = folded.slice(fstart, fend);
         const replacement = this.buildReplacement(matcher, matchedText);
-        spans.push([start, end, replacement]);
+        // Map folded span -> original span. A zero-width folded match maps to
+        // the zero-width original point at that folded index's origin start.
+        // The fold-equality guard above guarantees match offsets fall within
+        // ``originStarts`` (length === folded.length), so the ?? fallbacks are
+        // unreachable defense; ``value.length`` covers a span that ends at EOF.
+        let ostart: number;
+        let oend: number;
+        if (fend > fstart) {
+          ostart = originStarts[fstart] ?? value.length;
+          oend = originEnds[fend - 1] ?? value.length;
+        } else {
+          ostart =
+            fstart < originStarts.length
+              ? (originStarts[fstart] ?? value.length)
+              : value.length;
+          oend = ostart;
+        }
+        spans.push([ostart, oend, replacement]);
         // Guard against zero-width matches causing an infinite loop.
-        if (end === start) re.lastIndex += 1;
+        if (fend === fstart) re.lastIndex += 1;
       }
     }
-    if (spans.length === 0) return normalised;
+    // No matcher fired: emit the ORIGINAL string verbatim (the fix -- the
+    // folded/transliterated form is never emitted). VAL-REDACT-007.
+    if (spans.length === 0) return value;
     // Sort by start, then by end DESCENDING so the span that OPENS each
     // overlap group is the earliest-starting and (among equal starts)
     // longest match -- a deterministic, replacement-defining "highest
@@ -1252,21 +1357,22 @@ export class RedactionEngine {
       }
       merged.push(span);
     }
-    // Splice replacements into the NORMALIZED string at the same offsets
-    // we computed against it. Pre-fix this used ``value`` (the ORIGINAL)
-    // which is wrong when NFKC is NOT length-preserving (e.g. combining
-    // marks: ``"u" + U+0308`` collapses to U+00FC). With the original as
-    // splice destination, offsets pointed past the intended end and a
-    // fragment of the matched plaintext leaked. Bug 4 (P1) fix; mirrors
-    // Python ``_apply_matchers_to_string``.
+    // Splice replacements into the ORIGINAL string at the mapped offsets.
+    // Unmatched runs are copied from the original verbatim, so non-secret
+    // Cyrillic/Greek content round-trips unchanged (VAL-REDACT-007); matched
+    // secret spans are replaced by the placeholder. The folded-span ->
+    // original-span mapping (foldWithOrigin) guarantees each match span fully
+    // covers its contributing original code points, so the union still
+    // contains no clear matched byte (the VAL-REDACT-004 / Bug 4 guarantee).
+    // Mirrors Python ``_apply_matchers_to_clamped_string``.
     const out: string[] = [];
     let cursor = 0;
     for (const [start, end, repl] of merged) {
-      out.push(normalised.slice(cursor, start));
+      out.push(value.slice(cursor, start));
       out.push(repl);
       cursor = end;
     }
-    out.push(normalised.slice(cursor));
+    out.push(value.slice(cursor));
     return out.join("");
   }
 
