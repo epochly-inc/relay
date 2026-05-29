@@ -1008,15 +1008,35 @@ export class RedactionEngine {
       }
     }
     if (spans.length === 0) return normalised;
-    // Sort by start, then by end DESCENDING so longer overlapping spans
-    // win; collapse overlaps deterministically (matches Python sort key
-    // ``(start, -end)``).
+    // Sort by start, then by end DESCENDING so the span that OPENS each
+    // overlap group is the earliest-starting and (among equal starts)
+    // longest match -- a deterministic, replacement-defining "highest
+    // priority" span. Overlapping spans are then merged into their
+    // INTERVAL UNION rather than dropped (matches Python sort key
+    // ``(start, -end)`` and merge at redaction.py:919-932).
+    //
+    // VAL-REDACT-004 (HIGH / security; byte-identical to the Python
+    // VAL-REDACT-002 fix): the prior logic skipped any span that overlapped
+    // the kept span. When a later span started inside the kept span but
+    // extended BEYOND its end, the tail between the two ends was spliced
+    // back in as plaintext -- leaking the unredacted tail of a matched
+    // secret (e.g. "alphabravosecret" emitted "<redacted>vosecret").
+    // Proper interval merging extends the open interval's end to max(end)
+    // so the entire union of matched ranges is redacted by a single
+    // replacement and no matched byte is ever emitted in clear.
     spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
     const merged: Array<[number, number, string]> = [];
     for (const span of spans) {
       const last = merged.length > 0 ? merged[merged.length - 1] : undefined;
       if (last !== undefined && span[0] < last[1]) {
-        // Overlap: keep earlier-starting span; skip this.
+        // Overlap: extend the open interval to the union end, keeping the
+        // replacement of the span that opened the interval (the earliest-
+        // starting / longest-at-that-start match). The end is max() because
+        // a fully-contained later span (end <= prev_end) must not shrink the
+        // redacted range.
+        if (span[1] > last[1]) {
+          last[1] = span[1];
+        }
         continue;
       }
       merged.push(span);

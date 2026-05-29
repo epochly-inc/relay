@@ -291,3 +291,88 @@ describe("VAL-W4-023: Unicode homoglyph and mixed-encoding inputs are still reda
     expect(bodyContains(body, "alice@example.com")).toBe(false);
   });
 });
+
+// -----------------------------------------------------------------------------
+// VAL-REDACT-004 (HIGH / security): overlapping matcher spans must be merged
+// into their INTERVAL UNION; the unredacted tail of a longer overlapping match
+// MUST NOT leak. This is the TS half of the byte-identical fix landed on the
+// Python side as VAL-REDACT-002 (relay/packages/sdk-python/relay/redaction.py
+// `_apply_matchers_to_string`, commit 197daa3). The policy + input mirror the
+// Python `_OVERLAP_POLICY` / "alphabravosecret" case exactly so the two
+// runtimes are directly parity-testable.
+//
+// Two regex matchers whose spans overlap such that the LATER-sorted span
+// starts inside the earlier (kept) span but extends BEYOND its end. On the
+// input "alphabravosecret":
+//   * matcher "left"  matches "alphabra"    -> span [0, 8)
+//   * matcher "right" matches "bravosecret" -> span [5, 16)
+// Sort key (start, -end) keeps "left" (start 0); the pre-fix skip-on-overlap
+// branch drops "right" entirely because 5 < 8, splicing normalised[8:]
+// ("secret") back in as plaintext -- leaking the tail of a matched secret.
+// -----------------------------------------------------------------------------
+
+const OVERLAP_POLICY = {
+  schema_version: "relay.redaction.v1",
+  policy_version: "2026-05-29.overlap",
+  raw_capture: false,
+  retention_days: 30,
+  dpa_ref: null,
+  approver_user_id: null,
+  matchers: [
+    { id: "left", kind: "regex", pattern: "alphabra", action: "redact" },
+    { id: "right", kind: "regex", pattern: "bravosecret", action: "redact" },
+  ],
+  action_policy: {
+    hash: { algorithm: "hmac-sha256", salt_ref: "tenant_salt_v3" },
+    redact: { placeholder: "<redacted>" },
+    drop: { placeholder: null },
+  },
+  applies_to_fields: [...DEFAULT_APPLIES_TO_FIELDS],
+};
+
+describe("VAL-REDACT-004: overlapping spans merge to interval union (no tail leak)", () => {
+  it("redacts the full union [0,16) for 'alphabravosecret' (Python parity)", () => {
+    const policy = loadRedactionPolicy(OVERLAP_POLICY);
+    const engine = new RedactionEngine({ policy, saltProvider });
+    // The redacted leaf MUST be exactly the single placeholder over the
+    // whole interval union -- byte-identical to the Python engine's output.
+    const redacted = engine.redact({
+      model_call: { input: "alphabravosecret" },
+    }) as { model_call: { input: string } };
+    expect(redacted.model_call.input).toBe("<redacted>");
+  });
+
+  it("the overlapping tail never crosses the HTTP boundary as plaintext", () => {
+    const policy = loadRedactionPolicy(OVERLAP_POLICY);
+    const engine = new RedactionEngine({ policy, saltProvider });
+    const body = redactCapturePayload(engine, {
+      model_call: { input: "alphabravosecret" },
+    });
+    // Pre-fix the dropped "right" span left normalised[8:] ("secret") in
+    // the clear. Neither the leaked tail nor any matched fragment survives.
+    expect(bodyContains(body, "secret")).toBe(false);
+    expect(bodyContains(body, "bravo")).toBe(false);
+    expect(bodyContains(body, "alpha")).toBe(false);
+    expect(bodyContains(body, "<redacted>")).toBe(true);
+  });
+
+  it("a fully-contained later span does not shrink the redacted range", () => {
+    // Guard mirroring the Python `if end > prev_end` clamp: a span that
+    // opens inside the kept span AND ends at or before its end must not
+    // truncate the union. matcher "outer" -> [0,16), matcher "inner" ->
+    // [5,11) ("bravos"). The union stays [0,16); output is one placeholder.
+    const containedPolicy = {
+      ...OVERLAP_POLICY,
+      matchers: [
+        { id: "outer", kind: "regex", pattern: "alphabravosecret", action: "redact" },
+        { id: "inner", kind: "regex", pattern: "bravos", action: "redact" },
+      ],
+    };
+    const policy = loadRedactionPolicy(containedPolicy);
+    const engine = new RedactionEngine({ policy, saltProvider });
+    const redacted = engine.redact({
+      model_call: { input: "alphabravosecret" },
+    }) as { model_call: { input: string } };
+    expect(redacted.model_call.input).toBe("<redacted>");
+  });
+});

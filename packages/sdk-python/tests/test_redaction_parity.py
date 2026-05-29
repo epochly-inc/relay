@@ -683,3 +683,81 @@ def test_python_named_backreference_rejected() -> None:
     with pytest.raises(RelayPolicyError) as excinfo:
         RedactionPolicy.load(body)
     assert excinfo.value.details.get("reason") == "named_group_unsupported"
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-004 (HIGH / security): overlapping matcher spans merge to their
+# INTERVAL UNION on BOTH runtimes. The Python interval-union merge landed as
+# VAL-REDACT-002 (relay/packages/sdk-python/relay/redaction.py
+# `_apply_matchers_to_string`); the TypeScript half landed as VAL-REDACT-004
+# (packages/sdk-typescript/src/redaction.ts `applyMatchersToString`). This case
+# was deliberately deferred from VAL-REDACT-002 until the TS fix existed: it is
+# the live Node-subprocess byte-equality surface proving the two runtimes now
+# emit byte-identical output for an overlapping-span payload.
+#
+# Two regex matchers whose spans overlap such that the LATER-sorted span starts
+# inside the earlier (kept) span but extends BEYOND its end. On the input
+# "alphabravosecret":
+#   * matcher "left"  matches "alphabra"    -> span [0, 8)
+#   * matcher "right" matches "bravosecret" -> span [5, 16)
+# Sort key (start, -end) keeps "left" (start 0); pre-fix BOTH runtimes dropped
+# "right" (skip-on-overlap) and spliced the tail back in as plaintext. Post-fix
+# both extend the open interval to max(end) = 16 and redact the full union with
+# one placeholder.
+# ---------------------------------------------------------------------------
+
+_OVERLAP_POLICY: dict = {
+    "schema_version": "relay.redaction.v1",
+    "policy_version": "2026-05-29.overlap",
+    "raw_capture": False,
+    "retention_days": 30,
+    "dpa_ref": None,
+    "approver_user_id": None,
+    "matchers": [
+        {"id": "left", "kind": "regex", "pattern": "alphabra", "action": "redact"},
+        {"id": "right", "kind": "regex", "pattern": "bravosecret", "action": "redact"},
+    ],
+    "action_policy": {
+        "hash": {"algorithm": "hmac-sha256", "salt_ref": "tenant_salt_v3"},
+        "redact": {"placeholder": "<redacted>"},
+        "drop": {"placeholder": None},
+    },
+    "applies_to_fields": list(DEFAULT_APPLIES_TO_FIELDS),
+}
+
+
+@pytest.mark.plumbing
+def test_overlapping_spans_union_byte_equal_typescript_via_node_subprocess() -> None:
+    """Python and TS MUST emit byte-identical canonical bytes for a payload
+    whose matcher spans overlap such that a later span extends past the kept
+    span's end ("alphabravosecret").
+
+    This is the VAL-REDACT-004 parity surface (folded obligation from
+    VAL-REDACT-002): pre-fix both runtimes leaked the tail ("vosecret" on TS,
+    a "secret" splice on Python); post-fix both redact the full interval union
+    [0, 16) with one placeholder. The expected wire body is the leaf collapsed
+    to a single ``<redacted>``.
+
+    Skipped when Node or the TS dist are unavailable (offline tier-1); when
+    present the test is authoritative.
+    """
+    payload = {"model_call": {"input": "alphabravosecret"}}
+    ts_bytes = _ts_canonicalize_via_node(_OVERLAP_POLICY, payload, _TENANT_SALT)
+    if ts_bytes is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language byte equality cannot be checked "
+            "in this environment"
+        )
+    policy = RedactionPolicy.load(_OVERLAP_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    py_bytes = redact_capture_payload(engine, payload)
+    assert py_bytes == ts_bytes, (
+        "cross-language byte mismatch on overlapping-span union policy: "
+        f"py={py_bytes!r} ts={ts_bytes!r}"
+    )
+    # And the union is fully redacted on the Python side: no leaked tail.
+    assert b"secret" not in py_bytes
+    assert b"bravo" not in py_bytes
+    assert b"alpha" not in py_bytes
+    assert b"<redacted>" in py_bytes
