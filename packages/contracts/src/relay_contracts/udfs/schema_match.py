@@ -80,6 +80,40 @@ def _is_finite_number(payload: Any) -> bool:
         return False
     return not (isinstance(payload, float) and not math.isfinite(payload))
 
+
+def _is_integer(payload: Any) -> bool:
+    """Return True iff ``payload`` is a JSON-Schema "integer" value.
+
+    Pinned cross-runtime definition (VAL-PARITY-002): a finite number
+    whose value is integral is an integer. This mirrors the TypeScript
+    mirror's ``Number.isInteger`` check at
+    ``packages/contracts-typescript/src/udfs/schema_match.ts`` for
+    ``typeName === "integer"``:
+
+      - booleans are NOT integers (Python bool subclasses int; route out)
+      - non-int / non-float are NOT integers
+      - float NaN / +Inf / -Inf are NOT integers (Number.isInteger rejects
+        them) -- screened out by ``_is_finite_number``
+      - a finite float with an integral value (e.g. ``1.0``, produced by
+        cel-python typing a CEL double literal as ``DoubleType``) IS an
+        integer
+
+    Cross-runtime parity: cel-python types a CEL double ``1.0`` as a
+    ``float`` subclass, while cel-js represents it as the integral JS
+    number ``1``. Without the ``float`` arm below, the same input yielded
+    ``False`` in Python but ``True`` in TS -- breaking the byte-identical
+    JCS parity guarantee. ``int`` values are integral by definition; a
+    ``float`` is integral iff ``payload == int(payload)`` (safe only after
+    the finiteness screen, since ``int(nan)`` / ``int(inf)`` raise).
+    """
+    if not _is_finite_number(payload):
+        return False
+    if isinstance(payload, float):
+        return payload == int(payload)
+    # Remaining case is a non-bool ``int`` (bools were screened out by
+    # ``_is_finite_number``); every such value is integral.
+    return True
+
 # Defense-in-depth cap on recursive descent into nested schemas. The
 # evaluator's wall-clock timeout (DEFAULT_TIMEOUT_MS = 50 ms) is the
 # primary bound; this cap limits Python stack growth on pathological
@@ -104,7 +138,13 @@ def _matches_type(payload: Any, type_name: str) -> bool:
     if type_name == "string":
         return isinstance(payload, str)
     if type_name == "integer":
-        return isinstance(payload, int) and not isinstance(payload, bool)
+        # Pinned cross-runtime definition (VAL-PARITY-002): a finite
+        # number whose value is integral is an "integer", matching the
+        # TS mirror's ``Number.isInteger``. cel-python types a CEL double
+        # ``1.0`` as ``float``; without this, ``1.0`` was rejected here
+        # (Python False) while cel-js accepted it (TS True). Booleans and
+        # NaN / +Inf / -Inf are excluded by ``_is_integer``.
+        return _is_integer(payload)
     if type_name == "number":
         # JSON Schema "number" matches any FINITE numeric (int or float).
         # Booleans are excluded (they are not numbers in JSON Schema

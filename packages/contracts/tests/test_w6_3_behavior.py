@@ -203,6 +203,38 @@ def test_schema_match_number_rejects_nan_inf() -> None:
 
 
 @pytest.mark.plumbing
+def test_schema_match_integer_accepts_whole_valued_float() -> None:
+    """VAL-PARITY-002: a finite number whose value is integral is an
+    ``"integer"`` on BOTH runtimes.
+
+    cel-python types a CEL double ``1.0`` as a ``float`` subclass, so the
+    prior ``isinstance(payload, int)`` gate returned ``False`` for whole-
+    valued doubles while the TypeScript mirror's ``Number.isInteger``
+    returned ``True`` -- a cross-runtime disagreement (CLAUDE.md keystone
+    invariant #11). The pinned definition matches ``Number.isInteger``:
+    any finite number with an integral value is an integer.
+    """
+    # Whole-valued doubles ARE integers under the pinned definition.
+    assert relay_schema_match(1.0, {"type": "integer"}) is True
+    assert relay_schema_match(0.0, {"type": "integer"}) is True
+    assert relay_schema_match(-3.0, {"type": "integer"}) is True
+    assert relay_schema_match(2.0**53, {"type": "integer"}) is True
+    # Plain ints still pass.
+    assert relay_schema_match(42, {"type": "integer"}) is True
+    # Non-integral floats are NOT integers (both runtimes agree False).
+    assert relay_schema_match(1.5, {"type": "integer"}) is False
+    assert relay_schema_match(-0.5, {"type": "integer"}) is False
+    # Booleans are NOT integers (subclass-of-int gotcha), both runtimes.
+    assert relay_schema_match(True, {"type": "integer"}) is False
+    assert relay_schema_match(False, {"type": "integer"}) is False
+    # NaN / +Inf / -Inf are NOT integers (Number.isInteger rejects them),
+    # both runtimes.
+    assert relay_schema_match(float("nan"), {"type": "integer"}) is False
+    assert relay_schema_match(float("inf"), {"type": "integer"}) is False
+    assert relay_schema_match(float("-inf"), {"type": "integer"}) is False
+
+
+@pytest.mark.plumbing
 def test_schema_match_type_boolean() -> None:
     assert relay_schema_match(True, {"type": "boolean"}) is True
     assert relay_schema_match(False, {"type": "boolean"}) is True
@@ -416,6 +448,23 @@ def _schema_match_cases() -> list[dict[str, Any]]:
             "name": "schema_integer_excludes_bool",
             "args": [True, {"type": "integer"}],
             "py_jcs_b64": _b64(relay_schema_match(True, {"type": "integer"})),
+        },
+        # VAL-PARITY-002: whole-valued doubles ARE integers under the
+        # pinned cross-runtime definition (Number.isInteger semantics).
+        # cel-python types 1.0 as a float subclass; the JSON-roundtripped
+        # corpus carries it as a Python float, so this case was RED
+        # (Python False vs TS True) before the schema_match.py fix.
+        {
+            "udf": "relay.schema_match",
+            "name": "schema_integer_accepts_whole_float",
+            "args": [1.0, {"type": "integer"}],
+            "py_jcs_b64": _b64(relay_schema_match(1.0, {"type": "integer"})),
+        },
+        {
+            "udf": "relay.schema_match",
+            "name": "schema_integer_rejects_fractional_float",
+            "args": [1.5, {"type": "integer"}],
+            "py_jcs_b64": _b64(relay_schema_match(1.5, {"type": "integer"})),
         },
         {
             "udf": "relay.schema_match",

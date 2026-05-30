@@ -283,6 +283,28 @@
     },
     {
       "args": [
+        1.0,
+        {
+          "type": "integer"
+        }
+      ],
+      "name": "schema_integer_accepts_whole_float",
+      "py_jcs_b64": "dHJ1ZQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
+        1.5,
+        {
+          "type": "integer"
+        }
+      ],
+      "name": "schema_integer_rejects_fractional_float",
+      "py_jcs_b64": "ZmFsc2U=",
+      "udf": "relay.schema_match"
+    },
+    {
+      "args": [
         42,
         {
           "type": "number"
