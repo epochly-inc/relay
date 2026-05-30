@@ -344,6 +344,54 @@ def cel_spec_mirror_cases() -> list[tuple[str, str, dict[str, Any], str, str | N
     ]
 
 
+def regex_backref_ascii_pin_cases() -> (
+    list[tuple[str, str, dict[str, Any], str, str | None]]
+):
+    """VAL-PARITY-007: `\\` + a NON-ASCII digit is NOT a regex backreference.
+
+    A real RE2 backreference is ASCII ``\\1``..``\\9`` only. ``\\`` followed
+    by a non-ASCII digit (Unicode Nd category) -- e.g. fullwidth zero U+FF10
+    or Arabic-Indic zero U+0660 -- is accepted by RE2 and by the cel-js
+    mirror screen ``/\\\\d/`` (JS ``\\d`` is ASCII-only). cel-python's
+    ``_BACKREF_PATTERN`` was ``re.compile(r"\\\\d")`` with NO ``re.ASCII``
+    flag, so Python ``\\d`` matched the FULL Unicode Nd category and REJECTED
+    these -- a cross-runtime divergence. After the ASCII pin
+    (``re.compile(r"\\\\[0-9]")``) BOTH runtimes ACCEPT them, evaluating the
+    string literal to the same value (so JCS bytes match).
+
+    These are ``eval_value`` cases: the bare string literal evaluates to the
+    string itself (no ``.matches()`` call), so cel-python and cel-js must
+    produce the SAME value and JCS bytes. The non-ASCII digit is built via
+    ``chr`` so this generator source stays ASCII (CLAUDE.md), while the
+    emitted corpus expression carries the actual codepoint.
+
+    The ASCII ``\\1`` reject side is covered by the ``err_regex_backref*``
+    ``eval_error`` cases (both runtimes refuse).
+    """
+
+    fullwidth_zero = chr(0xFF10)  # U+FF10 FULLWIDTH DIGIT ZERO
+    arabic_zero = chr(0x0660)  # U+0660 ARABIC-INDIC DIGIT ZERO
+    # Each expression is `"\<non-ascii-digit>"` -- a bare double-quoted CEL
+    # string literal whose body is backslash + the non-ASCII digit. CEL
+    # parses the single backslash literally, yielding the 2-char string.
+    return [
+        (
+            "regex_backslash_fullwidth_digit_accepted",
+            '"' + "\\" + fullwidth_zero + '"',
+            {},
+            "regex",
+            "unicode",
+        ),
+        (
+            "regex_backslash_arabic_digit_accepted",
+            '"' + "\\" + arabic_zero + '"',
+            {},
+            "regex",
+            "unicode",
+        ),
+    ]
+
+
 def coercion_edge_cases() -> list[tuple[str, str, dict[str, Any], str, str | None]]:
     """Type-coercion edges where cel-python and cel-js MUST agree.
 
@@ -803,6 +851,7 @@ def build_corpus() -> dict[str, Any]:
     eval_value_inputs.extend(cel_spec_mirror_cases())
     eval_value_inputs.extend(coercion_edge_cases())
     eval_value_inputs.extend(deeply_nested_cases())
+    eval_value_inputs.extend(regex_backref_ascii_pin_cases())
     for case_id, expr, bindings, idiom, edge_cat in eval_value_inputs:
         if case_id in seen_ids:
             raise ValueError(f"duplicate case id: {case_id}")

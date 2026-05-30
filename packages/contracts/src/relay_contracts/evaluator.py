@@ -98,7 +98,18 @@ _DISABLED_BUILTINS = {
 # pre-screen and emit the structured error code so callers see
 # RELAY-CEL-007 / RELAY-CEL-PROFILE-REGEX-BACKREF rather than a leaked
 # cel-python parse error.
-_BACKREF_PATTERN = re.compile(r"\\\d")  # \1, \2, ... in a regex literal
+#
+# VAL-PARITY-007: the digit class is pinned to ASCII `[0-9]` (NOT the bare
+# `\d`). A real regex backreference is ASCII `\1`..`\9` only. Python's `\d`
+# without `re.ASCII` matches the FULL Unicode Nd category, so `\` followed by
+# a NON-ASCII digit (e.g. fullwidth zero U+FF10, Arabic-Indic zero U+0660)
+# would be treated as a backref and REJECTED -- while the cel-js mirror
+# `/\\\d/` (no `u` flag; JS `\d` is ASCII-only) ACCEPTS it. That asymmetry is
+# a cross-runtime divergence (the exact thing VAL-PARITY-007 eliminates), and
+# was enlarged by parity-007's first-arg->all-literals widening. Pinning to
+# `[0-9]` makes cel-python accept/reject the IDENTICAL set as cel-js: only
+# `\`+ASCII-digit is a backref; `\`+non-ASCII-digit is accepted on both.
+_BACKREF_PATTERN = re.compile(r"\\[0-9]")  # \1, \2, ... (ASCII only) in a regex literal
 
 # Whole-expression raw-text screen for regex backreferences. We scan the
 # ENTIRE source text for any single- or double-quoted CEL string literal
@@ -210,7 +221,11 @@ def _check_regex_backref(expression: str) -> None:
 
     RE2-legal shorthand classes (``\\d``, ``\\w``, ``\\s`` -- backslash
     followed by a LETTER) are NOT matched by ``_BACKREF_PATTERN`` and stay
-    accepted.
+    accepted. A backreference is ASCII ``\\1``..``\\9`` only:
+    ``_BACKREF_PATTERN`` is pinned to ``\\[0-9]`` (VAL-PARITY-007), so a
+    backslash followed by a NON-ASCII digit (fullwidth/Arabic-Indic, etc.)
+    is NOT flagged -- matching the cel-js mirror whose ``/\\\\d/`` has
+    ASCII-only ``\\d`` semantics, so both runtimes accept/reject the same set.
     """
 
     for match in _STRING_LITERAL_PATTERN.finditer(expression):

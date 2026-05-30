@@ -36,6 +36,17 @@ import {
 // compiled CEL source carries the literal `\1` -- the RE2-illegal backref.
 const BACKREF_BODY = "a(b)\\1";
 
+// Non-ASCII digit codepoints (Unicode Nd category) built at RUNTIME via
+// String.fromCodePoint so this source file stays ASCII (CLAUDE.md
+// "ASCII-Safe Source"). A real backref is ASCII `\1`..`\9` only; `\`
+// followed by a NON-ASCII digit (fullwidth zero U+FF10, Arabic-Indic zero
+// U+0660) is NOT a backref. cel-js `/\\\d/` (no `u` flag; JS `\d` is
+// ASCII-only) already ACCEPTS it -- so this side needs no code change; the
+// cel-python mirror was pinned to ASCII so both runtimes now agree
+// (VAL-PARITY-007).
+const FULLWIDTH_ZERO = String.fromCodePoint(0xff10); // U+FF10
+const ARABIC_ZERO = String.fromCodePoint(0x0660); // U+0660
+
 function compileError(expression: string): unknown {
   const ev = new RelayCelEvaluator();
   try {
@@ -86,5 +97,31 @@ describe("VAL-PARITY-007: cel-js backref screen is whole-expression scoped", () 
     // No top-level matches() so the expression is a clean comparison.
     const caught = compileError('note == "[a-z]+\\d\\w\\s"');
     expect(caught).toBeNull();
+  });
+
+  test("backslash + fullwidth digit (U+FF10) is NOT a backreference (accepted)", () => {
+    // A real backref is ASCII \1..\9; `\` + a non-ASCII digit is not.
+    // cel-js `\d` is ASCII-only so this is accepted -- matching the
+    // ASCII-pinned cel-python mirror (VAL-PARITY-007).
+    const expr = 'note == "' + "\\" + FULLWIDTH_ZERO + '"';
+    const caught = compileError(expr);
+    expect(caught).toBeNull();
+  });
+
+  test("backslash + Arabic-Indic digit (U+0660) is NOT a backreference (accepted)", () => {
+    const expr = 'note == "' + "\\" + ARABIC_ZERO + '"';
+    const caught = compileError(expr);
+    expect(caught).toBeNull();
+  });
+
+  test("ASCII backref \\1 is still rejected (regression guard for the ASCII pin)", () => {
+    // The ASCII pin must NOT widen the accepted set: a genuine ASCII
+    // backref stays rejected on both runtimes.
+    const expr = 'note == "' + "\\1" + '"';
+    const caught = compileError(expr);
+    expect(caught).toBeInstanceOf(RelayCelRegexBackreferenceError);
+    const err = caught as RelayCelRegexBackreferenceError;
+    expect(err.code).toBe("RELAY-CEL-007");
+    expect(err.subtype).toBe(SUBTYPE_PROFILE_REGEX_BACKREF);
   });
 });

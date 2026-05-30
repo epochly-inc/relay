@@ -1660,6 +1660,24 @@
     },
     {
       "bindings": {},
+      "edge_category": "unicode",
+      "expression": "\"\\\uff10\"",
+      "id": "regex_backslash_fullwidth_digit_accepted",
+      "idiom": "regex",
+      "kind": "eval_value",
+      "py_jcs_b64": "Ilxc77yQIg=="
+    },
+    {
+      "bindings": {},
+      "edge_category": "unicode",
+      "expression": "\"\\\u0660\"",
+      "id": "regex_backslash_arabic_digit_accepted",
+      "idiom": "regex",
+      "kind": "eval_value",
+      "py_jcs_b64": "Ilxc2aAi"
+    },
+    {
+      "bindings": {},
       "expression": "dyn(1)",
       "id": "err_dyn_call",
       "idiom": "profile-rejection",

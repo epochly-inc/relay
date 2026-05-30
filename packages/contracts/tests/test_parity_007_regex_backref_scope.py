@@ -43,6 +43,18 @@ from relay_contracts.errors import (
 # engine would see `\1`, which RE2 forbids.
 _BACKREF_BODY = r"a(b)\\1"
 
+# Non-ASCII digit codepoints (Unicode Nd category) built at RUNTIME so the
+# source file stays ASCII (CLAUDE.md "ASCII-Safe Source"). A real regex
+# backreference is ASCII `\1`..`\9` only; `\` followed by a NON-ASCII digit
+# (e.g. fullwidth zero U+FF10, Arabic-Indic zero U+0660) is NOT a backref.
+# RE2 -- and the cel-js mirror screen `/\\\d/` (no `u` flag, JS `\d` is
+# ASCII-only) -- accept it. cel-python's `_BACKREF_PATTERN = re.compile(r"\\\d")`
+# carried NO `re.ASCII` flag, so Python's `\d` matched the FULL Unicode Nd
+# category and REJECTED `\`+non-ASCII-digit -- a cross-runtime divergence
+# (VAL-PARITY-007) widened by parity-007's first-arg->all-literals widening.
+_FULLWIDTH_ZERO = chr(0xFF10)  # U+FF10 FULLWIDTH DIGIT ZERO (Nd category)
+_ARABIC_ZERO = chr(0x0660)  # U+0660 ARABIC-INDIC DIGIT ZERO (Nd category)
+
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-PARITY-007")
@@ -124,3 +136,55 @@ def test_clean_matches_pattern_still_accepted() -> None:
     evaluator = RelayCelEvaluator()
     compiled = evaluator.compile(r'"hello".matches("h.*o")')
     assert compiled is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-007")
+def test_backslash_fullwidth_digit_not_treated_as_backref() -> None:
+    """`\\` followed by a NON-ASCII digit (fullwidth zero U+FF10) is NOT a
+    regex backreference -- a real backref is ASCII `\\1`..`\\9`. RE2 and the
+    cel-js mirror screen (JS `\\d` is ASCII-only) both ACCEPT it. cel-python
+    used to REJECT it because `_BACKREF_PATTERN = re.compile(r"\\\\d")` had no
+    `re.ASCII` flag and Python's `\\d` matched the full Unicode Nd category --
+    a cross-runtime divergence (VAL-PARITY-007). After the ASCII pin it is
+    ACCEPTED on both runtimes.
+
+    The non-ASCII digit is built at runtime via ``chr`` so the source stays
+    ASCII; the runtime expression carries the actual codepoint.
+    """
+
+    evaluator = RelayCelEvaluator()
+    # Raw expression text: a string literal whose body is backslash +
+    # fullwidth-zero. RED at base (cel-python rejected); GREEN after pin.
+    expr = 'note == "' + "\\" + _FULLWIDTH_ZERO + '"'
+    compiled = evaluator.compile(expr)
+    assert compiled is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-007")
+def test_backslash_arabic_digit_not_treated_as_backref() -> None:
+    """`\\` followed by Arabic-Indic zero (U+0660, Unicode Nd) is NOT a
+    backreference. Same rationale as the fullwidth-zero case: ASCII-only
+    `\\d` semantics accept it on both runtimes after the pin."""
+
+    evaluator = RelayCelEvaluator()
+    expr = 'note == "' + "\\" + _ARABIC_ZERO + '"'
+    compiled = evaluator.compile(expr)
+    assert compiled is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-007")
+def test_ascii_backref_still_rejected_after_ascii_pin() -> None:
+    """Regression guard for the ASCII pin: a genuine ASCII backreference
+    `\\1` MUST stay rejected on both runtimes. Pinning `_BACKREF_PATTERN`
+    to ASCII digits must not widen the accepted set to include real
+    backrefs."""
+
+    evaluator = RelayCelEvaluator()
+    expr = 'note == "' + "\\1" + '"'
+    with pytest.raises(RelayCelRegexBackreferenceError) as ctx:
+        evaluator.compile(expr)
+    assert ctx.value.code == "RELAY-CEL-007"
+    assert ctx.value.subtype == SUBTYPE_PROFILE_REGEX_BACKREF
