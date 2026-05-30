@@ -75,6 +75,73 @@ def _run_rly(
     )
 
 
+# Crypto-implemented flag source files (VAL-ISO-005). The
+# sigstore/rekor/tsa "verifier-implemented" checks read the
+# ``*_CRYPTO_IMPLEMENTED`` flag by AST-parsing the SOURCE FILE under the
+# operator's ``repo_root`` (NOT by importing the installed package on
+# ``sys.path``) so a flag flipped to ``False`` in a checked-out tree is
+# observed even when the installed wheel ships ``True``. A "clean RELAY
+# tree" therefore MUST include these three flag source files with the
+# flags declared True, mirroring the real repo:
+#
+#   * packages/cli/src/relay_cli/commands/verify_install.py
+#       REKOR_CRYPTO_IMPLEMENTED: Final[bool] = True
+#   * packages/cli/src/relay_cli/bundle.py
+#       VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED: Final[bool] = True
+#   * packages/verifier/src/relay_verifier/tsa.py
+#       TSA_CRYPTO_IMPLEMENTED: Final[bool] = True
+#
+# The parser only walks the AST -- it never imports/executes the module
+# -- so each stub is a minimal valid module carrying just the canonical
+# annotated assignment in the exact ``<NAME>: Final[bool] = True`` form
+# the parser recognizes. Each stub is itself a production source file
+# scanned by the other verify-self checks (banned-patterns,
+# mocks-in-source, atomic-primitives, control-plane-write), so the stubs
+# carry no banned token, mock import, atomic-primitive bypass, or
+# canonical-write literal.
+_CRYPTO_FLAG_STUBS: dict[str, tuple[str, str]] = {
+    "packages/cli/src/relay_cli/commands/verify_install.py": (
+        "REKOR_CRYPTO_IMPLEMENTED",
+        "True",
+    ),
+    "packages/cli/src/relay_cli/bundle.py": (
+        "VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED",
+        "True",
+    ),
+    "packages/verifier/src/relay_verifier/tsa.py": (
+        "TSA_CRYPTO_IMPLEMENTED",
+        "True",
+    ),
+}
+
+
+def _write_crypto_flag_stubs(root: Path) -> None:
+    """Write the three crypto-implemented flag source files (VAL-ISO-005).
+
+    A clean RELAY tree mirrors the real repo: each ``*_CRYPTO_IMPLEMENTED``
+    flag is declared True in its canonical source path using the exact
+    ``<NAME>: Final[bool] = True`` annotated-assignment form the
+    ``resolve_bool_flag_from_source`` AST parser recognizes. Without these
+    files the three verifier-implemented checks read the flag as absent
+    (``None``) and fail closed -- correct behavior for a tree that lacks
+    the canonical declaration, but the synthetic clean tree is supposed to
+    BE complete.
+    """
+    for rel_path, (flag_name, value) in _CRYPTO_FLAG_STUBS.items():
+        dest = root.joinpath(*rel_path.split("/"))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(
+            '"""Crypto-implemented flag stub for the clean-tree fixture."""\n'
+            "\n"
+            "from __future__ import annotations\n"
+            "\n"
+            "from typing import Final\n"
+            "\n"
+            f"{flag_name}: Final[bool] = {value}\n",
+            encoding="utf-8",
+        )
+
+
 def _make_clean_tree(root: Path) -> None:
     """Create a synthetic relay-like tree with zero violations."""
     (root / "packages" / "okpkg" / "src").mkdir(parents=True)
@@ -84,6 +151,10 @@ def _make_clean_tree(root: Path) -> None:
         '"""Clean module."""\n\n\ndef helper() -> int:\n    return 42\n',
         encoding="utf-8",
     )
+    # A clean RELAY tree includes the three crypto-implemented flag source
+    # files with the flags True (mirroring the real repo) so the
+    # sigstore/rekor/tsa verifier-implemented checks (VAL-ISO-005) pass.
+    _write_crypto_flag_stubs(root)
 
 
 def _make_tree_with_todo(root: Path) -> None:
