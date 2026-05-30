@@ -122,14 +122,32 @@ function _absSecondsDelta(a: Date, b: Date): number {
   return Math.abs(Math.trunc((a.getTime() - b.getTime()) / 1000));
 }
 
-function _b64uDecode(s: string): Buffer {
-  // base64url -> base64 (restore '+', '/', and '=' padding) and decode.
-  let b64 = s.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = (-b64.length) % 4;
+/**
+ * Restore standard-base64 '=' padding on a base64url string and translate the
+ * URL-safe alphabet ('-' -> '+', '_' -> '/') so the result is decodable by
+ * ``Buffer.from(s, "base64")``.
+ *
+ * The pad count is ``(4 - (b64.length % 4)) % 4``. This is the JS-correct form
+ * of Python's ``(-len(s)) % 4`` (packages/verifier/src/relay_verifier/tsa.py::
+ * _b64u_decode): in Python ``%`` takes the sign of the divisor so ``(-22) % 4
+ * == 2``, but in JavaScript ``%`` takes the sign of the dividend so
+ * ``(-22) % 4 == -2``. A naive port of the Python expression yields a pad
+ * count that is always <= 0, leaving the padding branch dead and base64url
+ * strings whose length mod 4 is 2 or 3 unpadded (VAL-PARITY-011). The form
+ * here yields the same non-negative pad count as Python for every length.
+ */
+export function restoreBase64Padding(b64u: string): string {
+  const b64 = b64u.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = (4 - (b64.length % 4)) % 4;
   if (pad > 0) {
-    b64 += "=".repeat(pad);
+    return b64 + "=".repeat(pad);
   }
-  return Buffer.from(b64, "base64");
+  return b64;
+}
+
+export function _b64uDecode(s: string): Buffer {
+  // base64url -> base64 (restore '+', '/', and '=' padding) and decode.
+  return Buffer.from(restoreBase64Padding(s), "base64");
 }
 
 // ----------------------------------------------------------------------------

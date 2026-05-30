@@ -77,6 +77,7 @@ export {
   inspectTsaChain,
   loadBundledTsaChain,
   loadTsaChainPemBytes,
+  restoreBase64Padding,
   validateTsaToken,
 } from "./tsa.js";
 export type {
