@@ -44,6 +44,18 @@ from .errors import (
 # default TTL is 5 seconds; >5s replays return RELAY-SIDECAR-NONCE-EXPIRED.
 DEFAULT_NONCE_TTL_S: float = 5.0
 
+# VAL-ISO-024: hard upper bound on the in-memory issued-nonce store. The
+# nonce store is only ever populated by an AUTHENTICATED caller (correct
+# bearer digest), but a stuck or hostile holder of the bearer digest can
+# request nonces faster than it consumes them, growing the dict without
+# bound (a memory DoS). We sweep expired entries on every issue AND cap the
+# dict size, evicting the OLDEST entries first when the cap is exceeded.
+#
+# The cap is generous relative to the legitimate concurrent-attach pattern
+# (one spawner issues one nonce, consumes it within the 5s TTL) but bounds
+# worst-case memory. At ~80 bytes/entry the cap costs well under 1 MiB.
+MAX_ISSUED_NONCES: int = 4096
+
 
 @dataclass
 class HealthState:
@@ -74,6 +86,47 @@ def _bearer_digest_of(token: str) -> str:
 def _proof_of(nonce: str, token: str) -> str:
     """Compute the canonical nonce proof: SHA-256(``nonce:token``)."""
     return hashlib.sha256(f"{nonce}:{token}".encode()).hexdigest()
+
+
+def _prune_nonce_store(
+    issued: dict[str, float],
+    *,
+    now: float,
+    nonce_ttl_s: float,
+    max_entries: int = MAX_ISSUED_NONCES,
+) -> None:
+    """Bound the issued-nonce store in place (VAL-ISO-024).
+
+    Two reclamation passes, both mutating ``issued`` directly:
+
+      1. TTL sweep: drop every entry whose age ``now - issued_at`` exceeds
+         ``nonce_ttl_s``. Such nonces can never validate again (``/health``
+         rejects them with RELAY-SIDECAR-NONCE-EXPIRED), so retaining them is
+         pure leak.
+      2. Size cap: if more than ``max_entries`` survive the TTL sweep, evict
+         the OLDEST entries (smallest ``issued_at``) until the cap holds. This
+         bounds memory even for a stuck client that issues many nonces inside
+         the TTL window without ever consuming them.
+
+    Eviction never drops the just-issued nonce (its age is ~0, and it is the
+    newest by ``issued_at``), so a legitimate caller's fresh nonce always
+    survives to be validated on the paired ``/health`` request.
+    """
+    # (1) TTL sweep.
+    expired = [
+        nonce
+        for nonce, issued_at in issued.items()
+        if (now - issued_at) > nonce_ttl_s
+    ]
+    for nonce in expired:
+        del issued[nonce]
+
+    # (2) Size cap: evict oldest-first until at/under the cap.
+    overflow = len(issued) - max_entries
+    if overflow > 0:
+        oldest_first = sorted(issued.items(), key=lambda kv: kv[1])
+        for nonce, _issued_at in oldest_first[:overflow]:
+            del issued[nonce]
 
 
 def build_app(state: HealthState) -> FastAPI:
@@ -120,6 +173,15 @@ def _register_health_routes(app: FastAPI, state: HealthState) -> None:
         nonce = secrets.token_urlsafe(16)
         issued_at = time.monotonic()
         state._issued_nonces[nonce] = issued_at
+        # VAL-ISO-024: bound the store on every issue. Sweep TTL-expired
+        # entries and cap the dict size so a stuck/hostile bearer-digest
+        # holder cannot grow it without bound. The just-issued nonce is the
+        # newest entry, so neither pass evicts it.
+        _prune_nonce_store(
+            state._issued_nonces,
+            now=issued_at,
+            nonce_ttl_s=state.nonce_ttl_s,
+        )
         return {"nonce": nonce, "issued_at": issued_at}
 
     @app.get("/health")
@@ -204,8 +266,10 @@ def _register_health_routes(app: FastAPI, state: HealthState) -> None:
 
 __all__ = [
     "DEFAULT_NONCE_TTL_S",
+    "MAX_ISSUED_NONCES",
     "HealthState",
     "_bearer_digest_of",
     "_proof_of",
+    "_prune_nonce_store",
     "build_app",
 ]

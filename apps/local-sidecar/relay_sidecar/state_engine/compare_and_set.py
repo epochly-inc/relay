@@ -380,6 +380,19 @@ async def compare_and_set_state(
     payload_in = dict(payload) if payload else {}
     project_id_eff = project_id or "00000000-0000-0000-0000-000000000000"
 
+    # VAL-ISO-029 (CLAUDE.md keystone #4): the three-anchor handoff guard
+    # reads ``actor_identity_hash`` from the guard payload. The AUTHENTICATED
+    # actor (``actor.identity_hash``) -- not a caller-supplied payload field
+    # -- is the sole source of truth for the actor anchor. A caller MUST NOT
+    # be able to spoof the actor anchor by stuffing a different
+    # ``actor_identity_hash`` into the payload. We overwrite the payload's
+    # actor anchor with the authenticated actor BEFORE any guard runs (and
+    # before the forensic/audit rows are written) so every downstream path --
+    # guard evaluation, INVALID_TRANSITION forensic row, success audit row --
+    # records and enforces the authenticated identity. The override is
+    # unconditional: any payload-supplied ``actor_identity_hash`` is ignored.
+    payload_in["actor_identity_hash"] = actor.identity_hash
+
     async with _borrow_writer(database) as conn:
         await conn.execute("BEGIN IMMEDIATE")
         try:
@@ -440,12 +453,28 @@ async def compare_and_set_state(
             transition = tbl.lookup(scope_kind, expected_from, event)
             if transition is None:
                 # Spec C.4 line 3704-3706: emit a state.invalid_transition
-                # row, then rollback the scope_state SELECT but COMMIT the
-                # invalid-transition log. We use a fresh micro-txn for
-                # the log row -- this is the one place where the engine
-                # deliberately writes outside the parent txn so that the
-                # forensic audit row survives.
-                await conn.execute("ROLLBACK")
+                # forensic row. The scope_state SELECT above made NO writes,
+                # so the parent BEGIN IMMEDIATE..COMMIT carries ONLY this
+                # forensic INSERT. We deliberately keep that single txn open
+                # rather than ROLLBACK-then-fresh-micro-txn.
+                #
+                # VAL-ISO-028: the prior implementation ROLLBACK-ed the parent
+                # txn (losing nothing, since no writes), then ran the
+                # anti-bypass screen + spillover, then opened a SEPARATE
+                # ``BEGIN IMMEDIATE`` to INSERT the forensic row. Two defects:
+                #   (1) if the caller payload tripped the anti-bypass screen,
+                #       the branch short-circuited with a structured result
+                #       and NO forensic row was committed -- the invalid
+                #       transition went entirely unaudited; and
+                #   (2) the forensic row lived in a second transaction, so any
+                #       secondary failure between the parent ROLLBACK and the
+                #       second COMMIT silently lost the forensic row.
+                # Both violate the audit invariant ("every decision logged").
+                #
+                # Fix: compute + validate the screen BEFORE touching the
+                # transaction, then INSERT the (possibly sanitized) forensic
+                # row and COMMIT inside the single parent transaction so the
+                # row is durably recorded as ONE atomic outcome.
                 event_id = str(uuid.uuid4())
                 now = _now_rfc3339_utc()
                 full_payload = {
@@ -455,23 +484,21 @@ async def compare_and_set_state(
                     "rejected_reason": INVALID_TRANSITION,
                 }
                 full_payload.update(payload_in)
-                # Round-3 P1 fix #2: the INVALID_TRANSITION branch performs
-                # async I/O (screen_payload, maybe_spillover) and a fresh
-                # micro-txn AFTER the parent ROLLBACK. Per CLAUDE.md
-                # keystone #1 (control plane writes the result), callers
-                # are entitled to a structured StateTransitionResult on
-                # every path -- a propagating exception is observed as
-                # "unknown state" and provokes unsafe retries. We wrap
-                # the secondary I/O so failures are reported as
-                # ``extras['secondary_error_reason']`` on the
-                # INVALID_TRANSITION result; the canonical reason is
-                # preserved.
-                #
+
                 # W2.5 VAL-W2-057: anti-bypass screen on the caller-supplied
-                # payload portion. The engine-supplied keys above never
-                # contain bypass markers, but ``payload_in`` is caller-
-                # controlled. We screen the merged payload defensively.
+                # portion. The engine-supplied keys above never contain bypass
+                # markers, but ``payload_in`` is caller-controlled.
                 # W2.5 VAL-W2-038: blob spillover for oversize payloads.
+                #
+                # Round-3 P1 fix #2 + VAL-ISO-028: a screen REJECTION or a
+                # spillover error must NOT lose the forensic audit. We still
+                # surface ``extras['secondary_error_reason']`` so callers can
+                # distinguish a clean rejection from a screen-tripped one, but
+                # we ALSO durably record a SANITIZED forensic row carrying only
+                # the engine-supplied verdict fields (which are bypass-marker
+                # free by construction) plus a screen-rejection note. The raw
+                # offending payload is dropped from the durable row.
+                secondary_error_reason: str | None = None
                 try:
                     raise_on_reject(
                         await screen_payload(
@@ -481,33 +508,41 @@ async def compare_and_set_state(
                     )
                     full_payload_on_row = maybe_spillover(full_payload)
                 except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-                    # Cooperative cancellation + interpreter teardown
-                    # MUST propagate; otherwise the asyncio cancellation
-                    # contract is violated.
+                    # Cooperative cancellation + interpreter teardown MUST
+                    # propagate; otherwise the asyncio cancellation contract
+                    # is violated. Roll back the (write-free) parent txn first.
+                    with contextlib.suppress(Exception):
+                        await conn.execute("ROLLBACK")
                     raise
                 except Exception as secondary_exc:  # noqa: BLE001
-                    # Surface as structured outcome. We do NOT lose the
-                    # INVALID_TRANSITION verdict -- the scope_state row
-                    # was already ROLLBACK-ed above, so the canonical
-                    # reason is unchanged; only the forensic log row was
-                    # not written. Callers branch on
-                    # ``extras['secondary_error_reason']`` if they need
-                    # to distinguish the lost-forensic case from the
-                    # clean rejection.
-                    return StateTransitionResult(
-                        ok=False,
-                        reason=INVALID_TRANSITION,
-                        observed_state=current_state,
-                        epoch=current_epoch,
-                        extras={
-                            "secondary_error_reason": (
-                                f"{type(secondary_exc).__name__}: "
-                                f"{secondary_exc}"
-                            ),
-                        },
+                    # The full ``secondary_error_reason`` (returned to the
+                    # caller) MAY echo the offending token (e.g. the
+                    # anti-bypass message lists detected markers). We MUST NOT
+                    # splice that into the durable row -- doing so would both
+                    # re-introduce the bypass marker and risk tripping the
+                    # VAL-W2-036 DB CHECK. The durable row therefore records
+                    # only the failure CLASS name (marker-free by construction).
+                    secondary_error_reason = (
+                        f"{type(secondary_exc).__name__}: {secondary_exc}"
                     )
-                # Compute next ingest_sequence in a fresh BEGIN IMMEDIATE.
-                await conn.execute("BEGIN IMMEDIATE")
+                    # Sanitized forensic payload: engine-supplied verdict
+                    # fields ONLY (no caller payload), so the row passes the
+                    # anti-bypass screen and the VAL-W2-036 DB CHECK while
+                    # still recording that the invalid transition occurred.
+                    # No spillover: the payload is small and bounded by
+                    # construction (and ``maybe_spillover`` itself may be the
+                    # failing step, so we must not re-invoke it here).
+                    full_payload_on_row = {
+                        "event": event,
+                        "expected_from": expected_from,
+                        "observed_state": current_state,
+                        "rejected_reason": INVALID_TRANSITION,
+                        "actor_identity_hash": actor.identity_hash,
+                        "forensic_payload_sanitized": True,
+                        "secondary_error_class": type(secondary_exc).__name__,
+                    }
+
+                # Single parent transaction: INSERT the forensic row, COMMIT.
                 try:
                     async with conn.execute(
                         "SELECT COALESCE(MAX(ingest_sequence), -1) + 1 "
@@ -543,12 +578,19 @@ async def compare_and_set_state(
                     with contextlib.suppress(Exception):
                         await conn.execute("ROLLBACK")
                     raise
+
+                extras = (
+                    {"secondary_error_reason": secondary_error_reason}
+                    if secondary_error_reason is not None
+                    else {}
+                )
                 return StateTransitionResult(
                     ok=False,
                     reason=INVALID_TRANSITION,
                     observed_state=current_state,
                     epoch=current_epoch,
                     event_id=event_id,
+                    extras=extras,
                 )
 
             # Step 9: actor-kind gate.
