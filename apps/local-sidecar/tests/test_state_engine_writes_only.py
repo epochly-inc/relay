@@ -249,6 +249,28 @@ _PERMITTED_VERIFY_SELF_TEST_FILE = (
     / "test_w5_5_verify_self.py"
 )
 
+# Documented ISO-035 exception: the iso-035 control-plane .sql-scan
+# regression test at
+# ``packages/cli/tests/test_iso_035_control_plane_sql_scan.py`` embeds a
+# deliberate bad-input FIXTURE string on its trailing-comment line:
+# ``CREATE TABLE x (id INTEGER); -- trailing INSERT INTO run_results note``.
+# The fixture proves the control-plane-write checker does NOT flag a
+# canonical table name that appears only inside a SQL ``--`` line comment
+# (a false-positive guard). The ``INSERT INTO run_results`` literal is a
+# quoted string inside test fixture data; it never runs as SQL. Same
+# exception pattern as the W5.5 verify-self plumbing-test fixture data:
+# the VAL-W2-024 keystone invariant (canonical rows are written only by
+# the state engine) is satisfied; the test fixture is observation, not a
+# write path. Path-scoped so the guard still flags forbidden DML in any
+# other non-allowlisted file.
+_PERMITTED_ISO_035_TEST_FILE = (
+    _REPO_ROOT
+    / "packages"
+    / "cli"
+    / "tests"
+    / "test_iso_035_control_plane_sql_scan.py"
+)
+
 
 def _python_files(root: Path) -> list[Path]:
     if not root.exists():
@@ -293,6 +315,14 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # control-plane-write-only checker. See
             # _PERMITTED_VERIFY_SELF_TEST_FILE.
             if path == _PERMITTED_VERIFY_SELF_TEST_FILE:
+                continue
+            # Documented ISO-035 exception: the iso-035 .sql-scan regression
+            # test embeds a deliberate bad-input fixture string
+            # ("... -- trailing INSERT INTO run_results note") to prove a
+            # canonical table name inside a SQL line comment is NOT a false
+            # positive. The literal is quoted test fixture data, never run
+            # as SQL. See _PERMITTED_ISO_035_TEST_FILE.
+            if path == _PERMITTED_ISO_035_TEST_FILE:
                 continue
             # Documented W8.2 exception: the gate-engine decision writer
             # is the canonical control-plane writer for gate_decisions +
@@ -416,6 +446,11 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         # W5.5 verify-self plumbing test fixture-data exception.
         "/packages/cli/tests/test_w5_5_verify_self.py:"
     )
+    iso_035_test_marker = (
+        # ISO-035 .sql-scan regression test bad-input fixture-data exception.
+        # See _PERMITTED_ISO_035_TEST_FILE.
+        "/packages/cli/tests/test_iso_035_control_plane_sql_scan.py:"
+    )
     gate_decision_writer_marker = (
         # W8.2 canonical gate-engine writer exception. See
         # _PERMITTED_GATE_DECISION_WRITER_FILE.
@@ -466,6 +501,8 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         if recovery_py_marker in line:
             continue
         if verify_self_test_marker in line:
+            continue
+        if iso_035_test_marker in line:
             continue
         if gate_decision_writer_marker in line:
             continue
