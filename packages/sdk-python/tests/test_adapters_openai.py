@@ -484,3 +484,135 @@ def test_scrub_masks_camelcase_credential_key_names() -> None:
     assert scrubbed["secretaryName"] == "Bob"
     assert scrubbed["authorizedUser"] == "alice"
     assert scrubbed["bearings"] == "north"
+
+
+# ---------------------------------------------------------------------------
+# Gate-2 structural REAL_DEFECT C: ``_scrub`` recursed with no cycle guard
+# and no depth bound. A self-referential or pathologically deep tool-args
+# object (reachable via the live, non-JSON-round-tripped call sites in
+# anthropic_adapter._redact_tool_input) caused a RecursionError that crashed
+# inline span emission in the model-call wrap path. The fix fails safe: a
+# cycle is replaced with the "[relay:cycle]" marker and a subtree past
+# SCRUB_MAX_DEPTH with "[relay:elided-depth]", never crashing and never
+# leaking secret values. Lockstep markers with the TypeScript
+# ``scrubSecretShape``.
+# ---------------------------------------------------------------------------
+
+
+def test_scrub_handles_self_referential_dict_without_crash() -> None:
+    """Gate-2 C: a dict that references itself is scrubbed without a
+    RecursionError; the credential key is still masked and the
+    back-reference becomes the deterministic "[relay:cycle]" marker."""
+    from relay.adapters.openai_adapter import _scrub
+
+    d: dict[str, Any] = {"token": "sk-secret-AAAAAAAAAAAA", "n": 1}
+    d["self"] = d
+    scrubbed = _scrub(d)
+    assert scrubbed["token"] == "[REDACTED]"
+    assert scrubbed["n"] == 1
+    assert scrubbed["self"] == "[relay:cycle]"
+    # Adversarial: serialised output must not leak the seed secret.
+    import json as _json
+
+    assert "sk-secret-AAAAAAAAAAAA" not in _json.dumps(scrubbed)
+
+
+def test_scrub_handles_cycle_in_list_without_crash() -> None:
+    """Gate-2 C: a cycle nested inside a list is elided without crash."""
+    from relay.adapters.openai_adapter import _scrub
+
+    arr: list[Any] = []
+    node: dict[str, Any] = {"items": arr, "secret": "sk-deep-BBBBBBBB"}
+    arr.append(node)
+    scrubbed = _scrub(node)
+    assert scrubbed["secret"] == "[REDACTED]"
+    assert scrubbed["items"][0] == "[relay:cycle]"
+
+
+def test_scrub_elides_deeply_nested_object_without_recursionerror() -> None:
+    """Gate-2 C: a ~2000-deep nested dict is elided at the depth bound
+    instead of raising RecursionError; output is deterministic and the
+    bottom secret cannot leak past the bound."""
+    import json as _json
+
+    from relay.adapters.openai_adapter import _scrub
+
+    deep: dict[str, Any] = {"token": "sk-bottom-CCCCCCCC"}
+    for _ in range(2000):
+        deep = {"child": deep}
+    scrubbed = _scrub(deep)
+    serialized = _json.dumps(scrubbed)
+    assert "[relay:elided-depth]" in serialized
+    assert "sk-bottom-CCCCCCCC" not in serialized
+    # Determinism: scrubbing twice yields byte-identical output.
+    assert _json.dumps(_scrub(deep)) == serialized
+
+
+def test_scrub_does_not_treat_shared_subtree_as_cycle() -> None:
+    """Gate-2 C: an acyclic sub-object referenced from two siblings is
+    scrubbed in BOTH positions, not falsely elided as a cycle. The cycle
+    guard must track the active recursion path, not every container seen."""
+    from relay.adapters.openai_adapter import _scrub
+
+    shared: dict[str, Any] = {"api_key": "sk-shared-DDDDDDDD", "keep": "ok"}
+    root = {"left": shared, "right": shared}
+    scrubbed = _scrub(root)
+    assert scrubbed["left"]["api_key"] == "[REDACTED]"
+    assert scrubbed["right"]["api_key"] == "[REDACTED]"
+    assert scrubbed["left"]["keep"] == "ok"
+    assert scrubbed["right"]["keep"] == "ok"
+    assert scrubbed["left"]["api_key"] != "[relay:cycle]"
+    assert scrubbed["right"]["api_key"] != "[relay:cycle]"
+
+
+# ---------------------------------------------------------------------------
+# Gate-2 structural REAL_DEFECT D: ``_scrub`` preserves the original
+# (possibly non-string) dict key, then ``json.dumps(redacted,
+# sort_keys=True, ...)`` in ``_redact_tool_arguments`` raises TypeError on
+# heterogeneous keys -- crashing args_hash, while the TS side (whose keys
+# are always strings) hashes fine. The fix coerces dict keys to strings
+# deterministically before the sort+dump so non-string keys cannot crash
+# the hash and Py/TS align for the same logical input.
+# ---------------------------------------------------------------------------
+
+
+def test_redact_tool_arguments_with_non_string_key_no_typeerror() -> None:
+    """Gate-2 D: a tool-input dict carrying a non-string key computes
+    args_hash WITHOUT TypeError, and the secret value is scrubbed."""
+    import json as _json
+
+    from relay.adapters.openai_adapter import _redact_tool_arguments
+
+    # ``raw`` is the provider's JSON-encoded args string. A heterogeneous
+    # key arises after json.loads when the model emits a numeric-keyed
+    # object, or via the live (non-round-tripped) Anthropic path. We feed a
+    # raw string that json.loads cannot recover heterogeneous keys from, so
+    # exercise the dict path directly via the Anthropic redactor below and
+    # the openai redactor here through a pre-built dict round-trip.
+    raw = _json.dumps({"access_token": "ya29.A0ARrdaM-real-token", "x": 1})
+    redacted, args_hash = _redact_tool_arguments(raw)
+    assert redacted["access_token"] == "[REDACTED]"
+    assert isinstance(args_hash, str) and len(args_hash) == 64
+
+
+def test_anthropic_redact_tool_input_non_string_keys_no_typeerror() -> None:
+    """Gate-2 D: the Anthropic redactor receives the live tool_input dict
+    (no JSON round-trip), so non-string keys reach json.dumps. Coercion
+    must prevent the TypeError and still scrub the secret value."""
+    from relay.adapters.anthropic_adapter import _redact_tool_input
+
+    tool_input = {"access_token": "ya29.A0ARrdaM-real-token", 1: "x"}
+    redacted, args_hash = _redact_tool_input(tool_input)
+    assert redacted["access_token"] == "[REDACTED]"
+    assert isinstance(args_hash, str) and len(args_hash) == 64
+
+
+def test_scrub_mixed_int_and_string_keys_args_hash_stable() -> None:
+    """Gate-2 D: mixed int/str keys are sorted by their string form so the
+    args_hash is stable and deterministic across calls."""
+    from relay.adapters.anthropic_adapter import _redact_tool_input
+
+    tool_input: dict[Any, Any] = {2: "b", "access_token": "sk-leak-EEEE", 10: "c"}
+    _, h1 = _redact_tool_input(tool_input)
+    _, h2 = _redact_tool_input(dict(tool_input))
+    assert h1 == h2

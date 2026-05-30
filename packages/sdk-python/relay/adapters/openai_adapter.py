@@ -221,6 +221,78 @@ def _is_secret_key(key: str) -> bool:
     return decamel != lower and _matches_credential_form(decamel)
 
 
+# Maximum container-nesting depth :func:`_scrub` descends before eliding
+# the remaining subtree. Bounds stack usage on pathologically deep tool-args
+# objects so inline span emission never raises ``RecursionError``. Chosen
+# within the 64-128 band; MUST stay byte-identical to the TypeScript
+# ``SCRUB_MAX_DEPTH`` constant.
+_SCRUB_MAX_DEPTH: int = 96
+
+# Deterministic elision markers. When the depth bound is exceeded the
+# remaining subtree is replaced with :data:`_SCRUB_DEPTH_MARKER`; when a
+# reference cycle is detected the back-reference is replaced with
+# :data:`_SCRUB_CYCLE_MARKER`. Both fail SAFE -- no crash, and a value can
+# never leak through an elided position. MUST stay byte-identical to the
+# TypeScript markers.
+_SCRUB_DEPTH_MARKER: str = "[relay:elided-depth]"
+_SCRUB_CYCLE_MARKER: str = "[relay:cycle]"
+
+
+def _scrub_inner(value: Any, depth: int, seen: set[int]) -> Any:
+    """Internal recursive worker for :func:`_scrub`.
+
+    ``seen`` holds ``id()`` of the containers on the ACTIVE recursion path
+    (not every container ever visited) so a self-referential structure is
+    elided as a cycle while an acyclic sub-object shared between two siblings
+    is still scrubbed in both positions. ``depth`` bounds total nesting so a
+    pathologically deep object cannot raise ``RecursionError``.
+
+    Dict keys are coerced to strings in the output so a non-string key cannot
+    later crash ``json.dumps(..., sort_keys=True)`` in the args_hash path
+    (Gate-2 D). This matches the TypeScript canonicalizer, whose object keys
+    are always strings.
+    """
+    if isinstance(value, str):
+        if value.startswith("sk-") or value.startswith("sk-ant-"):
+            # Best-effort: OpenAI 'sk-' prefix, Anthropic 'sk-ant-' prefix.
+            return "[REDACTED]"
+        return value
+    if isinstance(value, dict):
+        vid = id(value)
+        if vid in seen:
+            return _SCRUB_CYCLE_MARKER
+        if depth >= _SCRUB_MAX_DEPTH:
+            return _SCRUB_DEPTH_MARKER
+        seen.add(vid)
+        try:
+            out: dict[str, Any] = {}
+            for k, v in value.items():
+                # Coerce the key deterministically so heterogeneous keys
+                # cannot crash the sort+dump in the args_hash path (Gate-2 D).
+                key = str(k)
+                if _is_secret_key(key):
+                    out[key] = "[REDACTED]"
+                else:
+                    out[key] = _scrub_inner(v, depth + 1, seen)
+            return out
+        finally:
+            # Pop the container off the active path so sibling references to
+            # the same acyclic object are NOT mistaken for a cycle.
+            seen.discard(vid)
+    if isinstance(value, list):
+        vid = id(value)
+        if vid in seen:
+            return _SCRUB_CYCLE_MARKER
+        if depth >= _SCRUB_MAX_DEPTH:
+            return _SCRUB_DEPTH_MARKER
+        seen.add(vid)
+        try:
+            return [_scrub_inner(v, depth + 1, seen) for v in value]
+        finally:
+            seen.discard(vid)
+    return value
+
+
 def _scrub(value: Any) -> Any:
     """Recursively replace secret-looking strings with ``"[REDACTED]"``.
 
@@ -229,23 +301,17 @@ def _scrub(value: Any) -> Any:
     suffix -- are masked (VAL-REDACT-008). String values starting with
     ``sk-`` / ``sk-ant-`` are masked. Lockstep with TypeScript
     ``scrubSecretShape``.
+
+    Robust to reference cycles and pathological depth (Gate-2 C): a cycle is
+    replaced with :data:`_SCRUB_CYCLE_MARKER` and a subtree past
+    :data:`_SCRUB_MAX_DEPTH` with :data:`_SCRUB_DEPTH_MARKER`, so the
+    conservative pass NEVER raises ``RecursionError`` on the live
+    (non-JSON-round-tripped) tool-args objects passed by the Anthropic
+    adapter. Dict keys are stringified so non-string keys cannot crash the
+    args_hash sort+dump (Gate-2 D). Lockstep with TypeScript
+    ``scrubSecretShape``.
     """
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for k, v in value.items():
-            if _is_secret_key(str(k)):
-                out[k] = "[REDACTED]"
-            else:
-                out[k] = _scrub(v)
-        return out
-    if isinstance(value, list):
-        return [_scrub(v) for v in value]
-    if isinstance(value, str) and (
-        value.startswith("sk-") or value.startswith("sk-ant-")
-    ):
-        # Best-effort: OpenAI 'sk-' prefix, Anthropic 'sk-ant-' prefix.
-        return "[REDACTED]"
-    return value
+    return _scrub_inner(value, 0, set())
 
 
 # ---------------------------------------------------------------------------

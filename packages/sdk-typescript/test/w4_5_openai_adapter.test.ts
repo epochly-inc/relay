@@ -392,3 +392,76 @@ describe("VAL-W4-040: adapter init refuses out-of-range provider SDK version", (
     expect(() => assertOpenAiVersionSupported("")).not.toThrow();
   });
 });
+
+// Gate-2 structural REAL_DEFECT C: scrubSecretShape recursed with no cycle
+// guard and no depth bound. A self-referential or pathologically deep
+// tool-args object (reachable via the live, non-JSON-round-tripped call
+// sites in anthropic.ts / vercel_ai.ts) caused a RangeError (stack
+// overflow) that crashed inline span emission in the model-call wrap path.
+// The fix fails safe: a cycle is replaced with the "[relay:cycle]" marker
+// and a subtree past SCRUB_MAX_DEPTH with "[relay:elided-depth]", never
+// crashing and never leaking secret values. Lockstep with the Python
+// `_scrub` markers.
+describe("Gate-2 C: scrubSecretShape is robust to cycles and deep nesting", () => {
+  it("replaces a self-referential object with the cycle marker WITHOUT crashing", () => {
+    const a: Record<string, unknown> = { token: "sk-secret-AAAAAAAAAAAA", n: 1 };
+    a["self"] = a;
+    const scrubbed = scrubSecretShape(a) as Record<string, unknown>;
+    // The credential key is still masked.
+    expect(scrubbed["token"]).toBe("[REDACTED]");
+    expect(scrubbed["n"]).toBe(1);
+    // The back-reference becomes a deterministic elision marker, not a
+    // crash and not the live object reference.
+    expect(scrubbed["self"]).toBe("[relay:cycle]");
+    // Adversarial: the serialised output must not leak the seed secret.
+    expect(JSON.stringify(scrubbed)).not.toContain("sk-secret-AAAAAAAAAAAA");
+  });
+
+  it("handles a cycle nested inside an array WITHOUT crashing", () => {
+    const arr: unknown[] = [];
+    const node: Record<string, unknown> = { items: arr, secret: "sk-deep-BBBBBBBB" };
+    arr.push(node);
+    const scrubbed = scrubSecretShape(node) as Record<string, unknown>;
+    expect(scrubbed["secret"]).toBe("[REDACTED]");
+    const items = scrubbed["items"] as unknown[];
+    expect(items[0]).toBe("[relay:cycle]");
+    expect(JSON.stringify(scrubbed)).not.toContain("sk-deep-BBBBBBBB");
+  });
+
+  it("elides a ~2000-deep nested object at the depth bound WITHOUT stack overflow", () => {
+    // Build a 2000-deep chain of single-key objects, secret at the bottom.
+    let deep: Record<string, unknown> = { token: "sk-bottom-CCCCCCCC" };
+    for (let i = 0; i < 2000; i += 1) {
+      deep = { child: deep };
+    }
+    // Base behaviour: this recursion overflows the stack -> RangeError.
+    const scrubbed = scrubSecretShape(deep);
+    // No crash. Output is deterministic JSON.
+    const serialized = JSON.stringify(scrubbed);
+    // The depth-elision marker appears (the chain is truncated past the bound).
+    expect(serialized).toContain("[relay:elided-depth]");
+    // The bottom secret is unreachable past the bound, so it cannot leak;
+    // either way the raw value must never appear verbatim.
+    expect(serialized).not.toContain("sk-bottom-CCCCCCCC");
+    // Determinism: scrubbing twice yields byte-identical output.
+    expect(JSON.stringify(scrubSecretShape(deep))).toBe(serialized);
+  });
+
+  it("does NOT treat sibling references to the same object as a cycle", () => {
+    // A shared (but acyclic) sub-object must be scrubbed in both positions,
+    // not elided as a false-positive cycle. The cycle guard tracks the
+    // active recursion path, not every object ever seen.
+    const shared: Record<string, unknown> = { api_key: "sk-shared-DDDDDDDD", keep: "ok" };
+    const root = { left: shared, right: shared };
+    const scrubbed = scrubSecretShape(root) as Record<string, unknown>;
+    const left = scrubbed["left"] as Record<string, unknown>;
+    const right = scrubbed["right"] as Record<string, unknown>;
+    expect(left["api_key"]).toBe("[REDACTED]");
+    expect(right["api_key"]).toBe("[REDACTED]");
+    expect(left["keep"]).toBe("ok");
+    expect(right["keep"]).toBe("ok");
+    // Neither position is the cycle marker.
+    expect(left["api_key"]).not.toBe("[relay:cycle]");
+    expect(right["api_key"]).not.toBe("[relay:cycle]");
+  });
+});

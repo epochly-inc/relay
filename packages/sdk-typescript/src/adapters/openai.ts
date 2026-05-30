@@ -143,6 +143,72 @@ function isSecretKey(key: string): boolean {
 }
 
 /**
+ * Maximum container-nesting depth ``scrubSecretShape`` will descend before
+ * eliding the remaining subtree. Bounds stack usage on pathologically deep
+ * tool-args objects so inline span emission never overflows the call stack.
+ * Chosen within the 64-128 band; MUST stay byte-identical to the Python
+ * ``_SCRUB_MAX_DEPTH`` constant.
+ */
+export const SCRUB_MAX_DEPTH = 96;
+
+/**
+ * Deterministic elision markers. When the depth bound is exceeded the
+ * remaining subtree is replaced with {@link SCRUB_DEPTH_MARKER}; when a
+ * reference cycle is detected the back-reference is replaced with
+ * {@link SCRUB_CYCLE_MARKER}. Both fail SAFE -- no crash, and a value can
+ * never leak through an elided position. MUST stay byte-identical to the
+ * Python markers.
+ */
+export const SCRUB_DEPTH_MARKER = "[relay:elided-depth]";
+export const SCRUB_CYCLE_MARKER = "[relay:cycle]";
+
+/**
+ * Internal recursive worker for {@link scrubSecretShape}.
+ *
+ * ``seen`` tracks the objects on the ACTIVE recursion path (not every
+ * object ever visited) so a self-referential structure is elided as a
+ * cycle while an acyclic sub-object shared between two siblings is still
+ * scrubbed in both positions. ``depth`` bounds total nesting so a
+ * pathologically deep object cannot overflow the call stack.
+ */
+function scrubSecretShapeInner(
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    if (value.startsWith("sk-") || value.startsWith("sk-ant-")) {
+      return "[REDACTED]";
+    }
+    return value;
+  }
+  if (typeof value !== "object") return value;
+  // From here ``value`` is an array or object container.
+  if (seen.has(value)) return SCRUB_CYCLE_MARKER;
+  if (depth >= SCRUB_MAX_DEPTH) return SCRUB_DEPTH_MARKER;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((v) => scrubSecretShapeInner(v, depth + 1, seen));
+    }
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (isSecretKey(k)) {
+        out[k] = "[REDACTED]";
+      } else {
+        out[k] = scrubSecretShapeInner(v, depth + 1, seen);
+      }
+    }
+    return out;
+  } finally {
+    // Pop the container off the active path so sibling references to the
+    // same acyclic object are NOT mistaken for a cycle.
+    seen.delete(value);
+  }
+}
+
+/**
  * Recursively replace secret-looking strings with ``"[REDACTED]"``.
  *
  * Mirrors the Python ``_scrub`` helper: keys whose lowercased name is a
@@ -152,28 +218,15 @@ function isSecretKey(key: string): boolean {
  * adapter-boundary pass that runs even when the run-level redaction engine
  * has not been configured (defense-in-depth per VAL-W4-038, VAL-REDACT-008,
  * CLAUDE.md keystone invariant #7).
+ *
+ * Robust to reference cycles and pathological depth: a cycle is replaced
+ * with {@link SCRUB_CYCLE_MARKER} and a subtree past {@link SCRUB_MAX_DEPTH}
+ * with {@link SCRUB_DEPTH_MARKER}, so the conservative pass NEVER overflows
+ * the stack on the live (non-JSON-round-tripped) tool-args objects passed by
+ * the Anthropic / Vercel AI adapters. Lockstep with the Python ``_scrub``.
  */
 export function scrubSecretShape(value: unknown): unknown {
-  if (value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map(scrubSecretShape);
-  if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (isSecretKey(k)) {
-        out[k] = "[REDACTED]";
-      } else {
-        out[k] = scrubSecretShape(v);
-      }
-    }
-    return out;
-  }
-  if (typeof value === "string") {
-    if (value.startsWith("sk-") || value.startsWith("sk-ant-")) {
-      return "[REDACTED]";
-    }
-    return value;
-  }
-  return value;
+  return scrubSecretShapeInner(value, 0, new WeakSet<object>());
 }
 
 /**
