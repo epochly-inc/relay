@@ -358,6 +358,21 @@ def _is_address_allowed(
     return False, host, port
 
 
+def _close_socket_quietly(sock: socket.socket) -> None:
+    """Close ``sock`` swallowing any error, so the deny path never leaks it.
+
+    Called by the connect / connect_ex gates BEFORE raising the deny.
+    :func:`socket.socket.close` is idempotent, so callers that ALSO close
+    the socket in their own ``finally`` are unaffected (the second close is a
+    no-op). We close the ORIGINAL, unpatched object: ``close`` is not one of
+    the patched methods, so ``sock.close()`` is the genuine close.
+    """
+    # A socket that was never given a real fd (or already closed) may raise
+    # here. Either way there is nothing left to leak, so suppress.
+    with contextlib.suppress(OSError):
+        sock.close()
+
+
 def _raise_deny(
     *,
     operation: str,
@@ -398,9 +413,22 @@ def _raise_deny(
 
 
 def _denying_connect(self: socket.socket, address: Any) -> Any:
-    """Replacement for ``socket.socket.connect``."""
+    """Replacement for ``socket.socket.connect``.
+
+    Socket-leak hygiene (root-cause fix, finding
+    ``fix-r4-iso-socket-leak-deep-latent``): library connect helpers
+    (``socket.create_connection``, ``http.client``, urllib3's
+    ``create_connection``) build the socket themselves then close it ONLY in
+    an ``except OSError:`` branch. Because :class:`RelaySocketDenyError` is
+    NOT an ``OSError`` that cleanup is skipped, so the just-built socket
+    ``self`` would leak. We close ``self`` here -- BEFORE raising -- so no
+    socket survives the deny regardless of how the caller handles the
+    exception. ``socket.close`` is idempotent, so callers that also close in
+    their own ``finally`` are unaffected.
+    """
     allowed, host, port = _is_address_allowed(self.family, self.type, address)
     if not allowed:
+        _close_socket_quietly(self)
         _raise_deny(
             operation="connect",
             family=self.family,
@@ -418,9 +446,14 @@ def _denying_connect_ex(self: socket.socket, address: Any) -> Any:
     ``connect_ex`` differs from ``connect`` only in that it returns the
     errno instead of raising; the deny gate still raises so callers
     cannot silently sweep the failure under a nonzero return code.
+
+    Socket-leak hygiene: like :func:`_denying_connect`, close ``self``
+    before raising so a denied ``connect_ex`` cannot leak the caller's
+    just-built socket past a non-``OSError`` deny (idempotent close).
     """
     allowed, host, port = _is_address_allowed(self.family, self.type, address)
     if not allowed:
+        _close_socket_quietly(self)
         _raise_deny(
             operation="connect_ex",
             family=self.family,

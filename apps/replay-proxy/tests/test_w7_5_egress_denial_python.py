@@ -157,8 +157,7 @@ def test_requests_get_external_blocked_under_replay() -> None:
             excinfo.traceback = excinfo.traceback[:0]
             if not found_deny:
                 pytest.fail(
-                    "expected RelaySocketDenyError in cause chain; got "
-                    + " <- ".join(seen_classes)
+                    "expected RelaySocketDenyError in cause chain; got " + " <- ".join(seen_classes)
                 )
     finally:
         socket.socket.__init__ = original_socket_init  # type: ignore[assignment]
@@ -189,8 +188,7 @@ def test_requests_get_external_blocked_under_replay() -> None:
 # `ignore::pytest.PytestUnraisableExceptionWarning` would weaken the
 # repo-wide ``filterwarnings = ["error", ...]`` policy for this test.
 @pytest.mark.filterwarnings(
-    "ignore:Exception ignored.*socket\\.socket"
-    ":pytest.PytestUnraisableExceptionWarning"
+    "ignore:Exception ignored.*socket\\.socket:pytest.PytestUnraisableExceptionWarning"
 )
 def test_requests_get_loopback_passes_through() -> None:
     """A request to ``127.0.0.1:<closed>`` raises ``ConnectionError`` at
@@ -230,9 +228,7 @@ def test_requests_get_loopback_passes_through() -> None:
     socket.socket.__init__ = _tracking_init  # type: ignore[assignment]
     try:
         with replay_session():
-            with pytest.raises(
-                requests.exceptions.ConnectionError
-            ) as excinfo:
+            with pytest.raises(requests.exceptions.ConnectionError) as excinfo:
                 requests.get("http://127.0.0.1:1/", timeout=2.0)
             cur: BaseException | None = excinfo.value
             while cur is not None:
@@ -267,9 +263,7 @@ def test_urllib_urlopen_external_blocked_under_replay() -> None:
     """
     with replay_session():
         with pytest.raises(Exception) as excinfo:
-            urllib.request.urlopen(
-                f"https://{_NON_LOOPBACK_HOST}/", timeout=2.0
-            )
+            urllib.request.urlopen(f"https://{_NON_LOOPBACK_HOST}/", timeout=2.0)
         cur: BaseException | None = excinfo.value
         seen: list[str] = []
         while cur is not None:
@@ -279,10 +273,7 @@ def test_urllib_urlopen_external_blocked_under_replay() -> None:
                 assert cur.error_class == "RELAY-SDK-SOCKET-DENY"
                 return
             cur = cur.__cause__ or cur.__context__
-        pytest.fail(
-            "expected RelaySocketDenyError in cause chain; got "
-            + " <- ".join(seen)
-        )
+        pytest.fail("expected RelaySocketDenyError in cause chain; got " + " <- ".join(seen))
 
 
 @pytest.mark.fulfills("VAL-W7-081")
@@ -320,9 +311,7 @@ def test_urllib_urlopen_outside_session_is_not_intercepted() -> None:
             # On the (expected) ECONNREFUSED path urlopen raises before
             # returning; on any non-refused path we still close the
             # response handle so its socket is released immediately.
-            response = urllib.request.urlopen(
-                "http://127.0.0.1:1/", timeout=1.0
-            )
+            response = urllib.request.urlopen("http://127.0.0.1:1/", timeout=1.0)
         cur: BaseException | None = excinfo.value
         while cur is not None:
             assert not isinstance(cur, RelaySocketDenyError), (
@@ -437,6 +426,7 @@ def test_aiohttp_get_external_blocked_under_replay() -> None:
             # ResourceWarning never fires. Use catch_warnings so even
             # close-time warnings stay scoped to this block.
             import contextlib
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", ResourceWarning)
                 for sk in created_sockets:
@@ -608,8 +598,7 @@ def test_egress_denial_coverage_sentinel() -> None:
     )
     # Every transport has a paired test in this module.
     import sys
+
     me = sys.modules[__name__]
     for transport, test_name in transports.items():
-        assert hasattr(me, test_name), (
-            f"missing test for transport {transport!r}: {test_name}"
-        )
+        assert hasattr(me, test_name), f"missing test for transport {transport!r}: {test_name}"
