@@ -29,8 +29,6 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import contextlib
-import os
-import signal
 import subprocess
 import sys
 import textwrap

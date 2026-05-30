@@ -36,11 +36,9 @@ Spec citations:
 from __future__ import annotations
 
 import argparse
-import filecmp
 import re
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 

@@ -15,6 +15,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+
 # VAL-W5-001: ``rly --version`` reports a stable semver string. The version
 # is mirrored from the package distribution metadata at runtime so a single
 # source of truth (pyproject.toml [project] version) governs the wire form.

@@ -234,7 +234,7 @@ def test_layer2_bare_python_syntax_error_is_p0(tmp_path: Path) -> None:
         "def f(:\n"  # SyntaxError: invalid syntax
         "    pass\n"
         "```\n\n"
-        f"Spec: §A.1\n"
+        "Spec: §A.1\n"
     )
     page = _make_page(tmp_path, "docs/contracts/syntax-error.md", body)
     cp = _run(["--files", str(page), "--layers", "2", "--json"])
@@ -260,7 +260,7 @@ def test_layer2_bare_python_runtime_error_is_p0(tmp_path: Path) -> None:
         "```python\n"
         "x = undefined_global_xyz  # NameError\n"
         "```\n\n"
-        f"Spec: §A.1\n"
+        "Spec: §A.1\n"
     )
     page = _make_page(tmp_path, "docs/contracts/runtime-error.md", body)
     cp = _run(["--files", str(page), "--layers", "2", "--json"])
@@ -287,7 +287,7 @@ def test_layer2_bare_python_import_error_demotes_to_p2(tmp_path: Path) -> None:
         "```python\n"
         "from relay_pkg_that_does_not_exist_xyz import nope\n"
         "```\n\n"
-        f"Spec: §A.1\n"
+        "Spec: §A.1\n"
     )
     page = _make_page(tmp_path, "docs/contracts/import-error.md", body)
     cp = _run(["--files", str(page), "--layers", "2", "--json"])
@@ -701,7 +701,9 @@ def test_layer4_exempts_generated_reference_pages(tmp_path: Path, rel_path: str)
     page = _make_page(
         tmp_path,
         rel_path,
-        "# Title\n\n> Generated from packages/cli/src/relay_cli/main.py. Do not edit by hand.\n\nBody.\n",
+        "# Title\n\n"
+        "> Generated from packages/cli/src/relay_cli/main.py. Do not edit by hand.\n\n"
+        "Body.\n",
     )
     cp = _run(["--files", str(page), "--layers", "4", "--json"])
     payload = json.loads(cp.stdout)
