@@ -361,6 +361,138 @@ def test_python_canonical_bytes_match_typescript_via_node_subprocess(
 
 
 # ---------------------------------------------------------------------------
+# Number canonicalization parity (fix-r3-number-canonicalization).
+# ---------------------------------------------------------------------------
+# EMPIRICALLY CONFIRMED Gate-2 REAL_DEFECT (pre-existing): for a captured
+# payload ``{"x": <num>}``, Python ``redact_capture_payload`` (via
+# ``json.dumps`` float repr) emitted ``{"x":1.0}`` / ``{"x":1e+16}`` /
+# ``{"x":1e+20}`` while TS ``canonicalJsonStringify`` (via ``String(value)``)
+# emitted ``1`` / ``10000000000000000`` / ``100000000000000000000``. This
+# broke Py<->TS byte-equality (keystone invariant #10) for any captured
+# payload containing an integral float or |x| >= 1e16. TS ``String()`` is the
+# ECMA-262 / RFC-8785 JCS-correct form; Python ``json.dumps`` was WRONG. The
+# fix routes the Python serializer through the ECMA-262/JCS number encoder.
+
+#: Value table covering the divergent cases AND the previously-coinciding
+#: ones. The diverging-at-base entries are 1.0, 1e16, 1e20 (integral float /
+#: large magnitude). 1.5, 100, 0, -17, 1e-7 already coincided.
+_NUMBER_CANON_FLOAT_TABLE: list[tuple[str, float]] = [
+    ("one-point-zero", 1.0),
+    ("one-e16", 1e16),
+    ("one-e20", 1e20),
+    ("one-e21-exponent-boundary", 1e21),
+    ("negative-zero", -0.0),
+    ("one-point-five", 1.5),
+    ("hundred-float", 100.0),
+    ("zero", 0.0),
+    ("negative-seventeen", -17.0),
+    ("one-e-minus-7", 1e-7),
+]
+
+
+def _expected_jcs_number(value: float | int) -> str:
+    """The ECMA-262/JCS Number-to-String form, sourced from the existing
+    contracts canonical encoder (the authoritative implementation). The
+    redaction encoder MUST be byte-identical to this across the table.
+    """
+    from relay_contracts.canonical import _encode_number
+
+    return _encode_number(value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("name,value", _NUMBER_CANON_FLOAT_TABLE)
+def test_redact_number_leaf_uses_ecma262_jcs_form(name: str, value: float) -> None:
+    """``redact_capture_payload`` MUST emit a numeric leaf using the
+    ECMA-262/JCS Number-to-String algorithm, not Python's ``json.dumps``
+    float repr. RED at base for 1.0 / 1e16 / 1e20 (json.dumps emits
+    ``1.0`` / ``1e+16`` / ``1e+20``; JCS demands ``1`` /
+    ``10000000000000000`` / ``100000000000000000000``).
+    """
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    body = redact_capture_payload(engine, {"x": value})
+    expected = ('{"x":' + _expected_jcs_number(value) + "}").encode("utf-8")
+    assert body == expected, (
+        f"number-leaf {name!r} ({value!r}) emitted {body!r}, "
+        f"expected JCS form {expected!r}"
+    )
+
+
+@pytest.mark.plumbing
+def test_redact_large_int_leaf_emits_exact_decimal() -> None:
+    """A Python ``int`` leaf is emitted as its EXACT decimal -- no float
+    coercion (which would lose precision past 2**53). JCS integer form.
+    """
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    big = 9007199254740993  # 2**53 + 1: inexact as an IEEE-754 double.
+    body = redact_capture_payload(engine, {"x": big})
+    assert body == b'{"x":9007199254740993}', f"got {body!r}"
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("name,value", _NUMBER_CANON_FLOAT_TABLE)
+def test_redact_number_leaf_byte_identical_to_contracts_encoder(
+    name: str, value: float
+) -> None:
+    """The redaction module's number formatter MUST be byte-identical to
+    ``relay_contracts.canonical._encode_number`` across the value table.
+
+    The redaction module replicates the JCS formatter rather than taking a
+    hard dependency on ``relay_contracts`` (not a declared dep of the
+    sdk-python package). This test pins the two implementations together so
+    they cannot drift.
+    """
+    from relay.redaction import _encode_jcs_number
+
+    assert _encode_jcs_number(value) == _expected_jcs_number(value), (
+        f"redaction _encode_jcs_number diverged from "
+        f"relay_contracts.canonical._encode_number on {name!r} ({value!r})"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "name,payload",
+    [
+        ("integral-float-1.0", {"x": 1.0}),
+        ("large-float-1e16", {"x": 1e16}),
+        ("large-float-1e20", {"x": 1e20}),
+        ("exponent-boundary-1e21", {"x": 1e21}),
+        ("fraction-1.5", {"x": 1.5}),
+        ("small-exponent-1e-7", {"x": 1e-7}),
+        ("zero", {"x": 0}),
+        ("mixed-numeric-leaves", {"a": 1.0, "b": 1e20, "c": [1e16, 2.5, 0], "d": 1e-7}),
+    ],
+)
+def test_number_canonicalization_byte_equal_typescript_via_node_subprocess(
+    name: str, payload: dict
+) -> None:
+    """Python ``redact_capture_payload`` MUST emit byte-identical bytes to
+    TS ``_canonicalJsonStringify`` for numeric-leaf payloads. RED at base:
+    1.0 / 1e16 / 1e20 diverge (Python ``1.0``/``1e+16``/``1e+20`` vs TS
+    ``1``/``10000000000000000``/``100000000000000000000``).
+
+    Skipped when Node or the TS dist are unavailable.
+    """
+    ts_bytes = _ts_canonicalize_via_node(_BASE_POLICY, payload, _TENANT_SALT)
+    if ts_bytes is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language byte equality cannot be checked "
+            "in this environment"
+        )
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    py_bytes = redact_capture_payload(engine, payload)
+    assert py_bytes == ts_bytes, (
+        f"cross-language numeric byte mismatch on {name!r}: "
+        f"py={py_bytes!r} ts={ts_bytes!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Bug 2 (P0): bytes leaves -> digest-only reference (no plaintext leak).
 # ---------------------------------------------------------------------------
 

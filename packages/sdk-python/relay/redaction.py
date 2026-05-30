@@ -44,6 +44,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import unicodedata
 from collections.abc import Callable, Iterable
@@ -1135,6 +1136,138 @@ def _hmac_sha256_hex(salt: bytes, plaintext: str) -> str:
     return hmac.new(salt, plaintext.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# ECMA-262 / RFC 8785 JCS Number-to-String (capture-payload serialization)
+# ---------------------------------------------------------------------------
+# Keystone invariant #10 (cross-runtime byte equality): the redacted capture
+# payload MUST serialise numeric leaves identically on the Python and the
+# TypeScript SDKs. The TS canonicalizer emits numbers via ``String(value)``,
+# which is the ECMA-262 7.1.12.1 Number-to-String form mandated by RFC 8785
+# JCS. Python's ``json.dumps`` instead uses the float ``repr`` (``1.0``,
+# ``1e+16``, ``1e+20``) which DIVERGES from JCS for any integral float or
+# magnitude >= 1e16 -- breaking byte-equality (EMPIRICALLY CONFIRMED Gate-2
+# REAL_DEFECT). We replicate the JCS number formatter here rather than import
+# ``relay_contracts.canonical``: ``epochly-relay-contracts`` is NOT a declared
+# dependency of this SDK package (see ``pyproject.toml``), so a hard import
+# would be an inappropriate cross-package dependency. The replicated formatter
+# is pinned byte-identical to ``relay_contracts.canonical._encode_number`` by
+# ``test_redaction_parity.py::test_redact_number_leaf_byte_identical_to_contracts_encoder``
+# across a value table, so the two implementations cannot drift.
+
+
+def _es6_to_string_positive(n: float) -> str:
+    """ECMA-262 7.1.12.1 Number.toString for a strictly positive finite
+    double; mirrors JS ``String(n)`` byte-for-byte.
+
+    Replicated from ``relay_contracts.canonical._es6_to_string_positive``
+    (the authoritative implementation; the contracts package owns the JCS
+    encoder for CEL evaluation). Kept byte-identical via the parity test.
+    """
+    s = repr(n)
+    if "e" in s:
+        mantissa, exp_str = s.split("e")
+        exp = int(exp_str)
+    else:
+        mantissa, exp = s, 0
+    if "." in mantissa:
+        int_part, frac_part = mantissa.split(".")
+    else:
+        int_part, frac_part = mantissa, ""
+    raw_digits = int_part + frac_part
+    stripped_lead = raw_digits.lstrip("0")
+    leading_zero_count = len(raw_digits) - len(stripped_lead)
+    if not stripped_lead:
+        return "0"
+    stripped = stripped_lead.rstrip("0")
+    n_dec = len(int_part) - leading_zero_count + exp
+    k = len(stripped)
+    if k <= n_dec <= 21:
+        return stripped + ("0" * (n_dec - k))
+    if 0 < n_dec <= 21:
+        return stripped[:n_dec] + "." + stripped[n_dec:]
+    if -6 < n_dec <= 0:
+        return "0." + ("0" * (-n_dec)) + stripped
+    sign = "+" if n_dec - 1 >= 0 else "-"
+    abs_exp = str(abs(n_dec - 1))
+    if k == 1:
+        return stripped + "e" + sign + abs_exp
+    return stripped[0] + "." + stripped[1:] + "e" + sign + abs_exp
+
+
+def _encode_jcs_number(n: int | float) -> str:
+    """Return the ECMA-262/RFC-8785 JCS Number-to-String form of ``n``.
+
+    Integers are emitted as their EXACT decimal (no float coercion, so
+    values past 2**53 stay precise). Floats use the ECMA-262 ToString
+    algorithm; ``-0.0`` collapses to ``"0"``. Non-finite floats
+    (``NaN``/``Inf``) are forbidden by JCS and raise ``ValueError`` so the
+    caller can fail closed identically to the TS SDK (RELAY-SDK-010).
+
+    Byte-identical to ``relay_contracts.canonical._encode_number`` across
+    the parity value table (pinned by ``test_redaction_parity.py``).
+    """
+    # ``bool`` subclasses ``int`` in Python; the caller dispatches bools to
+    # the ``true``/``false`` branch before reaching here. Guard defensively.
+    if isinstance(n, bool):  # pragma: no cover -- caller dispatches first
+        raise TypeError("bool is not a number for JCS encoding")
+    if isinstance(n, int):
+        return str(n)
+    if math.isnan(n) or math.isinf(n):
+        raise ValueError(f"JCS cannot encode non-finite number: {n!r}")
+    if n == 0.0:
+        # Collapses -0.0 to "0" per ECMA-262 ToString.
+        return "0"
+    if n < 0:
+        return "-" + _es6_to_string_positive(-n)
+    return _es6_to_string_positive(n)
+
+
+def _canonical_json_stringify(value: Any) -> str:
+    """Serialise ``value`` to RFC 8785 JCS-compatible canonical JSON text.
+
+    Mirrors the TypeScript ``canonicalJsonStringify``
+    (``packages/sdk-typescript/src/redaction.ts``) token-for-token so the
+    two SDKs emit byte-identical wire bytes for the same redacted payload
+    (keystone invariant #10):
+
+      * keys sorted (BMP ordering -- Python codepoint sort matches JS for the
+        BMP keys the redaction surface produces; supplementary-plane keys are
+        a documented non-BMP limitation upstream in the fold path);
+      * compact separators (``,`` / ``:`` with no whitespace);
+      * strings emitted via ``json.dumps(..., ensure_ascii=False)`` which is
+        byte-identical to JS ``JSON.stringify`` for the supported inputs
+        (both escape only ``"``/``\\``/U+0000..U+001F and emit other code
+        points as literal UTF-8) -- this preserves the existing corpus bytes;
+      * numbers emitted via :func:`_encode_jcs_number` (the JCS fix);
+      * non-finite numbers raise ``ValueError`` (caller maps to RELAY-SDK-010,
+        byte-identical fail-closed with the TS guard -- VAL-REDACT-005).
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return _encode_jcs_number(value)
+    if isinstance(value, str):
+        # ``ensure_ascii=False`` + the default escaper is byte-identical to
+        # JS ``JSON.stringify`` for the supported inputs (verified above);
+        # reusing it keeps the existing string-corpus bytes unchanged.
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list | tuple):
+        return "[" + ",".join(_canonical_json_stringify(v) for v in value) + "]"
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for k in sorted(value.keys(), key=str):
+            v = value[k]
+            key_text = json.dumps(k if isinstance(k, str) else str(k), ensure_ascii=False)
+            parts.append(key_text + ":" + _canonical_json_stringify(v))
+        return "{" + ",".join(parts) + "}"
+    raise TypeError(
+        f"canonical_json_stringify: unsupported type {type(value).__name__} "
+        f"for value {value!r}"
+    )
+
+
 def _escape_pointer_token(token: Any) -> str:
     """Escape a single RFC 6901 JSON Pointer reference token.
 
@@ -1590,31 +1723,32 @@ def redact_capture_payload(
         determinism.
     """
     redacted = engine.redact(payload)
-    # JCS-compact separators (no whitespace) match the TS canonicalizer
-    # at packages/sdk-typescript/src/redaction.ts:838-864
-    # (``canonicalJsonStringify``). ``ensure_ascii=False`` matches TS
-    # ``JSON.stringify`` which emits raw UTF-8 for BMP code points
-    # rather than ``\uXXXX`` escapes. Together these guarantee
-    # byte-equality with TS for the cross-language parity corpus
-    # (VAL-W4-020).
+    # Serialise via the RFC 8785 JCS-compatible canonicalizer that mirrors the
+    # TS ``canonicalJsonStringify`` (packages/sdk-typescript/src/redaction.ts)
+    # token-for-token. Sorted keys + compact ``,``/``:`` separators match the
+    # TS canonicalizer; string leaves use ``json.dumps(..., ensure_ascii=False)``
+    # which is byte-identical to TS ``JSON.stringify`` (both emit raw UTF-8 for
+    # BMP code points rather than ``\uXXXX`` escapes), preserving the
+    # cross-language parity corpus (VAL-W4-020).
     #
-    # VAL-REDACT-005 (MEDIUM / determinism; byte-identical fail-closed with
-    # the TS ``canonicalJsonStringify`` non-finite guard): RFC 8785 JCS
-    # forbids non-finite numbers (Infinity/-Infinity/NaN). ``allow_nan=False``
-    # makes ``json.dumps`` raise ``ValueError`` instead of emitting the
-    # default literal ``Infinity``/``NaN`` tokens (invalid JSON). Pre-fix
-    # Python emitted those tokens while TS threw -- the two SDKs diverged.
-    # We surface a typed ``RelayPolicyError`` (code RELAY-SDK-010,
-    # ``reason="non_finite_number"``) so both runtimes report the rejection
-    # identically and fail closed on a non-finite leaf.
+    # Numeric leaves are emitted via the ECMA-262/RFC-8785 JCS Number-to-String
+    # encoder (:func:`_encode_jcs_number`) instead of ``json.dumps``' float
+    # repr. ``json.dumps`` emitted ``1.0`` / ``1e+16`` / ``1e+20`` for integral
+    # floats and large magnitudes while TS ``String(value)`` (the JCS-correct
+    # form) emitted ``1`` / ``10000000000000000`` / ``100000000000000000000`` --
+    # breaking Py<->TS byte-equality (keystone invariant #10) for any captured
+    # payload containing such a numeric leaf. Routing numbers through the JCS
+    # encoder closes that divergence; integers stay exact decimals.
+    #
+    # VAL-REDACT-005 (MEDIUM / determinism; byte-identical fail-closed with the
+    # TS ``canonicalJsonStringify`` non-finite guard): RFC 8785 JCS forbids
+    # non-finite numbers (Infinity/-Infinity/NaN). :func:`_encode_jcs_number`
+    # raises ``ValueError`` on a non-finite leaf (matching the old
+    # ``allow_nan=False`` behaviour); we map it to a typed ``RelayPolicyError``
+    # (code RELAY-SDK-010, ``reason="non_finite_number"``) so both runtimes
+    # report the rejection identically and fail closed.
     try:
-        return json.dumps(
-            redacted,
-            sort_keys=True,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
+        return _canonical_json_stringify(redacted).encode("utf-8")
     except ValueError as exc:
         raise RelayPolicyError(
             "non-finite number (Infinity/-Infinity/NaN) is not permitted in a "
