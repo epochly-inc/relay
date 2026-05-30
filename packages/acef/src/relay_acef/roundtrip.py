@@ -63,7 +63,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 import unicodedata
 from decimal import Decimal
 from typing import Any, Final
@@ -106,9 +105,6 @@ _ESCAPE_MAP: Final[dict[int, str]] = {
     0x22: '\\"',
     0x5C: "\\\\",
 }
-
-_TRAILING_DOT_ZERO: Final[re.Pattern[str]] = re.compile(r"^(-?\d+)\.0$")
-
 
 class JCSEncodeError(ValueError):
     """The bundle contains a value that cannot be RFC 8785 JCS-encoded.
@@ -192,8 +188,69 @@ def _encode_decimal(d: Decimal) -> str:
     return f"{sign_str}{mantissa}e{sign_exp}{true_exp}"
 
 
+def _es6_to_string_positive(n: float) -> str:
+    """ECMA-262 7.1.12.1 Number.toString for a strictly positive finite
+    double; mirrors JS ``String(n)`` byte-for-byte.
+
+    Replicated from ``relay_contracts.canonical._es6_to_string_positive``
+    (the authoritative implementation; the contracts package owns the JCS
+    encoder for CEL evaluation) and from
+    ``relay.redaction._es6_to_string_positive`` (the SDK redaction mirror).
+    ``relay_acef`` does NOT depend on ``relay_contracts`` (see
+    ``pyproject.toml``), so the algorithm is duplicated here rather than
+    imported, and kept byte-identical by the cross-package parity test in
+    ``tests/test_w11_3_acef_roundtrip.py``
+    (``test_acef_encode_number_is_byte_identical_to_canonical``).
+
+    Why this instead of ``repr(n)``? Python's ``repr`` uses zero-padded
+    two-digit exponents (``repr(1e-7) == '1e-07'``) and never emits the
+    ECMA-262 decimal form for small-magnitude values (``1e-6`` must
+    canonicalise to ``'0.000001'``, not ``'1e-06'``). Routing floats
+    through ``repr`` therefore produced JCS bytes that diverged from the
+    Decimal path the parse side takes (``parse_float=Decimal``), breaking
+    emit -> parse -> emit byte-determinism (VAL-CANON-003).
+    """
+    s = repr(n)
+    if "e" in s:
+        mantissa, exp_str = s.split("e")
+        exp = int(exp_str)
+    else:
+        mantissa, exp = s, 0
+    if "." in mantissa:
+        int_part, frac_part = mantissa.split(".")
+    else:
+        int_part, frac_part = mantissa, ""
+    raw_digits = int_part + frac_part
+    stripped_lead = raw_digits.lstrip("0")
+    leading_zero_count = len(raw_digits) - len(stripped_lead)
+    if not stripped_lead:
+        return "0"
+    stripped = stripped_lead.rstrip("0")
+    n_dec = len(int_part) - leading_zero_count + exp
+    k = len(stripped)
+    if k <= n_dec <= 21:
+        return stripped + ("0" * (n_dec - k))
+    if 0 < n_dec <= 21:
+        return stripped[:n_dec] + "." + stripped[n_dec:]
+    if -6 < n_dec <= 0:
+        return "0." + ("0" * (-n_dec)) + stripped
+    sign = "+" if n_dec - 1 >= 0 else "-"
+    abs_exp = str(abs(n_dec - 1))
+    if k == 1:
+        return stripped + "e" + sign + abs_exp
+    return stripped[0] + "." + stripped[1:] + "e" + sign + abs_exp
+
+
 def _encode_number(n: int | float) -> str:
-    """Emit an int or float per RFC 8785 (ECMA-262 Number.toString)."""
+    """Emit an int or float per RFC 8785 (ECMA-262 Number.toString).
+
+    Integers are emitted exact (no float coercion, so values past 2**53
+    stay precise). Finite non-zero floats route through
+    :func:`_es6_to_string_positive` so the bytes match the Decimal path
+    (:func:`_encode_decimal`) and the authoritative
+    ``relay_contracts.canonical`` encoder byte-for-byte. ``-0.0`` collapses
+    to ``"0"``; NaN / Inf raise (no canonical JCS form, JCS 3.2.2).
+    """
     if isinstance(n, bool):  # bool is a subclass of int; route at caller
         raise TypeError("bool is not a number for JCS encoding")
     if isinstance(n, int):
@@ -201,14 +258,11 @@ def _encode_number(n: int | float) -> str:
     if math.isnan(n) or math.isinf(n):
         raise JCSEncodeError(f"JCS cannot encode non-finite number: {n!r}")
     if n == 0.0:
+        # Collapses -0.0 to "0" per ECMA-262 ToString.
         return "0"
-    if n.is_integer() and -1e21 < n < 1e21:
-        return str(int(n))
-    text = repr(n)
-    m = _TRAILING_DOT_ZERO.match(text)
-    if m is not None:
-        return m.group(1)
-    return text
+    if n < 0:
+        return "-" + _es6_to_string_positive(-n)
+    return _es6_to_string_positive(n)
 
 
 def _encode(value: Any) -> str:

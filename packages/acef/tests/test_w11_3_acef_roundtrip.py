@@ -1321,3 +1321,122 @@ def test_readme_uses_at_least_one_permitted_phrase() -> None:
         f"README.md must use at least one permitted phrase from "
         f"{_PERMITTED_PHRASES!r}; none found"
     )
+
+
+# ---------------------------------------------------------------------------
+# VAL-CANON-003: float path uses ECMA-262 Number.toString, not repr()
+# ---------------------------------------------------------------------------
+#
+# The W11.3 JCS encoder previously routed non-integer floats through
+# ``repr(n)`` + a trailing-".0" regex. Python's ``repr`` uses zero-padded
+# two-digit exponents (``repr(1e-7) == '1e-07'``) and does NOT implement
+# the ECMA-262 7.1.12.1 Number.toString algorithm RFC 8785 mandates
+# (e.g. ``1e-6`` MUST canonicalise to ``"0.000001"`` decimal form, not
+# ``"1e-06"``). Because ``parse_bundle`` re-reads numbers with
+# ``parse_float=Decimal``, the second emit took the (correct) Decimal
+# path -- so emit/parse/emit on a raw float was NOT byte-stable. The fix
+# routes the float path through the same ECMA-262 algorithm via
+# ``relay_acef.roundtrip._encode_number``, pinned byte-identical to
+# ``relay_contracts.canonical._encode_number`` by the parity test below.
+
+# Value table mixing the exponent-format trap (1e-7), the decimal-form
+# boundary repr never reaches (1e-6 -> "0.000001"), the integer-collapse
+# cases (1.0, 123456789.0), the large-magnitude exponent boundary (1e21),
+# negative zero, fractions, and a large exact integer (> 2**53).
+_CANON003_NUMBER_TABLE: list[int | float] = [
+    0.1,
+    1.0,
+    1e21,
+    1e-7,
+    1e-6,
+    -0.0,
+    1.5,
+    9007199254740993,
+    123456789.0,
+    1.23e30,
+    -1e-7,
+    0.30000000000000004,
+    100000.0,
+    9.999999999999999e20,
+]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-003")
+@pytest.mark.parametrize("value", _CANON003_NUMBER_TABLE, ids=repr)
+def test_acef_encode_number_is_byte_identical_to_canonical(
+    value: int | float,
+) -> None:
+    """The ACEF float path MUST match the authoritative JCS encoder byte
+    for byte. ``repr`` diverges for at least 1e-7 ('1e-07' vs '1e-7') and
+    1e-6 ('1e-06' vs the ECMA-262 decimal form '0.000001')."""
+    from relay_acef.roundtrip import _encode_number as acef_encode_number
+    from relay_contracts.canonical import _encode_number as canonical_encode_number
+
+    acef_text = acef_encode_number(value)
+    canonical_text = canonical_encode_number(value)
+    assert acef_text == canonical_text, (
+        f"ACEF JCS number encoding diverges from "
+        f"relay_contracts.canonical for {value!r}: "
+        f"acef={acef_text!r} canonical={canonical_text!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-003")
+@pytest.mark.parametrize("value", _CANON003_NUMBER_TABLE, ids=repr)
+def test_acef_jcs_canonicalize_matches_canonical_bytes(
+    value: int | float,
+) -> None:
+    """End-to-end through the public jcs_canonicalize entrypoint: the
+    canonical UTF-8 bytes for a bare number MUST equal the contracts
+    package's JCS canonical bytes (cross-package byte determinism)."""
+    from relay_contracts.canonical import jcs_canonicalize as canonical_jcs
+
+    assert jcs_canonicalize(value) == canonical_jcs(value), (
+        f"jcs_canonicalize byte mismatch for {value!r}: "
+        f"acef={jcs_canonicalize(value)!r} "
+        f"canonical={canonical_jcs(value)!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-003")
+def test_acef_float_path_matches_js_string_semantics() -> None:
+    """Spot-check the float path against JS ``String(n)`` semantics for the
+    cases ``repr`` gets wrong, so the assertion is not merely a tautology
+    against the (also-Python) contracts encoder."""
+    assert jcs_canonicalize(1e-7) == b"1e-7"  # JS: String(1e-7) === '1e-7'
+    assert jcs_canonicalize(1e-6) == b"0.000001"  # JS decimal form
+    assert jcs_canonicalize(1.0) == b"1"  # integer collapse
+    assert jcs_canonicalize(-0.0) == b"0"  # negative zero collapse
+    assert jcs_canonicalize(0.1) == b"0.1"
+    assert jcs_canonicalize(1e21) == b"1e+21"  # JS: String(1e21) === '1e+21'
+    assert jcs_canonicalize(123456789.0) == b"123456789"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-003")
+def test_raw_float_score_roundtrip_is_byte_stable() -> None:
+    """The exact VAL-CANON-003 trigger: emit -> parse -> emit on a bundle
+    whose eval-dataset-result ``score`` is a RAW Python float (1e-7) MUST
+    be byte-identical. Before the fix the first emit yields '...1e-07...'
+    (repr) and the second emit yields '...1e-7...' (Decimal path)."""
+    bundle = _base_bundle()
+    bundle["namespaces"][X_RELAY_NAMESPACE_KEY]["eval-dataset-result"] = {
+        "schema_version": "x-relay.eval-dataset-result.v1",
+        "eval_run_id": "12121212-3434-5656-7878-909090909090",
+        "dataset_digest": "e" * 64,
+        "case_count": 1,
+        "score": 1e-7,  # raw float, NOT Decimal -- the trigger.
+        "completed_at": "2026-05-15T12:00:00Z",
+    }
+    first = emit_bundle(deepcopy(bundle))
+    second = emit_bundle(parse_bundle(first))
+    assert first == second, (
+        "raw-float roundtrip drift (VAL-CANON-003): "
+        f"first={first!r} second={second!r}"
+    )
+    # The canonical encoding of 1e-7 is the ECMA-262 form, not repr's.
+    assert b"1e-7" in first
+    assert b"1e-07" not in first
