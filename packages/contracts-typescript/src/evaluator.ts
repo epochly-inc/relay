@@ -47,6 +47,21 @@ import type { PureUdf } from "./udf.js";
 export const DEFAULT_TIMEOUT_MS = 50;
 export const MAX_TIMEOUT_MS = 250;
 
+// VAL-PARITY-001: integral evaluation results whose absolute value exceeds
+// 2**53 are rejected at the result boundary, mirroring
+// packages/contracts/src/relay_contracts/evaluator.py SAFE_INTEGER_BOUND.
+// cel-python keeps such an integer exact (arbitrary precision) while a JS
+// double silently rounds it, so the same logical result would canonicalise
+// to DIFFERENT JCS bytes in each runtime -- a cross-runtime digest break
+// (CLAUDE.md keystone invariant #11). Both runtimes apply the SAME numeric
+// threshold (abs > 2**53) so they fail-closed identically. The boundary
+// value 2**53 is itself a power of two -- exactly representable as a double
+// and byte-identical across runtimes -- so it is accepted; only abs > 2**53
+// is rejected. (Note: 2**53 === Number.MAX_SAFE_INTEGER + 1; the bound is
+// expressed as the numeric threshold rather than Number.isSafeInteger,
+// which would also reject the byte-safe boundary value 2**53.)
+export const SAFE_INTEGER_BOUND = 2 ** 53; // 9007199254740992
+
 // Disabled native CEL identifiers when used as function calls
 // (`dyn(x)`, `timestamp("...")`, `duration("...")`). Detection runs
 // at parse/check time so the violation is surfaced before any
@@ -169,13 +184,28 @@ function checkRegexBackref(expression: string): void {
 }
 
 // Recursive finite-number check on a result tree. Lists and plain
-// objects recurse; numeric leaves throw on non-finite. Mirrors
-// packages/contracts/src/relay_contracts/evaluator.py:170-196.
+// objects recurse; numeric leaves throw on non-finite OR on an integral
+// value outside the IEEE-754 safe range. Mirrors
+// packages/contracts/src/relay_contracts/evaluator.py _check_finite.
 function checkFinite(value: unknown): unknown {
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
       throw new RelayCelNumericOutOfBoundsError(
         `Relay CEL evaluator rejects non-finite number: ${String(value)}`,
+      );
+    }
+    // VAL-PARITY-001: an integral result whose magnitude exceeds 2**53 is
+    // an out-of-band signal -- cel-python preserves it exactly while a JS
+    // double rounds it, diverging the cross-runtime digest. Fail-closed
+    // here so cel-js refuses the same result cel-python refuses. The
+    // boundary value 2**53 is exactly representable and accepted; only
+    // abs > 2**53 is rejected. Non-integral numbers (e.g. 1.5) are not
+    // subject to this bound.
+    if (Number.isInteger(value) && Math.abs(value) > SAFE_INTEGER_BOUND) {
+      throw new RelayCelNumericOutOfBoundsError(
+        "Relay CEL evaluator rejects integer outside the IEEE-754 safe " +
+          "range [-2**53, 2**53]: a cel-js double would lose precision " +
+          `and diverge the cross-runtime digest: ${String(value)}`,
       );
     }
     return value;

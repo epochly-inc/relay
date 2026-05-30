@@ -1701,6 +1701,34 @@
       "kind": "eval_error"
     },
     {
+      "bindings": {},
+      "expression": "1000000000 * 1000000000",
+      "id": "err_int_product_above_safe_range",
+      "idiom": "numeric-out-of-bounds",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
+      "expression": "9007199254740992 * 2",
+      "id": "err_int_double_boundary_above_safe_range",
+      "idiom": "numeric-out-of-bounds",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
+      "expression": "-9007199254740992 * 2",
+      "id": "err_int_negative_product_below_safe_range",
+      "idiom": "numeric-out-of-bounds",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
+      "expression": "9007199254740992 + 9007199254740992",
+      "id": "err_int_sum_above_safe_range",
+      "idiom": "numeric-out-of-bounds",
+      "kind": "eval_error"
+    },
+    {
       "args": [
         {
           "steps": [

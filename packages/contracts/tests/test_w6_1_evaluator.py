@@ -403,6 +403,85 @@ def test_finite_result_passes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# VAL-PARITY-001: integers outside the IEEE-754 safe range rejected at the
+# evaluation-result boundary (cross-runtime digest parity).
+#
+# cel-python returns arbitrary-precision Python ints, so an integral result
+# with abs value > 2**53 (e.g. 2**53 + 1) canonicalises EXACTLY in Python
+# while a JS double silently rounds it (9007199254740993 -> 9007199254740992),
+# producing divergent JCS bytes and a cross-runtime digest break. The
+# evaluation-result boundary (_check_finite) MUST fail-closed on such ints in
+# BOTH runtimes. The boundary value 2**53 (9007199254740992) is itself a power
+# of two -- exactly representable as an IEEE-754 double -- so it stays
+# accepted; the bound rejects only abs > 2**53.
+# ---------------------------------------------------------------------------
+
+_SAFE_INT_BOUND = 9007199254740992  # 2**53
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-001")
+def test_int_above_safe_range_in_result_rejected() -> None:
+    """An integral CEL result with abs value > 2**53 is rejected at the
+    evaluation-result boundary -- it would canonicalise exactly in Python
+    but lose precision in cel-js, breaking cross-runtime digest parity.
+
+    RED at base commit: evaluate() returns 9007199254740993 with no raise.
+    """
+
+    evaluator = RelayCelEvaluator()
+    with pytest.raises(RelayCelNumericOutOfBoundsError) as ctx:
+        evaluator.evaluate("9007199254740992 + 1")
+    assert ctx.value.code == "RELAY-CEL-006"
+    assert ctx.value.subtype == SUBTYPE_NUMERIC_OOB
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-001")
+def test_negative_int_below_safe_range_in_result_rejected() -> None:
+    """The bound is symmetric: an integral result of -(2**53 + 1) is also
+    rejected (abs value > 2**53)."""
+
+    evaluator = RelayCelEvaluator()
+    with pytest.raises(RelayCelNumericOutOfBoundsError) as ctx:
+        evaluator.evaluate("-9007199254740992 - 1")
+    assert ctx.value.subtype == SUBTYPE_NUMERIC_OOB
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-001")
+def test_safe_range_boundary_int_in_result_accepted() -> None:
+    """The boundary value 2**53 itself (and its negation) is exactly
+    representable in IEEE-754 and emits byte-identically in both runtimes,
+    so it MUST remain accepted -- the bound rejects only abs > 2**53."""
+
+    evaluator = RelayCelEvaluator()
+    pos = evaluator.evaluate("9007199254740992")
+    assert int(pos) == _SAFE_INT_BOUND
+    neg = evaluator.evaluate("-9007199254740992")
+    assert int(neg) == -_SAFE_INT_BOUND
+    # Just below the boundary (Number.MAX_SAFE_INTEGER) also accepted.
+    mx = evaluator.evaluate("9007199254740991")
+    assert int(mx) == _SAFE_INT_BOUND - 1
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-001")
+def test_nested_out_of_range_int_rejected_via_check_finite() -> None:
+    """The bound recurses into lists/maps exactly like the NaN/Inf check, so
+    an out-of-range integer nested in a UDF-produced structure is rejected."""
+
+    def big_in_list() -> list[int]:
+        return [1, 9007199254740993, 3]
+
+    udf = register_udf("big_in_list", big_in_list, pure=True, arity=0)
+    evaluator = RelayCelEvaluator(udfs=[udf])
+    with pytest.raises(RelayCelNumericOutOfBoundsError) as ctx:
+        evaluator.evaluate("big_in_list()")
+    assert ctx.value.subtype == SUBTYPE_NUMERIC_OOB
+
+
+# ---------------------------------------------------------------------------
 # VAL-W6-007: regex backreference rejected at parse/check time
 # ---------------------------------------------------------------------------
 

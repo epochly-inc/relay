@@ -56,6 +56,22 @@ MAX_TIMEOUT_MS: int = 250
 # threads.
 MAX_ORPHAN_THREADS: int = 64
 
+# VAL-PARITY-001: integral evaluation results whose absolute value exceeds
+# 2**53 are rejected at the result boundary. cel-python uses
+# arbitrary-precision Python ints, so such a value canonicalises EXACTLY
+# (str(n)); a cel-js double silently rounds it (9007199254740993 ->
+# 9007199254740992), producing DIVERGENT JCS bytes for the same logical
+# result and a cross-runtime digest break (CLAUDE.md keystone invariant #11:
+# cross-runtime byte equality). The cel-js mirror applies the SAME numeric
+# threshold (abs > 2**53; see contracts-typescript evaluator.ts checkFinite)
+# so BOTH runtimes fail-closed identically. The boundary value 2**53 itself
+# is a power of two -- exactly representable as an IEEE-754 double,
+# byte-identical in both runtimes -- so it is accepted; only abs > 2**53 is
+# rejected. (The threshold is abs > 2**53, NOT Number.isSafeInteger, which
+# would also reject the byte-safe boundary value 2**53.) This complements
+# the NaN/Inf check below (RFC 8785 cannot canonicalise either class).
+SAFE_INTEGER_BOUND: int = 2**53  # 9007199254740992
+
 # Disabled native CEL identifiers when used as function calls
 # (`dyn(x)`, `timestamp("...")`, `duration("...")`). Detection runs at
 # parse/check time so the violation is surfaced before any evaluation.
@@ -180,11 +196,24 @@ def _check_profile(ast: Any) -> None:
 
 
 def _check_finite(value: Any) -> Any:
-    """Reject NaN / +Inf / -Inf at the evaluation-result boundary.
+    """Reject NaN / +Inf / -Inf and out-of-safe-range ints at the
+    evaluation-result boundary.
 
     Recurses into lists and maps so a partial result containing a
-    non-finite cell is still rejected. Returns the value unchanged when
-    no violation is found (caller may keep it for canonicalisation).
+    non-finite or out-of-range cell is still rejected. Returns the value
+    unchanged when no violation is found (caller may keep it for
+    canonicalisation).
+
+    Two classes are rejected here so the result can be canonicalised
+    cross-runtime byte-identically (CLAUDE.md keystone invariant #11):
+
+      - NaN / +Inf / -Inf: RFC 8785 JCS cannot canonicalise them
+        (VAL-W6-006).
+      - Integers with abs value > 2**53: cel-python keeps them exact but
+        a cel-js double rounds them, so the same logical result would
+        canonicalise to DIFFERENT bytes in each runtime (VAL-PARITY-001).
+        The boundary value 2**53 is exactly representable as a double and
+        is accepted.
     """
 
     if isinstance(value, bool):
@@ -194,6 +223,21 @@ def _check_finite(value: Any) -> Any:
         if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
             raise RelayCelNumericOutOfBoundsError(
                 f"Relay CEL evaluator rejects non-finite number: {value!r}"
+            )
+        # VAL-PARITY-001: an integral result outside [-2**53, 2**53] is an
+        # out-of-band signal -- cel-python preserves it exactly while cel-js
+        # loses precision, diverging the cross-runtime digest. Fail-closed
+        # in both runtimes. ``int`` covers cel-python's IntType (a subclass);
+        # bool was already routed out above. Whole-valued floats are not
+        # treated as ints here (they live on the float code path and are
+        # already finite-checked); the JS mirror screens them via
+        # Number.isSafeInteger on the numeric leaf, but a Python float that
+        # large is itself imprecise and is out of scope for this signal.
+        if isinstance(value, int) and abs(value) > SAFE_INTEGER_BOUND:
+            raise RelayCelNumericOutOfBoundsError(
+                "Relay CEL evaluator rejects integer outside the IEEE-754 "
+                "safe range [-2**53, 2**53]: a cel-js double would lose "
+                f"precision and diverge the cross-runtime digest: {value!r}"
             )
         return value
     if isinstance(value, list | tuple):

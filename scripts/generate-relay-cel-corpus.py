@@ -467,6 +467,71 @@ def macro_eval_error_cases() -> list[tuple[str, str, dict[str, Any], str]]:
     ]
 
 
+def numeric_out_of_bounds_eval_error_cases() -> (
+    list[tuple[str, str, dict[str, Any], str]]
+):
+    """Return ``(id, expression, bindings, idiom)`` for integral results
+    whose absolute MAGNITUDE exceeds 2**53 in BOTH runtimes.
+
+    VAL-PARITY-001: an integral evaluation result outside [-2**53, 2**53]
+    is an out-of-band signal -- cel-python keeps it exact while a cel-js
+    double rounds it, so the same logical result would canonicalise to
+    DIFFERENT JCS bytes in each runtime and silently break cross-runtime
+    digest parity. BOTH runtimes therefore fail-closed at the
+    evaluation-result boundary (``RelayCelNumericOutOfBoundsError`` /
+    RELAY-CEL-006 / RELAY-CEL-NUMERIC-OOB).
+
+    These cross-runtime ``eval_error`` cases overflow to a magnitude that
+    is STRICTLY greater than 2**53 in BOTH runtimes (e.g. 1e9 * 1e9 = 1e18,
+    or 2**53 * 2 = 2**54). cel-js can detect these because the rounded
+    double still has magnitude > 2**53.
+
+    Note: a result of EXACTLY 2**53 + 1 cannot be a cross-runtime
+    ``eval_error`` case -- cel-js rounds it down to 2**53 (the accepted
+    boundary) and has no signal that the true value was out of range. That
+    asymmetry is the very hazard VAL-PARITY-001 fixes by failing closed on
+    the Python side, where the value is still exact; it is covered by the
+    Python-only unit tests in
+    ``packages/contracts/tests/test_w6_1_evaluator.py``
+    (``test_int_above_safe_range_in_result_rejected`` etc.). The boundary
+    value 2**53 itself is exactly representable in both runtimes and is
+    accepted (covered by the eval_value arithmetic cases).
+    """
+
+    return [
+        # 1e9 * 1e9 = 1e18; exact in cel-python, rounded-but-still-huge in
+        # cel-js. abs > 2**53 in both runtimes.
+        (
+            "err_int_product_above_safe_range",
+            "1000000000 * 1000000000",
+            {},
+            "numeric-out-of-bounds",
+        ),
+        # 2**53 * 2 = 2**54: exactly representable as a double but still
+        # outside the safe range; abs > 2**53 in both runtimes.
+        (
+            "err_int_double_boundary_above_safe_range",
+            "9007199254740992 * 2",
+            {},
+            "numeric-out-of-bounds",
+        ),
+        # Negative overflow: -(2**53) * 2 = -2**54; abs > 2**53 in both.
+        (
+            "err_int_negative_product_below_safe_range",
+            "-9007199254740992 * 2",
+            {},
+            "numeric-out-of-bounds",
+        ),
+        # Sum overflow: 2**53 + 2**53 = 2**54; abs > 2**53 in both.
+        (
+            "err_int_sum_above_safe_range",
+            "9007199254740992 + 9007199254740992",
+            {},
+            "numeric-out-of-bounds",
+        ),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # UDF cases (direct call -- bypasses CEL parser)
 # ---------------------------------------------------------------------------
@@ -738,7 +803,10 @@ def build_corpus() -> dict[str, Any]:
         cases.append(case)
 
     # eval_error cases
-    for case_id, expr, bindings, idiom in macro_eval_error_cases():
+    eval_error_inputs: list[tuple[str, str, dict[str, Any], str]] = []
+    eval_error_inputs.extend(macro_eval_error_cases())
+    eval_error_inputs.extend(numeric_out_of_bounds_eval_error_cases())
+    for case_id, expr, bindings, idiom in eval_error_inputs:
         if case_id in seen_ids:
             raise ValueError(f"duplicate case id: {case_id}")
         seen_ids.add(case_id)
