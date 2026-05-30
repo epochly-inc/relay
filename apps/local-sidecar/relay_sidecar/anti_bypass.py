@@ -67,11 +67,24 @@ BYPASS_MARKERS: tuple[str, ...] = (
 # we still require a right boundary so a longer flag like --no-verifyx
 # does NOT trip on --no-verify.
 def _compile(token: str) -> re.Pattern[str]:
-    # Boundaries: start-of-string, end-of-string, ASCII whitespace, OR
-    # any of the JSON syntax punctuation that brackets a string literal.
-    # Use re.escape on the token itself so internal hyphens / dots are literal.
-    boundary = r"(?:^|[\s,\[\]{}\"\\\\:])"
-    right_boundary = r"(?=$|[\s,\[\]{}\"\\\\:])"
+    # Boundaries: start-of-string, end-of-string, ASCII whitespace, OR any
+    # shell/JSON-adjacent punctuation that terminates the marker token.
+    #
+    # VAL-ISO-007: the original class omitted '(' and '=', so the canonical
+    # Python skip-decorator form ``pytest.mark.skip(reason=...)`` and the
+    # canonical git flag-value forms ``--skip-hooks=true`` / ``--no-verify=1``
+    # were NOT detected -- a real quality-bypass slipped through. We now
+    # also treat '(', ')', '=', ';', '.', '@' as boundaries on BOTH sides.
+    # Inside a character class these are all literal; only ']', '\\', '^',
+    # '-' need escaping, and those are placed/escaped explicitly below.
+    #
+    # Use re.escape on the token itself so internal hyphens / dots are
+    # literal. A substring near-miss (e.g. "pytest.mark.skipper",
+    # "--skip-hooksXYZ", "--no-verifyish") is still rejected because the
+    # following identifier char is NOT in the boundary class.
+    boundary_chars = r"\s,\[\]{}\"\\\\:()=;.@"
+    boundary = r"(?:^|[" + boundary_chars + r"])"
+    right_boundary = r"(?=$|[" + boundary_chars + r"])"
     return re.compile(boundary + re.escape(token) + right_boundary)
 
 

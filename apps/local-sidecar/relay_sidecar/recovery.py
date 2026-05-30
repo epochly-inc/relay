@@ -73,10 +73,41 @@ EXIT_CODE_WAL_CHECKPOINT_FAILED: int = 6
 # requires <= 2000 ms on a clean DB.
 QUICK_CHECK_BUDGET_S: float = 2.0
 
-# Schema version constant. MUST equal the integer recorded by the latest
-# migration (currently 0008_sidecar_schema_version.sql -> version=8).
-# Bumping this requires a new migration that UPDATEs the row.
-SUPPORTED_SCHEMA_VERSION: int = 8
+# Default migrations directory, resolved relative to this module:
+# ``<repo>/apps/local-sidecar/migrations``. Mirrors db.py's resolution
+# (SidecarDatabase._run_migrations). Kept as a module-level constant so
+# the schema-version derivation and the runner agree on the same set.
+_DEFAULT_MIGRATIONS_DIR: Path = Path(__file__).resolve().parent.parent / "migrations"
+
+
+def _count_migration_files(migrations_dir: Path = _DEFAULT_MIGRATIONS_DIR) -> int:
+    """Return the number of ``*.sql`` migration files shipped with the binary.
+
+    This is the LIVE, authoritative schema version: each new migration
+    file advances it automatically with no hand-edited constant to forget
+    (the prior frozen ``= 8`` was the root cause of VAL-ISO-001). The
+    runner (``SidecarDatabase._run_migrations``) applies exactly these
+    files in lex order and records each by filename in
+    ``__schema_migrations``; the count of applied rows therefore equals
+    this number on a fully-migrated DB.
+
+    Falls back to ``0`` if the directory is absent (e.g. a packaged
+    distribution that resolves the path differently); callers treat a
+    derived supported version of 0 as "cannot determine", never refusing
+    on it.
+    """
+    if not migrations_dir.is_dir():
+        return 0
+    return len(list(migrations_dir.glob("*.sql")))
+
+
+# Schema version constant. LIVE, derived from the count of migration
+# ``.sql`` files shipped with this binary (VAL-ISO-001). Previously this
+# was frozen at the literal 8 while 25 later migrations existed, so a DB
+# migrated past 0008 read observed=8 == SUPPORTED=8 and the drift went
+# undetected. Driving it from the migration count means every new
+# migration advances the supported version with no manual bump.
+SUPPORTED_SCHEMA_VERSION: int = _count_migration_files()
 
 # Sentinel UUIDs for sidecar-internal event_log rows (matches db.py
 # convention for non-tenant observability rows).
@@ -279,6 +310,64 @@ def _read_schema_version(db_path: Path) -> int | None:
         return None
 
 
+def _read_applied_migration_count(db_path: Path) -> int | None:
+    """Return the number of rows in the live ``__schema_migrations`` table.
+
+    ``__schema_migrations`` is the runner's authoritative record: it holds
+    exactly one row per applied migration filename
+    (``SidecarDatabase._run_migrations``). The row count is therefore the
+    LIVE schema version of the database, and is what VAL-ISO-001 requires
+    the recovery gate to compare against -- not the frozen
+    ``_sidecar_schema_version`` row, which migration 0008 seeds with
+    INSERT OR IGNORE and which no later migration ever advances.
+
+    Returns ``None`` when the ``__schema_migrations`` table is absent
+    (pristine DB created before the runner, or a unit-test fixture that
+    seeds only the legacy row); the caller then falls back to the legacy
+    ``_read_schema_version``. Never raises; SQL errors collapse to
+    ``None``.
+    """
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='__schema_migrations'"
+            )
+            if cur.fetchone() is None:
+                return None
+            cur = conn.execute("SELECT COUNT(*) FROM __schema_migrations")
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return int(row[0])
+        finally:
+            with contextlib.suppress(Exception):
+                conn.close()
+    except sqlite3.DatabaseError:
+        return None
+
+
+def _read_observed_schema_version(db_path: Path) -> int | None:
+    """Resolve the database's observed schema version, LIVE source first.
+
+    Precedence (VAL-ISO-001):
+      1. The count of applied migrations in ``__schema_migrations`` -- the
+         runner's authoritative live record.
+      2. Fallback to the legacy ``_sidecar_schema_version`` row only when
+         ``__schema_migrations`` is absent (pre-runner DBs and unit-test
+         fixtures that seed only the legacy row).
+      3. ``None`` (pristine DB) when neither source is present; the caller
+         tolerates this because the lifespan startup then runs migrations.
+    """
+    live = _read_applied_migration_count(db_path)
+    if live is not None:
+        return live
+    return _read_schema_version(db_path)
+
+
 def emit_crash_recovery_event(
     db_path: Path,
     *,
@@ -420,8 +509,10 @@ def recover_or_refuse(db_path: Path) -> dict[str, object]:
          opens the journal in read+write mode).
       5. Re-run ``quick_check_with_budget`` after WAL replay to confirm
          the post-recovery state is also clean.
-      6. Read ``_sidecar_schema_version`` and compare to
-         ``SUPPORTED_SCHEMA_VERSION``; mismatch -> exit 5.
+      6. Read the LIVE schema version (``__schema_migrations`` count,
+         legacy ``_sidecar_schema_version`` row as fallback) and compare
+         to ``SUPPORTED_SCHEMA_VERSION`` (the migration-file count);
+         mismatch -> exit 5 (VAL-ISO-001).
       7. If WAL was present at startup, emit a single
          ``sidecar.crash_recovered`` event_log row.
 
@@ -480,12 +571,27 @@ def recover_or_refuse(db_path: Path) -> dict[str, object]:
             # If WAL replay itself fails, the slow-path will catch it.
             pass
 
-    # Step 5: schema version check (VAL-W2-054).
-    observed_version = _read_schema_version(db_path)
-    # ``None`` is the "pristine pre-0008 DB" path; the migration runner
-    # will create the table on first lifespan startup. We only refuse
-    # when the table EXISTS but the version is unknown to us.
-    if observed_version is not None and observed_version != SUPPORTED_SCHEMA_VERSION:
+    # Step 5: schema version check (VAL-W2-054 + VAL-ISO-001).
+    #
+    # The observed version is read LIVE from ``__schema_migrations`` (the
+    # runner's authoritative per-migration record), falling back to the
+    # legacy ``_sidecar_schema_version`` row only when that table is
+    # absent. ``SUPPORTED_SCHEMA_VERSION`` is derived from the count of
+    # migration files shipped with this binary. This replaces the
+    # frozen-at-8 mechanism that let a DB migrated past 0008 pass
+    # undetected (VAL-ISO-001).
+    observed_version = _read_observed_schema_version(db_path)
+    # ``None`` is the "pristine pre-runner DB" path; the migration runner
+    # will create the tables on first lifespan startup. We only refuse
+    # when a version source EXISTS but disagrees with the binary.
+    # ``SUPPORTED_SCHEMA_VERSION == 0`` means the migrations dir could not
+    # be located (packaged distribution edge case); we cannot determine
+    # drift in that case, so we never refuse on it.
+    if (
+        observed_version is not None
+        and SUPPORTED_SCHEMA_VERSION > 0
+        and observed_version != SUPPORTED_SCHEMA_VERSION
+    ):
         envelope = {
             "code": RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN_CODE,
             "error_class": RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN,

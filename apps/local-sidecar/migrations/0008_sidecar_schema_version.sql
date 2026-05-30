@@ -1,11 +1,20 @@
 -- W2.7 migration 0008: _sidecar_schema_version table.
 --
--- Records the canonical schema-version integer that the running sidecar
--- binary supports. The recovery module (relay_sidecar.recovery) reads
--- this table at startup, compares against ``SUPPORTED_SCHEMA_VERSION``
--- (a constant in code), and refuses to start with
+-- Legacy schema-version table, retained as a FALLBACK only.
+--
+-- As of VAL-ISO-001 the recovery module (relay_sidecar.recovery) reads
+-- the LIVE schema version from the ``__schema_migrations`` row count
+-- (the runner's authoritative per-migration record) and compares it to
+-- ``SUPPORTED_SCHEMA_VERSION`` (derived from the count of migration .sql
+-- files shipped with the binary), refusing to start with
 -- ``RELAY-SIDECAR-SCHEMA-VERSION-UNKNOWN`` + exit code 5 on mismatch
--- (VAL-W2-054).
+-- (VAL-W2-054). This table's frozen row is consulted ONLY when
+-- ``__schema_migrations`` is absent (pre-runner DBs / unit fixtures).
+--
+-- NOTE: this row is seeded once with INSERT OR IGNORE and intentionally
+-- never advanced by later migrations -- that frozen value was the root
+-- cause of VAL-ISO-001 when it was the sole drift signal. It is no
+-- longer authoritative; ``__schema_migrations`` is.
 --
 -- Why a table (and not just ``PRAGMA user_version``):
 --   PRAGMA user_version only stores a single 32-bit integer with no

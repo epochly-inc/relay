@@ -184,6 +184,62 @@ def _archive_filename(now: datetime | None = None) -> str:
     return f"{ts.year:04d}-{ts.month:02d}.jsonl.zst"
 
 
+def _manifest_filename(now: datetime | None = None) -> str:
+    """Return the durable archived-ids manifest filename for the month.
+
+    VAL-ISO-009: this sidecar records the ``event_id``s that have been
+    written into the month's archive frame(s) but whose live-table DELETE
+    has not yet been confirmed. It is the crash-safety record that lets a
+    re-run delete already-archived rows WITHOUT re-archiving (which would
+    duplicate events in the archive).
+    """
+    return f"{_archive_filename(now)}.archived-ids.json"
+
+
+def _read_archived_ids_manifest(manifest_path: Path) -> set[str]:
+    """Load the set of already-archived-but-maybe-undeleted event_ids.
+
+    Returns an empty set when the manifest is absent or unreadable; a
+    missing manifest simply means "no prior incomplete pass to reconcile".
+    Never raises -- a corrupt manifest degrades to "archive everything we
+    read", which the digest gate + delete path then handle (and the worst
+    case is the pre-fix behaviour, not a new failure mode).
+    """
+    if not manifest_path.exists():
+        return set()
+    try:
+        raw = manifest_path.read_bytes()
+    except OSError:
+        return set()
+    if not raw.strip():
+        return set()
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return set()
+    ids = data.get("archived_event_ids") if isinstance(data, dict) else None
+    if not isinstance(ids, list):
+        return set()
+    return {str(x) for x in ids}
+
+
+def _write_archived_ids_manifest(
+    manifest_path: Path, event_ids: set[str]
+) -> None:
+    """Persist the archived-ids manifest via the atomic-file primitive.
+
+    Writing the empty set leaves a manifest with an empty list (the
+    durable "nothing pending" state) rather than deleting the file, so the
+    presence/absence of the file is never load-bearing.
+    """
+    body = json.dumps(
+        {"archived_event_ids": sorted(event_ids)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    local_atomic_file_write(manifest_path, body, mode=0o600)
+
+
 async def run_retention_pass(
     database: SidecarDatabase,
     *,
@@ -271,13 +327,38 @@ async def run_retention_pass(
         ) as cur:
             rows = await cur.fetchall()
 
+        archive_root = archive_dir(home)
+        archive_root.mkdir(parents=True, exist_ok=True)
+        archive_name = _archive_filename(now)
+        archive_path = archive_root / archive_name
+        digest_path = archive_root / f"{archive_name}.sha256"
+        manifest_path = archive_root / _manifest_filename(now)
+
+        # VAL-ISO-009 crash-safety reconciliation. The manifest records the
+        # event_ids written into this month's archive frame(s) by a prior
+        # pass whose live-table DELETE may NOT have committed (the process
+        # could have crashed in the window between the archive write and
+        # the DELETE COMMIT). Such ids are STILL live (we read them above)
+        # but they are ALREADY in the archive: re-archiving them would
+        # duplicate events. We therefore partition the candidate rows into
+        #   - ``to_delete_only``: ids already in the manifest -> delete, do
+        #     NOT re-archive.
+        #   - rows to archive: ids absent from the manifest -> archive then
+        #     delete.
+        already_archived = _read_archived_ids_manifest(manifest_path)
+
         archived_rows: list[dict[str, Any]] = []
         archived_event_ids: list[str] = []
+        delete_only_event_ids: list[str] = []
         running = before
         for raw in rows:
             row_dict = _row_to_dict(raw, columns)
+            event_id = str(row_dict["event_id"])
             # Recompute this row's byte contribution to the live estimate
-            # (same sum as _live_table_byte_estimate).
+            # (same sum as _live_table_byte_estimate). The byte target is
+            # driven by all candidate rows regardless of archive status,
+            # because both archive-and-delete and delete-only rows free
+            # live-table bytes once deleted.
             row_bytes = sum(
                 len(str(row_dict[c])) if row_dict[c] is not None else 0
                 for c in (
@@ -294,83 +375,101 @@ async def run_retention_pass(
                     "event_kind",
                 )
             )
-            archived_rows.append(row_dict)
-            archived_event_ids.append(str(row_dict["event_id"]))
+            if event_id in already_archived:
+                # Previously archived but not deleted -> delete-only.
+                delete_only_event_ids.append(event_id)
+            else:
+                archived_rows.append(row_dict)
+                archived_event_ids.append(event_id)
             running -= row_bytes
             if running < limit:
                 break
 
-        if not archived_rows:
+        all_delete_ids = archived_event_ids + delete_only_event_ids
+        if not all_delete_ids:
             return RetentionResult(
                 live_bytes_before=before,
                 live_bytes_after=before,
                 threshold_bytes=limit,
             )
 
-        # Serialize rows to JSONL (one JSON object per line). Sorted keys
-        # + compact separators match the rest of the canonical encoding.
-        jsonl_lines: list[bytes] = []
-        for r in archived_rows:
-            jsonl_lines.append(
-                json.dumps(
-                    r, sort_keys=True, separators=(",", ":"), default=str
-                ).encode("utf-8")
-            )
-        jsonl_bytes = b"\n".join(jsonl_lines) + b"\n"
+        final_digest: str | None = None
+        if archived_rows:
+            # Serialize rows to JSONL (one JSON object per line). Sorted
+            # keys + compact separators match the rest of the canonical
+            # encoding.
+            jsonl_lines: list[bytes] = []
+            for r in archived_rows:
+                jsonl_lines.append(
+                    json.dumps(
+                        r, sort_keys=True, separators=(",", ":"), default=str
+                    ).encode("utf-8")
+                )
+            jsonl_bytes = b"\n".join(jsonl_lines) + b"\n"
 
-        compressor = zstd.ZstdCompressor(level=_ZSTD_LEVEL)
-        archive_bytes = compressor.compress(jsonl_bytes)
-        digest_hex = hashlib.sha256(archive_bytes).hexdigest()
+            compressor = zstd.ZstdCompressor(level=_ZSTD_LEVEL)
+            archive_bytes = compressor.compress(jsonl_bytes)
 
-        archive_root = archive_dir(home)
-        archive_root.mkdir(parents=True, exist_ok=True)
-        archive_name = _archive_filename(now)
-        archive_path = archive_root / archive_name
-        digest_path = archive_root / f"{archive_name}.sha256"
+            # Append-or-create semantics: if a prior pass already wrote this
+            # month's archive, concatenate (zstandard frames concatenate
+            # losslessly). Then re-hash the resulting bytes.
+            if archive_path.exists():
+                existing = archive_path.read_bytes()
+                combined = existing + archive_bytes
+                local_atomic_file_write(archive_path, combined, mode=0o600)
+                final_digest = hashlib.sha256(combined).hexdigest()
+            else:
+                local_atomic_file_write(archive_path, archive_bytes, mode=0o600)
+                final_digest = hashlib.sha256(archive_bytes).hexdigest()
 
-        # Append-or-create semantics: if a prior pass already wrote this
-        # month's archive, concatenate (zstandard frames concatenate
-        # losslessly). Then re-hash the resulting bytes.
-        if archive_path.exists():
-            existing = archive_path.read_bytes()
-            combined = existing + archive_bytes
-            local_atomic_file_write(archive_path, combined, mode=0o600)
-            final_digest = hashlib.sha256(combined).hexdigest()
-        else:
-            local_atomic_file_write(archive_path, archive_bytes, mode=0o600)
-            final_digest = digest_hex
+            # Atomic write of the digest sidecar (text form:
+            # "<hex>  <basename>\n" matches GNU coreutils sha256sum output).
+            digest_line = f"{final_digest}  {archive_name}\n".encode("ascii")
+            local_atomic_file_write(digest_path, digest_line, mode=0o600)
 
-        # Atomic write of the digest sidecar (text form: "<hex>  <basename>\n"
-        # matches the GNU coreutils sha256sum output).
-        digest_line = f"{final_digest}  {archive_name}\n".encode("ascii")
-        local_atomic_file_write(digest_path, digest_line, mode=0o600)
+            # VAL-W2-042 verifier gate: re-read the archive and digest,
+            # confirm they match BEFORE deleting live rows. If the disk
+            # write was corrupted (truncated, partially flushed) the delete
+            # is skipped and the operator sees a discrepancy on next sweep.
+            on_disk_bytes = archive_path.read_bytes()
+            on_disk_digest = hashlib.sha256(on_disk_bytes).hexdigest()
+            if on_disk_digest != final_digest:
+                return RetentionResult(
+                    archived_rows=0,
+                    archive_path=archive_path,
+                    digest_path=digest_path,
+                    digest_hex=final_digest,
+                    live_bytes_before=before,
+                    live_bytes_after=before,
+                    threshold_bytes=limit,
+                )
 
-        # VAL-W2-042 verifier gate: re-read the archive and digest, confirm
-        # they match BEFORE deleting live rows. If the disk write was
-        # corrupted (truncated, partially flushed) the delete is skipped
-        # and the operator sees a discrepancy on next sweep.
-        on_disk_bytes = archive_path.read_bytes()
-        on_disk_digest = hashlib.sha256(on_disk_bytes).hexdigest()
-        if on_disk_digest != final_digest:
-            return RetentionResult(
-                archived_rows=0,
-                archive_path=archive_path,
-                digest_path=digest_path,
-                digest_hex=final_digest,
-                live_bytes_before=before,
-                live_bytes_after=before,
-                threshold_bytes=limit,
-            )
+            # VAL-ISO-009: durably record the newly-archived ids in the
+            # manifest BEFORE the DELETE. If the process crashes after this
+            # point but before the DELETE COMMIT, the rows remain live AND
+            # are recorded here, so the next pass deletes them WITHOUT
+            # re-archiving -- no duplicate events.
+            already_archived.update(archived_event_ids)
+            _write_archived_ids_manifest(manifest_path, already_archived)
+        elif archive_path.exists():
+            # No new rows to archive (every candidate was a previously-
+            # archived delete-only id). The archive on disk is unchanged;
+            # report its current digest for the result envelope.
+            final_digest = hashlib.sha256(
+                archive_path.read_bytes()
+            ).hexdigest()
 
         # Switch role -> DELETE the archived rows -> restore role. The
         # DELETE is bound by IN clause; SQLite has a default limit on the
-        # number of parameters (999) so we batch.
+        # number of parameters (999) so we batch. Both newly-archived ids
+        # and previously-archived-but-undeleted (delete-only) ids are
+        # removed in the same transaction.
         await conn.execute("BEGIN IMMEDIATE")
         try:
             async with set_sidecar_role(conn, ROLE_RETENTION_ARCHIVE):
                 BATCH = 500
-                for i in range(0, len(archived_event_ids), BATCH):
-                    batch = archived_event_ids[i : i + BATCH]
+                for i in range(0, len(all_delete_ids), BATCH):
+                    batch = all_delete_ids[i : i + BATCH]
                     placeholders = ",".join("?" for _ in batch)
                     await conn.execute(
                         f"DELETE FROM event_log_entries "
@@ -382,6 +481,15 @@ async def run_retention_pass(
             with contextlib.suppress(Exception):
                 await conn.execute("ROLLBACK")
             raise
+
+        # VAL-ISO-009: the DELETE committed -> the deleted ids are no
+        # longer live and never need re-deletion, so prune them from the
+        # manifest. A crash between the COMMIT and this prune is benign:
+        # the next pass will not read the (now-deleted) rows, so the stale
+        # manifest entries are simply never matched; we still prune them
+        # here to keep the manifest bounded.
+        remaining = already_archived.difference(all_delete_ids)
+        _write_archived_ids_manifest(manifest_path, remaining)
 
         after = await _live_table_byte_estimate(conn)
         return RetentionResult(
