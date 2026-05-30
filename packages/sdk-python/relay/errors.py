@@ -214,10 +214,16 @@ class RelayError(Exception):
         details: Optional structured payload.
     """
 
-    # Class-level defaults. Subclasses override.
-    code: ClassVar[str] = "RELAY-SDK-001"
+    # Class-level defaults. Subclasses override at class scope; the base
+    # ``__init__`` may also bind a per-instance ``code``/``http_status``
+    # override (e.g. a wire code surfaced by the sidecar). Because these
+    # two are genuinely instance-assignable they are plain annotated class
+    # attributes, NOT ``ClassVar`` -- a ``ClassVar`` cannot be assigned
+    # through an instance. ``error_class`` and the ``default_*`` fields are
+    # never instance-assigned, so they remain ``ClassVar``.
+    code: str = "RELAY-SDK-001"
     error_class: ClassVar[str] = "RELAY-SDK-ERROR"
-    http_status: ClassVar[int] = 500
+    http_status: int = 500
     default_retry_advice: ClassVar[str] = "no_retry"
     default_blocked_surface: ClassVar[str] = "relay-sdk"
 
@@ -368,27 +374,27 @@ class RelayError(Exception):
 class RelayIngestError(RelayError):
     """Errors in the RELAY-ING-* namespace (ingest endpoints)."""
 
-    code: ClassVar[str] = RELAY_ING_DEFAULT_CODE
+    code: str = RELAY_ING_DEFAULT_CODE
     error_class: ClassVar[str] = "RELAY-ING-ERROR"
-    http_status: ClassVar[int] = 400
+    http_status: int = 400
     default_blocked_surface: ClassVar[str] = "POST /v1/ingest/runs"
 
 
 class RelayAuthError(RelayError):
     """Errors in the RELAY-AUTH-* namespace."""
 
-    code: ClassVar[str] = RELAY_AUTH_DEFAULT_CODE
+    code: str = RELAY_AUTH_DEFAULT_CODE
     error_class: ClassVar[str] = "RELAY-AUTH-ERROR"
-    http_status: ClassVar[int] = 401
+    http_status: int = 401
     default_blocked_surface: ClassVar[str] = "POST /v1/ingest/runs"
 
 
 class RelayRateLimitError(RelayError):
     """Errors in the RELAY-RATE-* namespace (rate-limit rejection)."""
 
-    code: ClassVar[str] = RELAY_RATE_DEFAULT_CODE
+    code: str = RELAY_RATE_DEFAULT_CODE
     error_class: ClassVar[str] = "RELAY-RATE-ERROR"
-    http_status: ClassVar[int] = 429
+    http_status: int = 429
     default_retry_advice: ClassVar[str] = "after_retry_after"
     default_blocked_surface: ClassVar[str] = "POST /v1/ingest/runs"
 
@@ -396,45 +402,45 @@ class RelayRateLimitError(RelayError):
 class RelayGateError(RelayError):
     """Errors in the RELAY-GATE-* namespace (gate evaluation)."""
 
-    code: ClassVar[str] = RELAY_GATE_DEFAULT_CODE
+    code: str = RELAY_GATE_DEFAULT_CODE
     error_class: ClassVar[str] = "RELAY-GATE-ERROR"
-    http_status: ClassVar[int] = 404
+    http_status: int = 404
     default_blocked_surface: ClassVar[str] = "POST /v1/gates/{gate_id}/drafts"
 
 
 class RelayEvidenceError(RelayError):
     """Errors in the RELAY-EVID-* namespace (evidence ingest / verify)."""
 
-    code: ClassVar[str] = RELAY_EVID_DEFAULT_CODE
+    code: str = RELAY_EVID_DEFAULT_CODE
     error_class: ClassVar[str] = "RELAY-EVID-ERROR"
-    http_status: ClassVar[int] = 422
+    http_status: int = 422
     default_blocked_surface: ClassVar[str] = "POST /v1/evidence"
 
 
 class RelayReplayError(RelayError):
     """Errors in the RELAY-REPLAY-* namespace (replay create / playback)."""
 
-    code: ClassVar[str] = RELAY_REPLAY_DEFAULT_CODE
+    code: str = RELAY_REPLAY_DEFAULT_CODE
     error_class: ClassVar[str] = "RELAY-REPLAY-ERROR"
-    http_status: ClassVar[int] = 422
+    http_status: int = 422
     default_blocked_surface: ClassVar[str] = "POST /v1/runs/{run_id}/replays"
 
 
 class RelaySchemaError(RelayError):
     """Errors in the RELAY-SCHEMA-* namespace (envelope schema rejection)."""
 
-    code: ClassVar[str] = RELAY_SCHEMA_DEFAULT_CODE
+    code: str = RELAY_SCHEMA_DEFAULT_CODE
     error_class: ClassVar[str] = "RELAY-SCHEMA-ERROR"
-    http_status: ClassVar[int] = 422
+    http_status: int = 422
     default_blocked_surface: ClassVar[str] = "POST /v1/ingest/runs"
 
 
 class RelaySidecarError(RelayError):
     """Errors in the RELAY-SIDECAR-* namespace (local sidecar lifecycle)."""
 
-    code: ClassVar[str] = RELAY_SIDECAR_DEFAULT_CODE
+    code: str = RELAY_SIDECAR_DEFAULT_CODE
     error_class: ClassVar[str] = "RELAY-SIDECAR-ERROR"
-    http_status: ClassVar[int] = 503
+    http_status: int = 503
     default_retry_advice: ClassVar[str] = "after_state_change"
     default_blocked_surface: ClassVar[str] = "relay-sidecar"
 
@@ -442,18 +448,18 @@ class RelaySidecarError(RelayError):
 class RelaySdkError(RelayError):
     """Errors in the RELAY-SDK-* namespace (SDK-local validation failures)."""
 
-    code: ClassVar[str] = RELAY_SDK_CONFIG_CODE
+    code: str = RELAY_SDK_CONFIG_CODE
     error_class: ClassVar[str] = "RELAY-SDK-ERROR"
-    http_status: ClassVar[int] = 400
+    http_status: int = 400
     default_blocked_surface: ClassVar[str] = "relay-sdk"
 
 
 class RelaySQLiteError(RelayError):
     """Errors in the RELAY-SQLITE-* namespace (sidecar SQLite-layer faults)."""
 
-    code: ClassVar[str] = RELAY_SQLITE_DEFAULT_CODE
+    code: str = RELAY_SQLITE_DEFAULT_CODE
     error_class: ClassVar[str] = "RELAY-SQLITE-ERROR"
-    http_status: ClassVar[int] = 500
+    http_status: int = 500
     default_blocked_surface: ClassVar[str] = "relay-sidecar-sqlite"
 
 
@@ -465,9 +471,9 @@ class RelaySQLiteError(RelayError):
 class RelayConfigError(RelaySdkError):
     """Invalid SDK configuration detected synchronously at construction."""
 
-    code: ClassVar[str] = RELAY_SDK_CONFIG_CODE
+    code: str = RELAY_SDK_CONFIG_CODE
     error_class: ClassVar[str] = RELAY_SDK_CONFIG_CLASS
-    http_status: ClassVar[int] = 400
+    http_status: int = 400
     default_blocked_surface: ClassVar[str] = "relay-sdk"
     default_retry_advice: ClassVar[str] = "no_retry"
 
@@ -475,9 +481,9 @@ class RelayConfigError(RelaySdkError):
 class RelaySidecarVersionMismatch(RelaySidecarError):
     """The attached sidecar reports a version outside the SDK compat range."""
 
-    code: ClassVar[str] = RELAY_SDK_VERSION_MISMATCH_CODE
+    code: str = RELAY_SDK_VERSION_MISMATCH_CODE
     error_class: ClassVar[str] = RELAY_SDK_VERSION_MISMATCH_CLASS
-    http_status: ClassVar[int] = 503
+    http_status: int = 503
     default_blocked_surface: ClassVar[str] = "GET /health"
     default_retry_advice: ClassVar[str] = "no_retry"
 
@@ -485,9 +491,9 @@ class RelaySidecarVersionMismatch(RelaySidecarError):
 class RelaySidecarNotReachable(RelaySidecarError):
     """No sidecar is reachable and auto-spawn is disabled."""
 
-    code: ClassVar[str] = RELAY_SDK_NO_SIDECAR_CODE
+    code: str = RELAY_SDK_NO_SIDECAR_CODE
     error_class: ClassVar[str] = RELAY_SDK_NO_SIDECAR_CLASS
-    http_status: ClassVar[int] = 503
+    http_status: int = 503
     default_blocked_surface: ClassVar[str] = "GET /health"
     default_retry_advice: ClassVar[str] = "after_state_change"
 
@@ -495,9 +501,9 @@ class RelaySidecarNotReachable(RelaySidecarError):
 class RelayAuthMismatch(RelayAuthError):
     """The sidecar rejected, or failed to satisfy, the nonce-challenge auth."""
 
-    code: ClassVar[str] = RELAY_SDK_AUTH_MISMATCH_CODE
+    code: str = RELAY_SDK_AUTH_MISMATCH_CODE
     error_class: ClassVar[str] = RELAY_SDK_AUTH_MISMATCH_CLASS
-    http_status: ClassVar[int] = 401
+    http_status: int = 401
     default_blocked_surface: ClassVar[str] = "GET /health"
     default_retry_advice: ClassVar[str] = "no_retry"
 
@@ -513,9 +519,9 @@ class RelayCanonicalStatusForbidden(RelayIngestError):
     preserving both the typed surface and the wire-code observability.
     """
 
-    code: ClassVar[str] = RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CODE
+    code: str = RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CODE
     error_class: ClassVar[str] = RELAY_SDK_CANONICAL_STATUS_FORBIDDEN_CLASS
-    http_status: ClassVar[int] = 422
+    http_status: int = 422
     default_blocked_surface: ClassVar[str] = "POST /v1/ingest/runs"
     default_retry_advice: ClassVar[str] = "no_retry"
 
@@ -523,9 +529,9 @@ class RelayCanonicalStatusForbidden(RelayIngestError):
 class RelayLifecycleInvalid(RelaySdkError):
     """``client_lifecycle_status`` value is outside the closed enum."""
 
-    code: ClassVar[str] = RELAY_SDK_LIFECYCLE_INVALID_CODE
+    code: str = RELAY_SDK_LIFECYCLE_INVALID_CODE
     error_class: ClassVar[str] = RELAY_SDK_LIFECYCLE_INVALID_CLASS
-    http_status: ClassVar[int] = 400
+    http_status: int = 400
     default_blocked_surface: ClassVar[str] = "POST /v1/ingest/runs"
     default_retry_advice: ClassVar[str] = "no_retry"
 
@@ -538,9 +544,9 @@ class RelayHandoffIncomplete(RelayIngestError):
     ``details["code"]`` when the sidecar surfaces this code.
     """
 
-    code: ClassVar[str] = RELAY_SDK_HANDOFF_INCOMPLETE_CODE
+    code: str = RELAY_SDK_HANDOFF_INCOMPLETE_CODE
     error_class: ClassVar[str] = RELAY_SDK_HANDOFF_INCOMPLETE_CLASS
-    http_status: ClassVar[int] = 422
+    http_status: int = 422
     default_blocked_surface: ClassVar[str] = "POST /v1/ingest/runs"
     default_retry_advice: ClassVar[str] = "after_state_change"
 
@@ -553,9 +559,9 @@ class RelayEvidenceIncomplete(RelayEvidenceError):
     ``details["code"]``.
     """
 
-    code: ClassVar[str] = RELAY_SDK_EVIDENCE_INCOMPLETE_CODE
+    code: str = RELAY_SDK_EVIDENCE_INCOMPLETE_CODE
     error_class: ClassVar[str] = RELAY_SDK_EVIDENCE_INCOMPLETE_CLASS
-    http_status: ClassVar[int] = 422
+    http_status: int = 422
     default_blocked_surface: ClassVar[str] = "POST /v1/evidence"
     default_retry_advice: ClassVar[str] = "no_retry"
 
@@ -568,9 +574,9 @@ class RelayReplayPrecondition(RelayReplayError):
     ``details["code"]``.
     """
 
-    code: ClassVar[str] = RELAY_SDK_REPLAY_PRECONDITION_CODE
+    code: str = RELAY_SDK_REPLAY_PRECONDITION_CODE
     error_class: ClassVar[str] = RELAY_SDK_REPLAY_PRECONDITION_CLASS
-    http_status: ClassVar[int] = 422
+    http_status: int = 422
     default_blocked_surface: ClassVar[str] = "POST /v1/runs/{run_id}/replays"
     default_retry_advice: ClassVar[str] = "after_state_change"
 
@@ -583,9 +589,9 @@ class RelayPolicyError(RelayIngestError):
     it is preserved by the transport in ``details["code"]``.
     """
 
-    code: ClassVar[str] = RELAY_SDK_POLICY_INVALID_CODE
+    code: str = RELAY_SDK_POLICY_INVALID_CODE
     error_class: ClassVar[str] = RELAY_SDK_POLICY_INVALID_CLASS
-    http_status: ClassVar[int] = 422
+    http_status: int = 422
     default_blocked_surface: ClassVar[str] = "POST /v1/ingest/runs"
     default_retry_advice: ClassVar[str] = "no_retry"
 
@@ -604,9 +610,9 @@ class RelayUnknownError(RelayError):
     log, attribute, and decide how to retry.
     """
 
-    code: ClassVar[str] = RELAY_FUTURE_999_CODE
+    code: str = RELAY_FUTURE_999_CODE
     error_class: ClassVar[str] = "RELAY-UNKNOWN-ERROR"
-    http_status: ClassVar[int] = 500
+    http_status: int = 500
     default_blocked_surface: ClassVar[str] = "relay-unknown"
     default_retry_advice: ClassVar[str] = "no_retry"
 

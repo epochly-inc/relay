@@ -380,7 +380,10 @@ def test_sidecar_rejects_raw_payload_via_mock_endpoint() -> None:
     """
     from relay.errors import RELAY_ING_RAW_PAYLOAD_CODE
     from relay.run import _LifecycleHTTPClient
-    from test_loopback_server import LoopbackServer
+
+    # Sibling test helper resolved at runtime via pytest's `prepend` import
+    # mode (the tests dir is on sys.path); pyright does not model that.
+    from test_loopback_server import LoopbackServer  # pyright: ignore[reportMissingImports]
 
     server = LoopbackServer()
     server.add_route(

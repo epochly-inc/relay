@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 from relay.exit_codes import (
@@ -83,11 +84,18 @@ def test_corpus_loads_with_expected_schema_version() -> None:
 def test_python_resolver_matches_every_corpus_row() -> None:
     """Py-side exit_code_for_code_and_status agrees with each corpus row."""
     corpus = _load_corpus()
-    for fixture in corpus["fixtures"]:
+    # The corpus schema (relay.cli_exit_code_parity.v1) guarantees
+    # ``fixtures`` is a list of row objects; ``_load_corpus`` returns the
+    # untyped ``dict[str, object]`` from ``json.loads``, so narrow the
+    # value to its documented shape for iteration/indexing.
+    fixtures = cast(list[dict[str, object]], corpus["fixtures"])
+    for fixture in fixtures:
+        # Each row's typed fields per the v1 corpus schema: ``wire_code``
+        # (str), ``http_status`` (int|null), ``retry_advice_mode`` (str|null).
         actual = exit_code_for_code_and_status(
-            fixture["wire_code"],
-            fixture["http_status"],
-            fixture["retry_advice_mode"],
+            cast(str, fixture["wire_code"]),
+            cast("int | None", fixture["http_status"]),
+            cast("str | None", fixture["retry_advice_mode"]),
         )
         assert actual == fixture["expected_exit"], (
             f"row '{fixture['name']}' Py mismatch: got {actual}, "

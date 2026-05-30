@@ -100,7 +100,10 @@ def test_idempotent_replay_flag_surfaced_to_caller(relay_home_tmp) -> None:
     response payload back to the caller intact.
     """
     from relay import Relay
-    from test_loopback_server import LoopbackServer
+
+    # Sibling test helper resolved at runtime via pytest's `prepend` import
+    # mode (the tests dir is on sys.path); pyright does not model that.
+    from test_loopback_server import LoopbackServer  # pyright: ignore[reportMissingImports]
 
     server = LoopbackServer()
     server.add_route(

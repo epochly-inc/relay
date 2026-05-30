@@ -41,7 +41,7 @@ import re
 import threading
 import time
 from collections.abc import Iterable
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 from .errors import RelaySdkError
 
@@ -89,9 +89,9 @@ class RelayBudgetExceededError(RelaySdkError):
     cancel primitive, so they are left to finish naturally).
     """
 
-    code: Final[str] = "RELAY-REDACT-015"
-    error_class: Final[str] = "RELAY-REDACT-015"
-    http_status: Final[int] = 429
+    code: str = "RELAY-REDACT-015"
+    error_class: ClassVar[str] = "RELAY-REDACT-015"
+    http_status: int = 429
 
 
 def _evaluate_one(
@@ -109,6 +109,14 @@ def _evaluate_one(
     primitive). Subsequent stress inputs are still measured one by one,
     each with its own deadline.
     """
+    # The timeout path below augment-assigns ``_STUCK_REGEX_THREADS``
+    # (``+= 1`` / ``-= 1``). Without this declaration Python would treat
+    # the name as a function-local on first augmented assignment and raise
+    # ``UnboundLocalError`` on the timeout branch. The counter is genuinely
+    # module-global (the nested ``_run`` probe also declares it global), so
+    # bind it here to mutate the shared counter, matching the documented
+    # exactly-once handoff discipline.
+    global _STUCK_REGEX_THREADS
     done = threading.Event()
     # ``state`` carries the exactly-once handoff flags used by the
     # probe thread and the main thread to coordinate which side

@@ -30,6 +30,7 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError, version
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlparse
@@ -65,7 +66,6 @@ logger = logging.getLogger("relay.run")
 # so the value remains valid SemVer + clearly signals a dev/local run.
 def _resolve_sdk_version() -> str:
     try:
-        from importlib.metadata import PackageNotFoundError, version
         return f"relay-python@{version('epochly-relay')}"
     except PackageNotFoundError:
         return "relay-python@0.0.0+local"

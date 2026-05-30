@@ -23,7 +23,10 @@ from __future__ import annotations
 import pytest
 from relay import Relay, RelayEvidenceIncomplete
 from relay.lifecycle import build_evidence_envelope
-from test_loopback_server import LoopbackServer
+
+# Sibling test helper resolved at runtime via pytest's `prepend` import
+# mode (the tests dir is on sys.path); pyright does not model that.
+from test_loopback_server import LoopbackServer  # pyright: ignore[reportMissingImports]
 
 _VALID_KEY = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 _ACTOR = "sha256-actoractoractoractoractoractoractoractoractoractoractoractoractor"

@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from relay import RelayCanonicalStatusForbidden, RelayLifecycleInvalid
@@ -41,8 +42,12 @@ _VALID_ANCHORS = {
 _VALID_AGENT = {"name": "ops-agent", "version": "0.1.0"}
 
 
-def _good_envelope(**overrides):
-    base = dict(
+def _good_envelope(**overrides: Any) -> dict[str, Any]:
+    # ``base`` collects heterogeneous keyword values (str, dict, int); type
+    # it as ``dict[str, Any]`` so the ``**base`` spread matches the typed
+    # keyword parameters of ``build_ingest_run_envelope``. Runtime behavior
+    # is unchanged -- the same kwargs are forwarded.
+    base: dict[str, Any] = dict(
         run_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
         trace_id="trace-abc",
         project_id="aa111111-2222-3333-4444-555555555555",

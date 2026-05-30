@@ -51,7 +51,10 @@ _CONFORMANCE_REDACTION = _REPO_ROOT / "tests" / "conformance" / "redaction"
 if str(_CONFORMANCE_REDACTION) not in sys.path:
     sys.path.insert(0, str(_CONFORMANCE_REDACTION))
 
-from validation_fixtures import (  # noqa: E402
+# ``validation_fixtures`` lives in tests/conformance/redaction and is added
+# to sys.path at runtime by the sys.path.insert above; pyright cannot model
+# that dynamic search-path insertion.
+from validation_fixtures import (  # noqa: E402  # pyright: ignore[reportMissingImports]
     FIXTURE_MISMATCH_CODE,
     FixtureMismatch,
     compute_expected_digest,

@@ -81,7 +81,12 @@ class LoopbackServer:
     @property
     def base_url(self) -> str:
         assert self._server is not None, "server not started"
-        host, port = self._server.server_address
+        # ``server_address`` is typed as the union of the AF_INET (2-tuple)
+        # and AF_INET6 (4-tuple) sockaddr forms. The loopback test server
+        # binds AF_INET, so the host/port are always the first two members;
+        # index them rather than unpacking to a fixed-arity 2-tuple.
+        addr = self._server.server_address
+        host, port = addr[0], addr[1]
         return f"http://{host}:{port}"
 
     def add_route(self, method: str, path: str, handler: HandlerFn) -> None:

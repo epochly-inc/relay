@@ -25,7 +25,9 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import random
+import re
 import time
+from typing import cast
 
 import pytest
 import relay.redaction_budget as rb
@@ -43,8 +45,6 @@ def test_stuck_thread_counter_returns_to_zero_under_race() -> None:
     race-detect window (the exact race that produced the double-
     decrement before the fix).
     """
-    import re
-
     # Snapshot the starting counter so the test is independent of
     # any other concurrent tests in this process.
     starting = rb._STUCK_REGEX_THREADS
@@ -111,8 +111,6 @@ def test_stuck_thread_counter_handles_genuinely_stuck_probe() -> None:
     ``incremented=True`` and then the probe later observes it and
     decrements.
     """
-    import re
-
     starting = rb._STUCK_REGEX_THREADS
 
     # A pattern that genuinely takes ~50 ms. We feed a 5000-char
@@ -140,6 +138,64 @@ def test_stuck_thread_counter_handles_genuinely_stuck_probe() -> None:
     with rb._STUCK_REGEX_LOCK:
         final = rb._STUCK_REGEX_THREADS
 
+    assert final == starting, (
+        f"counter drifted: starting={starting} final={final}"
+    )
+
+
+@pytest.mark.plumbing
+def test_timeout_branch_increments_shared_counter_without_unbound_error() -> None:
+    """The ``not completed`` (probe-overran) branch of ``_evaluate_one``
+    must mutate the process-wide ``_STUCK_REGEX_THREADS`` counter, not a
+    function-local shadow.
+
+    Regression guard for a latent scope defect: ``_evaluate_one``
+    augment-assigns the module-global counter (``+= 1`` / ``-= 1``) in
+    this branch but lacked a ``global`` declaration in its own scope, so
+    Python classified the name as a function-local and raised
+    ``UnboundLocalError`` the moment a probe genuinely overran its
+    budget. The pre-existing timing-based tests never reached this branch
+    because their trivial regexes completed inside the ``done.wait``
+    window. This test forces the branch deterministically with a searcher
+    whose ``search`` sleeps well past the 1 ms budget, so the probe is
+    provably still running when the budget elapses.
+    """
+
+    class _SlowSearcher:
+        """Stand-in for a compiled pattern whose match outlasts the
+        budget. ``_evaluate_one`` only calls ``.search(text)`` on its
+        first argument, so this duck-types the needed surface.
+        """
+
+        def search(self, _text: str) -> None:
+            time.sleep(0.2)  # 200 ms >> 1 ms budget -> probe overruns
+            return None
+
+    starting = rb._STUCK_REGEX_THREADS
+
+    # ``_evaluate_one`` only invokes ``.search(text)`` on its first
+    # argument; ``_SlowSearcher`` supplies exactly that surface. Cast to
+    # the declared ``re.Pattern[str]`` parameter type (a runtime no-op)
+    # rather than suppress the checker.
+    searcher = cast("re.Pattern[str]", _SlowSearcher())
+
+    # Must not raise. Returns within_budget=False from the overran branch.
+    within_budget, elapsed_s = _evaluate_one(searcher, "x", 0.001)
+    assert within_budget is False
+    assert elapsed_s >= 0.0
+
+    # The probe's ``finally`` decrements the counter once it returns;
+    # poll until it drains so the monotonic invariant is observable.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        with rb._STUCK_REGEX_LOCK:
+            current = rb._STUCK_REGEX_THREADS
+        if current == starting:
+            break
+        time.sleep(0.01)
+
+    with rb._STUCK_REGEX_LOCK:
+        final = rb._STUCK_REGEX_THREADS
     assert final == starting, (
         f"counter drifted: starting={starting} final={final}"
     )

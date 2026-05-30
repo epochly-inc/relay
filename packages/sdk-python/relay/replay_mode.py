@@ -106,9 +106,9 @@ class RelayUninstrumentedHTTPError(RelaySdkError):
     cassette playback.
     """
 
-    code: ClassVar[str] = RELAY_SDK_REPLAY_UNINSTRUMENTED_HTTP_CODE
+    code: str = RELAY_SDK_REPLAY_UNINSTRUMENTED_HTTP_CODE
     error_class: ClassVar[str] = RELAY_SDK_REPLAY_UNINSTRUMENTED_HTTP_CLASS
-    http_status: ClassVar[int] = 400
+    http_status: int = 400
     default_blocked_surface: ClassVar[str] = "relay-sdk-replay-init"
     default_retry_advice: ClassVar[str] = "after_state_change"
 
@@ -133,9 +133,9 @@ class RelaySocketDenyError(RelaySdkError):
     ``details["target"]`` field is preserved for W3.5-era callers.
     """
 
-    code: ClassVar[str] = RELAY_SDK_SOCKET_DENY_CODE
+    code: str = RELAY_SDK_SOCKET_DENY_CODE
     error_class: ClassVar[str] = RELAY_SDK_SOCKET_DENY_CLASS
-    http_status: ClassVar[int] = 403
+    http_status: int = 403
     default_blocked_surface: ClassVar[str] = "socket.socket.connect"
     default_retry_advice: ClassVar[str] = "no_retry"
 
@@ -183,11 +183,11 @@ class RelayReplayDegradedModeNotAcknowledged(RelaySdkError):
     opt in.
     """
 
-    code: ClassVar[str] = RELAY_SDK_REPLAY_DEGRADED_MODE_NOT_ACKNOWLEDGED_CODE
+    code: str = RELAY_SDK_REPLAY_DEGRADED_MODE_NOT_ACKNOWLEDGED_CODE
     error_class: ClassVar[str] = (
         RELAY_SDK_REPLAY_DEGRADED_MODE_NOT_ACKNOWLEDGED_CLASS
     )
-    http_status: ClassVar[int] = 400
+    http_status: int = 400
     default_blocked_surface: ClassVar[str] = "relay.replay.run"
     default_retry_advice: ClassVar[str] = "no_retry"
 
