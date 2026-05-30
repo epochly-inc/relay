@@ -149,18 +149,22 @@ def _build_real_sigstore_bundle(tmp_path: Path) -> tuple[bytes, bytes, str, str]
     if cred is None:
         pytest.skip("no ambient OIDC credential detected (set CI=true with an OIDC provider)")
     try:
+        from sigstore.models import ClientTrustConfig
         from sigstore.sign import SigningContext
     except Exception as exc:  # pragma: no cover - defensive
         pytest.skip(f"sigstore.sign unavailable: {exc}")
     ident = IdentityToken(cred)
-    sc = SigningContext.production()
+    # sigstore 4.x dropped ``SigningContext.production()``; the production
+    # signing context is built from the production client trust config.
+    sc = SigningContext.from_trust_config(ClientTrustConfig.production())
     artifact = b"relay-w9-1 test artifact " + os.urandom(8)
     artifact_path = tmp_path / "artifact.bin"
     artifact_path.write_bytes(artifact)
     with sc.signer(ident) as signer:
         result = signer.sign_artifact(artifact)
     bundle_json = result.to_json()
-    return artifact, bundle_json.encode("utf-8"), ident.identity, ident.expected_issuer
+    # sigstore 4.x renamed ``IdentityToken.expected_issuer`` to ``issuer``.
+    return artifact, bundle_json.encode("utf-8"), ident.identity, ident.issuer
 
 
 @pytest.mark.smoke

@@ -392,9 +392,13 @@ def read_bytes_symlink_safe(path: Path) -> bytes:
         fd = os.open(fspath, flags)
     except OSError as exc:
         if _is_symlink_errno(exc):
+            # ``_is_symlink_errno`` only returns True for ELOOP/EMLINK,
+            # both non-None ints, so ``exc.errno`` is a valid int here.
+            err_no = exc.errno
+            assert err_no is not None
             raise SymlinkRejectedError(
                 offending_path=fspath,
-                reason=f"posix-o-nofollow:errno={errno.errorcode.get(exc.errno, exc.errno)}",
+                reason=f"posix-o-nofollow:errno={errno.errorcode.get(err_no, err_no)}",
             ) from exc
         # ENOENT on a plain non-existent path -> FileNotFoundError.
         # EISDIR / EACCES / etc. -> bubble unchanged.

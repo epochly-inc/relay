@@ -85,7 +85,7 @@ def _scrub_strings_and_comments(src: str) -> str:
                     out.append('""')
             else:
                 out.append(tok.string)
-    except tokenize.TokenizeError:
+    except tokenize.TokenError:
         # Truncated source; return as-is for the grep.
         return src
     return " ".join(out)

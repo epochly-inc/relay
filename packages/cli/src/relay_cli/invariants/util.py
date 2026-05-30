@@ -373,7 +373,7 @@ def iter_source_files(
     Tests, generated codegen output, vendored node_modules, and
     ``__pycache__`` are always excluded.
     """
-    excluded = list(_BASE_EXCLUDED_PREFIXES)
+    excluded: list[str] = list(_BASE_EXCLUDED_PREFIXES)
     if not include_self:
         excluded.extend(_SELF_MENTION_EXCLUDED_PREFIXES)
     excluded_t = tuple(excluded)

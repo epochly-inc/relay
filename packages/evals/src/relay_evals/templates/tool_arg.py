@@ -45,7 +45,7 @@ import hashlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from relay_contracts.canonical import jcs_canonicalize
 
@@ -102,7 +102,7 @@ class ToolArgTemplateResult:
     signed_by: str
 
 
-def _raise_input(message: str, *, json_path: str) -> None:
+def _raise_input(message: str, *, json_path: str) -> NoReturn:
     raise RelayTemplateInputError(message, payload={"json_path": json_path})
 
 

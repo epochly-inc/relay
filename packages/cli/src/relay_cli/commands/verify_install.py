@@ -263,7 +263,9 @@ def _load_install_record(path: Path, *, expected_kind: str) -> InstallRecord:
             detail={"path": str(path), "missing": missing},
         )
     return InstallRecord(
-        kind=kind,
+        # ``kind`` is proven equal to ``expected_kind`` (a ``str``) by the
+        # kind-mismatch guard above; use the typed value.
+        kind=expected_kind,
         artifact_path=Path(record["artifact_path"]),
         expected_sha256=record["expected_sha256"],
         sigstore_bundle_path=Path(record["sigstore_bundle_path"]),
@@ -369,14 +371,22 @@ def _verify_rekor_inclusion(sigstore_bytes: bytes) -> tuple[bool, str]:
     # CLI startup.
     try:
         from sigstore.errors import VerificationError
+
+        # ``sigstore.models`` defines no ``__all__``, so pyright treats the
+        # re-exported helpers below (``KeyringPurpose``, ``verify_checkpoint``,
+        # ``verify_merkle_inclusion`` -- all defined in ``sigstore._internal.*``)
+        # as private imports. They are part of sigstore's documented
+        # verification surface and resolve at runtime; importing from the
+        # ``_internal`` modules directly would be more fragile and is likewise
+        # flagged. Narrow per-symbol suppression only.
         from sigstore.models import (
             Bundle,
             ClientTrustConfig,
             InvalidBundle,
-            KeyringPurpose,
+            KeyringPurpose,  # pyright: ignore[reportPrivateImportUsage]
             TransparencyLogEntry,
-            verify_checkpoint,
-            verify_merkle_inclusion,
+            verify_checkpoint,  # pyright: ignore[reportPrivateImportUsage]
+            verify_merkle_inclusion,  # pyright: ignore[reportPrivateImportUsage]
         )
     except Exception as exc:  # pragma: no cover - import failure
         return False, f"sigstore_unavailable:{type(exc).__name__}"

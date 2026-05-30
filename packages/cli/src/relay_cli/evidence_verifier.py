@@ -61,6 +61,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -402,7 +403,7 @@ def verify_bundle(
         # bundle was edited after signing.
         try:
             recorded_signing_input = _b64u_decode(signing_input_b64u)
-        except (ValueError, base64.binascii.Error) as exc:
+        except (ValueError, binascii.Error) as exc:
             sigs_ok = False
             digest_ok = False
             result.signature_checks.append(
@@ -458,7 +459,7 @@ def verify_bundle(
             continue
         try:
             signature_bytes = _b64u_decode(signature_b64u)
-        except (ValueError, base64.binascii.Error) as exc:
+        except (ValueError, binascii.Error) as exc:
             sigs_ok = False
             result.signature_checks.append(
                 SignatureCheck(

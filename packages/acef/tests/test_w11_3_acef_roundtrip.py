@@ -436,6 +436,10 @@ def _fixture_one_namespace_per_id(ns: str) -> dict[str, Any]:
 # present) are exercised by the schema-version + missing-binding tests
 # and are recorded in the corpus index for W17.
 
+_PER_NAMESPACE_FIXTURES: list[tuple[str, Any, str | None]] = [
+    (f"single-namespace-{ns}", lambda ns=ns: _fixture_one_namespace_per_id(ns), None)
+    for ns in NS_TEN
+]
 ROUNDTRIP_FIXTURES: list[tuple[str, Any, str | None]] = [
     ("minimum", _fixture_minimum, None),
     ("with-one-namespace", _fixture_with_one_namespace, None),
@@ -448,10 +452,7 @@ ROUNDTRIP_FIXTURES: list[tuple[str, Any, str | None]] = [
     ("optional-fields-absent", _fixture_optional_field_absent, None),
     ("optional-fields-present", _fixture_optional_field_present, None),
     ("claims-canonical-order", _fixture_with_claims_in_canonical_order, None),
-] + [
-    (f"single-namespace-{ns}", lambda ns=ns: _fixture_one_namespace_per_id(ns), None)
-    for ns in NS_TEN
-]
+] + _PER_NAMESPACE_FIXTURES
 # 11 + 10 = 21 happy-path entries. Plus negative entries (>= 4) ->
 # corpus total >= 25 (VAL-W11-024 requirement).
 

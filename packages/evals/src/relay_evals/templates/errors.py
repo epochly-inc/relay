@@ -33,7 +33,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import Any, ClassVar
 
 from relay_schemas.error_codes import RelayErrorCode
 
@@ -47,7 +47,7 @@ class RelayTemplateError(Exception):
     the wire code via the ``CODE`` class attribute.
     """
 
-    CODE: str = ""
+    CODE: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -77,7 +77,7 @@ class RelayTemplateInputError(RelayTemplateError):
     it as ``Input validation failed at <json_path>: <message>``.
     """
 
-    CODE: Final[str] = RelayErrorCode.RELAY_CONTRACT_002
+    CODE: ClassVar[str] = RelayErrorCode.RELAY_CONTRACT_002
 
 
 class RelayTemplateLoaderError(RelayTemplateError):
@@ -90,7 +90,7 @@ class RelayTemplateLoaderError(RelayTemplateError):
     permitted_names"]`` lists the registered template names.
     """
 
-    CODE: Final[str] = RelayErrorCode.RELAY_CONTRACT_003
+    CODE: ClassVar[str] = RelayErrorCode.RELAY_CONTRACT_003
 
 
 class RelaySchemaNotFoundError(RelayTemplateError):
@@ -103,7 +103,7 @@ class RelaySchemaNotFoundError(RelayTemplateError):
     accepted v1 ids so the caller can correct the typo.
     """
 
-    CODE: Final[str] = RelayErrorCode.RELAY_SCHEMA_014
+    CODE: ClassVar[str] = RelayErrorCode.RELAY_SCHEMA_014
 
 
 class RelayManifestUnknownToolError(RelayTemplateError):
@@ -121,7 +121,7 @@ class RelayManifestUnknownToolError(RelayTemplateError):
     preamble), NOT git's blob SHA-1.
     """
 
-    CODE: Final[str] = RelayErrorCode.RELAY_MANIFEST_021
+    CODE: ClassVar[str] = RelayErrorCode.RELAY_MANIFEST_021
 
 
 __all__ = [

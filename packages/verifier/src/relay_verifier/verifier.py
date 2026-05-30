@@ -28,6 +28,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -471,7 +472,7 @@ def verify_bundle(
 
         try:
             recorded_signing_input = _b64u_decode(signing_input_b64u)
-        except (ValueError, base64.binascii.Error) as exc:
+        except (ValueError, binascii.Error) as exc:
             sigs_ok = False
             digest_ok = False
             result.signature_checks.append(
@@ -526,7 +527,7 @@ def verify_bundle(
             continue
         try:
             signature_bytes = _b64u_decode(signature_b64u)
-        except (ValueError, base64.binascii.Error) as exc:
+        except (ValueError, binascii.Error) as exc:
             sigs_ok = False
             result.signature_checks.append(
                 SignatureCheck(
@@ -705,7 +706,7 @@ def _decode_protected_header(header_b64u: str) -> dict[str, Any]:
     """
     try:
         raw = _b64u_decode(header_b64u)
-    except (ValueError, base64.binascii.Error) as exc:
+    except (ValueError, binascii.Error) as exc:
         raise ValueError(f"protected header is not valid base64url: {exc}") from exc
     try:
         decoded = json.loads(raw.decode("utf-8"))
@@ -808,7 +809,7 @@ def verify_jws_compact(
 
     try:
         signature_bytes = _b64u_decode(sig_b64)
-    except (ValueError, base64.binascii.Error) as exc:
+    except (ValueError, binascii.Error) as exc:
         return SignatureCheck(
             kid=kid,
             alg=alg,
@@ -921,7 +922,7 @@ def verify_jws_detached(
 
     try:
         signature_bytes = _b64u_decode(signature_b64u)
-    except (ValueError, base64.binascii.Error) as exc:
+    except (ValueError, binascii.Error) as exc:
         return SignatureCheck(
             kid=kid,
             alg=alg,
@@ -1193,7 +1194,7 @@ def _verify_one_signature_over_bytes(
         )
     try:
         signature_bytes = _b64u_decode(signature_b64u)
-    except (ValueError, base64.binascii.Error) as exc:
+    except (ValueError, binascii.Error) as exc:
         return SignatureCheck(
             kid=kid,
             alg=alg,

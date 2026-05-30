@@ -173,6 +173,11 @@ def _encode_decimal(d: Decimal) -> str:
     # canonical decimal tuple so the shortest round-tripping
     # representation is emitted (e.g., ``1.0E+22`` -> ``1e+22``).
     sign, digits, exp = d.as_tuple()
+    # ``d.is_finite()`` is guaranteed above (non-finite Decimals are
+    # rejected at the top of this function), so ``exp`` is always an int
+    # here; the special ``'n'/'N'/'F'`` sentinels only appear for
+    # NaN/Infinity tuples. Narrow for the type-checker.
+    assert isinstance(exp, int)
     digits_str = "".join(str(c) for c in digits).rstrip("0")
     if not digits_str:
         return "0"

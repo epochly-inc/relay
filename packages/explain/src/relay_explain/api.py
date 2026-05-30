@@ -52,6 +52,7 @@ class PromotionService(Protocol):
         Implementations MUST be transactional with
         :meth:`mark_promoted` so the promotion is atomic.
         """
+        ...
 
     def mark_promoted(
         self, *, hypothesis_id: str, replay_case_id: str

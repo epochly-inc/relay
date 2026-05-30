@@ -218,7 +218,8 @@ class _OracleGenerator:
             return []
 
         class _Draft:
-            pass
+            hypothesis_class: str
+            confidence: float
 
         d = _Draft()
         d.hypothesis_class = self._class

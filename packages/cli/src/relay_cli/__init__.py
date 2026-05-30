@@ -15,6 +15,8 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
+
 
 # VAL-W5-001: ``rly --version`` reports a stable semver string. The version
 # is mirrored from the package distribution metadata at runtime so a single
@@ -27,7 +29,6 @@ def _resolve_version() -> str:
     ``rly --version`` still emits a valid version envelope.
     """
     try:
-        from importlib.metadata import PackageNotFoundError, version
         return version("epochly-relay-cli")
     except PackageNotFoundError:
         return "0.0.0+local"

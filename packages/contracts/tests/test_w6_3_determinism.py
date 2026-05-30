@@ -54,7 +54,7 @@ def _scrub_strings_and_comments(src: str) -> str:
     out_lines: list[str] = []
     try:
         tokens = list(tokenize.tokenize(io.BytesIO(src.encode("utf-8")).readline))
-    except tokenize.TokenizeError:
+    except tokenize.TokenError:
         # Defensive: if the file fails to tokenize, fall back to
         # comment-only stripping. The line-strip below is the original
         # behavior; we accept it as a last resort.

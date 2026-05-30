@@ -123,6 +123,7 @@ class HypothesisStore(Protocol):
 
     def span_belongs_to_run(self, run_id: str, span_id: str) -> bool:
         """Return True iff ``span_id`` is a row in ``spans`` with that run."""
+        ...
 
     def find_by_dedupe(
         self,
