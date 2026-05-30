@@ -43,9 +43,12 @@ import {
   CLOCK_SKEW_TOLERANCE_SECONDS,
   RELAY_EVID_031,
   RELAY_EVID_038,
+  loadBundledTsaChain,
+  loadTsaChainPemBytes,
   validateTsaToken,
   type TsaToken,
 } from "./tsa.js";
+import type { X509Certificate } from "node:crypto";
 import {
   _selectJwk,
   canonicalJsonBytes,
@@ -182,6 +185,25 @@ export interface ValidateBundleOptions {
   subject_store?: SubjectStore | null;
   witness_jwks?: JWKS | Record<string, unknown> | null;
   default_trust_anchor?: string | null;
+  /**
+   * VAL-PARITY-004. Optional PEM blob of additional TSA trust roots merged
+   * with the package-bundled chain at
+   * `packages/verifier-typescript/src/tsa_chain/tsa-chain.pem`. Test-injection
+   * seam used by fixture builders to anchor an ephemeral TSA root generated at
+   * test time so the real RFC 3161 `TimeStampResp` signature verifies without
+   * writing private key material to disk (banned pattern #14). Production
+   * callers leave this undefined and the verifier uses only the bundled chain.
+   * Mirrors the Python `ValidateBundleOptions.tsa_extra_trusted_roots_pem`.
+   */
+  tsa_extra_trusted_roots_pem?: Uint8Array | Buffer | null;
+  /**
+   * VAL-PARITY-004. If true, do NOT load the package-bundled TSA cert chain.
+   * Used by tests that need to demonstrate the "untrusted root" failure mode
+   * without their ephemeral cert accidentally chaining into the bundled
+   * placeholder root via a collision. Defaults false. Mirrors the Python
+   * `ValidateBundleOptions.tsa_skip_bundled_chain`.
+   */
+  tsa_skip_bundled_chain?: boolean;
 }
 
 export interface VerifierOutputEnvelope {
@@ -733,6 +755,21 @@ export function validateBundle(args: {
   const decidedAt = typeof rawDecidedAt === "string" ? rawDecidedAt : "";
   const bindingDigestHex = _computeBindingDigest(bundle);
   if (decidedAt.length > 0) {
+    // VAL-PARITY-004: load the package-bundled TSA chain so CMS SignerInfo
+    // signatures can be cryptographically verified against the OSS placeholder
+    // root, mirroring Python bundle_validator.py:844-856. If the package asset
+    // is missing/unparseable we tolerate the error so the rest of the
+    // validator still emits a structured outcome -- the empty trust-roots set
+    // then yields outcome="invalid" (reason="tsa_cert_chain_unknown_root").
+    let bundledChainCerts: X509Certificate[] | null = null;
+    if (!opts.tsa_skip_bundled_chain) {
+      try {
+        const { raw } = loadBundledTsaChain();
+        bundledChainCerts = loadTsaChainPemBytes(raw);
+      } catch {
+        bundledChainCerts = null;
+      }
+    }
     const tsaResult = validateTsaToken({
       token:
         tsaTokenRaw !== null && typeof tsaTokenRaw === "object" && !Array.isArray(tsaTokenRaw)
@@ -740,7 +777,8 @@ export function validateBundle(args: {
           : null,
       bundleDigestHex: bindingDigestHex,
       decidedAt,
-      chainCerts: null,
+      chainCerts: bundledChainCerts,
+      extraTrustedRootsPem: opts.tsa_extra_trusted_roots_pem ?? null,
     });
     output.tsa_check = tsaResult.outcome;
     if (tsaResult.outcome === "missing") {
