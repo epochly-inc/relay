@@ -1340,3 +1340,189 @@ def test_max_leaf_length_constant_matches_typescript_via_node_subprocess() -> No
     assert ts_cap == MAX_REDACTION_LEAF_LENGTH, (
         f"cap constant divergence: py={MAX_REDACTION_LEAF_LENGTH} ts={ts_cap}"
     )
+
+
+# ---------------------------------------------------------------------------
+# VAL-REDACT-007 parity (Gate-1 scrutiny finding): the two SDKs grouped
+# combining marks into the preceding base segment by DIFFERENT predicates in
+# ``_fold_with_origin`` (Python) / ``foldWithOrigin`` (TS):
+#
+#   * Python: ``unicodedata.combining(ch) != 0`` -- TRUE only for a NON-ZERO
+#     canonical combining class.
+#   * TS:     ``\p{Mn}|\p{Mc}|\p{Me}`` -- TRUE for ALL Mark categories.
+#
+# A class-0 SPACING combining mark such as U+0903 (DEVANAGARI SIGN VISARGA,
+# category Mc, canonical combining class 0) is matched by the TS predicate but
+# NOT by the Python one. So for an input that contains such a mark, TS absorbs
+# it into the preceding base segment while Python starts a NEW segment -- the
+# fold-with-origin offset maps diverge, and a matched span maps to a DIFFERENT
+# original slice on each runtime. Worst case is fail-closed over-redaction
+# (never a leak), but it breaks the keystone Python<->TypeScript byte-equality
+# contract.
+#
+# The fix unifies the grouping rule to Unicode MARK CATEGORY (Mn/Mc/Me) on BOTH
+# sides (Option a): Python switches to
+# ``unicodedata.category(ch) in {"Mn","Mc","Me"}`` and TS keeps its existing
+# ``\p{Mn}|\p{Mc}|\p{Me}`` test. After the fix the two engines group the
+# IDENTICAL set of code points and emit byte-identical redaction output.
+#
+# Source stays ASCII per CLAUDE.md "ASCII-Safe Source": the combining marks are
+# written as ``\uXXXX`` escapes, never raw glyphs.
+# ---------------------------------------------------------------------------
+
+# U+0903 DEVANAGARI SIGN VISARGA: category Mc, canonical combining class 0.
+# This is the precise code point on which the two predicates disagreed.
+# Written as a ``\uXXXX`` escape so the source stays pure ASCII (CLAUDE.md).
+_VISARGA = "\u0903"
+# U+0BBE TAMIL VOWEL SIGN AA: a second category-Mc, combining-class-0 mark, so
+# the parity surface is not pinned to a single code point.
+_TAMIL_VOWEL_SIGN_AA = "\u0bbe"
+# U+0308 COMBINING DIAERESIS: a class-230 (non-zero) mark -- matched by BOTH
+# predicates already, included so the round-trip fixture mixes a class-0 and a
+# non-zero-class mark.
+_COMBINING_DIAERESIS_MARK = "\u0308"
+
+# A policy whose only matcher redacts the literal ``SECRET`` so we can place a
+# class-0 spacing mark immediately AFTER a matched span and observe whether the
+# splice consumes it.
+_VISARGA_SECRET_POLICY: dict = {
+    "schema_version": "relay.redaction.v1",
+    "policy_version": "2026-05-29.visarga",
+    "raw_capture": False,
+    "retention_days": 30,
+    "dpa_ref": None,
+    "approver_user_id": None,
+    "matchers": [
+        {"id": "secret", "kind": "regex", "pattern": "SECRET", "action": "redact"},
+    ],
+    "action_policy": {
+        "hash": {"algorithm": "hmac-sha256", "salt_ref": "tenant_salt_v3"},
+        "redact": {"placeholder": "<redacted>"},
+        "drop": {"placeholder": None},
+    },
+    "applies_to_fields": list(DEFAULT_APPLIES_TO_FIELDS),
+}
+
+
+@pytest.mark.plumbing
+def test_class0_spacing_mark_segments_identically_python_local() -> None:
+    """Python ``_fold_with_origin`` MUST group a class-0 spacing combining mark
+    (U+0903) into the preceding base segment, identically to the TS predicate.
+
+    Pre-fix Python used ``unicodedata.combining(ch) != 0``; U+0903 has combining
+    class 0, so Python started a NEW segment for it while TS (``\\p{Mc}``)
+    absorbed it. Post-fix Python groups by category (Mn/Mc/Me), so the mark is
+    absorbed into the preceding base's segment -- every folded code point of the
+    base+mark sequence maps to the FULL base+mark original span.
+    """
+    from relay.redaction import _fold_with_origin
+
+    # 'a' (base) + VISARGA + 'b' (base). After the fix the VISARGA shares the
+    # 'a' segment, so folded[0] ('a') and folded[1] (VISARGA) BOTH map to the
+    # half-open original span [0, 2).
+    value = "a" + _VISARGA + "b"
+    folded, origin_starts, origin_ends = _fold_with_origin(value)
+    # Detection surface is unchanged (NFKC keeps the three code points here).
+    assert folded == value
+    # The base 'a' (index 0) and the VISARGA (index 1) MUST share one segment
+    # spanning [0, 2). Pre-fix the VISARGA was its own segment: starts/ends
+    # would have been [0, 1, 2] / [1, 2, 3].
+    assert origin_starts == [0, 0, 2], (
+        f"class-0 mark not grouped with base: starts={origin_starts}"
+    )
+    assert origin_ends == [2, 2, 3], (
+        f"class-0 mark not grouped with base: ends={origin_ends}"
+    )
+
+
+@pytest.mark.plumbing
+def test_class0_spacing_mark_redaction_byte_equal_typescript_via_node_subprocess() -> (  # noqa: E501
+    None
+):
+    """Python and TS MUST emit byte-identical canonical bytes for a leaf
+    containing a class-0 SPACING combining mark (U+0903) immediately after a
+    matched secret.
+
+    This is the VAL-REDACT-007 parity surface (Gate-1 scrutiny finding).
+    Pre-fix the two engines DIVERGED on ``"pre SECRET<VISARGA> tail"``:
+
+      * Python (``combining != 0``): the VISARGA was its own segment, so the
+        ``SECRET`` match mapped to the original span NOT including the VISARGA
+        -- output ``"pre <redacted><VISARGA> tail"`` (VISARGA survives next to
+        the placeholder).
+      * TS (``\\p{Mc}``): the VISARGA was absorbed into the preceding base
+        segment, so the match consumed it -- output ``"pre <redacted> tail"``.
+
+    Post-fix both group by Mark category, so both consume the VISARGA and emit
+    byte-identical bytes. This proves the class-0 spacing mark segments
+    identically and never leaks (fail-closed over-redaction at worst).
+
+    Skipped when Node or the TS dist are unavailable (offline tier-1); when
+    present the test is authoritative.
+    """
+    payload = {"model_call": {"input": "pre SECRET" + _VISARGA + " tail"}}
+    ts_bytes = _ts_canonicalize_via_node(
+        _VISARGA_SECRET_POLICY, payload, _TENANT_SALT
+    )
+    if ts_bytes is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language byte equality cannot be checked "
+            "in this environment"
+        )
+    policy = RedactionPolicy.load(_VISARGA_SECRET_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    py_bytes = redact_capture_payload(engine, payload)
+    assert py_bytes == ts_bytes, (
+        "cross-language byte mismatch on class-0 spacing-mark (U+0903) "
+        f"redaction: py={py_bytes!r} ts={ts_bytes!r}"
+    )
+    # Behavioural anchor: the VISARGA MUST NOT survive adjacent to the
+    # placeholder on EITHER side (the match span consumed it).
+    out = engine.redact(payload)["model_call"]["input"]
+    assert out == "pre <redacted> tail", f"unexpected splice result: out={out!r}"
+    assert _VISARGA not in out, f"class-0 mark leaked next to placeholder: {out!r}"
+
+
+@pytest.mark.plumbing
+def test_class0_spacing_mark_non_secret_round_trips_byte_equal_typescript() -> None:
+    """A NON-secret string containing class-0 spacing combining marks (U+0903,
+    U+0BBE) and a non-zero-class mark (U+0308) MUST round-trip UNCHANGED and
+    byte-identically on Python and TS (the missing-coverage fixture the
+    reviewer flagged).
+
+    No matcher fires, so the engine emits the ORIGINAL code points verbatim on
+    both runtimes (VAL-REDACT-007: the fold is a detection aid only). This
+    guards against over-redaction / silent transliteration of legitimate
+    combining-mark content, and confirms the unified segmentation rule does not
+    perturb the unmatched-leaf path.
+
+    Skipped when Node or the TS dist are unavailable (offline tier-1); when
+    present the test is authoritative.
+    """
+    # A benign sentence-shaped leaf mixing a base+class-0-mark sequence, a
+    # base+class-0-mark sequence (Tamil), and a base+non-zero-class mark
+    # (combining diaeresis) -- none of which any matcher in the base policy
+    # touches.
+    benign = (
+        "namaste a" + _VISARGA + " ka" + _TAMIL_VOWEL_SIGN_AA + " u"
+        + _COMBINING_DIAERESIS_MARK + " ok"
+    )
+    payload = {"model_call": {"input": benign}}
+    ts_bytes = _ts_canonicalize_via_node(_BASE_POLICY, payload, _TENANT_SALT)
+    if ts_bytes is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language byte equality cannot be checked "
+            "in this environment"
+        )
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    py_bytes = redact_capture_payload(engine, payload)
+    assert py_bytes == ts_bytes, (
+        "cross-language byte mismatch on non-secret combining-mark round-trip: "
+        f"py={py_bytes!r} ts={ts_bytes!r}"
+    )
+    # The leaf MUST be reproduced verbatim (no redaction, no transliteration).
+    out = engine.redact(payload)["model_call"]["input"]
+    assert out == benign, f"non-secret combining-mark leaf was altered: {out!r}"

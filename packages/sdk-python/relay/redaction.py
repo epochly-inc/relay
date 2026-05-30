@@ -353,6 +353,18 @@ def _build_confusables_map() -> dict[str, str]:
 
 _CONFUSABLES_MAP: Final[dict[str, str]] = _build_confusables_map()
 
+# Unicode general categories treated as "combining marks" for segment grouping
+# in :func:`_fold_with_origin` (VAL-REDACT-007). MUST match the TypeScript SDK's
+# ``foldWithOrigin`` predicate ``/\p{Mn}|\p{Mc}|\p{Me}/u`` exactly so the two
+# engines group the identical set of code points and emit byte-equal output:
+#   Mn  Mark, Nonspacing       (e.g. U+0308 COMBINING DIAERESIS, ccc 230)
+#   Mc  Mark, Spacing Combining (e.g. U+0903 DEVANAGARI SIGN VISARGA, ccc 0)
+#   Me  Mark, Enclosing        (e.g. U+20DD COMBINING ENCLOSING CIRCLE)
+# This is deliberately NOT a canonical-combining-class test: U+0903 (Mc) has
+# combining class 0, so ``unicodedata.combining(ch) != 0`` would exclude it
+# while ``\p{Mc}`` (TS) includes it -- a Python<->TS parity divergence.
+_COMBINING_MARK_CATEGORIES: Final[frozenset[str]] = frozenset({"Mn", "Mc", "Me"})
+
 
 def _normalise_for_matching(value: str) -> str:
     """Return the NFKC + confusables-folded form of ``value``.
@@ -392,14 +404,29 @@ def _fold_with_origin(value: str) -> tuple[str, list[int], list[int]]:
     (e.g. ``"u" + U+0308`` -> ``U+00FC``). To keep a faithful
     original-offset mapping under that non-length-preserving transform,
     the input is split into segments of one base code point plus any
-    trailing combining marks (``unicodedata.combining(ch) != 0``); each
-    segment is NFKC-normalised and folded as a unit, and every folded
-    code point it yields maps to the segment's FULL original span. A
-    matched folded span therefore always maps to an original span that
-    fully covers each contributing original code point -- no plaintext
-    fragment of a matched secret can survive (the VAL-REDACT-002 / Bug 4
-    guarantee), while unmatched code points are reproduced from the
-    original string.
+    trailing combining marks; each segment is NFKC-normalised and folded
+    as a unit, and every folded code point it yields maps to the
+    segment's FULL original span. A matched folded span therefore always
+    maps to an original span that fully covers each contributing original
+    code point -- no plaintext fragment of a matched secret can survive
+    (the VAL-REDACT-002 / Bug 4 guarantee), while unmatched code points
+    are reproduced from the original string.
+
+    Combining-mark grouping rule (VAL-REDACT-007 parity): a trailing
+    code point is absorbed into the current segment when its Unicode
+    GENERAL CATEGORY is one of ``Mn`` (nonspacing mark), ``Mc`` (spacing
+    combining mark), or ``Me`` (enclosing mark). This MUST match the
+    TypeScript SDK's ``foldWithOrigin`` predicate
+    (``/\\p{Mn}|\\p{Mc}|\\p{Me}/u`` in
+    ``packages/sdk-typescript/src/redaction.ts``) EXACTLY so the two
+    engines group the identical set of code points and emit byte-equal
+    redaction output. A canonical-combining-class test
+    (``unicodedata.combining(ch) != 0``) would NOT suffice: a class-0
+    SPACING combining mark such as U+0903 (DEVANAGARI SIGN VISARGA,
+    category ``Mc``, canonical combining class 0) has combining class 0,
+    so ``combining`` would EXCLUDE it while ``\\p{Mc}`` (TS) INCLUDES it
+    -- the segment boundaries would diverge and the two SDKs could emit
+    different redaction output for the same input.
     """
     folded_parts: list[str] = []
     origin_starts: list[int] = []
@@ -410,8 +437,12 @@ def _fold_with_origin(value: str) -> tuple[str, list[int], list[int]]:
         seg_start = i
         i += 1
         # Absorb trailing combining marks into the same segment so the
-        # base+marks NFKC composition is computed as a unit.
-        while i < n and unicodedata.combining(value[i]) != 0:
+        # base+marks NFKC composition is computed as a unit. The predicate
+        # is Unicode MARK CATEGORY (Mn/Mc/Me), matching the TS SDK's
+        # ``\p{Mn}|\p{Mc}|\p{Me}`` test byte-for-byte (VAL-REDACT-007). This
+        # is NOT ``combining(ch) != 0``: a class-0 spacing mark like U+0903
+        # (category Mc) must be grouped here too for Python<->TS parity.
+        while i < n and unicodedata.category(value[i]) in _COMBINING_MARK_CATEGORIES:
             i += 1
         seg_end = i
         segment = value[seg_start:seg_end]
