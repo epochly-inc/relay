@@ -106,10 +106,11 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
         if _is_control_plane_path(rel):
             continue
         # Canonical-write SQL only appears in code, schemas, and SQL
-        # files; restrict accordingly. ``.sql`` extension is included
-        # so that any future ``packages/schemas/sql/`` migration that
-        # accidentally hand-codes a canonical-row INSERT outside the
-        # state engine is caught.
+        # files; restrict accordingly. ``.sql`` is included so that any
+        # migration that hand-codes a canonical-row INSERT/UPDATE outside
+        # the state engine is caught. ``iter_canonical_source_files``
+        # enumerates ``.sql`` files (via CANONICAL_WRITE_EXTRA_EXTS) so
+        # this branch is live, not dead (VAL-ISO-035).
         if path.suffix not in (
             ".py",
             ".pyi",
@@ -126,11 +127,17 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        # SQL migrations use ``--`` line comments and embed canonical
+        # table names inside ``RAISE(ABORT, '...')`` error-message string
+        # literals; the documentation matcher must recognize SQL syntax
+        # for ``.sql`` files so comments / string payloads are not
+        # mistaken for executable writes (VAL-ISO-035).
+        is_sql = path.suffix == ".sql"
         for line_no_minus_one, line in enumerate(text.split("\n")):
             m = _CANONICAL_WRITE_RE.search(line)
             if m is None:
                 continue
-            if _match_is_documentation(line, m.start()):
+            if _match_is_documentation(line, m.start(), sql=is_sql):
                 continue
             findings.append(
                 Finding(

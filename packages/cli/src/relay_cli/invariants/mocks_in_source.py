@@ -7,10 +7,15 @@ ONLY in test paths. Production source under ``packages/`` / ``services/``
 The check matches the same regex specified by contract VAL-W5-033:
 ``from unittest.mock|MagicMock\\(|@patch\\(|@mock\\.``. Test paths are
 filtered by :func:`relay_cli.invariants.util.iter_source_files` which
-already excludes ``**/tests/`` and ``packages/sdk-typescript/test/``.
-We additionally exclude ``test_*.py`` and ``conftest.py`` files at the
-per-file layer because they may live outside a ``tests/`` directory in
-TS package roots.
+already excludes the canonical ``tests/`` subtrees and
+``packages/sdk-typescript/test/``. We additionally exclude
+``test_*.py``, ``*.test.ts``, and ``conftest.py`` files at the per-file
+layer because they may live outside an excluded ``tests/`` prefix.
+Project-specific test-helper basenames (e.g. ``_w25_helpers.py``) are
+exempted ONLY when they actually live under a ``tests/`` directory; the
+exemption is NOT applied globally by basename, so a production source
+file sharing the name cannot smuggle a mock import past the check
+(VAL-ISO-037).
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -43,17 +48,42 @@ _MOCK_RE: Final[re.Pattern[str]] = re.compile(
     r"from\s+unittest\.mock|MagicMock\(|@patch\(|@mock\."
 )
 
-# Per-file exclusions. Test files often live alongside non-test source
-# in TS workspaces; ``test_*.py`` and ``conftest.py`` are unconditionally
-# test-only across both Python and TS conventions.
-_PER_FILE_EXCLUDES: Final[tuple[str, ...]] = (
-    "conftest.py",
-    "_w25_helpers.py",
-)
+# Unconditional per-file exclusions: filenames that are test-only by
+# convention REGARDLESS of directory. ``conftest.py`` is the pytest
+# fixture-collection file and is test-only everywhere by definition.
+_PER_FILE_EXCLUDES: Final[tuple[str, ...]] = ("conftest.py",)
+
+# Test-tree-scoped per-file exclusions: project-specific test helper
+# basenames that are ONLY test-only when they actually live under a
+# ``tests/`` directory. ``_w25_helpers.py`` is a shared helper module
+# imported by the W2.5 sidecar tests; it legitimately uses mocks, but
+# the exemption MUST be scoped to ``tests/`` so a production source file
+# that happens to share the basename cannot smuggle a mock import into
+# shipping code (VAL-ISO-037 -- the basename allowlist was previously
+# applied across the whole tree, exempting any non-test file with this
+# name).
+_TEST_SCOPED_PER_FILE_EXCLUDES: Final[tuple[str, ...]] = ("_w25_helpers.py",)
+
+
+def _under_tests_dir(path: Path) -> bool:
+    """Return True iff ``path`` has a ``tests`` directory segment.
+
+    Matches both ``.../tests/...`` (Python) and ``.../test/...``
+    (vitest) path segments, case-sensitively, so the test-scoped
+    exemptions only apply inside genuine test trees.
+    """
+    return "tests" in path.parts or "test" in path.parts
 
 
 def _is_test_filename(path: Path) -> bool:
-    """Return True for filenames that are test-only by convention."""
+    """Return True for files that are test-only by convention.
+
+    Unconditional test filenames (``test_*.py``, ``*.test.ts``,
+    ``conftest.py`` ...) are test-only regardless of location. The
+    project-specific helper basenames in
+    :data:`_TEST_SCOPED_PER_FILE_EXCLUDES` are test-only ONLY when they
+    live under a ``tests/`` directory (VAL-ISO-037).
+    """
     name = path.name
     if name.startswith("test_") and (name.endswith(".py") or name.endswith(".pyi")):
         return True
@@ -65,7 +95,9 @@ def _is_test_filename(path: Path) -> bool:
         return True
     if name.endswith(".spec.js") or name.endswith(".spec.jsx"):
         return True
-    return name in _PER_FILE_EXCLUDES
+    if name in _PER_FILE_EXCLUDES:
+        return True
+    return name in _TEST_SCOPED_PER_FILE_EXCLUDES and _under_tests_dir(path)
 
 
 def run(repo_root: Path) -> tuple[str, list[Finding]]:

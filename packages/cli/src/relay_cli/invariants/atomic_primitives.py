@@ -85,19 +85,26 @@ def _is_in_primitive_dir(rel_posix: str) -> bool:
     return _PRIMITIVE_DIR_TOKEN in PurePosixPath(rel_posix).parts
 
 
-def _match_is_documentation(line: str, match_start: int) -> bool:
+def _match_is_documentation(
+    line: str, match_start: int, *, sql: bool = False
+) -> bool:
     """Return True iff the match position appears inside a documentation context.
 
     Heuristics (each conservative; only fires when the match lives in
     explicit documentation syntax):
 
       1. The leftmost non-whitespace character on the line is ``#`` or
-         ``//``  -> entire line is a comment -> documentation.
-      2. A standalone ``#`` (Python/shell comment) appears in the line
-         BEFORE the match position, NOT inside a string literal -> the
-         match is inside a trailing comment.
+         ``//`` (or ``--`` when ``sql=True``) -> entire line is a comment
+         -> documentation.
+      2. A standalone ``#`` (Python/shell comment, or SQL ``--`` when
+         ``sql=True``) appears in the line BEFORE the match position, NOT
+         inside a string literal -> the match is inside a trailing
+         comment.
       3. The match span is wholly enclosed by a backtick pair on the
          line -> the match is a backtick-quoted reference.
+      4. (``sql=True`` only) The match is enclosed in a quoted string
+         literal -> it is a string payload (e.g. a ``RAISE(ABORT, '...')``
+         error message), not an executable SQL statement.
 
     Heuristic 2's "not inside a string literal" check is approximated by
     counting unescaped quote characters to the left of the candidate
@@ -108,10 +115,19 @@ def _match_is_documentation(line: str, match_start: int) -> bool:
 
     Heuristic 3 walks the line for ``backtick ... backtick`` pairs and
     returns True iff the match is fully bounded by one of them.
+
+    ``sql=True`` is set by the control-plane-write check when scanning
+    ``.sql`` migration files (VAL-ISO-035): SQL line comments start with
+    ``--`` (not ``#``/``//``), and a canonical-table name mentioned
+    inside a string literal (an error message) is not an executable
+    write. The default (``sql=False``) preserves the exact Python/TS
+    behavior for every other caller.
     """
     # Heuristic 1: full-line comment.
     stripped = line.lstrip()
     if stripped.startswith("#") or stripped.startswith("//"):
+        return True
+    if sql and stripped.startswith("--"):
         return True
     # Heuristic 2: trailing comment.
     quote_count = 0
@@ -129,6 +145,20 @@ def _match_is_documentation(line: str, match_start: int) -> bool:
             and line[idx + 1] == "/"
         ):
             return True
+        elif (
+            sql
+            and ch == "-"
+            and quote_count % 2 == 0
+            and idx + 1 < len(line)
+            and line[idx + 1] == "-"
+        ):
+            # SQL ``--`` line comment outside any string literal.
+            return True
+    # Heuristic 4 (SQL only): the match sits inside a string literal.
+    # An odd number of unescaped quotes to the left of the match means
+    # the match position is inside an open string literal.
+    if sql and quote_count % 2 == 1:
+        return True
     # Heuristic 3: backtick-bounded (closed pair on the same line).
     for m in _BACKTICK_RE.finditer(line):
         if m.start() < match_start < m.end():

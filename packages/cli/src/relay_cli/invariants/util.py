@@ -84,6 +84,19 @@ SOURCE_EXTS: Final[frozenset[str]] = frozenset(
     {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".yaml", ".yml"}
 )
 
+# Extensions enumerated ONLY by the canonical-write check
+# (VAL-W5-035 / VAL-ISO-035). The control-plane-write checker greps for
+# direct ``INSERT INTO``/``UPDATE`` of ``run_results`` / ``gate_decisions``
+# in code AND in SQL migrations. ``.sql`` is NOT part of the shared
+# :data:`SOURCE_EXTS` set because the other checks (banned-copy,
+# atomic-primitives, mocks-in-source, todo/fixme, kill-by-name,
+# pytest-skip) have no business scanning SQL migrations; pulling ``.sql``
+# into the global set would broaden every check. The canonical-write
+# iterator unions this set with :data:`SOURCE_EXTS` so migration ``.sql``
+# files are actually enumerated and scanned for forbidden hand-coded
+# canonical writes.
+CANONICAL_WRITE_EXTRA_EXTS: Final[frozenset[str]] = frozenset({".sql"})
+
 # -----------------------------------------------------------------------------
 # Excluded subtrees (path-prefix matches on POSIX-form relative path)
 # -----------------------------------------------------------------------------
@@ -301,7 +314,12 @@ def _is_excluded(rel_posix: str, excluded_prefixes: tuple[str, ...]) -> bool:
     return False
 
 
-def _walk_root(root: Path, repo_root: Path) -> Iterator[Path]:
+def _walk_root(
+    root: Path,
+    repo_root: Path,
+    *,
+    exts: frozenset[str] = SOURCE_EXTS,
+) -> Iterator[Path]:
     """Yield candidate source files under ``root`` deterministically.
 
     Walks the tree top-down with sorted entries so ordering is identical
@@ -309,6 +327,11 @@ def _walk_root(root: Path, repo_root: Path) -> Iterator[Path]:
     time for performance (the per-file exclusion check would also
     handle them, but pruning the descent avoids reading metadata for
     thousands of generated .pyc files on cold caches).
+
+    ``exts`` is the suffix allowlist a path must match to be yielded.
+    Defaults to :data:`SOURCE_EXTS`; the canonical-write iterator passes
+    an expanded set that also includes ``.sql`` so migration files are
+    scanned (VAL-ISO-035).
     """
     if not root.exists():
         return
@@ -317,7 +340,7 @@ def _walk_root(root: Path, repo_root: Path) -> Iterator[Path]:
     candidates = [p for p in root.rglob("*") if p.is_file()]
     candidates.sort(key=lambda p: _to_posix(p, repo_root))
     for path in candidates:
-        if path.suffix not in SOURCE_EXTS:
+        if path.suffix not in exts:
             continue
         # Drop __pycache__ early.
         if "__pycache__" in path.parts:
@@ -329,6 +352,7 @@ def iter_source_files(
     repo_root: Path,
     *,
     include_self: bool = False,
+    extra_exts: frozenset[str] = frozenset(),
 ) -> Iterator[Path]:
     """Yield production source files under ``repo_root`` deterministically.
 
@@ -341,18 +365,23 @@ def iter_source_files(
     verifier's own source anyway (the verifier never writes
     ``run_results``) but should not silently skip any tree.
 
-    File extensions are filtered to :data:`SOURCE_EXTS`. Tests, generated
-    codegen output, vendored node_modules, and ``__pycache__`` are
-    always excluded.
+    File extensions are filtered to :data:`SOURCE_EXTS` unioned with
+    ``extra_exts``. The canonical-write iterator passes
+    :data:`CANONICAL_WRITE_EXTRA_EXTS` (``{".sql"}``) so migration files
+    are enumerated and scanned (VAL-ISO-035); the default empty
+    ``extra_exts`` keeps every other check scoped to :data:`SOURCE_EXTS`.
+    Tests, generated codegen output, vendored node_modules, and
+    ``__pycache__`` are always excluded.
     """
     excluded = list(_BASE_EXCLUDED_PREFIXES)
     if not include_self:
         excluded.extend(_SELF_MENTION_EXCLUDED_PREFIXES)
     excluded_t = tuple(excluded)
+    exts = SOURCE_EXTS | extra_exts
 
     for root_name in SCAN_ROOTS:
         root = repo_root / root_name
-        for path in _walk_root(root, repo_root):
+        for path in _walk_root(root, repo_root, exts=exts):
             rel = _to_posix(path, repo_root)
             if _is_excluded(rel, excluded_t):
                 continue
@@ -362,16 +391,23 @@ def iter_source_files(
 def iter_canonical_source_files(repo_root: Path) -> Iterator[Path]:
     """Variant of :func:`iter_source_files` for the canonical-write check.
 
-    Behaves exactly like ``iter_source_files(repo_root, include_self=True)``
-    -- the verifier's own source files are included so the grep is
-    exhaustive across the tree. The check itself filters
-    ``services/result-writer/`` and ``services/gate-engine/`` per
-    VAL-W5-035.
+    Behaves like ``iter_source_files(repo_root, include_self=True)`` with
+    one addition: the suffix allowlist is extended by
+    :data:`CANONICAL_WRITE_EXTRA_EXTS` (``{".sql"}``) so that ``.sql``
+    migration files are enumerated. The verifier's own source files are
+    included so the grep is exhaustive across the tree. The check itself
+    filters ``services/result-writer/`` and ``services/gate-engine/`` (and
+    the OSS-local CP package prefixes) per VAL-W5-035.
     """
-    return iter_source_files(repo_root, include_self=True)
+    return iter_source_files(
+        repo_root,
+        include_self=True,
+        extra_exts=CANONICAL_WRITE_EXTRA_EXTS,
+    )
 
 
 __all__ = [
+    "CANONICAL_WRITE_EXTRA_EXTS",
     "Finding",
     "SCAN_ROOTS",
     "SOURCE_EXTS",
