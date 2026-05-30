@@ -292,7 +292,17 @@ async def test_bug_a2_check_idempotency_consults_db_on_cache_miss(
             leading >>= 5
         return "".join(reversed(chars))
 
-    surface = "PUT /v1/gates/{gate_id}"
+    # VAL-IDEMP-001 (commit 35a173a) interpolated the concrete path
+    # parameter into the gate idempotency surface: the PUT /v1/gates/{gate_id}
+    # handler now derives its canonical idempotency key from the RESOLVED
+    # surface ``f"PUT /v1/gates/{gate_id}"`` (gate_id = "gate-restart" below),
+    # NOT the un-interpolated template. The BUG-A2 DB-fallback regression
+    # this test guards must seed the row under the SAME resolved surface the
+    # handler now uses, or the canonical_key cannot match on the cache-miss
+    # DB lookup. (Pre-VAL-IDEMP-001 this used the literal "{gate_id}"
+    # template, which silently aliased every gate -- the very defect
+    # VAL-IDEMP-001 fixed.)
+    surface = "PUT /v1/gates/gate-restart"
     # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
     # ULID grammar ^[0-9A-HJKMNP-TV-Z]{26}$ (spec B.6 line 3517) so the
     # runtime accepts the header before computing canonical_key. The

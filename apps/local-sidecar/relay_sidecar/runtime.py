@@ -70,7 +70,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -389,6 +389,24 @@ class RuntimeState:
     redaction_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
     # W2.9 idempotency: surface -> {key -> (request_digest, response)}.
     idempotency_store: dict[str, dict[str, dict[str, Any]]] = field(
+        default_factory=dict
+    )
+    # VAL-IDEMP-002: in-flight reservation registry closing the
+    # check-then-store TOCTOU window. Maps (surface, key) -> a reservation
+    # record {"event": asyncio.Event, "owner": asyncio.Task | None,
+    # "digest": str} inserted SYNCHRONOUSLY on the cache-miss path of
+    # _check_idempotency (no ``await`` between the miss check and the
+    # insert, so the insert is atomic within the single-threaded asyncio
+    # event loop). A second concurrent request for the same (surface, key)
+    # observes the reservation, waits on the event for the winner to store,
+    # then replays the stored response -- it never executes the handler
+    # body a second time. The winner finalizes the reservation in
+    # _store_idempotency (sets the event, removes the record). The scope of
+    # this mechanism is INTRA-PROCESS: it closes the asyncio race within a
+    # single sidecar process. The cross-process backstop remains the
+    # DB-backed idempotency_records UNIQUE primary key written through
+    # ``transactional_db_write_raw`` in _store_idempotency.
+    idempotency_inflight: dict[tuple[str, str], dict[str, Any]] = field(
         default_factory=dict
     )
     # W2.10 rate-limit buckets. bucket_key -> (window_start_epoch, count).
@@ -1069,6 +1087,40 @@ class DrainMiddleware:
             headers={"Retry-After": str(DRAIN_RETRY_AFTER_S)},
         )
         await response(scope, receive, send)
+
+
+class _IdempotencyReservationReleaseMiddleware:
+    """Pure-ASGI middleware: release a request's pending idempotency
+    reservations on completion (VAL-IDEMP-002).
+
+    The idempotency winner records the (surface, key) tuples it reserved on
+    the per-request ASGI ``scope`` (see ``_reserve_idempotency_for_request``).
+    The success path finalizes the reservation in ``_store_idempotency``;
+    this middleware deterministically releases any reservation that is STILL
+    pending when the request finishes -- i.e. an aborted winner that took an
+    early-return validation path or raised -- so the key cannot wedge a
+    later genuine retry. Releasing sets the reservation event (waking any
+    loser blocked on it) and removes the reservation from
+    ``idempotency_inflight``.
+
+    Pure-ASGI (not BaseHTTPMiddleware) so it shares the exact ``scope`` dict
+    the route handler mutates and so the release runs in a ``finally`` on
+    EVERY exit path (normal response, early-return, exception)."""
+
+    def __init__(self, app: ASGIApp, release: Callable[[Scope], None]) -> None:
+        self.app = app
+        self._release = release
+
+    async def __call__(
+        self, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self._release(scope)
 
 
 def build_runtime_app(
@@ -3481,6 +3533,47 @@ def build_runtime_app(
             leading >>= 5
         return "".join(reversed(chars))
 
+    # VAL-IDEMP-002: per-request reservation ledger. The winner records the
+    # (surface, key) tuples it reserved on the ASGI ``request.scope`` (which
+    # is strictly per-request and independent of asyncio task identity --
+    # unlike ``asyncio.current_task()``, which is shared when a handler runs
+    # inline in the caller's task, e.g. under httpx.ASGITransport). On the
+    # success path _store_idempotency finalizes the reservation (sets its
+    # event, removes it from ``idempotency_inflight``). On ANY non-store exit
+    # path (early-return validation error, raised exception) the
+    # _IdempotencyReservationReleaseMiddleware releases every still-pending
+    # reservation recorded on the scope: it sets the reservation event (to
+    # wake any waiting loser) and removes it from ``idempotency_inflight`` (so
+    # a later genuine request with the same key can win and execute). This
+    # makes abort handling deterministic instead of relying on wall-clock
+    # timeouts or task liveness.
+    _IDEMP_SCOPE_LEDGER_KEY = "relay_idempotency_reservations"
+
+    def _reserve_idempotency_for_request(
+        request: Request, reservation_key: tuple[str, str]
+    ) -> None:
+        ledger = request.scope.get(_IDEMP_SCOPE_LEDGER_KEY)
+        if ledger is None:
+            ledger = []
+            request.scope[_IDEMP_SCOPE_LEDGER_KEY] = ledger
+        ledger.append(reservation_key)
+
+    def _release_request_idempotency_reservations(scope: Scope) -> None:
+        """Release every still-pending reservation recorded on a request
+        scope. Called by the release middleware on request completion (any
+        exit path). A reservation that was already finalized by
+        _store_idempotency is absent from ``idempotency_inflight`` and is
+        skipped; a still-present one is an aborted winner -> set its event
+        (wake waiting losers) and remove it (free the key)."""
+        ledger = scope.get(_IDEMP_SCOPE_LEDGER_KEY)
+        if not ledger:
+            return
+        inflight = runtime.idempotency_inflight
+        for reservation_key in ledger:
+            reservation = inflight.pop(reservation_key, None)
+            if reservation is not None:
+                reservation["event"].set()
+
     async def _check_idempotency(
         request: Request, *, surface: str, body_bytes: bytes
     ) -> tuple[JSONResponse | None, str | None, str | None]:
@@ -3554,58 +3647,110 @@ def build_runtime_app(
             )
         key = raw_key
         digest = _digest_of_bytes(body_bytes)
-        # In-memory map: surface -> {key: {digest, status, body, headers}}
-        per_surface = runtime.idempotency_store.setdefault(surface, {})
-        existing = per_surface.get(key)
-        if existing is None:
-            # BUG-A2 fix: cache miss falls back to the DB-backed table
-            # using the SAME canonical_key derivation as the writer.
-            db_record = await _lookup_idempotency_db(
-                surface=surface, user_key=key
-            )
-            if db_record is not None:
-                # Hydrate the in-memory map so subsequent replays in
-                # this process avoid the DB round-trip.
-                per_surface[key] = db_record
-                existing = db_record
-        if existing is not None:
-            if existing["request_digest"] == digest:
-                return (
-                    JSONResponse(
-                        status_code=existing["response_status"],
-                        content=existing["response_body"],
-                        headers={
-                            **_rate_limit_headers_for(request),
-                            "Idempotent-Replay": "true",
-                        },
-                    ),
-                    key,
-                    digest,
+
+        def _response_for_existing(record: dict[str, Any]) -> JSONResponse:
+            """Build the replay (same digest) or 409 (different digest)
+            response for an already-stored idempotency record."""
+            if record["request_digest"] == digest:
+                return JSONResponse(
+                    status_code=record["response_status"],
+                    content=record["response_body"],
+                    headers={
+                        **_rate_limit_headers_for(request),
+                        "Idempotent-Replay": "true",
+                    },
                 )
-            return (
-                JSONResponse(
-                    status_code=409,
-                    content=_build_error_envelope(
-                        code="RELAY-IDEMPOTENCY-001",
-                        http_status=409,
-                        message=(
-                            f"Idempotency-Key {key!r} was reused with a "
-                            "different request body digest; original "
-                            "digest is preserved per spec B.2"
-                        ),
-                        blocked_surface=surface,
-                        details={
-                            "key": key,
-                            "stored_digest": existing["request_digest"],
-                            "submitted_digest": digest,
-                        },
+            return JSONResponse(
+                status_code=409,
+                content=_build_error_envelope(
+                    code="RELAY-IDEMPOTENCY-001",
+                    http_status=409,
+                    message=(
+                        f"Idempotency-Key {key!r} was reused with a "
+                        "different request body digest; original "
+                        "digest is preserved per spec B.2"
                     ),
-                    headers=_rate_limit_headers_for(request),
+                    blocked_surface=surface,
+                    details={
+                        "key": key,
+                        "stored_digest": record["request_digest"],
+                        "submitted_digest": digest,
+                    },
                 ),
-                key,
-                digest,
+                headers=_rate_limit_headers_for(request),
             )
-        return None, key, digest
+
+        async def _lookup_existing() -> dict[str, Any] | None:
+            """Look up a STORED record (in-memory map first, then the
+            DB-backed table). Returns None on a genuine miss."""
+            # In-memory map: surface -> {key: {digest, status, body}}.
+            store = runtime.idempotency_store.setdefault(surface, {})
+            rec = store.get(key)
+            if rec is None:
+                # BUG-A2 fix: cache miss falls back to the DB-backed table
+                # using the SAME canonical_key derivation as the writer.
+                db_rec = await _lookup_idempotency_db(
+                    surface=surface, user_key=key
+                )
+                if db_rec is not None:
+                    # Hydrate the in-memory map so subsequent replays in
+                    # this process avoid the DB round-trip.
+                    store[key] = db_rec
+                    rec = db_rec
+            return rec
+
+        existing = await _lookup_existing()
+        if existing is not None:
+            return _response_for_existing(existing), key, digest
+
+        # VAL-IDEMP-002: genuine cache miss. Close the check-then-store
+        # TOCTOU by RESERVING the (surface, key) atomically before the
+        # caller runs the write-handler body. There MUST be no ``await``
+        # between observing "no reservation" and inserting our own, so the
+        # reserve is atomic within the single-threaded asyncio event loop:
+        # a concurrent coroutine cannot interleave and also win the race.
+        reservation_key = (surface, key)
+        inflight = runtime.idempotency_inflight
+        while True:
+            reservation = inflight.get(reservation_key)
+            if reservation is None:
+                # WINNER: install a pending reservation, then return so the
+                # caller executes the handler body exactly once.
+                # _store_idempotency finalizes (sets the event, removes the
+                # reservation) on the success path; the per-request release
+                # ledger (_reserve_idempotency_for_request below + the
+                # release middleware) deterministically clears the
+                # reservation on ANY exit path -- including an early-return
+                # validation error or an exception -- so an aborted winner
+                # never wedges the key for a later genuine retry.
+                new_reservation = {
+                    "event": asyncio.Event(),
+                    "digest": digest,
+                }
+                inflight[reservation_key] = new_reservation
+                _reserve_idempotency_for_request(request, reservation_key)
+                return None, key, digest
+
+            # LOSER: a concurrent (or prior, not-yet-released) request holds
+            # the reservation. Wait for the winner to store its result (the
+            # winner sets the event in _store_idempotency) or to release the
+            # reservation without storing (an aborted winner -- the release
+            # middleware sets the event AND removes the reservation). We
+            # never execute the handler body in parallel.
+            event: asyncio.Event = reservation["event"]
+            await event.wait()
+            # The winner finished (stored or aborted). If it stored, the
+            # record is now present -> replay (same digest) or 409.
+            existing = await _lookup_existing()
+            if existing is not None:
+                return _response_for_existing(existing), key, digest
+            # The winner aborted without storing (the release path sets the
+            # event and removes the reservation). The key produced no
+            # committed result, so it is free. Loop: either we now win the
+            # reservation ourselves and execute, or a newer winner has
+            # already taken it and we wait again. This converges because
+            # each iteration either stores a result (terminal replay) or
+            # consumes exactly one aborted reservation.
 
     async def _lookup_idempotency_db(
         *, surface: str, user_key: str
@@ -3702,6 +3847,15 @@ def build_runtime_app(
             "response_status": response_status,
             "response_body": response_body,
         }
+        # VAL-IDEMP-002: finalize the in-flight reservation installed by
+        # _check_idempotency. The in-memory record is written ABOVE first,
+        # so any loser woken by the event immediately finds the stored
+        # result and replays it. Removing the reservation and setting its
+        # event wakes every waiting loser. Order matters: record-then-
+        # signal guarantees a woken loser never observes an empty store.
+        reservation = runtime.idempotency_inflight.pop((surface, key), None)
+        if reservation is not None:
+            reservation["event"].set()
         db = runtime.database
         if db is None:
             return
@@ -3933,6 +4087,15 @@ def build_runtime_app(
             await self.app(scope, receive, send_wrapper)
 
     app.add_middleware(_RateLimitMiddleware, runtime_state=runtime)
+    # VAL-IDEMP-002: release any idempotency reservation left pending when a
+    # request finishes (aborted winner / exception path). Added LAST so it is
+    # the OUTERMOST middleware -- its ``finally`` runs after the route and the
+    # inner middlewares, guaranteeing the reservation is released on every
+    # exit path before the response leaves the process.
+    app.add_middleware(
+        _IdempotencyReservationReleaseMiddleware,
+        release=_release_request_idempotency_reservations,
+    )
 
     # =====================================================================
     # W2.5 Gates endpoints (VAL-V2M02-037..048)
