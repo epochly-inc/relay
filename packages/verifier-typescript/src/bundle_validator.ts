@@ -636,6 +636,77 @@ export function validateBundle(args: {
     }
   }
 
+  // --- Evidence-ref manifest binding (VAL-V3M1-019) -----------------------
+  // Per spec K rule line 4428 ("A claim cannot reference an artifact whose
+  // digest is not present in the bundle's manifest.") the verifier checks
+  // that every `evidence_refs[].digest` resolves to an entry in the
+  // bundle's top-level `manifest` list. When the bundle declares no
+  // `manifest` the check is SKIPPED (preserves back-compat for legacy
+  // bundles that predate this rule); when the manifest is declared, any
+  // claim digest absent from it triggers structured error
+  // `evidence_ref_artifact_missing_from_manifest` (code RELAY-EVID-014).
+  //
+  // The manifest may be a list of dicts each carrying a `digest` key
+  // (preferred per spec K example at line 4393-4399) OR a list of bare
+  // digest strings (defensive accept). Heterogeneous entries are
+  // tolerated -- unparseable entries simply are not contributed to the
+  // allowed set. The set is computed once outside the per-claim loop to
+  // keep the check O(N + M) instead of O(N * M). Runs under
+  // jwsResult.structure_ok mirroring the Python guard ordering
+  // (bundle_validator.py:728-798); placed between the artifact-digest
+  // check and the Merkle check to preserve cross-runtime error ordering.
+  if (jwsResult.structure_ok) {
+    const manifestField = bundle["manifest"];
+    let manifestDigests: Set<string> | null = null;
+    if (Array.isArray(manifestField)) {
+      manifestDigests = new Set<string>();
+      for (const entry of manifestField) {
+        if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+          const entryDigest = (entry as Record<string, unknown>)["digest"];
+          if (typeof entryDigest === "string" && entryDigest.length > 0) {
+            manifestDigests.add(entryDigest);
+          }
+        } else if (typeof entry === "string" && entry.length > 0) {
+          manifestDigests.add(entry);
+        }
+      }
+    }
+
+    // manifestDigests === null marks "no manifest declared" -> skip the gate.
+    if (manifestDigests !== null) {
+      const claims = bundle["claims"];
+      if (Array.isArray(claims)) {
+        for (let ci = 0; ci < claims.length; ci++) {
+          const claim = claims[ci];
+          if (claim === null || typeof claim !== "object" || Array.isArray(claim)) continue;
+          const refs = (claim as Record<string, unknown>)["evidence_refs"];
+          if (!Array.isArray(refs)) continue;
+          for (let ri = 0; ri < refs.length; ri++) {
+            const ref = refs[ri];
+            if (ref === null || typeof ref !== "object" || Array.isArray(ref)) continue;
+            const refDigest = (ref as Record<string, unknown>)["digest"];
+            // The spec K example shows refs that carry `value` instead of
+            // `digest` (e.g. exit_code references). Those refs are not
+            // subject to the manifest-binding rule -- only digest-bearing
+            // refs are. Mirrors Python bundle_validator.py:779-785.
+            if (typeof refDigest !== "string" || refDigest.length === 0) continue;
+            if (!manifestDigests.has(refDigest)) {
+              _appendError(output, {
+                reason: "evidence_ref_artifact_missing_from_manifest",
+                message:
+                  `claim[${ci}].evidence_refs[${ri}] digest ` +
+                  `${JSON.stringify(refDigest)} is not present in the ` +
+                  `bundle's manifest (spec K line 4428); manifest contains ` +
+                  `${manifestDigests.size} digest(s)`,
+                code: RELAY_EVID_014,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
   // --- Merkle root check (VAL-W10-024) ------------------------------------
   const declaredMerkle = bundle["merkle_root_hex"];
   if (typeof declaredMerkle === "string" && declaredMerkle.length > 0) {
