@@ -541,6 +541,142 @@ def test_corrupted_cassette_quarantine_moves_file(
     assert quarantined[0].read_text(encoding="utf-8") == "garbage{not_json\n"
 
 
+def _seed_one_recorded_fixture(
+    session_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> Any:
+    """Record one valid fixture (cassette line + bodies + request.json).
+
+    Returns the ``ReplayFixture`` so callers can locate its sidecar file.
+    """
+    body = b'{"choices":[]}'
+    fixture = make_replay_fixture(
+        output_digest="sha256-" + hashlib.sha256(body).hexdigest(),
+        output_ref="file://bodies/00000000-0000-4000-8000-000000000001.body",
+    )
+    _record_one(
+        session_dir,
+        fixture=fixture,
+        request=make_canonical_request(),
+        response_bytes=body,
+    )
+    return fixture
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_malformed_canonical_request_json_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json that is not valid JSON MUST
+    raise ``RelayCassetteCorruptError`` and quarantine -- NOT an uncaught
+    ``json.JSONDecodeError`` that bypasses the quarantine path."""
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text("{not valid json", encoding="utf-8")
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["line_number"] == 1
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    # The malformed cassette MUST have been moved to quarantine.
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_missing_method_key_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json that is valid JSON but lacks
+    a required ``method`` key MUST raise ``RelayCassetteCorruptError`` and
+    quarantine -- NOT an uncaught ``KeyError``."""
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    # Valid JSON, but the obj["method"] access in
+    # _read_canonical_key_for_fixture will raise KeyError.
+    request_path.write_text(
+        json.dumps({"url": "https://api.openai.com/v1/chat/completions"}),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_invalid_base64_body_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json with a non-base64 body_b64
+    value MUST raise ``RelayCassetteCorruptError`` (binascii.Error caught),
+    not an uncaught ``binascii.Error``."""
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {},
+                "body_b64": "@@@not-base64@@@",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_valid_canonical_request_still_loads(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 guard: a valid recorded cassette still loads cleanly
+    after the try/except hardening (no over-rejection)."""
+    _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    index = load_cassette(cassette_path)
+    assert len(index) == 1
+
+
 @pytest.mark.fulfills("VAL-W7-026")
 def test_blank_line_raises_corrupt_error(empty_cassette_dir: Path) -> None:
     """An empty line in the JSONL stream MUST raise corrupt error."""

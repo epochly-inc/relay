@@ -73,6 +73,7 @@ class DeltaComputeResult:
     rows_inserted: int
     rows_existing: int  # rows that already existed (idempotent re-run)
     rows_skipped_current_absent: int
+    rows_skipped_invalid: int = 0  # invalid-involved cases (no admissible delta)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +137,7 @@ def compute_eval_delta(
     rows_inserted = 0
     rows_existing = 0
     rows_skipped_current_absent = 0
+    rows_skipped_invalid = 0
 
     with eval_transaction(conn):
         for case_id, current in current_cases.items():
@@ -146,6 +148,16 @@ def compute_eval_delta(
                 baseline=baseline,
                 flake_history=flake_history.get(case_id, []),
             )
+            if delta_class is None:
+                # Invalid-involved case: no admissible delta (spec AM.3's
+                # closed six-member enum has no 'invalid' class, and the
+                # runner contract states "failed counts toward eval-delta;
+                # invalid does not"). Skip insertion -- mirroring the
+                # current_absent handling below -- and surface via a
+                # separate count so a pass->invalid break is not masked
+                # as 'unchanged_failure' (VAL-ISO-015).
+                rows_skipped_invalid += 1
+                continue
             delta_id = _derive_delta_id(
                 eval_run_id=eval_run_id,
                 baseline_eval_run_id=baseline_eval_run_id,
@@ -186,6 +198,7 @@ def compute_eval_delta(
         rows_inserted=rows_inserted,
         rows_existing=rows_existing,
         rows_skipped_current_absent=rows_skipped_current_absent,
+        rows_skipped_invalid=rows_skipped_invalid,
     )
 
 
@@ -200,8 +213,17 @@ def _classify(
     current: _Outcome,
     baseline: _Outcome | None,
     flake_history: list[str],
-) -> str:
-    """Return one of the six DELTA_* classes for a single case."""
+) -> str | None:
+    """Return one of the six DELTA_* classes, or ``None`` to skip.
+
+    Returns ``None`` when either side of the comparison is ``invalid``:
+    spec AM.3's ``delta_class`` is a closed six-member enum with no
+    'invalid' member, and the runner contract states "failed counts
+    toward eval-delta; invalid does not". An invalid-involved case has
+    no admissible delta and must be SKIPPED (mirroring the current_absent
+    handling) -- never aliased onto 'unchanged_failure', which would mask
+    a pass->invalid regression (VAL-ISO-015).
+    """
     # Map per-case status -> normalized 'pass' / 'fail' / 'invalid'
     # using observed_outcome plus status. For pass/fail aggregation
     # purposes:
@@ -213,6 +235,15 @@ def _classify(
 
     if base is None:
         return DELTA_BASELINE_ABSENT
+
+    # Invalid involvement: there is no admissible delta. The six-member
+    # enum has no 'invalid' class, so we skip the case (return None) and
+    # let the caller surface it via rows_skipped_invalid -- the same way
+    # current_absent cases are skipped and counted. This must come BEFORE
+    # the flake override: a case that is invalid in the current run is
+    # not a comparable pass/fail outcome regardless of its history.
+    if cur == "invalid" or base == "invalid":
+        return None
 
     # Flake detection: if the prior history within window contains BOTH
     # 'pass' and 'fail' outcomes for this case, classify flaky and
@@ -231,12 +262,13 @@ def _classify(
     if base == "fail" and cur == "pass":
         return DELTA_NET_NEW_SUCCESS
 
-    # invalid involvement: treat any 'invalid' as not-comparable; pick
-    # 'flaky' if status changed across history, else 'unchanged_failure'
-    # as the conservative class (an invalid case is not a true pass).
-    if _is_flaky(flake_history):
-        return DELTA_FLAKY
-    return DELTA_UNCHANGED_FAILURE
+    # Unreachable: cur/base are each in {pass, fail} here (invalid was
+    # handled above), and all four pass/fail pairings are enumerated.
+    # Defensive fallthrough that does not silently invent a class.
+    raise AssertionError(
+        f"unclassifiable delta for case {case_id!r}: "
+        f"base={base!r}, cur={cur!r}"
+    )
 
 
 def _normalize(outcome: _Outcome) -> str:

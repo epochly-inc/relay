@@ -272,6 +272,105 @@ def test_manifest_loader_handles_billion_laughs_anchor_pattern() -> None:
 
 
 # ---------------------------------------------------------------------------
+# VAL-ISO-016: alias/anchor-bomb (billion-laughs) defense at expansion time.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-016")
+def test_manifest_loader_rejects_alias_bomb_with_shallow_authored_depth() -> None:
+    """VAL-ISO-016 regression: a billion-laughs alias bomb whose AUTHORED
+    depth is shallow (3) but whose expansion factor is exponential MUST be
+    rejected.
+
+    The depth walk over the pre-expansion event stream sees the aliases as
+    AliasEvent nodes (NOT expanded), so its observed max depth stays under
+    16 -- yet ``yaml.safe_load`` expands the structure to 2^N nodes. The
+    loader must count aliases / nodes during the walk and reject.
+    """
+    from relay_schemas.manifest import safe_load_yaml
+
+    # Exact trigger from the finding: authored depth 3, expansion 2^N.
+    bomb = (
+        "a: &a [1]\n"
+        "b: &b [*a,*a]\n"
+        "c: &c [*b,*b]\n"
+        "d: [*c,*c]\n"
+    )
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 -- typed below
+        safe_load_yaml(bomb)
+    # Must be the structural-defense rejection, NOT an unrelated parse error.
+    assert "alias" in str(excinfo.value).lower() or "bomb" in str(
+        excinfo.value
+    ).lower() or "size" in str(excinfo.value).lower(), (
+        "VAL-ISO-016: alias bomb must be rejected by the anchor/alias "
+        f"budget, got: {excinfo.value!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-016")
+def test_manifest_loader_rejects_large_alias_bomb_amplification() -> None:
+    """A deeper alias chain (higher amplification) is also rejected."""
+    from relay_schemas.manifest import safe_load_yaml
+
+    lines = ["l0: &l0 [1,1]"]
+    for i in range(1, 12):
+        lines.append(f"l{i}: &l{i} [*l{i - 1},*l{i - 1}]")
+    lines.append("top: [*l11,*l11]")
+    bomb = "\n".join(lines) + "\n"
+    with pytest.raises(Exception):  # noqa: B017,PT011 -- any rejection is fine
+        safe_load_yaml(bomb)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-016")
+def test_manifest_loader_accepts_legitimate_anchors() -> None:
+    """VAL-ISO-016 guard: a document with a small, reasonable number of
+    anchors/aliases (the legitimate use the manifest itself relies on)
+    MUST still load successfully.
+
+    The real manifest.yaml uses anchors (``&id001`` egress allowlist reused
+    across commands). Over-rejecting those would break manifest loading.
+    """
+    from relay_schemas.manifest import safe_load_yaml
+
+    legit = (
+        "egress: &egress\n"
+        "  - https://api.openai.com\n"
+        "  - https://api.anthropic.com\n"
+        "cmd_a:\n"
+        "  allowlist: *egress\n"
+        "cmd_b:\n"
+        "  allowlist: *egress\n"
+        "cmd_c:\n"
+        "  allowlist: *egress\n"
+    )
+    out = safe_load_yaml(legit)
+    assert out is not None
+    assert out["cmd_a"]["allowlist"] == [
+        "https://api.openai.com",
+        "https://api.anthropic.com",
+    ]
+    assert out["cmd_c"]["allowlist"] == out["cmd_a"]["allowlist"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-016")
+def test_manifest_loader_rejects_oversize_canonical_json() -> None:
+    """VAL-ISO-016 / AI.1: the 256 KiB canonical-JSON size half of the
+    AI.1 constraint is enforced. A document whose materialized content
+    exceeds the byte budget MUST be rejected."""
+    from relay_schemas.manifest import safe_load_yaml
+
+    # A flat list of many short scalars: shallow depth, no aliases, but
+    # large materialized size. Build > 256 KiB of content.
+    big = "- " + "\n- ".join(["x" * 64] * 8000) + "\n"
+    with pytest.raises(Exception):  # noqa: B017,PT011
+        safe_load_yaml(big)
+
+
+# ---------------------------------------------------------------------------
 # VAL-V3M5-012: contract DSL YAML loader enforces depth <= 16.
 # ---------------------------------------------------------------------------
 

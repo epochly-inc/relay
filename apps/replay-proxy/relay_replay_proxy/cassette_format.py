@@ -74,6 +74,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import binascii
 import contextlib
 import errno
 import hashlib
@@ -877,7 +878,28 @@ def load_cassette(
             if quarantine_on_error:
                 _quarantine(cassette_path)
             raise
-        canonical_key = _read_canonical_key_for_fixture(session_dir, fixture)
+        try:
+            canonical_key = _read_canonical_key_for_fixture(session_dir, fixture)
+        except (json.JSONDecodeError, KeyError, binascii.Error) as exc:
+            # The sidecar request.json exists but is malformed (invalid
+            # JSON, missing a required key like "method"/"url", or a
+            # non-base64 body_b64). Quarantine the cassette and re-raise as
+            # a structured corrupt error -- mirroring the JSON-parse,
+            # schema-validation, and output-digest steps above -- instead
+            # of letting an uncaught exception bypass the quarantine path
+            # (VAL-ISO-010).
+            if quarantine_on_error:
+                _quarantine(cassette_path)
+            raise RelayCassetteCorruptError(
+                f"cassette {cassette_path} line {line_number}: "
+                f"malformed canonical request file for fixture "
+                f"{fixture.fixture_id}: {type(exc).__name__}: {exc}",
+                details={
+                    "cassette_path": str(cassette_path),
+                    "line_number": line_number,
+                    "fixture_id": str(fixture.fixture_id),
+                },
+            ) from exc
         if canonical_key is None:
             if quarantine_on_error:
                 _quarantine(cassette_path)
@@ -928,7 +950,10 @@ def _read_canonical_key_for_fixture(
     obj = json.loads(raw)
     import base64
 
-    body_bytes = base64.b64decode(obj.get("body_b64", "") or "")
+    # validate=True so a non-base64 body_b64 raises binascii.Error (which
+    # load_cassette catches and quarantines) rather than silently
+    # discarding invalid characters (VAL-ISO-010).
+    body_bytes = base64.b64decode(obj.get("body_b64", "") or "", validate=True)
     req = CanonicalRequest(
         method=obj["method"],
         url=obj["url"],

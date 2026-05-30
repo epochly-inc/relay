@@ -64,6 +64,25 @@ A document like ``{a: 1}`` has depth 2 (mapping + scalar leaf). A document
 like ``{a: [1, 2]}`` has depth 3.
 """
 
+MAX_YAML_CANONICAL_BYTES: int = 256 * 1024
+"""Maximum canonical-JSON size of a YAML document (spec AI.1 line 5659).
+
+The 256 KiB half of the AI.1 structural constraint, enforced on the
+*materialized* (post alias expansion) object so an alias bomb that expands
+to a large canonical form is rejected even if its authored bytes are small.
+"""
+
+MAX_YAML_EXPANDED_NODES: int = 100_000
+"""Maximum post-expansion node count (anchor/alias bomb resource cap).
+
+An alias bomb (billion-laughs) authors few bytes but expands to an
+exponential number of nodes. We compute the post-expansion node count from
+the event stream (charging each ``AliasEvent`` the full node-cost of the
+anchor it references) and reject documents whose expansion exceeds this
+budget before materialising them. Generously above legitimate manifest
+usage (the canonical manifest expands to <2000 nodes).
+"""
+
 
 class YamlDepthExceededError(ValueError):
     """Raised when a YAML document exceeds :data:`MAX_YAML_DEPTH`.
@@ -82,15 +101,146 @@ class YamlDepthExceededError(ValueError):
         self.limit = limit
 
 
+class YamlAliasBombError(ValueError):
+    """Raised when a YAML document is an anchor/alias (billion-laughs) bomb.
+
+    Two structural signatures trip this guard:
+
+    * A nested alias-in-anchor chain: an anchor whose own defining subtree
+      contains an alias to another anchor. This is the defining feature of
+      an exponential amplification bomb; legitimate anchor reuse references
+      anchors only outside their own definitions.
+    * A post-expansion node count exceeding
+      :data:`MAX_YAML_EXPANDED_NODES`.
+
+    Attributes:
+        reason: Machine-readable cause (``"alias_chain"`` /
+            ``"expanded_nodes"``).
+        observed: The observed metric value (expanded node count, or the
+            count of nested-alias anchors).
+    """
+
+    def __init__(self, reason: str, observed: int) -> None:
+        super().__init__(
+            f"YAML anchor/alias bomb rejected ({reason}={observed}); "
+            f"billion-laughs structural defense (spec AI.1 line 5659)"
+        )
+        self.reason = reason
+        self.observed = observed
+
+
+class YamlSizeExceededError(ValueError):
+    """Raised when a YAML document's canonical JSON exceeds the byte budget.
+
+    Attributes:
+        size: Observed canonical-JSON byte length.
+        limit: The configured cap, mirrored from
+            :data:`MAX_YAML_CANONICAL_BYTES`.
+    """
+
+    def __init__(self, size: int, limit: int = MAX_YAML_CANONICAL_BYTES) -> None:
+        super().__init__(
+            f"YAML canonical-JSON size {size} bytes exceeds limit {limit} "
+            f"(spec AI.1 line 5659)"
+        )
+        self.size = size
+        self.limit = limit
+
+
+def _scan_yaml_event_stream(
+    stream: str | bytes, *, max_depth: int
+) -> None:
+    """Walk the parse event stream and enforce structural budgets.
+
+    Enforces, before any alias expansion materialises the object:
+
+    * Nesting depth <= ``max_depth`` (raises :class:`YamlDepthExceededError`).
+    * No nested alias-in-anchor amplification chain and a bounded
+      post-expansion node count (raises :class:`YamlAliasBombError`).
+
+    The walk is single-pass. For each container we track (a) its running
+    nesting depth for the depth cap, (b) its fully-expanded node cost
+    (charging each ``AliasEvent`` the cost of the anchor it references) for
+    the node-budget cap, and (c) whether its subtree contains any alias --
+    if a *named* (anchored) container's subtree contains an alias, the
+    document has an amplification chain and is rejected.
+    """
+    container_depth = 0
+    max_observed = 0
+    saw_scalar = False
+    # anchor name -> fully-expanded node cost of the anchored subtree.
+    anchor_cost: dict[str, int] = {}
+    # Stack of frames for open containers: [expanded_cost, anchor_name,
+    # subtree_contains_alias].
+    frames: list[list[Any]] = [[0, None, False]]
+    for event in yaml.parse(stream, Loader=yaml.SafeLoader):
+        if isinstance(event, yaml.MappingStartEvent | yaml.SequenceStartEvent):
+            container_depth += 1
+            if container_depth + 1 > max_observed:
+                max_observed = container_depth + 1
+            if max_observed > max_depth:
+                raise YamlDepthExceededError(max_observed, limit=max_depth)
+            frames.append([1, getattr(event, "anchor", None), False])
+        elif isinstance(event, yaml.MappingEndEvent | yaml.SequenceEndEvent):
+            container_depth -= 1
+            cost, anchor, has_alias = frames.pop()
+            if anchor is not None:
+                anchor_cost[anchor] = cost
+                if has_alias:
+                    # An anchored subtree that itself references another
+                    # anchor is the amplification primitive of a
+                    # billion-laughs bomb. Reject before materialising.
+                    raise YamlAliasBombError("alias_chain", observed=1)
+            parent = frames[-1]
+            parent[0] += cost
+            parent[2] = parent[2] or has_alias
+            if parent[0] > MAX_YAML_EXPANDED_NODES:
+                raise YamlAliasBombError("expanded_nodes", observed=parent[0])
+        elif isinstance(event, yaml.ScalarEvent):
+            saw_scalar = True
+            level = container_depth + 1
+            if level > max_observed:
+                max_observed = level
+            if max_observed > max_depth:
+                raise YamlDepthExceededError(max_observed, limit=max_depth)
+            anchor = getattr(event, "anchor", None)
+            if anchor is not None:
+                anchor_cost[anchor] = 1
+            frames[-1][0] += 1
+        elif isinstance(event, yaml.AliasEvent):
+            frames[-1][0] += anchor_cost.get(event.anchor, 1)
+            frames[-1][2] = True
+            if frames[-1][0] > MAX_YAML_EXPANDED_NODES:
+                raise YamlAliasBombError("expanded_nodes", observed=frames[-1][0])
+    if not saw_scalar and max_observed == 0 and frames[0][0] == 0:
+        return
+    if frames[0][0] > MAX_YAML_EXPANDED_NODES:
+        raise YamlAliasBombError("expanded_nodes", observed=frames[0][0])
+
+
 def safe_load_yaml(stream: str | bytes, *, max_depth: int = MAX_YAML_DEPTH) -> Any:
-    """Depth-bounded ``yaml.safe_load`` for manifest documents.
+    """Depth-, alias-, and size-bounded ``yaml.safe_load`` for manifests.
 
     Uses ``yaml.SafeLoader`` exclusively (never ``yaml.Loader``) so arbitrary
-    Python object construction is impossible. Walks the parse event stream
-    to count nested ``MappingStartEvent`` + ``SequenceStartEvent`` events
-    and raises :class:`YamlDepthExceededError` when the running maximum
-    exceeds ``max_depth``. After the depth check passes the bytes are
-    re-parsed via ``yaml.safe_load`` to produce the Python object.
+    Python object construction is impossible. Before materialising the
+    object, walks the parse event stream to enforce the spec AI.1 structural
+    budgets:
+
+    * nesting depth <= ``max_depth`` (:class:`YamlDepthExceededError`);
+    * no anchor/alias (billion-laughs) bomb -- a nested alias-in-anchor
+      amplification chain or an expanded node count above
+      :data:`MAX_YAML_EXPANDED_NODES` (:class:`YamlAliasBombError`).
+
+    The event-stream alias accounting is required because aliases are
+    represented as ``AliasEvent`` nodes that are NOT expanded in the parse
+    stream: a depth-only walk over the unexpanded events is blind to a
+    billion-laughs payload whose authored depth is shallow but whose
+    expansion is exponential (VAL-ISO-016).
+
+    After the structural checks pass the bytes are re-parsed via
+    ``yaml.safe_load`` and the materialised object's canonical-JSON size is
+    enforced against :data:`MAX_YAML_CANONICAL_BYTES`
+    (:class:`YamlSizeExceededError`), the 256 KiB half of the AI.1 cap.
 
     Args:
         stream: YAML document body (str or bytes).
@@ -102,39 +252,18 @@ def safe_load_yaml(stream: str | bytes, *, max_depth: int = MAX_YAML_DEPTH) -> A
 
     Raises:
         YamlDepthExceededError: depth budget exceeded.
+        YamlAliasBombError: anchor/alias bomb detected.
+        YamlSizeExceededError: materialised canonical JSON exceeds the byte
+            budget.
         yaml.YAMLError: any parse error (propagated verbatim from PyYAML).
     """
-    # Event-stream depth walk. We track the running container depth and
-    # remember the maximum reached. Scalars at the bottom add a final +1
-    # depth (a bare scalar document has depth 1).
-    container_depth = 0
-    max_observed = 0
-    saw_scalar = False
-    for event in yaml.parse(stream, Loader=yaml.SafeLoader):
-        if isinstance(event, yaml.MappingStartEvent | yaml.SequenceStartEvent):
-            container_depth += 1
-            # The leaf scalar inside this container adds 1 more; account
-            # for it speculatively so an event-stream cutoff on an empty
-            # container still produces a depth >= 1 result.
-            if container_depth + 1 > max_observed:
-                max_observed = container_depth + 1
-            if max_observed > max_depth:
-                raise YamlDepthExceededError(max_observed, limit=max_depth)
-        elif isinstance(event, yaml.MappingEndEvent | yaml.SequenceEndEvent):
-            container_depth -= 1
-        elif isinstance(event, yaml.ScalarEvent):
-            saw_scalar = True
-            # Scalar at the current container depth: total observed depth
-            # is container_depth + 1 (the scalar leaf level).
-            level = container_depth + 1
-            if level > max_observed:
-                max_observed = level
-            if max_observed > max_depth:
-                raise YamlDepthExceededError(max_observed, limit=max_depth)
-    if not saw_scalar and max_observed == 0:
-        # Empty document; safe_load returns None.
-        return None
-    return yaml.safe_load(stream)
+    _scan_yaml_event_stream(stream, max_depth=max_depth)
+    result = yaml.safe_load(stream)
+    if result is not None:
+        size = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        if size > MAX_YAML_CANONICAL_BYTES:
+            raise YamlSizeExceededError(size)
+    return result
 
 # ----------------------------------------------------------------------------
 # Canonical schema discovery.

@@ -33,6 +33,7 @@ from relay_evals import (
     DELTA_FLAKY,
     DELTA_NET_NEW_FAILURE,
     DELTA_NET_NEW_SUCCESS,
+    DELTA_UNCHANGED_FAILURE,
     DELTA_UNCHANGED_PASS,
     MAX_FLAKE_WINDOW_N,
     EvalCase,
@@ -166,6 +167,133 @@ def test_delta_classes_match_spec_example(
 # ---------------------------------------------------------------------------
 # VAL-W9-004: idempotent + monotonic against the same baseline
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-015")
+def test_pass_to_invalid_transition_not_classified_unchanged_failure(
+    eval_db: sqlite3.Connection,
+    deterministic_ids: Callable[[], str],
+    fixed_manifest_hash: str,
+    valid_evidence: Callable[..., EvidenceBinding],
+) -> None:
+    """VAL-ISO-015 regression: a case that was PASSING in baseline but is
+    now INVALID (missing evidence) must NOT be recorded as
+    'unchanged_failure'.
+
+    Per the runner contract (runner.py: 'failed counts toward eval-delta;
+    invalid does not') and spec AM.3's closed six-member enum (no
+    'invalid' class), an invalid-involved case must be SKIPPED -- mirroring
+    the current_absent handling -- and surfaced via a separate count, NOT
+    silently aliased onto 'unchanged_failure' (which would mask the
+    pass->invalid regression).
+    """
+    runner = EvalRunner(eval_db, id_supplier=deterministic_ids)
+
+    # Baseline: case 'k' passes with complete evidence.
+    baseline_id = _run_eval(
+        runner=runner,
+        dataset_id="ds-inv",
+        agent_version="agent-v1",
+        fixed_manifest_hash=fixed_manifest_hash,
+        case_ids=["k"],
+        observed_by_case={"k": "pass"},
+        valid_evidence=valid_evidence,
+    )
+
+    # Current: case 'k' emits INCOMPLETE evidence (no span ids) -> the
+    # runner marks it status='invalid' (VAL-W9-007). observed_outcome is
+    # still 'pass' but the case is not a valid pass/fail.
+    def invalid_evidence_evaluator(case: EvalCase) -> EvalCaseOutcome:
+        return EvalCaseOutcome(
+            observed_outcome="pass",
+            evidence=valid_evidence(span_ids=[]),  # strips an anchor
+        )
+
+    current_id = runner.run(
+        dataset_id="ds-inv",
+        agent_version="agent-v1",
+        release_sha="rel-current",
+        manifest_commit_hash=fixed_manifest_hash,
+        cases=_cases("k", expected="pass"),
+        evaluator=invalid_evidence_evaluator,
+    ).eval_run_id
+
+    # Sanity: the current case really is status='invalid'.
+    cur_status = eval_db.execute(
+        "SELECT status FROM eval_results "
+        "WHERE eval_run_id = ? AND case_id = 'k'",
+        (current_id,),
+    ).fetchone()["status"]
+    assert cur_status == "invalid"
+
+    result = compute_eval_delta(
+        eval_db,
+        eval_run_id=current_id,
+        baseline_eval_run_id=baseline_id,
+    )
+
+    rows = eval_db.execute(
+        "SELECT case_id, delta_class FROM eval_run_deltas "
+        "WHERE eval_run_id = ?",
+        (current_id,),
+    ).fetchall()
+    classes = {row["case_id"]: row["delta_class"] for row in rows}
+
+    # The defect: pass->invalid was inserted as 'unchanged_failure',
+    # masking the regression. The fix: it is NOT classified
+    # unchanged_failure -- it is skipped and surfaced via a separate count.
+    assert classes.get("k") != DELTA_UNCHANGED_FAILURE, (
+        "VAL-ISO-015: pass->invalid must not be aliased to "
+        "unchanged_failure (regression masking)."
+    )
+    assert "k" not in classes, (
+        "VAL-ISO-015: invalid-involved case must be skipped from "
+        "eval_run_deltas (mirrors current_absent), not inserted."
+    )
+    assert result.rows_inserted == 0
+    assert result.rows_skipped_invalid == 1
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-015")
+def test_genuine_unchanged_failure_still_classified(
+    eval_db: sqlite3.Connection,
+    deterministic_ids: Callable[[], str],
+    fixed_manifest_hash: str,
+    valid_evidence: Callable[..., EvidenceBinding],
+) -> None:
+    """VAL-ISO-015 guard: a real fail->fail case is still classified
+    'unchanged_failure' after the invalid-skip fix (no over-correction).
+    """
+    runner = EvalRunner(eval_db, id_supplier=deterministic_ids)
+    baseline_id = _run_eval(
+        runner=runner,
+        dataset_id="ds-uf",
+        agent_version="agent-v1",
+        fixed_manifest_hash=fixed_manifest_hash,
+        case_ids=["m"],
+        observed_by_case={"m": "fail"},
+        valid_evidence=valid_evidence,
+    )
+    current_id = _run_eval(
+        runner=runner,
+        dataset_id="ds-uf",
+        agent_version="agent-v1",
+        fixed_manifest_hash=fixed_manifest_hash,
+        case_ids=["m"],
+        observed_by_case={"m": "fail"},
+        valid_evidence=valid_evidence,
+    )
+    result = compute_eval_delta(
+        eval_db,
+        eval_run_id=current_id,
+        baseline_eval_run_id=baseline_id,
+    )
+    rows = _fetch_deltas(eval_db, current_id, baseline_id)
+    assert rows[0]["delta_class"] == DELTA_UNCHANGED_FAILURE
+    assert result.rows_inserted == 1
+    assert result.rows_skipped_invalid == 0
 
 
 @pytest.mark.plumbing
