@@ -175,6 +175,58 @@ describe("VAL-W4-027: retryAdvice is a discriminated union, NOT a boolean", () =
     expect(advice.max_attempts).toBe(5);
   });
 
+  // VAL-PARITY-009: an object whose ``mode`` is a non-empty UNKNOWN string must
+  // preserve its sibling fields (delay_seconds, max_attempts, ...) and keep the
+  // original mode -- matching the Python ``_coerce_retry_advice`` dict branch
+  // (``return dict(value)``). Previously the unknown-mode object branch returned
+  // ``{ mode: "no_retry", raw: mode }`` and silently dropped the siblings.
+  it("dict input with unknown mode preserves sibling fields (VAL-PARITY-009)", () => {
+    const advice = coerceRetryAdvice({
+      mode: "after_quota_reset",
+      delay_seconds: 30,
+      max_attempts: 3,
+    });
+    // Siblings survive (the regression: delay_seconds/max_attempts were dropped).
+    expect(advice.delay_seconds).toBe(30);
+    expect(advice.max_attempts).toBe(3);
+    // The mode is carried through verbatim, byte-equal to Python's coercion.
+    expect(advice.mode).toBe("after_quota_reset");
+    expect(advice).toEqual({
+      mode: "after_quota_reset",
+      delay_seconds: 30,
+      max_attempts: 3,
+    });
+  });
+
+  // Python<->TypeScript parity: for each input below the TS coercion output must
+  // byte-equal Python's _coerce_retry_advice (confirmed against the Python impl).
+  it("Python<->TypeScript parity on retry_advice coercion (VAL-PARITY-009)", () => {
+    // Unknown-mode object: full object preserved, mode unchanged.
+    expect(
+      coerceRetryAdvice({ mode: "weird", delay_seconds: 5, max_attempts: 3 }),
+    ).toEqual({ mode: "weird", delay_seconds: 5, max_attempts: 3 });
+    // Known-mode object: full object preserved.
+    expect(
+      coerceRetryAdvice({
+        mode: "after_retry_after",
+        delay_seconds: 30,
+        max_attempts: 5,
+      }),
+    ).toEqual({ mode: "after_retry_after", delay_seconds: 30, max_attempts: 5 });
+    // Missing-mode object: falls closed to no_retry, siblings preserved.
+    expect(coerceRetryAdvice({ delay_seconds: 30 })).toEqual({
+      mode: "no_retry",
+      delay_seconds: 30,
+    });
+    // Unknown string: falls closed to no_retry with raw preserved.
+    expect(coerceRetryAdvice("definitely_not_a_mode")).toEqual({
+      mode: "no_retry",
+      raw: "definitely_not_a_mode",
+    });
+    // Wire enum string: mapped to SDK mode.
+    expect(coerceRetryAdvice("do_not_retry")).toEqual({ mode: "no_retry" });
+  });
+
   it("rate-limit error default retry_advice is after_retry_after (not boolean)", () => {
     const err = new RelayRateLimitError("rate limit", { code: "RELAY-RATE-001" });
     expect(err.retryAdvice.mode).toBe("after_retry_after");

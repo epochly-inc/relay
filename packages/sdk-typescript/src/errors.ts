@@ -220,7 +220,12 @@ export function coerceRetryAdvice(value: unknown): RetryAdvice {
     if (KNOWN_MODES.has(mode)) {
       return { ...(obj as RetryAdvice), mode: mode as RetryAdviceMode };
     }
-    return { mode: "no_retry", raw: mode };
+    // Unknown non-empty mode: preserve the whole object (mode + siblings such
+    // as delay_seconds/max_attempts), mirroring Python's
+    // ``_coerce_retry_advice`` dict branch (``return dict(value)``) so the two
+    // SDKs produce byte-equal coerced output (VAL-PARITY-009). Dropping the
+    // siblings here was the regression.
+    return { ...(obj as RetryAdvice), mode: mode as RetryAdviceMode };
   }
   return { mode: "no_retry" };
 }
