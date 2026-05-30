@@ -100,7 +100,28 @@ _DISABLED_BUILTINS = {
 # cel-python parse error.
 _BACKREF_PATTERN = re.compile(r"\\\d")  # \1, \2, ... in a regex literal
 
-# CEL string-method names whose regex argument we screen.
+# Whole-expression raw-text screen for regex backreferences. We scan the
+# ENTIRE source text for any single- or double-quoted CEL string literal
+# whose body contains `\<digit>`, regardless of position or receiver. This
+# matches the cel-js mirror `checkRegexBackref` in
+# packages/contracts-typescript/src/evaluator.ts byte-for-byte in scope, so
+# both runtimes accept/reject the IDENTICAL set of expressions (VAL-PARITY-007).
+# A narrower screen (only the first string literal of a `.matches()` call)
+# failed open for backreferences in sibling sub-expressions, non-first
+# `.matches()` arguments, and concatenated string operands.
+#
+# Both CEL string-quote styles parse the backslash literally, so an inner
+# `\1` in the source becomes the RE2-illegal backref `\1` after CEL string
+# parsing. The pattern below captures each literal's body (group 1 =
+# double-quoted, group 2 = single-quoted) so the backref check runs only
+# against literal contents, never against surrounding operators.
+_STRING_LITERAL_PATTERN = re.compile(
+    r'"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\''
+)
+
+# CEL string-method names whose regex argument we screen. Retained for the
+# regex-method allow-list; the backreference screen itself is now
+# whole-expression (see `_check_regex_backref`).
 _REGEX_METHODS = {"matches"}
 
 
@@ -137,17 +158,21 @@ def _check_profile(ast: Any) -> None:
       - ``dyn(...)`` calls (RELAY-CEL-002 / DYN-DISABLED)
       - native ``timestamp(...)`` calls (RELAY-CEL-002 / TS-DISABLED)
       - native ``duration(...)`` calls (RELAY-CEL-002 / DUR-DISABLED)
-      - ``"...".matches("...\\1...")`` regex backreferences
-        (RELAY-CEL-007 / REGEX-BACKREF)
+
+    The regex-backreference screen (RELAY-CEL-007 / REGEX-BACKREF) is a
+    separate whole-expression raw-text pass, :func:`_check_regex_backref`,
+    run before this AST walk in :meth:`RelayCelEvaluator.compile`. It scans
+    every string literal in the source -- not just the first argument of a
+    ``.matches()`` call -- so it stays byte-for-byte in scope with the
+    cel-js mirror ``checkRegexBackref`` (VAL-PARITY-007).
     """
 
     for node in _walk_tree(ast):
         data = getattr(node, "data", None)
         if data is None:
             continue
-        # Function-call shapes: `ident_arg` is the bare-call form
-        # (`dyn(x)`); `member_dot_arg` is the method form
-        # (`"abc".matches("...")`). Both expose IDENT + exprlist.
+        # Function-call shape: `ident_arg` is the bare-call form
+        # (`dyn(x)`) exposing IDENT + exprlist.
         if data == "ident_arg":
             ident_token = next(
                 (
@@ -163,36 +188,41 @@ def _check_profile(ast: Any) -> None:
             if entry is not None:
                 msg, subtype = entry
                 raise RelayCelProfileError(msg, subtype=subtype)
-        elif data == "member_dot_arg":
-            # Find the trailing IDENT (method name) and the exprlist.
-            ident_token = None
-            exprlist = None
-            for c in node.children:
-                if hasattr(c, "type") and getattr(c, "type", None) == "IDENT":
-                    ident_token = c
-                elif getattr(c, "data", None) == "exprlist":
-                    exprlist = c
-            if ident_token is None or exprlist is None:
-                continue
-            method_name = str(ident_token)
-            if method_name not in _REGEX_METHODS:
-                continue
-            # Walk the exprlist looking for a string literal first arg.
-            for sub in _walk_tree(exprlist):
-                if hasattr(sub, "type") and getattr(sub, "type", None) == "STRING_LIT":
-                    raw = str(sub)
-                    # Strip the surrounding quotes; cel-python emits the
-                    # literal with its delimiters intact.
-                    if len(raw) >= 2 and raw[0] in ("'", '"') and raw[-1] == raw[0]:
-                        body = raw[1:-1]
-                    else:
-                        body = raw
-                    if _BACKREF_PATTERN.search(body):
-                        raise RelayCelRegexBackreferenceError(
-                            "Relay CEL profile pins regex to the RE2 subset; "
-                            "backreferences (e.g., \\1) are not supported."
-                        )
-                    break  # only check the first string literal
+
+
+def _check_regex_backref(expression: str) -> None:
+    """Reject any regex backreference (``\\1``..``\\9``) in the raw
+    expression text.
+
+    Scans the ENTIRE source for single- and double-quoted CEL string
+    literals and rejects with ``RELAY-CEL-007`` /
+    ``RELAY-CEL-PROFILE-REGEX-BACKREF`` if ANY literal body contains
+    ``\\<digit>``, regardless of position or receiver. This is the
+    fail-closed whole-expression scope; it mirrors the cel-js
+    ``checkRegexBackref`` (packages/contracts-typescript/src/evaluator.ts)
+    so the two runtimes accept/reject the IDENTICAL set of expressions
+    (VAL-PARITY-007).
+
+    Run as a pre-screen before AST parse so the structured error surfaces
+    even for expressions whose ``.matches()`` argument is a non-first or
+    concatenated literal (which a scoped AST screen missed), and so the
+    error is RELAY-CEL-007 rather than a leaked RE2 compile error.
+
+    RE2-legal shorthand classes (``\\d``, ``\\w``, ``\\s`` -- backslash
+    followed by a LETTER) are NOT matched by ``_BACKREF_PATTERN`` and stay
+    accepted.
+    """
+
+    for match in _STRING_LITERAL_PATTERN.finditer(expression):
+        # group(1) = double-quoted body, group(2) = single-quoted body.
+        body = match.group(1)
+        if body is None:
+            body = match.group(2)
+        if body is not None and _BACKREF_PATTERN.search(body):
+            raise RelayCelRegexBackreferenceError(
+                "Relay CEL profile pins regex to the RE2 subset; "
+                "backreferences (e.g., \\1) are not supported."
+            )
 
 
 def _check_finite(value: Any) -> Any:
@@ -340,6 +370,11 @@ class RelayCelEvaluator:
         cached = self._compile_cache.get(expression)
         if cached is not None:
             return cached
+        # Pre-screen regex backreferences in the raw expression text before
+        # parse, so a backref in ANY string literal (not just the first
+        # `.matches()` argument) surfaces RELAY-CEL-007. Mirrors the cel-js
+        # `checkRegexBackref` pre-parse screen (VAL-PARITY-007).
+        _check_regex_backref(expression)
         try:
             ast = self._env.compile(expression)
         except RelayCelError:

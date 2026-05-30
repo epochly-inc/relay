@@ -1702,6 +1702,27 @@
     },
     {
       "bindings": {},
+      "expression": "req.matches(\"ok\") && note == \"a(b)\\\\1\"",
+      "id": "err_regex_backref_sibling_subexpr",
+      "idiom": "regex",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
+      "expression": "req.matches(\"a\" + \"a(b)\\\\1\")",
+      "id": "err_regex_backref_concat_matches_arg",
+      "idiom": "regex",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
+      "expression": "note == \"a(b)\\\\1\"",
+      "id": "err_regex_backref_bare_string_no_matches",
+      "idiom": "regex",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
       "expression": "1000000000 * 1000000000",
       "id": "err_int_product_above_safe_range",
       "idiom": "numeric-out-of-bounds",

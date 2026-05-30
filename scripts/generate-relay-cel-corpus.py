@@ -464,6 +464,30 @@ def macro_eval_error_cases() -> list[tuple[str, str, dict[str, Any], str]]:
         # and raise ``RelayCelRegexBackreferenceError``.
         ("err_regex_backref", "'abc'.matches('(a)\\\\1')", {}, "regex"),
         ("err_regex_backref_double_quote", '"abc".matches("(a)\\\\1")', {}, "regex"),
+        # VAL-PARITY-007: the backref screen is whole-expression scoped on
+        # BOTH runtimes -- not just the first ``.matches()`` argument. A
+        # backref in a sibling sub-expression, a non-first ``.matches()``
+        # argument, or a concatenated operand MUST be rejected identically.
+        # cel-python used to accept these (fail-open) while cel-js rejected
+        # them (fail-closed); both now reject with RELAY-CEL-007.
+        (
+            "err_regex_backref_sibling_subexpr",
+            'req.matches("ok") && note == "a(b)\\\\1"',
+            {},
+            "regex",
+        ),
+        (
+            "err_regex_backref_concat_matches_arg",
+            'req.matches("a" + "a(b)\\\\1")',
+            {},
+            "regex",
+        ),
+        (
+            "err_regex_backref_bare_string_no_matches",
+            'note == "a(b)\\\\1"',
+            {},
+            "regex",
+        ),
     ]
 
 
