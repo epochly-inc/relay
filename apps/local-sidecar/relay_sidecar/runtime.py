@@ -1745,8 +1745,18 @@ def build_runtime_app(
                     },
                 )
         # ---- v2m02 full-envelope path ----
-        scope_reject = _check_required_scope(
-            request, required="ingest:write", blocked_surface=_RUNS_SURFACE
+        # Auth is the FIRST gate on this path (before the canonical-write /
+        # required-field / raw_capture gates below). Migrated from
+        # ``_check_required_scope`` to ``_check_auth`` (round-2 follow-up to
+        # VAL-ISO-002): ``_check_required_scope`` consulted only the legacy
+        # ``X-Relay-Scopes`` header (empty in the secure default), rejecting
+        # a bearer token with ``ingest:write`` 403. ``_check_auth`` merges
+        # the bearer-token scopes while preserving the exact required scope
+        # and the legacy header path.
+        scope_reject = _check_auth(
+            request,
+            required_scope="ingest:write",
+            blocked_surface=_RUNS_SURFACE,
         )
         if scope_reject is not None:
             return scope_reject
@@ -1891,9 +1901,14 @@ def build_runtime_app(
                     },
                 )
         # ---- v2m02 full-envelope path ----
-        scope_reject = _check_required_scope(
+        # Auth is the FIRST gate on this path (before the M08-W8 per-span
+        # hardening, raw_capture, and side-effect-pairing gates below).
+        # Migrated from ``_check_required_scope`` to ``_check_auth`` (round-2
+        # follow-up to VAL-ISO-002): the legacy-header-only check rejected a
+        # bearer token with ``ingest:write`` 403 in the secure default.
+        scope_reject = _check_auth(
             request,
-            required="ingest:write",
+            required_scope="ingest:write",
             blocked_surface=_SPANS_BATCH_SURFACE,
         )
         if scope_reject is not None:
@@ -2022,9 +2037,14 @@ def build_runtime_app(
         enforced = await _enforce_manifest_anchors(body)
         if isinstance(enforced, JSONResponse):
             return enforced
-        scope_reject = _check_required_scope(
+        # Auth is the FIRST gate after manifest enforcement (before the
+        # ``contract_results`` shape check below). Migrated from
+        # ``_check_required_scope`` to ``_check_auth`` (round-2 follow-up to
+        # VAL-ISO-002): the legacy-header-only check rejected a bearer token
+        # with ``ingest:write`` 403 in the secure default.
+        scope_reject = _check_auth(
             request,
-            required="ingest:write",
+            required_scope="ingest:write",
             blocked_surface=_CONTRACT_RESULTS_BATCH_SURFACE,
         )
         if scope_reject is not None:
