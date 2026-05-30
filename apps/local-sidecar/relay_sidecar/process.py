@@ -22,6 +22,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import calendar
 import os
 import signal
 import subprocess
@@ -82,22 +83,39 @@ def pid_start_time_epoch_s(pid: int) -> float | None:
 
     # 2. POSIX ``ps`` fallback.
     if sys.platform != "win32":
+        # VAL-CANON-001: ``ps -o lstart`` emits the abbreviated weekday/month
+        # (``%a``/``%b``) localized to the process's LC_TIME, and
+        # ``time.strptime`` matches against the *current* locale's names. On a
+        # non-English LC_TIME host (e.g. de_DE.UTF-8 -> "Sa Mai 17 ...") the
+        # English ``%a %b`` format fails to parse and the fallback silently
+        # returns None, which breaks the four-state lockfile classifier's
+        # ability to tell a stale PID from a live one. Force the C locale on
+        # the subprocess so ``ps`` always emits English ("Sat May 17 ..."),
+        # AND parse that struct under the C locale (see ``calendar``-wrapped
+        # strptime below) so the parse is correct regardless of the ambient
+        # interpreter locale.
+        ps_env = dict(os.environ)
+        ps_env["LC_ALL"] = "C"
+        ps_env["LANG"] = "C"
+        ps_env["LC_TIME"] = "C"
         try:
             out = subprocess.check_output(
                 ["ps", "-p", str(pid), "-o", "lstart="],
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=2.0,
+                env=ps_env,
             ).strip()
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
             out = ""
         if out:
-            # Format: "Sat May 17 12:34:56 2026" (locale-independent;
-            # ``ps`` uses the C locale formatting for lstart). Parse with
-            # an explicit format string so we don't depend on the test
-            # host's locale.
+            # Format: "Sat May 17 12:34:56 2026" in the C locale (forced via
+            # ``ps_env`` above). Parse under the C locale explicitly so
+            # ``time.strptime`` matches the English weekday/month names even
+            # when the interpreter's ambient LC_TIME is non-English.
             try:
-                struct_time = time.strptime(out, "%a %b %d %H:%M:%S %Y")
+                with calendar.different_locale(("C", None)):
+                    struct_time = time.strptime(out, "%a %b %d %H:%M:%S %Y")
                 # ``ps -o lstart`` emits the local timezone but the
                 # struct lacks tz info. ``time.mktime`` interprets it as
                 # local time, which is what the surrounding ``ps`` value
