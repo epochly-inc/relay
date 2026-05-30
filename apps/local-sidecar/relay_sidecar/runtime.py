@@ -1713,6 +1713,19 @@ def build_runtime_app(
                     details={"missing_fields": missing_fields},
                 ),
             )
+        # Step 7: defense-in-depth raw_capture rejection (M08 W8). Mirrors
+        # the spans:batch gate (see v1_ingest_spans_batch). The runs
+        # surface carries the canonical raw-eligible fields at the body
+        # root (no span wrapper); evaluate_raw_capture_on_request has a
+        # self-contained fallback for that shape (raw_capture.py:360-363).
+        # Per CLAUDE.md keystone invariant #7 the absence of an applied
+        # policy is treated as raw_capture=false (default-deny).
+        raw_rejection = evaluate_raw_capture_on_request(body=body)
+        if raw_rejection is not None:
+            return JSONResponse(
+                status_code=raw_rejection.http_status,
+                content=raw_rejection.as_envelope(),
+            )
         tracker = runtime.quiesce.tracker
         async with tracker.acquire(description="ingest/runs"):
             return JSONResponse(
