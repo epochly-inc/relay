@@ -468,6 +468,63 @@ def test_emission_rejects_unknown_x_relay_schema_version(bad_version: str) -> No
 
 
 # =============================================================================
+# VAL-ISO-011: per-namespace payload schema_version const is enforced
+# =============================================================================
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-011")
+def test_good_bundle_namespace_payload_schema_version_passes() -> None:
+    """The reference good-bundle, whose namespace payload carries the exact
+    const ``x-relay.agent-execution-trace.v1``, passes write_bundle."""
+    bundle = _good_bundle()
+    out = EmissionWriter().write_bundle(bundle)
+    payload = out["namespaces"][X_RELAY_NAMESPACE_KEY]["agent-execution-trace"]
+    assert payload["schema_version"] == "x-relay.agent-execution-trace.v1"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-011")
+@pytest.mark.parametrize(
+    "bad_version",
+    [
+        "x-relay.agent-execution-trace.v2",
+        "x-relay.agent-execution-trace.v0",
+        "x-relay.replay-verification.v1",
+        "agent-execution-trace.v1",
+        "",
+    ],
+)
+def test_emission_rejects_downgraded_namespace_payload_schema_version(
+    bad_version: str,
+) -> None:
+    """A downgraded/unknown per-namespace payload schema_version is rejected
+    with RELAY-SCHEMA-014, mirroring the contract trigger (the v2 downgrade)."""
+    bundle = _good_bundle()
+    payload = bundle["namespaces"][X_RELAY_NAMESPACE_KEY]["agent-execution-trace"]
+    payload["schema_version"] = bad_version
+    with pytest.raises(SchemaVersionError) as excinfo:
+        EmissionWriter().write_bundle(bundle)
+    assert excinfo.value.error_code == RELAY_SCHEMA_014_CODE
+    assert excinfo.value.details["namespace"] == "agent-execution-trace"
+    assert excinfo.value.details["expected"] == "x-relay.agent-execution-trace.v1"
+    assert excinfo.value.details["observed"] == bad_version
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-011")
+def test_emission_rejects_missing_namespace_payload_schema_version() -> None:
+    """A namespace payload with no schema_version at all is rejected closed."""
+    bundle = _good_bundle()
+    payload = bundle["namespaces"][X_RELAY_NAMESPACE_KEY]["agent-execution-trace"]
+    del payload["schema_version"]
+    with pytest.raises(SchemaVersionError) as excinfo:
+        EmissionWriter().write_bundle(bundle)
+    assert excinfo.value.error_code == RELAY_SCHEMA_014_CODE
+    assert excinfo.value.details["namespace"] == "agent-execution-trace"
+
+
+# =============================================================================
 # VAL-W11-015: x-relay extensions never reference Relay's internal DB schemas
 # =============================================================================
 

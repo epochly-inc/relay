@@ -694,6 +694,51 @@ def test_claim_ordering_is_canonical_lexicographic() -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-030")
+def test_merkle_root_deterministic_on_duplicate_evidence_claim_id() -> None:
+    """Two distinct claims that share the same ``evidence_claim_id`` MUST
+    produce the same Merkle root regardless of their input order.
+
+    At base commit the sort key is ``evidence_claim_id`` alone; Python's
+    stable sort preserves input order for equal keys, so swapping the two
+    duplicate-id claims yields a DIFFERENT root -- violating the documented
+    determinism guarantee. A total tie-break (content digest) fixes it.
+    """
+    forward = _base_bundle()
+    forward["claims"] = [
+        {"evidence_claim_id": "a", "v": 1},
+        {"evidence_claim_id": "a", "v": 2},
+    ]
+    reversed_order = _base_bundle()
+    reversed_order["claims"] = [
+        {"evidence_claim_id": "a", "v": 2},
+        {"evidence_claim_id": "a", "v": 1},
+    ]
+    assert bundle_merkle_root(forward) == bundle_merkle_root(reversed_order), (
+        "Merkle root is order-dependent when two claims share an "
+        "evidence_claim_id; the sort key must be total."
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-030")
+def test_merkle_root_distinguishes_distinct_duplicate_id_claim_sets() -> None:
+    """Different content under the same duplicate id still changes the root
+    (the tie-break must be content-derived, not a constant)."""
+    base = _base_bundle()
+    base["claims"] = [
+        {"evidence_claim_id": "a", "v": 1},
+        {"evidence_claim_id": "a", "v": 2},
+    ]
+    different = _base_bundle()
+    different["claims"] = [
+        {"evidence_claim_id": "a", "v": 1},
+        {"evidence_claim_id": "a", "v": 3},
+    ]
+    assert bundle_merkle_root(base) != bundle_merkle_root(different)
+
+
+@pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W11-019")
 def test_empty_claims_returns_canonical_empty_root() -> None:
     """A bundle with no claims has a deterministic empty-tree root."""

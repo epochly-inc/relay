@@ -215,6 +215,32 @@ def test_network_policy_egress_default_is_deny_literal() -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-038")
+def test_network_policy_accepts_deny_default() -> None:
+    """The only permitted ``egress_default`` value, ``"deny"``, constructs."""
+    policy = NetworkPolicy(egress_default="deny")
+    assert policy.egress_default == "deny"
+    assert policy.egress_allowlist == []
+    assert policy.egress_proxy is None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-038")
+@pytest.mark.parametrize("bad_value", ["allow", "ALLOW", "", "Deny", "deny ", "permit"])
+def test_network_policy_rejects_non_deny_egress_default(bad_value: str) -> None:
+    """Constructing NetworkPolicy with egress_default != "deny" MUST raise
+    ValueError at construction time (VAL-ISO-038).
+
+    The ``Literal["deny"]`` annotation is NOT enforced at runtime; without a
+    ``__post_init__`` guard a third-party caller can build
+    ``NetworkPolicy(egress_default="allow")`` and silently defeat the P0
+    default-deny invariant. This mirrors EphemeralCredential.__post_init__.
+    """
+    with pytest.raises(ValueError, match="deny"):
+        NetworkPolicy(egress_default=bad_value)  # type: ignore[arg-type]
+
+
+@pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M04-031")
 def test_tool_policy_fields() -> None:
     """ToolPolicy has mocked_tools, live_tools, blocked_tools,

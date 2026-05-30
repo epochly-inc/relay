@@ -33,9 +33,11 @@ import secrets
 from typing import Any
 
 import pytest
+from relay_verifier import tsa as _tsa
 from relay_verifier.tsa import (
     RELAY_EVID_031,
     TSA_CRYPTO_IMPLEMENTED,
+    _verify_cryptographic_signature,
     validate_tsa_token,
 )
 
@@ -264,6 +266,141 @@ def test_validate_tsa_rejects_random_b64u_as_tsr_der() -> None:
         bundle_digest_hex=bundle_digest,
         decided_at=decided_at,
         extra_trusted_roots_pem=cert_pem,
+    )
+    assert result.outcome == "invalid"
+    assert result.code == RELAY_EVID_031
+
+
+# ---------------------------------------------------------------------------
+# VAL-ISO-023: a non-VerificationError from verifier.verify MUST fail closed
+# and never escape (the function contract is fail-closed, not crash).
+# ---------------------------------------------------------------------------
+
+
+def _self_signed_root() -> bytes:
+    """Return a PEM-encoded self-signed cert usable as a trust root."""
+    import datetime as _dt
+
+    from cryptography import x509 as _x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec as _ec
+    from cryptography.x509.oid import NameOID
+
+    sk = _ec.generate_private_key(_ec.SECP256R1())
+    subj = _x509.Name([_x509.NameAttribute(NameOID.COMMON_NAME, "Test ISO-023")])
+    now = _dt.datetime.now(_dt.UTC)
+    cert = (
+        _x509.CertificateBuilder()
+        .subject_name(subj)
+        .issuer_name(subj)
+        .public_key(sk.public_key())
+        .serial_number(1)
+        .not_valid_before(now - _dt.timedelta(days=1))
+        .not_valid_after(now + _dt.timedelta(days=365))
+        .sign(sk, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM)
+
+
+class _RaisingVerifier:
+    """A verifier whose verify() raises a NON-VerificationError exception.
+
+    This models rfc3161_client raising e.g. a TypeError on an unexpected
+    internal state -- the exact escape the contract must guard against.
+    """
+
+    def verify(self, *_args: Any, **_kwargs: Any) -> bool:  # noqa: D401
+        raise TypeError("unexpected internal verifier state (not a VerificationError)")
+
+
+class _RaisingVerifierBuilder:
+    """Stand-in for rfc3161_client.VerifierBuilder that yields a raising verifier."""
+
+    def add_root_certificate(self, _root: Any) -> _RaisingVerifierBuilder:
+        return self
+
+    def common_name(self, _cn: str) -> _RaisingVerifierBuilder:
+        return self
+
+    def build(self) -> _RaisingVerifier:
+        return _RaisingVerifier()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-023")
+def test_verify_step_non_verification_error_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-VerificationError raised by verifier.verify() must be caught and
+    converted to a fail-closed (False, reason) tuple, NOT propagated.
+
+    At base commit the verify-step except clause catches only
+    ``rfc3161_client.errors.VerificationError``; any other exception type
+    (e.g. TypeError) escapes ``_verify_cryptographic_signature`` and bubbles
+    out of ``validate_bundle``, violating the documented fail-closed contract.
+    """
+    from cryptography import x509 as _x509
+
+    root = _x509.load_pem_x509_certificate(_self_signed_root())
+
+    # decode succeeds (returns an opaque sentinel); the verify step raises a
+    # NON-VerificationError. The decode patch keeps us off the rfc3161 parser.
+    monkeypatch.setattr(
+        _tsa.rfc3161_client,
+        "decode_timestamp_response",
+        lambda _der: object(),
+    )
+    monkeypatch.setattr(
+        _tsa.rfc3161_client,
+        "VerifierBuilder",
+        _RaisingVerifierBuilder,
+    )
+
+    # Must return a tuple, not raise.
+    ok, reason = _verify_cryptographic_signature(
+        tsr_der=b"\x30\x03\x02\x01\x00",
+        bundle_digest_bytes=b"\x00" * 32,
+        trust_roots=[root],
+    )
+    assert ok is False, "verify-step crash must fail closed (ok=False)"
+    assert reason in ("tsa_signature_invalid", "tsa_verify_error"), (
+        f"expected a fail-closed reason tag, got {reason!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-023")
+def test_validate_tsa_token_does_not_propagate_verify_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_tsa_token (and thus validate_bundle) must not let a
+    non-VerificationError from the verify step escape: it must surface as
+    outcome='invalid' with RELAY-EVID-031, not raise."""
+    bundle_digest = "44" * 32
+    decided_at = "2026-05-15T12:34:56Z"
+
+    monkeypatch.setattr(
+        _tsa.rfc3161_client,
+        "decode_timestamp_response",
+        lambda _der: object(),
+    )
+    monkeypatch.setattr(
+        _tsa.rfc3161_client,
+        "VerifierBuilder",
+        _RaisingVerifierBuilder,
+    )
+
+    token = _structured_token(
+        bundle_digest_hex=bundle_digest,
+        gen_time=decided_at,
+        tsr_der_b64u="AQID" * 8,
+    )
+    # Must not raise.
+    result = validate_tsa_token(
+        token=token,
+        bundle_digest_hex=bundle_digest,
+        decided_at=decided_at,
+        extra_trusted_roots_pem=_self_signed_root(),
     )
     assert result.outcome == "invalid"
     assert result.code == RELAY_EVID_031

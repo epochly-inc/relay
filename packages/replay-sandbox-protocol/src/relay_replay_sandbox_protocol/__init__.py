@@ -130,7 +130,10 @@ class NetworkPolicy:
 
     Fields:
         egress_default: ALWAYS the literal ``"deny"`` in P0. The Literal
-            type pin prevents callers from accidentally passing ``"allow"``.
+            type pin documents the intent, and ``__post_init__`` enforces
+            it at runtime (VAL-ISO-038): a Python ``Literal`` annotation is
+            NOT checked at runtime, so the guard is what actually prevents a
+            caller from passing ``"allow"``.
         egress_allowlist: Exact-match hostnames or CIDR blocks. Empty
             list means full deny.
         egress_proxy: When set, all egress is routed via Relay's recording
@@ -141,6 +144,21 @@ class NetworkPolicy:
     egress_default: Literal["deny"]
     egress_allowlist: list[str] = field(default_factory=list)
     egress_proxy: str | None = None
+
+    def __post_init__(self) -> None:
+        # VAL-ISO-038: runtime-enforce the P0 default-deny invariant. The
+        # ``Literal["deny"]`` annotation is not checked at runtime, so a
+        # caller could otherwise construct ``egress_default="allow"`` and
+        # silently defeat the sandbox's default-deny egress (spec E.4 line
+        # 3969). Fail closed at construction time, mirroring
+        # ``EphemeralCredential.__post_init__``.
+        if self.egress_default != "deny":
+            raise ValueError(
+                f"NetworkPolicy.egress_default must be the literal 'deny' "
+                f"(P0 default-deny egress per spec E.4 line 3969); got "
+                f"{self.egress_default!r}. The allowlist is the only way to "
+                f"permit egress; the default may never be relaxed."
+            )
 
 
 # -----------------------------------------------------------------------------

@@ -407,8 +407,8 @@ def bundle_digest(bundle: dict[str, Any]) -> str:
     return hashlib.sha256(emit_bundle(bundle)).hexdigest()
 
 
-def _claim_canonical_id(claim: dict[str, Any]) -> str:
-    """Return the canonical sort key for a claim.
+def _claim_canonical_id(claim: dict[str, Any]) -> tuple[str, str]:
+    """Return the canonical (total-order) sort key for a claim.
 
     ACEF Core's canonical claim order (per VAL-W11-019) is lexicographic
     on ``evidence_claim_id``. If a claim is missing ``evidence_claim_id``
@@ -416,11 +416,22 @@ def _claim_canonical_id(claim: dict[str, Any]) -> str:
     sort is still total and deterministic; this matches the verifier's
     "no-id claim" handling and keeps the Merkle root computable even
     when a fixture omits the optional id field.
+
+    VAL-ISO-030: the key is a TWO-element tuple
+    ``(primary_id, content_digest)``. The first element is the
+    ``evidence_claim_id`` (or the content digest when absent), giving the
+    spec-mandated lexicographic-by-id ordering. The second element is
+    always the SHA-256 digest of the claim's canonical bytes, providing a
+    deterministic tie-break when two DISTINCT claims share the same
+    ``evidence_claim_id``. Without this tie-break, Python's stable sort
+    would leave equal-id claims in input order, making the Merkle root
+    order-dependent and violating the determinism guarantee.
     """
+    content_digest = hashlib.sha256(jcs_canonicalize(claim)).hexdigest()
     cid = claim.get("evidence_claim_id")
     if isinstance(cid, str) and cid:
-        return cid
-    return hashlib.sha256(jcs_canonicalize(claim)).hexdigest()
+        return (cid, content_digest)
+    return (content_digest, content_digest)
 
 
 def bundle_merkle_root(bundle: dict[str, Any]) -> str:

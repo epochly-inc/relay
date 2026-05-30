@@ -303,6 +303,16 @@ def _verify_cryptographic_signature(
         if any(marker in lowered for marker in chain_failure_markers):
             return False, "tsa_cert_chain_unknown_root"
         return False, "tsa_signature_invalid"
+    except Exception:
+        # VAL-ISO-023: fail closed on ANY other exception type. The decode
+        # step above already guards with a bare ``Exception``; the verify
+        # step must do the same. A non-VerificationError (e.g. a TypeError
+        # on an unexpected internal state) MUST NOT escape this function and
+        # propagate out of ``validate_bundle`` -- the contract is fail-closed,
+        # not crash (CLAUDE.md keystone: the verifier fails closed). We treat
+        # the unexpected error as a signature-invalid outcome rather than a
+        # chain failure, since we cannot prove a valid chain at this point.
+        return False, "tsa_signature_invalid"
 
     if not ok:
         return False, "tsa_signature_invalid"

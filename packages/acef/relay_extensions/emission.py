@@ -145,7 +145,8 @@ def _audit_namespace_subfields(x_relay: dict[str, Any]) -> None:
                 details={"namespace": ns, "observed_type": type(payload).__name__},
             )
         schema = load_namespace_schema(ns)
-        declared_props = set((schema.get("properties") or {}).keys())
+        properties = schema.get("properties") or {}
+        declared_props = set(properties.keys())
         if not declared_props:
             # Schema has no properties block; nothing to enforce. Defensive
             # path; the W11.2 schemas all declare properties.
@@ -159,6 +160,29 @@ def _audit_namespace_subfields(x_relay: dict[str, Any]) -> None:
                         "namespace": ns,
                         "violating_subfield": field,
                         "declared_properties": sorted(declared_props),
+                    },
+                )
+
+        # VAL-ISO-011: enforce the per-namespace payload schema_version
+        # ``const`` declared by the namespace JSON Schema (e.g.
+        # ``x-relay.<ns>.v1``). The key-level audit above does NOT validate
+        # the VALUE, so a downgraded/unknown namespace schema_version (e.g.
+        # ``x-relay.replay-verification.v2``) would otherwise be accepted.
+        # Fail closed with RELAY-SCHEMA-014 on mismatch or absence, mirroring
+        # the block-level schema_version check in ``_audit_schema_versions``.
+        expected_version = (properties.get("schema_version") or {}).get("const")
+        if expected_version is not None:
+            observed_version = payload.get("schema_version")
+            if observed_version != expected_version:
+                raise SchemaVersionError(
+                    f"namespace {ns!r} schema_version must equal "
+                    f"{expected_version!r}; got {observed_version!r}",
+                    error_code=RELAY_SCHEMA_014_CODE,
+                    details={
+                        "field": f"namespaces.{X_RELAY_NAMESPACE_KEY}.{ns}.schema_version",
+                        "namespace": ns,
+                        "expected": expected_version,
+                        "observed": observed_version,
                     },
                 )
 
