@@ -61,6 +61,57 @@ async def bootstrap_db(db_path: Path) -> None:
         await conn.commit()
 
 
+async def seed_three_anchor_handoff(
+    db_path: Path,
+    *,
+    actor_identity_hash: str | None,
+    manifest_commit_hash: str | None,
+    project_id: str = "00000000-0000-0000-0000-000000000000",
+) -> None:
+    """Seed the ``actors`` + ``manifest_versions`` anchor registries.
+
+    VAL-ISO-003 made ``validate_three_anchor_handoff`` run unconditionally
+    in ``v1_post_gate_draft`` (fail closed on unseeded tables). Tests that
+    legitimately expect a gate-draft to be ACCEPTED (202) must therefore
+    seed a registered, non-revoked actor and a currently-active manifest
+    version so the genuine handoff validates.
+
+    Pass ``actor_identity_hash=None`` to seed only the manifest (and vice
+    versa) when a half-seeded DB is required.
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    import aiosqlite
+
+    now_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    async with aiosqlite.connect(str(db_path)) as conn:
+        if actor_identity_hash is not None:
+            await conn.execute(
+                "INSERT OR IGNORE INTO actors "
+                "(identity_hash, kind, registered_at, revoked_at) "
+                "VALUES (?, ?, ?, ?)",
+                (actor_identity_hash, "worker", now_iso, None),
+            )
+        if manifest_commit_hash is not None:
+            await conn.execute(
+                "INSERT OR IGNORE INTO manifest_versions "
+                "(manifest_version_id, manifest_id, project_id, commit_hash, "
+                " effective_at, effective_until, grace_window_seconds) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    str(uuid.uuid4()),
+                    project_id,
+                    manifest_commit_hash,
+                    now_iso,
+                    None,  # effective_until NULL -> currently active
+                    86400,
+                ),
+            )
+        await conn.commit()
+
+
 def scope_header(*scopes: str) -> dict[str, str]:
     return {"X-Relay-Scopes": ",".join(scopes)}
 

@@ -2098,8 +2098,10 @@ def build_runtime_app(
         )
         if id_reject is not None:
             return id_reject
-        scope_reject = _check_required_scope(
-            request, required="runs:read", blocked_surface=_RUN_LIST_SURFACE
+        scope_reject = _check_auth(
+            request,
+            required_scope="runs:read",
+            blocked_surface=_RUN_LIST_SURFACE,
         )
         if scope_reject is not None:
             return scope_reject
@@ -2195,8 +2197,10 @@ def build_runtime_app(
         )
         if id_reject is not None:
             return id_reject
-        scope_reject = _check_required_scope(
-            request, required="runs:read", blocked_surface=_RUN_DETAIL_SURFACE
+        scope_reject = _check_auth(
+            request,
+            required_scope="runs:read",
+            blocked_surface=_RUN_DETAIL_SURFACE,
         )
         if scope_reject is not None:
             return scope_reject
@@ -2262,8 +2266,10 @@ def build_runtime_app(
         )
         if id_reject is not None:
             return id_reject
-        scope_reject = _check_required_scope(
-            request, required="runs:read", blocked_surface=_RUN_TRACE_SURFACE
+        scope_reject = _check_auth(
+            request,
+            required_scope="runs:read",
+            blocked_surface=_RUN_TRACE_SURFACE,
         )
         if scope_reject is not None:
             return scope_reject
@@ -2368,8 +2374,10 @@ def build_runtime_app(
         )
         if id_reject is not None:
             return id_reject
-        scope_reject = _check_required_scope(
-            request, required="runs:read", blocked_surface=_RUN_RESULT_SURFACE
+        scope_reject = _check_auth(
+            request,
+            required_scope="runs:read",
+            blocked_surface=_RUN_RESULT_SURFACE,
         )
         if scope_reject is not None:
             return scope_reject
@@ -2441,9 +2449,9 @@ def build_runtime_app(
         )
         if id_reject is not None:
             return id_reject
-        scope_reject = _check_required_scope(
+        scope_reject = _check_auth(
             request,
-            required="runs:read",
+            required_scope="runs:read",
             blocked_surface=_RUN_EXPLAIN_SURFACE,
         )
         if scope_reject is not None:
@@ -2555,9 +2563,9 @@ def build_runtime_app(
         VAL-V2M02-022). Returns 201 + ``{case_id}``; unknown
         ``from_run_id`` returns 404.
         """
-        scope_reject = _check_required_scope(
+        scope_reject = _check_auth(
             request,
-            required="replay:write",
+            required_scope="replay:write",
             blocked_surface=_REPLAY_CREATE_SURFACE,
         )
         if scope_reject is not None:
@@ -2654,9 +2662,9 @@ def build_runtime_app(
     async def v1_get_replay_case(
         case_id: str, request: Request
     ) -> JSONResponse:
-        scope_reject = _check_required_scope(
+        scope_reject = _check_auth(
             request,
-            required="runs:read",
+            required_scope="runs:read",
             blocked_surface=_REPLAY_GET_SURFACE,
         )
         if scope_reject is not None:
@@ -2682,9 +2690,9 @@ def build_runtime_app(
         ``object_put_with_digest`` primitive: the digest returned is the
         sha256 of the canonical JSON payload.
         """
-        scope_reject = _check_required_scope(
+        scope_reject = _check_auth(
             request,
-            required="replay:write",
+            required_scope="replay:write",
             blocked_surface=_REPLAY_FIXTURES_SURFACE,
         )
         if scope_reject is not None:
@@ -2740,9 +2748,9 @@ def build_runtime_app(
         ``external_irreversible`` tools is refused with
         ``RELAY-REPLAY-014`` per spec B.4 line 3428.
         """
-        scope_reject = _check_required_scope(
+        scope_reject = _check_auth(
             request,
-            required="replay:write",
+            required_scope="replay:write",
             blocked_surface=_REPLAY_RUN_SURFACE,
         )
         if scope_reject is not None:
@@ -2831,9 +2839,9 @@ def build_runtime_app(
     async def v1_get_replay_result(
         result_id: str, request: Request
     ) -> JSONResponse:
-        scope_reject = _check_required_scope(
+        scope_reject = _check_auth(
             request,
-            required="runs:read",
+            required_scope="runs:read",
             blocked_surface=_REPLAY_RESULT_SURFACE,
         )
         if scope_reject is not None:
@@ -2861,9 +2869,9 @@ def build_runtime_app(
 
     @app.post("/v1/eval-datasets")
     async def v1_create_eval_dataset(request: Request) -> JSONResponse:
-        scope_reject = _check_required_scope(
+        scope_reject = _check_auth(
             request,
-            required="replay:write",
+            required_scope="replay:write",
             blocked_surface=_EVAL_DATASET_SURFACE,
         )
         if scope_reject is not None:
@@ -2930,9 +2938,9 @@ def build_runtime_app(
 
     @app.post("/v1/eval-runs")
     async def v1_create_eval_run(request: Request) -> JSONResponse:
-        scope_reject = _check_required_scope(
+        scope_reject = _check_auth(
             request,
-            required="replay:write",
+            required_scope="replay:write",
             blocked_surface=_EVAL_RUN_CREATE_SURFACE,
         )
         if scope_reject is not None:
@@ -3020,9 +3028,9 @@ def build_runtime_app(
     async def v1_get_eval_run(
         eval_run_id: str, request: Request
     ) -> JSONResponse:
-        scope_reject = _check_required_scope(
+        scope_reject = _check_auth(
             request,
-            required="runs:read",
+            required_scope="runs:read",
             blocked_surface=_EVAL_RUN_GET_SURFACE,
         )
         if scope_reject is not None:
@@ -4375,61 +4383,75 @@ def build_runtime_app(
                 ),
                 headers=_rate_limit_headers_for(request),
             )
-        # Audit fix (2026-05-17 P0): the prior implementation only did
-        # string-presence checks and never called
-        # validate_three_anchor_handoff. Per CLAUDE.md keystone #4 +
-        # spec C.5, every gate-draft submission MUST consult the actors
-        # + manifest_versions tables. When the tables are unseeded
-        # (typical v2m02 in-memory fixtures) we accept to preserve the
-        # legacy contract; when seeded the validator's reject path
-        # surfaces unknown/revoked actors and stale manifests.
+        # VAL-ISO-003 (fail closed) + audit fix (2026-05-17 P0): per
+        # CLAUDE.md keystone #4 + spec C.5, every gate-draft submission MUST
+        # consult the actors + manifest_versions registries. The prior
+        # implementation only ran ``validate_three_anchor_handoff`` when
+        # BOTH tables were already non-empty (``actors_seeded and
+        # manifests_seeded``); on an unseeded DB it SKIPPED validation and
+        # accepted whatever actor/manifest anchors the body carried -- a
+        # silent bypass of the three-anchor handoff. There is no fallback
+        # skip path: the validator runs UNCONDITIONALLY and already fails
+        # closed for empty registries (an empty ``actors`` table yields
+        # ACTOR_NOT_REGISTERED; an empty ``manifest_versions`` table yields
+        # MANIFEST_NOT_ACTIVE). A missing database connection is itself a
+        # state in which the handoff cannot be validated, so it also fails
+        # closed rather than accepting an unvalidatable submission.
         db = runtime.database
-        if db is not None:
-            reader = db.acquire_reader()
-            actors_seeded = False
-            manifests_seeded = False
-            async with reader.execute(
-                "SELECT 1 FROM actors LIMIT 1"
-            ) as cur:
-                actors_seeded = (await cur.fetchone()) is not None
-            async with reader.execute(
-                "SELECT 1 FROM manifest_versions LIMIT 1"
-            ) as cur:
-                manifests_seeded = (await cur.fetchone()) is not None
-            if actors_seeded and manifests_seeded:
-                handoff_result = await validate_three_anchor_handoff(
-                    reader=reader,
-                    scope_kind="gate_round",
-                    scope_id=gate_id,
-                    payload={
-                        "actor_identity_hash": actor_identity_hash,
+        if db is None:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-GATE-021",
+                    http_status=422,
+                    message=(
+                        "three-anchor handoff cannot be validated: the "
+                        "control-plane registries are unavailable "
+                        "(keystone invariant #4 -- fail closed)"
+                    ),
+                    blocked_surface=_GATE_DRAFT_SURFACE,
+                    details={
+                        "reason": "registry_unavailable",
                         "manifest_commit_hash": manifest_commit_hash,
+                        "actor_identity_hash": actor_identity_hash,
                     },
-                )
-                if not handoff_result.ok:
-                    return JSONResponse(
-                        status_code=422,
-                        content=_build_error_envelope(
-                            code="RELAY-GATE-021",
-                            http_status=422,
-                            message=(
-                                "three-anchor handoff rejected: "
-                                f"{handoff_result.reason}"
-                            ),
-                            blocked_surface=_GATE_DRAFT_SURFACE,
-                            details={
-                                "reason": handoff_result.reason,
-                                "manifest_commit_hash": manifest_commit_hash,
-                                "actor_identity_hash": actor_identity_hash,
-                                "valid_reasons": [
-                                    SCOPE_ID_MISMATCH,
-                                    ACTOR_NOT_REGISTERED,
-                                    MANIFEST_NOT_ACTIVE,
-                                ],
-                            },
-                        ),
-                        headers=_rate_limit_headers_for(request),
-                    )
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        reader = db.acquire_reader()
+        handoff_result = await validate_three_anchor_handoff(
+            reader=reader,
+            scope_kind="gate_round",
+            scope_id=gate_id,
+            payload={
+                "actor_identity_hash": actor_identity_hash,
+                "manifest_commit_hash": manifest_commit_hash,
+            },
+        )
+        if not handoff_result.ok:
+            return JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-GATE-021",
+                    http_status=422,
+                    message=(
+                        "three-anchor handoff rejected: "
+                        f"{handoff_result.reason}"
+                    ),
+                    blocked_surface=_GATE_DRAFT_SURFACE,
+                    details={
+                        "reason": handoff_result.reason,
+                        "manifest_commit_hash": manifest_commit_hash,
+                        "actor_identity_hash": actor_identity_hash,
+                        "valid_reasons": [
+                            SCOPE_ID_MISMATCH,
+                            ACTOR_NOT_REGISTERED,
+                            MANIFEST_NOT_ACTIVE,
+                        ],
+                    },
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
         worker_id = body.get("worker_id") or "worker-default"
         # VAL-CANON-002: a non-numeric ``round`` must fail closed as a
         # canonical RELAY-ING-001 422 rather than an unhandled ValueError.

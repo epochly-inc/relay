@@ -604,13 +604,14 @@ async def test_post_gate_draft_rejects_unknown_actor(
 
 @pytest.mark.plumbing
 @pytest.mark.asyncio
-async def test_post_gate_draft_accepts_when_tables_unseeded(
+async def test_post_gate_draft_rejects_when_tables_unseeded(
     audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
 ) -> None:
-    """When actors + manifest_versions tables are empty (typical OSS
-    test fixture), the handoff validator is skipped and the draft
-    succeeds. This preserves the v2m02 legacy contract while still
-    enforcing the keystone invariant when the tables ARE populated."""
+    """VAL-ISO-003 (fail closed): when the actors + manifest_versions
+    registries are empty, the three-anchor handoff validator runs
+    UNCONDITIONALLY and rejects the submission (the prior skip-and-accept
+    path was a silent bypass of keystone invariant #4). An empty actors
+    table yields ACTOR_NOT_REGISTERED -> 422 RELAY-GATE-021."""
     c, _db, _app = audit_client_legacy
     body = {
         "manifest_commit_hash": "sha256-" + ("0" * 64),
@@ -623,4 +624,7 @@ async def test_post_gate_draft_accepts_when_tables_unseeded(
         json=body,
         headers={"X-Relay-Scopes": "gates:execute"},
     )
-    assert r.status_code == 202, r.text
+    assert r.status_code == 422, r.text
+    err = json.loads(r.text)
+    assert err["code"] == "RELAY-GATE-021"
+    assert err["details"]["reason"] == "ACTOR_NOT_REGISTERED"

@@ -26,7 +26,15 @@ import json
 
 import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header
+from _v2m02_w25_helpers import scope_header, seed_three_anchor_handoff
+
+# Anchors for the gate-draft POSTs. VAL-ISO-003 made the three-anchor
+# handoff validator run unconditionally (fail closed on unseeded
+# registries). The handoff validation runs BEFORE the round int-coercion,
+# so tests that need to reach the coercion (or expect a 202) must seed a
+# valid actor + active manifest matching these hashes.
+_DRAFT_MANIFEST_HASH = "sha256-" + ("0" * 64)
+_DRAFT_ACTOR_HASH = "sha256-" + ("1" * 64)
 
 
 def _assert_canonical_422(r: httpx.Response) -> dict:
@@ -91,10 +99,15 @@ async def test_put_gate_non_int_draft_ttl_returns_422(
 async def test_post_gate_draft_non_int_round_returns_422(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    c, _db, _app = v2m02_client
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     body = {
-        "manifest_commit_hash": "sha256-" + ("0" * 64),
-        "actor_identity_hash": "sha256-" + ("1" * 64),
+        "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+        "actor_identity_hash": _DRAFT_ACTOR_HASH,
         "worker_id": "worker-canon2",
         "round": "abc",
     }
@@ -120,7 +133,12 @@ async def test_post_gate_draft_non_int_round_returns_422(
 async def test_draft_against_gate_with_rejected_ttl_does_not_500(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    c, _db, _app = v2m02_client
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     # Configure attempt with a bad ttl is rejected (no poisoned record).
     bad = await c.put(
         "/v1/gates/gate-canon2-site3",
@@ -134,8 +152,8 @@ async def test_draft_against_gate_with_rejected_ttl_does_not_500(
     draft = await c.post(
         "/v1/gates/gate-canon2-site3/drafts",
         json={
-            "manifest_commit_hash": "sha256-" + ("0" * 64),
-            "actor_identity_hash": "sha256-" + ("1" * 64),
+            "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+            "actor_identity_hash": _DRAFT_ACTOR_HASH,
             "worker_id": "worker-canon2",
             "round": 1,
         },
@@ -154,7 +172,12 @@ async def test_draft_against_gate_with_rejected_ttl_does_not_500(
 async def test_valid_int_fields_still_accepted(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    c, _db, _app = v2m02_client
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     # Valid ints (and JSON-numeric strings the spec permits) accepted.
     r = await c.put(
         "/v1/gates/gate-canon2-ok",
@@ -169,8 +192,8 @@ async def test_valid_int_fields_still_accepted(
     d = await c.post(
         "/v1/gates/gate-canon2-ok/drafts",
         json={
-            "manifest_commit_hash": "sha256-" + ("0" * 64),
-            "actor_identity_hash": "sha256-" + ("1" * 64),
+            "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+            "actor_identity_hash": _DRAFT_ACTOR_HASH,
             "worker_id": "worker-canon2",
             "round": 2,
         },

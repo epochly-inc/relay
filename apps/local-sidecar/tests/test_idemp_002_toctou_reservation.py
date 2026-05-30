@@ -43,12 +43,19 @@ from typing import Any, cast
 
 import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header
+from _v2m02_w25_helpers import scope_header, seed_three_anchor_handoff
 
 # One valid Crockford-base32 ULID Idempotency-Key shared by the racing pair so
 # the ONLY thing under test is the check-then-store reservation, not key
 # derivation.
 _RACE_KEY = "01HZX9F8K7M3N4P5Q6R7S8T9V0"
+
+# Anchors for the gate-draft POSTs. VAL-ISO-003 made the three-anchor
+# handoff validator run unconditionally (fail closed on unseeded
+# registries), so the draft-posting tests must seed a valid actor +
+# active manifest matching these hashes.
+_DRAFT_MANIFEST_HASH = "sha256-" + ("0" * 64)
+_DRAFT_ACTOR_HASH = "sha256-" + ("1" * 64)
 
 
 @pytest.mark.plumbing
@@ -65,14 +72,19 @@ async def test_concurrent_same_key_gate_draft_executes_exactly_once(
     a second execution appends a second entry to ``runtime.gate_rounds[gate]``.
     Exactly-once <=> exactly one round opened for the gate.
     """
-    c, _db, app = v2m02_client
+    c, db_path, app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     headers = {
         **scope_header("gates:execute"),
         "Idempotency-Key": _RACE_KEY,
     }
     body = {
-        "manifest_commit_hash": "sha256-" + ("0" * 64),
-        "actor_identity_hash": "sha256-" + ("1" * 64),
+        "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+        "actor_identity_hash": _DRAFT_ACTOR_HASH,
         "round": 1,
     }
 
@@ -134,14 +146,19 @@ async def test_sequential_same_key_retry_still_replays(
     completes) MUST still replay the stored result. The reservation change
     must not break the legitimate idempotent-replay path.
     """
-    c, _db, app = v2m02_client
+    c, db_path, app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     headers = {
         **scope_header("gates:execute"),
         "Idempotency-Key": _RACE_KEY,
     }
     body = {
-        "manifest_commit_hash": "sha256-" + ("0" * 64),
-        "actor_identity_hash": "sha256-" + ("1" * 64),
+        "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+        "actor_identity_hash": _DRAFT_ACTOR_HASH,
         "round": 1,
     }
 
@@ -177,14 +194,19 @@ async def test_aborted_winner_does_not_wedge_the_key(
     be released so a later genuine request with the SAME key can still
     execute. The reservation must be self-healing, not a permanent wedge.
     """
-    c, _db, app = v2m02_client
+    c, db_path, app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     headers = {
         **scope_header("gates:execute"),
         "Idempotency-Key": _RACE_KEY,
     }
     # First request is missing manifest_commit_hash -> 422 early-return that
     # never reaches _store_idempotency.
-    bad_body = {"actor_identity_hash": "sha256-" + ("1" * 64), "round": 1}
+    bad_body = {"actor_identity_hash": _DRAFT_ACTOR_HASH, "round": 1}
     r_bad = await c.post(
         "/v1/gates/wedge-gate/drafts", json=bad_body, headers=headers
     )
@@ -193,8 +215,8 @@ async def test_aborted_winner_does_not_wedge_the_key(
     # A later well-formed request with the SAME key must NOT be wedged on the
     # stale reservation: it must execute and return a fresh 202.
     good_body = {
-        "manifest_commit_hash": "sha256-" + ("0" * 64),
-        "actor_identity_hash": "sha256-" + ("1" * 64),
+        "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+        "actor_identity_hash": _DRAFT_ACTOR_HASH,
         "round": 1,
     }
     r_good = await c.post(

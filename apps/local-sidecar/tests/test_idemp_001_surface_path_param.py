@@ -27,11 +27,18 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header
+from _v2m02_w25_helpers import scope_header, seed_three_anchor_handoff
 
 # Same valid Crockford-base32 ULID Idempotency-Key for every request so the
 # ONLY differentiator across requests is the resolved path parameter.
 _SHARED_KEY = "01HZX9F8K7M3N4P5Q6R7S8T9V0"
+
+# Anchors for the gate-draft POSTs. VAL-ISO-003 made the three-anchor
+# handoff validator run unconditionally (fail closed on unseeded
+# registries), so the draft-posting tests must seed a valid actor +
+# active manifest matching these hashes.
+_DRAFT_MANIFEST_HASH = "sha256-" + ("0" * 64)
+_DRAFT_ACTOR_HASH = "sha256-" + ("1" * 64)
 
 
 @pytest.mark.plumbing
@@ -44,14 +51,19 @@ async def test_gate_draft_distinct_gates_do_not_alias_idempotency(
     body + the same Idempotency-Key MUST NOT alias: gate B gets its own draft,
     not a replay of gate A's.
     """
-    c, _db, _app = v2m02_client
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     headers = {
         **scope_header("gates:execute"),
         "Idempotency-Key": _SHARED_KEY,
     }
     body = {
-        "manifest_commit_hash": "sha256-" + ("0" * 64),
-        "actor_identity_hash": "sha256-" + ("1" * 64),
+        "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+        "actor_identity_hash": _DRAFT_ACTOR_HASH,
         "round": 1,
     }
 
@@ -86,14 +98,19 @@ async def test_gate_draft_same_gate_retry_still_replays(
     MUST still collide -> identical response body + Idempotent-Replay: true.
     The fix must not break the legitimate idempotent-replay path.
     """
-    c, _db, _app = v2m02_client
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     headers = {
         **scope_header("gates:execute"),
         "Idempotency-Key": _SHARED_KEY,
     }
     body = {
-        "manifest_commit_hash": "sha256-" + ("0" * 64),
-        "actor_identity_hash": "sha256-" + ("1" * 64),
+        "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+        "actor_identity_hash": _DRAFT_ACTOR_HASH,
         "round": 1,
     }
 

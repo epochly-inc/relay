@@ -22,7 +22,15 @@ import pytest
 from _v2m02_w25_helpers import (
     no_scope_header,
     scope_header,
+    seed_three_anchor_handoff,
 )
+
+# Anchors used by the draft-posting tests. VAL-ISO-003 made the
+# three-anchor handoff validator run unconditionally (fail closed on
+# unseeded registries), so any test that legitimately expects a 202 draft
+# must seed a registered actor + active manifest matching these hashes.
+_DRAFT_MANIFEST_HASH = "sha256-" + ("0" * 64)
+_DRAFT_ACTOR_HASH = "sha256-" + ("1" * 64)
 
 # ---- VAL-V2M02-037 / 038: PUT /v1/gates/{gate_id} ------------------------
 
@@ -127,10 +135,15 @@ async def test_put_gate_policy_enforces_scope(
 async def test_post_gate_draft_returns_202(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    c, _db, _app = v2m02_client
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     body = {
-        "manifest_commit_hash": "sha256-" + ("0" * 64),
-        "actor_identity_hash": "sha256-" + ("1" * 64),
+        "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+        "actor_identity_hash": _DRAFT_ACTOR_HASH,
         "worker_id": "worker-A",
         "round": 1,
     }
@@ -153,10 +166,15 @@ async def test_post_gate_draft_returns_202(
 async def test_post_gate_draft_conflict_409(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    c, _db, _app = v2m02_client
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
     body_a = {
-        "manifest_commit_hash": "sha256-" + ("0" * 64),
-        "actor_identity_hash": "sha256-" + ("1" * 64),
+        "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+        "actor_identity_hash": _DRAFT_ACTOR_HASH,
         "worker_id": "worker-A",
         "round": 1,
     }

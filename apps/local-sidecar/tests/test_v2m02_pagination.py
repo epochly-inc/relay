@@ -22,7 +22,15 @@ import pytest
 from _v2m02_w25_helpers import (
     no_scope_header,
     scope_header,
+    seed_three_anchor_handoff,
 )
+
+# Anchors for draft-posting seed rounds. VAL-ISO-003 made the three-anchor
+# handoff validator run unconditionally (fail closed on unseeded
+# registries), so the seed loops below must register a valid actor +
+# active manifest matching these hashes for the drafts to be accepted.
+_PAGE_MANIFEST_HASH = "sha256-" + ("0" * 64)
+_PAGE_ACTOR_HASH = "sha256-" + ("1" * 64)
 
 ULID_RE = re.compile(r"^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$")
 DOC_URL_RE = re.compile(r"^https://relay\.epochly\.com/docs/errors/[A-Z0-9-]+$")
@@ -37,14 +45,19 @@ DOC_URL_RE = re.compile(r"^https://relay\.epochly\.com/docs/errors/[A-Z0-9-]+$")
 async def test_cursor_tampered_returns_400(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    c, _db, _app = v2m02_client
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_PAGE_ACTOR_HASH,
+        manifest_commit_hash=_PAGE_MANIFEST_HASH,
+    )
     # Seed >100 rounds so cursor is returned.
     for i in range(105):
         await c.post(
             "/v1/gates/g-page/drafts",
             json={
-                "manifest_commit_hash": "sha256-" + ("0" * 64),
-                "actor_identity_hash": "sha256-" + ("1" * 64),
+                "manifest_commit_hash": _PAGE_MANIFEST_HASH,
+                "actor_identity_hash": _PAGE_ACTOR_HASH,
                 "worker_id": f"w-{i}",
                 "round": i + 1,
             },
@@ -81,14 +94,19 @@ async def test_cursor_expires_after_1h(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    c, _db, app = v2m02_client
+    c, db_path, app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_PAGE_ACTOR_HASH,
+        manifest_commit_hash=_PAGE_MANIFEST_HASH,
+    )
     # Seed rounds + grab a cursor.
     for i in range(105):
         await c.post(
             "/v1/gates/g-expire/drafts",
             json={
-                "manifest_commit_hash": "sha256-" + ("0" * 64),
-                "actor_identity_hash": "sha256-" + ("1" * 64),
+                "manifest_commit_hash": _PAGE_MANIFEST_HASH,
+                "actor_identity_hash": _PAGE_ACTOR_HASH,
                 "worker_id": f"w-{i}",
                 "round": i + 1,
             },
