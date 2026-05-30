@@ -70,6 +70,7 @@ import {
   type IngestRunEnvelope,
   type LifecycleStatus,
 } from "./lifecycle.js";
+import { _canonicalJsonStringify } from "./redaction.js";
 import { newUlid } from "./ulid.js";
 
 /** SDK version string the SDK includes in every envelope.
@@ -525,7 +526,14 @@ export class Run {
     const startedAt = utcNowIso8601();
     const startMs = Date.now();
     let chunkCount = 0;
-    let completionTokens = input.completionTokens ?? 0;
+    // VAL-ISO-040 (correctness): when a stream is supplied the completion-token
+    // count is derived from the stream's per-chunk deltas. Initialising the
+    // accumulator from the caller-supplied ``completionTokens`` and then ADDING
+    // each chunk delta double-counts when both are provided (base +
+    // sum(deltas)). The stream path therefore starts from 0 and ignores
+    // ``input.completionTokens``; the non-streaming branch below uses the
+    // caller-supplied count verbatim.
+    let completionTokens = input.stream !== undefined ? 0 : (input.completionTokens ?? 0);
     let firstTokenLatencyMs: number | null = null;
     if (input.stream !== undefined) {
       for await (const chunk of input.stream) {
@@ -845,11 +853,37 @@ export class Run {
 // ---------------------------------------------------------------------------
 
 function digestArgs(args: unknown): string {
+  // VAL-ISO-022 (determinism): tool-call args are serialised with the RFC 8785
+  // JCS canonicalizer (sorted keys, compact separators) -- the same algorithm
+  // the rest of the SDK uses -- so the digest is byte-identical to the Python
+  // SDK's json.dumps(..., sort_keys=True, separators=(",", ":")) and is
+  // independent of object key insertion order. Plain JSON.stringify serialised
+  // keys in insertion order, so the same logical args could yield different
+  // digests across processes/SDKs and break cross-SDK/replay determinism.
+  //
+  // VAL-ISO-041 (correctness): if the args cannot be canonicalised (circular
+  // reference, BigInt, or any other unserialisable shape) we raise a typed
+  // RelayConfigError. The pre-fix code fell back to String(args), which is the
+  // constant "[object Object]" for any non-primitive object -- every
+  // unserialisable arg collapsed to the SAME content-free, collision-prone
+  // digest. The digest is the evidence binding for the tool call, so a
+  // colliding/content-free digest is unacceptable; fail closed instead.
   let serialised: string;
   try {
-    serialised = JSON.stringify(args ?? null);
-  } catch {
-    serialised = String(args);
+    serialised = _canonicalJsonStringify(args ?? null);
+  } catch (cause) {
+    throw new RelayConfigError(
+      "tool_call args could not be canonicalised for the args_digest; " +
+        "the arguments must be a finite JSON value (no circular references, " +
+        "BigInt, or other non-serialisable types)",
+      {
+        details: {
+          field: "args",
+          reason: "unserializable_tool_args",
+          cause: cause instanceof Error ? cause.message : String(cause),
+        },
+      },
+    );
   }
   return "sha256-" + crypto.createHash("sha256").update(serialised, "utf8").digest("hex");
 }
