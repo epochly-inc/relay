@@ -113,6 +113,17 @@ def _match_is_documentation(
     catches the vast majority of trailing-comment cases without
     misidentifying an in-string ``#``.
 
+    A quote is "unescaped" iff the run of consecutive backslashes
+    immediately preceding it is even-length (VAL-ISO-014). A naive check
+    of only the single preceding character wrongly treats the closing
+    quote of a string ending in an escaped backslash (``"a\\"`` -- two
+    source backslashes, one literal backslash, string CLOSED) as escaped,
+    inverting quote parity and allowing a crafted line to hide a real
+    atomic-primitive bypass behind an in-string ``#``/``//`` that is
+    mis-read as a comment. Counting the backslash run fixes both the
+    even case (escaped backslash, quote NOT escaped) and the odd case
+    (escaped quote, string stays open).
+
     Heuristic 3 walks the line for ``backtick ... backtick`` pairs and
     returns True iff the match is fully bounded by one of them.
 
@@ -134,8 +145,16 @@ def _match_is_documentation(
     for idx in range(match_start):
         ch = line[idx]
         if ch in ("'", '"'):
-            # Naive escape handling: a preceding backslash escapes.
-            if idx > 0 and line[idx - 1] == "\\":
+            # A quote is escaped iff the run of consecutive backslashes
+            # immediately to its left is ODD. An even run (including a
+            # lone escaped-backslash sequence ``\\``) leaves the quote
+            # itself unescaped, so it opens/closes a string literal.
+            backslashes = 0
+            j = idx - 1
+            while j >= 0 and line[j] == "\\":
+                backslashes += 1
+                j -= 1
+            if backslashes % 2 == 1:
                 continue
             quote_count += 1
         elif ch == "#" and quote_count % 2 == 0 or (

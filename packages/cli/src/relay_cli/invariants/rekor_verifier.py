@@ -12,6 +12,11 @@ This invariant verifies the flag value is still True. A False value
 emits one finding pointing at the file + line where the flag is
 declared so the operator can investigate the regression.
 
+Per VAL-ISO-005 the flag is read from the SOURCE FILE under the
+operator-supplied ``repo_root`` (AST parse, no import), so ``rly
+verify-self --repo-root <tree>`` validates that tree's source rather than
+whatever wheel happens to be on ``sys.path``.
+
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
 
@@ -25,6 +30,7 @@ from verify_self.finding_codes import (
 )
 
 from .util import Finding, suggested_fix_for
+from .util_flag_source import resolve_bool_flag_from_source
 
 CHECK_NAME: Final[str] = "rekor-verifier-implemented"
 
@@ -34,13 +40,11 @@ _FLAG_SOURCE_FILE: Final[str] = (
 _FLAG_NAME: Final[str] = "REKOR_CRYPTO_IMPLEMENTED"
 
 
-def _resolve_flag() -> bool | None:
-    """Return the current value of the Rekor-implemented flag."""
-    try:
-        from relay_cli.commands.verify_install import REKOR_CRYPTO_IMPLEMENTED
-    except Exception:  # noqa: BLE001 - any import failure is a finding
-        return None
-    return bool(REKOR_CRYPTO_IMPLEMENTED)
+def _resolve_flag(repo_root: Path) -> bool | None:
+    """Return the Rekor-implemented flag value parsed from ``repo_root``."""
+    return resolve_bool_flag_from_source(
+        repo_root / _FLAG_SOURCE_FILE, _FLAG_NAME
+    )
 
 
 def _grep_flag_line(repo_root: Path) -> int:
@@ -62,7 +66,7 @@ def _grep_flag_line(repo_root: Path) -> int:
 def run(repo_root: Path) -> tuple[str, list[Finding]]:
     """Run the rekor-verifier-implemented check."""
     findings: list[Finding] = []
-    value = _resolve_flag()
+    value = _resolve_flag(repo_root)
     if value is not True:
         findings.append(
             Finding(

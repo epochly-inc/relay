@@ -612,6 +612,93 @@ def test_chain_extra_materials_at_child_are_permitted(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# VAL-ISO-006: chain guard must NOT pass vacuously when a parent step's
+# product digests are not parseable lowercase sha256. A non-empty
+# products[] that yields an empty parent_products digest set silently
+# excludes the parent from the continuity check, accepting a chain whose
+# parent's products are never verified against the child's materials.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-006")
+def test_chain_fails_when_parent_products_have_no_sha256(tmp_path: Path) -> None:
+    """A parent whose products carry only a non-sha256 algorithm FAILS.
+
+    Replace ``source-checkout``'s product digest with a ``sha512``-only
+    digest (no lowercase 64-hex ``sha256`` key). Under the defect,
+    ``_digest_set`` returns an empty set for the parent's products, so
+    ``missing = parent_products - step_materials`` is empty and the chain
+    check passes VACUOUSLY -- the parent->child continuity is never
+    actually verified. The fix must treat a non-empty ``products[]`` that
+    yields zero parseable sha256 digests as a hard chain failure.
+    """
+    target_links = tmp_path / "links"
+    target_links.mkdir()
+    for src in LINKS_FIXTURE_DIR.glob("*.link"):
+        shutil.copy2(src, target_links / src.name)
+    victim = target_links / f"source-checkout.{FUNCTIONARY_KEY_ID}.link"
+    body = json.loads(victim.read_text(encoding="utf-8"))
+    # Swap the sole product's sha256 digest for a sha512-only digest. The
+    # entry is still a structurally valid in-toto product, but it has no
+    # parseable lowercase sha256 to anchor the chain.
+    body["signed"]["products"][0]["digest"] = {
+        "sha512": hashlib.sha512(b"source-tree-sha512-only").hexdigest()
+    }
+    victim.write_text(json.dumps(body, indent=2), encoding="utf-8")
+    proc = _run_guard(
+        "--mode", "chain",
+        "--layout", str(LAYOUT_FIXTURE),
+        "--link-dir", str(target_links),
+        "--json",
+    )
+    assert proc.returncode == 1, (
+        "chain guard passed vacuously on a parent product with no parseable "
+        f"sha256 digest: stdout={proc.stdout} stderr={proc.stderr}"
+    )
+    report = _parse_json(proc)
+    chain_check = _check_for(report, "VAL-W12-018")
+    assert not chain_check["passed"], chain_check["message"]
+    assert chain_check["error_code"] == "RELAY-RELEASE-018"
+    assert "source-checkout" in chain_check["message"], chain_check["message"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-006")
+def test_chain_fails_when_parent_product_digest_uppercase(tmp_path: Path) -> None:
+    """An uppercase (non-canonical) sha256 product digest also FAILS.
+
+    ``_SHA256_RE`` matches only lowercase 64-hex. An uppercased digest is
+    not parseable, so the buggy code drops it from ``parent_products`` and
+    passes vacuously. The fix must reject the chain because the parent has
+    a non-empty products[] with no parseable sha256.
+    """
+    target_links = tmp_path / "links"
+    target_links.mkdir()
+    for src in LINKS_FIXTURE_DIR.glob("*.link"):
+        shutil.copy2(src, target_links / src.name)
+    victim = target_links / f"source-checkout.{FUNCTIONARY_KEY_ID}.link"
+    body = json.loads(victim.read_text(encoding="utf-8"))
+    digest = body["signed"]["products"][0]["digest"]["sha256"]
+    body["signed"]["products"][0]["digest"]["sha256"] = digest.upper()
+    victim.write_text(json.dumps(body, indent=2), encoding="utf-8")
+    proc = _run_guard(
+        "--mode", "chain",
+        "--layout", str(LAYOUT_FIXTURE),
+        "--link-dir", str(target_links),
+        "--json",
+    )
+    assert proc.returncode == 1, (
+        "chain guard passed vacuously on an uppercase (unparseable) sha256 "
+        f"product digest: stdout={proc.stdout} stderr={proc.stderr}"
+    )
+    report = _parse_json(proc)
+    chain_check = _check_for(report, "VAL-W12-018")
+    assert not chain_check["passed"], chain_check["message"]
+    assert chain_check["error_code"] == "RELAY-RELEASE-018"
+
+
+# ---------------------------------------------------------------------------
 # VAL-W12-019: layout signing key is rotated per spec section L.
 # ---------------------------------------------------------------------------
 

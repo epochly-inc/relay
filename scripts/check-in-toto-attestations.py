@@ -754,6 +754,26 @@ def _digest_set(
     return out
 
 
+def _count_digest_bearing_entries(items: list[dict[str, Any]] | Any) -> int:
+    """Count materials/products entries that declare a ``digest`` object.
+
+    Used by the chain check (VAL-ISO-006) to detect the vacuity where a
+    non-empty ``products[]`` declares digests but NONE are parseable
+    lowercase ``sha256`` (e.g. a ``sha512``-only or uppercase/short value).
+    Such a parent yields an empty :func:`_digest_set`, which would
+    otherwise make the parent->child continuity assertion pass vacuously.
+    Entries with no ``digest`` object at all are not counted: only digest
+    declarations whose sha256 we expect to parse are relevant.
+    """
+    if not isinstance(items, list):
+        return 0
+    count = 0
+    for item in items:
+        if isinstance(item, dict) and isinstance(item.get("digest"), dict):
+            count += 1
+    return count
+
+
 def check_chain_val_w12_016(
     layout: dict[str, Any],
     links_by_step: dict[str, dict[str, Any]],
@@ -852,7 +872,30 @@ def check_chain_val_w12_018(
                     ),
                 )
             parent_signed = _link_signed_block(parent_link)
-            parent_products = _digest_set(parent_signed.get("products", []))
+            parent_raw_products = parent_signed.get("products", [])
+            parent_products = _digest_set(parent_raw_products)
+            # VAL-ISO-006: fail closed when the parent declares
+            # digest-bearing products but NONE parse as a lowercase
+            # sha256. An empty parent_products derived from a non-empty
+            # products[] would otherwise make ``missing`` empty and pass
+            # the continuity assertion vacuously, accepting a chain whose
+            # parent products are never actually verified against the
+            # child's materials (e.g. a sha512-only or uppercase digest).
+            if (
+                not parent_products
+                and _count_digest_bearing_entries(parent_raw_products) > 0
+            ):
+                return CheckResult(
+                    "VAL-W12-018",
+                    "RELAY-RELEASE-018",
+                    False,
+                    (
+                        f"chain break at step '{step_name}': parent "
+                        f"'{parent_name}' declares products with no "
+                        f"parseable lowercase sha256 digest; the "
+                        f"parent->child continuity cannot be verified"
+                    ),
+                )
             missing = parent_products - step_materials
             if missing:
                 return CheckResult(

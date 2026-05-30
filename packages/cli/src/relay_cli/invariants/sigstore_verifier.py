@@ -13,9 +13,13 @@ emits one finding pointing at the file + line where the flag is
 declared so the operator can investigate the regression (the fail-closed
 path is reachable only via deliberate edit of that constant).
 
-The check is pure: it reads the constant via Python import (no
-filesystem regex), so flag flips made via ``sed`` are caught at the
-next ``rly verify-self`` run.
+The check is pure: it reads the constant by parsing the SOURCE FILE
+under the operator-supplied ``repo_root`` (VAL-ISO-005), NOT by importing
+the installed package on ``sys.path``. ``rly verify-self --repo-root
+<tree>`` therefore validates the tree the operator named -- a flag flipped
+to ``False`` in that tree's source is reported even when the installed
+wheel ships ``True``. Reading via import would silently validate the
+wheel, not the tree, and miss the regression.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -30,6 +34,7 @@ from verify_self.finding_codes import (
 )
 
 from .util import Finding, suggested_fix_for
+from .util_flag_source import resolve_bool_flag_from_source
 
 CHECK_NAME: Final[str] = "sigstore-verifier-implemented"
 
@@ -43,19 +48,18 @@ _FLAG_SOURCE_FILE: Final[str] = (
 _FLAG_NAME: Final[str] = "VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED"
 
 
-def _resolve_flag() -> bool | None:
-    """Return the current value of the Sigstore-implemented flag.
+def _resolve_flag(repo_root: Path) -> bool | None:
+    """Return the Sigstore-implemented flag value parsed from ``repo_root``.
 
-    Returns ``None`` when the flag cannot be imported (e.g., the
-    verifier package was uninstalled or the constant was renamed). The
-    runner treats ``None`` as a finding because the absence of the flag
-    is itself a regression of the canonical surface.
+    Reads the flag's module-level assignment from the SOURCE FILE under
+    ``repo_root`` (not via import). Returns ``None`` when the source file
+    is absent/unreadable or the assignment cannot be found or is not a
+    boolean literal -- the runner treats ``None`` as a finding because the
+    absence of the canonical declaration is itself a regression.
     """
-    try:
-        from relay_cli.bundle import VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED
-    except Exception:  # noqa: BLE001 - any import failure is a finding
-        return None
-    return bool(VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED)
+    return resolve_bool_flag_from_source(
+        repo_root / _FLAG_SOURCE_FILE, _FLAG_NAME
+    )
 
 
 def _grep_flag_line(repo_root: Path) -> int:
@@ -85,7 +89,7 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
     is True). One finding = fail (the flag is False or absent).
     """
     findings: list[Finding] = []
-    value = _resolve_flag()
+    value = _resolve_flag(repo_root)
     if value is not True:
         findings.append(
             Finding(
