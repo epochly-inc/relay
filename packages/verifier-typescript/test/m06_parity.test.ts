@@ -487,10 +487,12 @@ sys.stdout.write(json.dumps({'root': root}))
   }
 
   test("verifyInclusionProof verifies a TS-built proof at every paired-leaf index (size 8)", () => {
-    // Use a power-of-two tree so no lonely-leaf indices appear; the
-    // build_inclusion_proof helper does NOT include sibling slots for
-    // lonely leaves (RFC 6962 convention), so the verifier returns false
-    // for those indices by construction. Power-of-two avoids that edge.
+    // Power-of-two tree: no lonely-leaf promotion appears at any index. The
+    // build_inclusion_proof helper omits sibling slots for lonely leaves per
+    // the RFC 6962 convention; verifyInclusionProof now models that promotion
+    // (geometry-driven walk, VAL-PARITY-006), so non-power-of-two trees are
+    // covered by parity_006_merkle_inclusion.test.ts. This case keeps the
+    // power-of-two regression here.
     const n = 8;
     const leaves = Array.from({ length: n }, (_, i) =>
       createHash("sha256").update(`x-${i}`).digest("hex"),

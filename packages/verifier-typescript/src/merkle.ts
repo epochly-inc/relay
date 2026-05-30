@@ -149,7 +149,35 @@ export function verifyInclusionProof(args: {
   const claimedRoot = _hexToBytes(claimedRootHex);
   let idx = leafIndex;
   let last = treeSize - 1;
-  for (const siblingHex of proofPath) {
+  // Walk up the tree driven by GEOMETRY, not by proof length (RFC 6962
+  // sec 2.1.1). At each level, `last` is the index of the rightmost node
+  // and `idx` is our position. A node with no sibling at a level -- the
+  // rightmost node when the level has an odd count, i.e.
+  // `idx === last && idx % 2 === 0` -- is the "lonely leaf": it is promoted
+  // verbatim with NO sibling and NO proof entry. We must NOT consume a
+  // proof entry or hash in that case; we just rise a level. Only when a
+  // real sibling exists do we consume one proof entry and hash. Driving by
+  // proof length (the previous implementation) mis-rejected valid proofs
+  // for non-power-of-two trees because it consumed a phantom entry at
+  // promotion levels.
+  let cursor = 0;
+  while (last > 0) {
+    if (idx === last && idx % 2 === 0) {
+      // Lonely promoted node: rise without a sibling or proof entry.
+      idx = Math.floor(idx / 2);
+      last = Math.floor(last / 2);
+      continue;
+    }
+    // A sibling exists at this level: it must be supplied by the proof.
+    if (cursor >= proofPath.length) {
+      // Proof is truncated: a required sibling is missing.
+      return false;
+    }
+    const siblingHex = proofPath[cursor];
+    cursor += 1;
+    if (siblingHex === undefined) {
+      return false;
+    }
     const sibling = _hexToBytes(siblingHex);
     node =
       idx % 2 === 1
@@ -158,7 +186,10 @@ export function verifyInclusionProof(args: {
     idx = Math.floor(idx / 2);
     last = Math.floor(last / 2);
   }
-  if (idx !== 0 || last !== 0) {
+  // The proof must be FULLY consumed; leftover entries mean the proof
+  // carried more siblings than the tree geometry needs (a forger could
+  // otherwise pad a proof with junk the verifier ignores).
+  if (cursor !== proofPath.length) {
     return false;
   }
   if (node.length !== claimedRoot.length) {

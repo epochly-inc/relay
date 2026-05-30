@@ -135,20 +135,31 @@ def verify_inclusion_proof(
     node = _hash_leaf(leaf_digest_hex)
     claimed_root = _hex_to_bytes(claimed_root_hex)
 
-    # Walk up the tree, consuming one sibling per level until we have
-    # consumed the entire proof_path or reduced the subtree size to 1.
-    last_index = tree_size - 1
+    # Walk up the tree driven by GEOMETRY, not by proof length (RFC 6962
+    # sec 2.1.1). At each level, ``last`` is the index of the rightmost
+    # node and ``idx`` is our position. A node with no sibling at a level
+    # -- the rightmost node when the level has an odd count, i.e.
+    # ``idx == last and idx % 2 == 0`` -- is the "lonely leaf": it is
+    # promoted verbatim with NO sibling and NO proof entry. We must NOT
+    # consume a proof entry or hash in that case; we just rise a level.
+    # Only when a real sibling exists do we consume one proof entry and
+    # hash. Driving by proof length (the previous implementation) mis-
+    # rejected valid proofs for non-power-of-two trees because it consumed
+    # a phantom entry at promotion levels.
     idx = leaf_index
-    last = last_index
+    last = tree_size - 1
     proof_iter = iter(proof_path)
-    for sibling_hex in proof_iter:
-        # If we are the right child of a pair (idx odd), the sibling is
-        # on our left. If we are the left child, the sibling is on our
-        # right -- unless we are the lonely-leaf at this level
-        # (idx == last AND last is even), in which case there is no
-        # sibling and we promote ourselves; but the proof should NOT
-        # include a path entry in that case. The producer of the proof
-        # is responsible for omitting the sibling when promotion occurs.
+    while last > 0:
+        if idx == last and idx % 2 == 0:
+            # Lonely promoted node: rise without a sibling or proof entry.
+            idx //= 2
+            last //= 2
+            continue
+        # A sibling exists at this level: it must be supplied by the proof.
+        sibling_hex = next(proof_iter, None)
+        if sibling_hex is None:
+            # Proof is truncated: a required sibling is missing.
+            return False
         sibling = _hex_to_bytes(sibling_hex)
         node = (
             _hash_internal(sibling, node)
@@ -158,10 +169,10 @@ def verify_inclusion_proof(
         idx //= 2
         last //= 2
 
-    # If recomputation consumed the entire path AND we have reduced to
-    # the root level, compare. Otherwise the proof was malformed (too
-    # many or too few path entries for the declared tree_size).
-    if idx != 0 or last != 0:
+    # The proof iterator must be FULLY consumed; leftover entries mean the
+    # proof carried more siblings than the tree geometry needs (a forger
+    # could otherwise pad a proof with junk the verifier ignores).
+    if next(proof_iter, None) is not None:
         return False
     return node == claimed_root
 
