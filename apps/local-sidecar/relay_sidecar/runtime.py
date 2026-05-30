@@ -3313,13 +3313,33 @@ def build_runtime_app(
 
         Single fixed-window-per-second counter. Stored on
         ``runtime.rate_limit_buckets``.
+
+        VAL-ISO-008 (DoS hardening): bucket keys are derived from
+        unauthenticated, attacker-controlled inputs
+        (``ip:<X-Forwarded-For>``, ``jwt:<bearer>``,
+        ``project:<X-Relay-Project>``). Without pruning, a request loop
+        carrying a unique header value per request would create a
+        permanent entry per value and grow ``runtime.rate_limit_buckets``
+        without bound -> memory-exhaustion DoS. The window is a single
+        second (``reset_epoch = window_start + 1``), so any entry whose
+        ``window_start < now`` belongs to a dead window and can never be
+        consulted again. Sweep those stale entries on each access so the
+        dict is bounded by the number of distinct buckets ACTIVE in the
+        current 1-second window, while counting for live keys is
+        unaffected (the live key's own count is preserved below).
         """
         now = _now_epoch_s()
-        window_start, count = runtime.rate_limit_buckets.get(key, (now, 0))
+        buckets = runtime.rate_limit_buckets
+        # Prune dead windows (anything started before the current second).
+        # Build the survivor list first to avoid mutating during iteration.
+        stale = [k for k, (ws, _c) in buckets.items() if ws < now]
+        for k in stale:
+            del buckets[k]
+        window_start, count = buckets.get(key, (now, 0))
         if now != window_start:
             window_start, count = now, 0
         count += 1
-        runtime.rate_limit_buckets[key] = (window_start, count)
+        buckets[key] = (window_start, count)
         remaining = max(0, limit - count)
         reset_epoch = window_start + 1
         return limit, remaining, reset_epoch
@@ -4361,28 +4381,18 @@ def build_runtime_app(
                 ),
                 headers=_rate_limit_headers_for(request),
             )
-        # Optional stale-handoff signal: body may carry
-        # ``handoff_stale=True`` so tests can exercise the rejection
-        # path deterministically without seeding the manifest registry.
-        if body.get("handoff_stale") is True:
-            return JSONResponse(
-                status_code=422,
-                content=_build_error_envelope(
-                    code="RELAY-GATE-021",
-                    http_status=422,
-                    message=(
-                        "three-anchor handoff stale: manifest_commit_hash "
-                        "outside active/grace window OR actor_identity_hash "
-                        "mismatch (keystone invariant #4)"
-                    ),
-                    blocked_surface=_GATE_DRAFT_SURFACE,
-                    details={
-                        "manifest_commit_hash": manifest_commit_hash,
-                        "actor_identity_hash": actor_identity_hash,
-                    },
-                ),
-                headers=_rate_limit_headers_for(request),
-            )
+        # VAL-ISO-025: a ``handoff_stale`` body flag used to short-circuit
+        # to RELAY-GATE-021 here. That was a client-triggerable control-flow
+        # backdoor -- any caller could force the stale-handoff rejection
+        # path from the request body, independent of the actual anchor
+        # validity. It has been REMOVED. The genuine stale path is the
+        # three-anchor mismatch detected unconditionally by
+        # ``validate_three_anchor_handoff`` below (RELAY-GATE-021 with a
+        # structured reason of ACTOR_NOT_REGISTERED / MANIFEST_NOT_ACTIVE /
+        # SCOPE_ID_MISMATCH). Tests exercise the stale path by seeding the
+        # actors/manifest_versions registries to a genuinely-stale state,
+        # not by a client-settable flag.
+        #
         # VAL-ISO-003 (fail closed) + audit fix (2026-05-17 P0): per
         # CLAUDE.md keystone #4 + spec C.5, every gate-draft submission MUST
         # consult the actors + manifest_versions registries. The prior
@@ -4466,9 +4476,54 @@ def build_runtime_app(
         # round_reject is None implies a successful coercion, so round_n is
         # a concrete int (narrowing for the type checker / dict-key types).
         assert round_n is not None
+        gate_cfg = runtime.gates.get(gate_id, {})
+        # VAL-CANON-002: gate_cfg["draft_ttl_seconds"] is normally an int
+        # (v1_put_gate now coerces it via _coerce_int_field), but wrap the
+        # read defensively so a non-int stored value can never escalate to
+        # an unhandled ValueError (bare HTTP 500); fail closed as 422.
+        draft_ttl, ttl_reject = _coerce_int_field(
+            gate_cfg.get("draft_ttl_seconds", 900),
+            "draft_ttl_seconds",
+            blocked_surface=_GATE_DRAFT_SURFACE,
+            request=request,
+        )
+        if ttl_reject is not None:
+            return ttl_reject
+        # ttl_reject is None implies a successful coercion, so draft_ttl is a
+        # concrete int (narrowing for the type checker before the arithmetic
+        # in the TTL-expiry comparison below).
+        assert draft_ttl is not None
+        # VAL-ISO-026: the active-draft conflict map
+        # ``runtime.gate_drafts_active`` was written when a draft was
+        # created and read to reject a second worker (RELAY-GATE-014) but
+        # NEVER cleared -- so once a draft for (gate_id, round) was
+        # recorded, any DIFFERENT worker was rejected forever (perma-block)
+        # and the map leaked one entry per distinct (gate_id, round). Treat
+        # an entry whose TTL has elapsed (``submitted_at_epoch +
+        # draft_ttl_seconds < now``) as ABSENT: the round is effectively
+        # closed once its draft window expires, so a new worker must be
+        # admitted. We compare integer epochs (not RFC3339 strings, cf.
+        # VAL-CANON-004) to avoid serializer-mismatch hazards. The active
+        # entry is also superseded below when the same round is
+        # (re)submitted, so resolution clears the prior record rather than
+        # leaving it pending indefinitely.
+        now_epoch = _now_epoch_s()
         # Conflict detection: same (gate_id, round) from a different worker
-        # while an earlier draft is still pending -> 409 RELAY-GATE-014.
+        # while an earlier, NON-EXPIRED draft is still pending ->
+        # 409 RELAY-GATE-014.
         active = runtime.gate_drafts_active.get((gate_id, round_n))
+        if active is not None:
+            submitted_epoch = active.get("submitted_at_epoch")
+            expired = (
+                isinstance(submitted_epoch, int)
+                and (submitted_epoch + draft_ttl) < now_epoch
+            )
+            if expired:
+                # Round window closed: clear the stale entry so a new
+                # worker is not perma-blocked, then fall through to create
+                # a fresh draft.
+                del runtime.gate_drafts_active[(gate_id, round_n)]
+                active = None
         if active is not None and active.get("worker_id") != worker_id:
             return JSONResponse(
                 status_code=409,
@@ -4490,19 +4545,6 @@ def build_runtime_app(
             )
         draft_id = f"draft-{uuid.uuid4().hex}"
         gate_round_id = f"round-{uuid.uuid4().hex}"
-        gate_cfg = runtime.gates.get(gate_id, {})
-        # VAL-CANON-002: gate_cfg["draft_ttl_seconds"] is normally an int
-        # (v1_put_gate now coerces it via _coerce_int_field), but wrap the
-        # read defensively so a non-int stored value can never escalate to
-        # an unhandled ValueError (bare HTTP 500); fail closed as 422.
-        draft_ttl, ttl_reject = _coerce_int_field(
-            gate_cfg.get("draft_ttl_seconds", 900),
-            "draft_ttl_seconds",
-            blocked_surface=_GATE_DRAFT_SURFACE,
-            request=request,
-        )
-        if ttl_reject is not None:
-            return ttl_reject
         draft_record = {
             "schema_version": "relay.gate_decision_draft.v1",
             "draft_id": draft_id,
@@ -4513,6 +4555,7 @@ def build_runtime_app(
             "manifest_commit_hash": manifest_commit_hash,
             "actor_identity_hash": actor_identity_hash,
             "submitted_at": _now_iso_z(),
+            "submitted_at_epoch": now_epoch,
             "written_by": "control_plane",
             "resolution_state": "pending",
         }

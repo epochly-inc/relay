@@ -201,13 +201,24 @@ async def test_post_gate_draft_conflict_409(
 async def test_post_gate_draft_stale_handoff_422(
     v2m02_client: tuple[httpx.AsyncClient, object, object],
 ) -> None:
-    c, _db, _app = v2m02_client
+    # VAL-ISO-025: the prior version of this test forced the stale path
+    # via a client-settable ``handoff_stale=True`` body flag. That flag was
+    # a control-flow backdoor and has been removed from the production
+    # handler. The stale path is now exercised through the REAL mechanism:
+    # seed a registered actor + a manifest whose commit_hash does NOT match
+    # the submitted ``manifest_commit_hash`` so the genuine three-anchor
+    # validator returns MANIFEST_NOT_ACTIVE -> 422 RELAY-GATE-021.
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash="sha256-" + ("a" * 64),  # a DIFFERENT manifest
+    )
     body = {
-        "manifest_commit_hash": "sha256-" + ("0" * 64),
-        "actor_identity_hash": "sha256-" + ("1" * 64),
+        "manifest_commit_hash": "sha256-" + ("0" * 64),  # not active -> stale
+        "actor_identity_hash": _DRAFT_ACTOR_HASH,
         "worker_id": "worker-S",
         "round": 7,
-        "handoff_stale": True,
     }
     r = await c.post(
         "/v1/gates/gate-stale/drafts",
@@ -215,7 +226,9 @@ async def test_post_gate_draft_stale_handoff_422(
         headers=scope_header("gates:execute"),
     )
     assert r.status_code == 422, r.text
-    assert json.loads(r.text)["code"] == "RELAY-GATE-021"
+    env = json.loads(r.text)
+    assert env["code"] == "RELAY-GATE-021", env
+    assert env["details"]["reason"] == "MANIFEST_NOT_ACTIVE", env
 
 
 @pytest.mark.plumbing
