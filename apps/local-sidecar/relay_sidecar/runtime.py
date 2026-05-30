@@ -1445,28 +1445,16 @@ def build_runtime_app(
         items = {part.strip() for part in raw.split(",") if part.strip()}
         return frozenset(items)
 
-    def _check_required_scope(
-        request: Request, *, required: str, blocked_surface: str
-    ) -> JSONResponse | None:
-        """Enforce a single ``scope_required`` value. Return 403 envelope
-        when the active scope set lacks ``required``; ``None`` on accept.
-        """
-        scopes = _extract_request_scopes(request)
-        if required in scopes:
-            return None
-        return JSONResponse(
-            status_code=403,
-            content=_build_error_envelope(
-                code="RELAY-AUTH-014",
-                http_status=403,
-                message=(
-                    f"token lacks required scope {required!r}; "
-                    f"present scopes: {sorted(scopes)!r}"
-                ),
-                blocked_surface=blocked_surface,
-                details={"required_scope": required},
-            ),
-        )
+    # NOTE: ``_check_required_scope`` was removed (round-3 dead-code
+    # cleanup). It enforced a single ``scope_required`` value sourced
+    # ONLY from ``_extract_request_scopes`` (the legacy
+    # ``X-Relay-Scopes`` header path). After VAL-ISO-002 migrated the
+    # read/replay/eval routes and fix-r2-iso-ingest-bearer-auth migrated
+    # the ingest write routes, every caller now uses ``_check_auth``
+    # (which merges bearer-token scopes with the optionally-enabled
+    # legacy header). The helper had zero executable callers and was
+    # deleted; ``RELAY-AUTH-014`` is still emitted by ``_check_auth`` for
+    # the same scope-rejection condition.
 
     # Maximum batch body size for the spans/contract-results batch routes
     # (spec B.4 RELAY-ING-021: payload > 1 MiB returns 413). The limit is

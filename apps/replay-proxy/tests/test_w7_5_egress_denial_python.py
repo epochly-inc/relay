@@ -35,6 +35,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
 import socket
 import urllib.error
@@ -154,15 +155,42 @@ def test_requests_get_loopback_passes_through() -> None:
     # Pick a port that's almost certainly not bound. The kernel will
     # respond with ECONNREFUSED, which requests surfaces as
     # ConnectionError. Crucially, this is NOT a RelaySocketDenyError.
-    with replay_session():
-        with pytest.raises(requests.exceptions.ConnectionError) as excinfo:
-            requests.get("http://127.0.0.1:1/", timeout=2.0)
-        cur: BaseException | None = excinfo.value
-        while cur is not None:
-            assert not isinstance(cur, RelaySocketDenyError), (
-                "loopback must NOT be blocked by the deny gate"
-            )
-            cur = cur.__cause__ or cur.__context__
+    #
+    # Socket-leak hygiene (same class as the urllib outside-session
+    # test): track every socket urllib3 creates and close it
+    # deterministically, and drop the traceback reference, so the
+    # ECONNREFUSED socket is finalized inside the test body rather than
+    # in a later test's GC window. The ``filterwarnings`` decorator
+    # above remains as a defence-in-depth backstop for slow runners
+    # where urllib3 internals may still construct a transient socket the
+    # tracker cannot reach; it does not weaken the deterministic close.
+    created_sockets: list[socket.socket] = []
+    original_socket_init = socket.socket.__init__
+
+    def _tracking_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        original_socket_init(self, *args, **kwargs)
+        created_sockets.append(self)
+
+    socket.socket.__init__ = _tracking_init  # type: ignore[assignment]
+    try:
+        with replay_session():
+            with pytest.raises(
+                requests.exceptions.ConnectionError
+            ) as excinfo:
+                requests.get("http://127.0.0.1:1/", timeout=2.0)
+            cur: BaseException | None = excinfo.value
+            while cur is not None:
+                assert not isinstance(cur, RelaySocketDenyError), (
+                    "loopback must NOT be blocked by the deny gate"
+                )
+                cur = cur.__cause__ or cur.__context__
+            del cur
+            excinfo.traceback = excinfo.traceback[:0]
+    finally:
+        socket.socket.__init__ = original_socket_init  # type: ignore[assignment]
+        for sk in created_sockets:
+            with contextlib.suppress(Exception):
+                sk.close()
 
 
 # ---------------------------------------------------------------------------
@@ -207,16 +235,57 @@ def test_urllib_urlopen_outside_session_is_not_intercepted() -> None:
 
     Negative assertion that proves VAL-W7-047 still holds for the
     urllib transport family.
+
+    Socket-leak hygiene: ``urlopen`` constructs an ``http.client``
+    connection whose underlying ``socket.socket`` is reachable through
+    the raised ``URLError``'s traceback. If that socket is left to be
+    GC-finalized, CPython emits a stray ``ResourceWarning`` whenever the
+    finalizer happens to run with a live OS fd. Under the full plumbing
+    suite a later test triggers that GC, and pytest's
+    ``unraisableexception`` plugin elevates the warning to a teardown
+    ERROR (pyproject ``filterwarnings = ["error", ...]``). Every socket
+    this call creates is therefore tracked and closed deterministically
+    in a ``finally`` block, and the traceback reference is dropped so no
+    socket survives the test body. The negative assertion below is
+    unchanged: outside ``replay_session`` the gate MUST NOT fire.
     """
-    # Use a closed loopback port to avoid actual external network.
-    with pytest.raises(urllib.error.URLError) as excinfo:
-        urllib.request.urlopen("http://127.0.0.1:1/", timeout=1.0)
-    cur: BaseException | None = excinfo.value
-    while cur is not None:
-        assert not isinstance(cur, RelaySocketDenyError), (
-            "outside replay_session, the gate must not fire"
-        )
-        cur = cur.__cause__ or cur.__context__
+    created_sockets: list[socket.socket] = []
+    original_socket_init = socket.socket.__init__
+
+    def _tracking_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        original_socket_init(self, *args, **kwargs)
+        created_sockets.append(self)
+
+    response: object | None = None
+    socket.socket.__init__ = _tracking_init  # type: ignore[assignment]
+    try:
+        # Use a closed loopback port to avoid actual external network.
+        with pytest.raises(urllib.error.URLError) as excinfo:
+            # On the (expected) ECONNREFUSED path urlopen raises before
+            # returning; on any non-refused path we still close the
+            # response handle so its socket is released immediately.
+            response = urllib.request.urlopen(
+                "http://127.0.0.1:1/", timeout=1.0
+            )
+        cur: BaseException | None = excinfo.value
+        while cur is not None:
+            assert not isinstance(cur, RelaySocketDenyError), (
+                "outside replay_session, the gate must not fire"
+            )
+            cur = cur.__cause__ or cur.__context__
+        # Drop the traceback reference that keeps the connection (and its
+        # socket) alive, so GC does not defer finalization into a later
+        # test's window.
+        del cur
+        excinfo.traceback = excinfo.traceback[:0]
+    finally:
+        socket.socket.__init__ = original_socket_init  # type: ignore[assignment]
+        if response is not None:
+            with contextlib.suppress(Exception):
+                response.close()  # type: ignore[attr-defined]
+        for sk in created_sockets:
+            with contextlib.suppress(Exception):
+                sk.close()
 
 
 # ---------------------------------------------------------------------------
