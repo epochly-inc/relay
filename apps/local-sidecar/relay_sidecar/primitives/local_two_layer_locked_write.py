@@ -70,7 +70,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 import portalocker
 
@@ -365,7 +365,9 @@ def _write_atomic_via_callback(
         # Use a counting wrapper so we can return the exact byte count.
         with os.fdopen(fd, "wb") as raw_fh:
             counter = _CountingBinaryWriter(raw_fh)
-            body_writer(counter)
+            # The counter duck-types the BinaryIO surface the callback uses
+            # (write/flush/fileno); cast reflects the documented invariant.
+            body_writer(cast("BinaryIO", counter))
             raw_fh.flush()
             os.fsync(raw_fh.fileno())
             bytes_written = counter.bytes_written

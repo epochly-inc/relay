@@ -214,6 +214,7 @@ def test_val_v3m1_012_claim_predicate_accepts_depth_8() -> None:
 
     payload = _base_claim(claim_predicate=nest(7))  # depth: 8 levels of op
     ec = EvidenceClaim.model_validate(payload)
+    assert ec.claim_predicate is not None
     assert ec.claim_predicate.op == "and"
 
 

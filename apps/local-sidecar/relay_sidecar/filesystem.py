@@ -240,7 +240,9 @@ def _probe_windows(path: Path) -> tuple[str, int | str | None]:  # pragma: no co
         return ("unknown", None)
     root = drive + os.sep
     fs_name_buf = ctypes.create_unicode_buffer(256)
-    kernel32 = ctypes.windll.kernel32
+    # ctypes.windll exists only on Windows; this function is reached only
+    # when sys.platform == "win32" (see _probe_filesystem dispatch above).
+    kernel32 = ctypes.windll.kernel32  # pyright: ignore[reportAttributeAccessIssue]
     rc = kernel32.GetVolumeInformationW(
         ctypes.c_wchar_p(root),
         None,

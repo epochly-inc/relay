@@ -70,7 +70,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, MutableMapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -784,7 +784,9 @@ async def _wal_checkpoint_truncate_with_status(
         return (True, "")
     try:
         async with conn.execute("PRAGMA wal_checkpoint(TRUNCATE)") as cur:
-            rows = await cur.fetchall()
+            # aiosqlite types fetchall() as Iterable[Row]; at runtime it
+            # returns a concrete list. Materialize for indexing/len below.
+            rows = list(await cur.fetchall())
     except Exception as e:  # noqa: BLE001
         return (False, f"{type(e).__name__}: {e}")
     with contextlib.suppress(Exception):
@@ -1714,6 +1716,9 @@ def build_runtime_app(
             # contract avoids cross-feature regressions while v2m02 owns
             # the full-envelope code path below.
             tracker = runtime.quiesce.tracker
+            # Populated in lifespan startup before any route runs; route
+            # handlers never execute pre-startup (invariant narrowing).
+            assert tracker is not None
             async with tracker.acquire(description="ingest/runs") as op:
                 return JSONResponse(
                     status_code=200,
@@ -1779,6 +1784,8 @@ def build_runtime_app(
                 content=raw_rejection.as_envelope(),
             )
         tracker = runtime.quiesce.tracker
+        # Populated in lifespan startup before any route runs (invariant).
+        assert tracker is not None
         async with tracker.acquire(description="ingest/runs"):
             return JSONResponse(
                 status_code=201,
@@ -1856,6 +1863,8 @@ def build_runtime_app(
         }
         if not non_anchor_keys:
             tracker = runtime.quiesce.tracker
+            # Populated in lifespan startup before any route runs (invariant).
+            assert tracker is not None
             async with tracker.acquire(description="ingest/spans:batch") as op:
                 return JSONResponse(
                     status_code=200,
@@ -1933,6 +1942,8 @@ def build_runtime_app(
                 )
             accepted_count = sum(1 for s in spans if isinstance(s, dict))
         tracker = runtime.quiesce.tracker
+        # Populated in lifespan startup before any route runs (invariant).
+        assert tracker is not None
         async with tracker.acquire(description="ingest/spans:batch") as op:
             return JSONResponse(
                 status_code=202,
@@ -2020,6 +2031,8 @@ def build_runtime_app(
             1 for r in contract_results if isinstance(r, dict)
         )
         tracker = runtime.quiesce.tracker
+        # Populated in lifespan startup before any route runs (invariant).
+        assert tracker is not None
         async with tracker.acquire(
             description="ingest/contract-results:batch"
         ) as op:
@@ -2151,7 +2164,9 @@ def build_runtime_app(
             "ORDER BY decided_at DESC, run_id ASC LIMIT ? OFFSET ?",
             (project_id, effective_limit + 1, offset),
         ) as cur:
-            rows = await cur.fetchall()
+            # aiosqlite types fetchall() as Iterable[Row]; at runtime it
+            # returns a concrete list. Materialize for len()/slice below.
+            rows = list(await cur.fetchall())
         has_more = len(rows) > effective_limit
         page_rows = rows[:effective_limit]
         items = [
@@ -2322,7 +2337,9 @@ def build_runtime_app(
             "LIMIT ? OFFSET ?",
             (run_id, effective_limit + 1, offset),
         ) as cur:
-            span_rows = await cur.fetchall()
+            # aiosqlite types fetchall() as Iterable[Row]; at runtime it
+            # returns a concrete list. Materialize for len()/slice below.
+            span_rows = list(await cur.fetchall())
         has_more = len(span_rows) > effective_limit
         page_rows = span_rows[:effective_limit]
         spans = [
@@ -2506,7 +2523,9 @@ def build_runtime_app(
             "LIMIT ? OFFSET ?",
             (run_id, effective_limit + 1, offset),
         ) as cur:
-            rows = await cur.fetchall()
+            # aiosqlite types fetchall() as Iterable[Row]; at runtime it
+            # returns a concrete list. Materialize for len()/slice below.
+            rows = list(await cur.fetchall())
         has_more = len(rows) > effective_limit
         page_rows = rows[:effective_limit]
         hypotheses = [
@@ -4081,7 +4100,7 @@ def build_runtime_app(
             # Stash the snapshot so handlers can re-emit headers on their
             # own JSONResponse instances (for the early auth-fail path).
             # The standard send-wrapper below also injects headers.
-            async def send_wrapper(message: dict[str, Any]) -> None:
+            async def send_wrapper(message: MutableMapping[str, Any]) -> None:
                 if message["type"] == "http.response.start":
                     existing = message.get("headers", [])
                     # Drop any pre-existing X-RateLimit headers so the

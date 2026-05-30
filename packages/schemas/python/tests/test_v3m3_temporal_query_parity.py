@@ -270,7 +270,8 @@ def _pg_available() -> str | None:
     if not dsn:
         return None
     try:
-        import psycopg  # noqa: F401
+        # Optional PG driver; absence is handled by the except below.
+        import psycopg  # noqa: F401  # pyright: ignore[reportMissingImports]
     except ImportError:
         return None
     return dsn

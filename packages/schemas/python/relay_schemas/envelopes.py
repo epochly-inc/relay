@@ -50,6 +50,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.config import ExtraValues
 
 # -----------------------------------------------------------------------------
 # Shared type aliases
@@ -580,10 +581,10 @@ class _ScopeStateAdapterMeta(type):
     ``ScopeState.model_validate(payload)`` exactly like every other envelope.
     """
 
-    def model_validate(cls, payload: Any) -> _ScopeStateBase:
+    def model_validate(cls, payload: Any) -> _ScopeStateUnion:
         from pydantic import TypeAdapter
 
-        adapter: TypeAdapter[_ScopeStateBase] = TypeAdapter(_ScopeStateUnion)
+        adapter: TypeAdapter[_ScopeStateUnion] = TypeAdapter(_ScopeStateUnion)
         return adapter.validate_python(payload)
 
 
@@ -711,6 +712,7 @@ class EventLogEntry(_RelayEnvelope):
         obj: Any,
         *,
         strict: bool | None = None,
+        extra: ExtraValues | None = None,
         from_attributes: bool | None = None,
         context: Any = None,
         by_alias: bool | None = None,
@@ -728,6 +730,7 @@ class EventLogEntry(_RelayEnvelope):
         instance = super().model_validate(
             obj,
             strict=strict,
+            extra=extra,
             from_attributes=from_attributes,
             context=context,
             by_alias=by_alias,
@@ -1223,6 +1226,7 @@ class ReplayFixture(_RelayEnvelope):
         obj: Any,
         *,
         strict: bool | None = None,
+        extra: ExtraValues | None = None,
         from_attributes: bool | None = None,
         context: Any = None,
         by_alias: bool | None = None,
@@ -1239,6 +1243,7 @@ class ReplayFixture(_RelayEnvelope):
         instance = super().model_validate(
             obj,
             strict=strict,
+            extra=extra,
             from_attributes=from_attributes,
             context=context,
             by_alias=by_alias,
