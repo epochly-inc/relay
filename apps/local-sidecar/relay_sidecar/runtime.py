@@ -3390,6 +3390,63 @@ def build_runtime_app(
                 )
         return None
 
+    def _coerce_int_field(
+        raw: Any,
+        field_name: str,
+        *,
+        blocked_surface: str,
+        request: Request,
+    ) -> tuple[int | None, JSONResponse | None]:
+        """Coerce a JSON body field to int, failing closed as 422.
+
+        VAL-CANON-002: write handlers previously coerced client-controlled
+        JSON body fields with a bare ``int()`` (e.g. ``draft_ttl_seconds``,
+        ``remediation_round_cap``, ``round``). A non-numeric string made
+        ``int()`` raise ``ValueError`` which was unhandled, surfacing as a
+        bare HTTP 500 rather than the canonical RELAY-ING-001 422
+        ingest-validation envelope that sibling malformed-field rejections
+        already emit.
+
+        Returns ``(value, None)`` on success or ``(None, JSONResponse)``
+        carrying a canonical RELAY-ING-001 422 envelope when ``raw`` cannot
+        be coerced to an int. Only the ``int()`` ``(TypeError, ValueError)``
+        is caught; no other error is masked. Booleans are rejected because
+        ``int(True)`` would silently coerce to 1 -- a non-int JSON type is a
+        malformed field, not a numeric value.
+        """
+        if isinstance(raw, bool):
+            return None, JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message=(
+                        f"field {field_name!r} MUST be an integer, "
+                        "not a boolean"
+                    ),
+                    blocked_surface=blocked_surface,
+                    details={"field": field_name},
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        try:
+            return int(raw), None
+        except (TypeError, ValueError):
+            return None, JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message=(
+                        f"field {field_name!r} MUST be an integer-valued "
+                        "JSON number or numeric string"
+                    ),
+                    blocked_surface=blocked_surface,
+                    details={"field": field_name},
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+
     def _canonical_idempotency_key(*, surface: str, user_key: str) -> str:
         """Derive the canonical ULID-grammar idempotency_key.
 
@@ -3928,6 +3985,26 @@ def build_runtime_app(
                 headers=_rate_limit_headers_for(request),
             )
         existed = gate_id in runtime.gates
+        # VAL-CANON-002: coerce client-controlled int body fields through
+        # _coerce_int_field so a non-numeric value fails closed as a
+        # canonical RELAY-ING-001 422 instead of an unhandled ValueError
+        # (bare HTTP 500).
+        draft_ttl_seconds, ttl_reject = _coerce_int_field(
+            body.get("draft_ttl_seconds", 900),
+            "draft_ttl_seconds",
+            blocked_surface=_GATE_CONFIGURE_SURFACE,
+            request=request,
+        )
+        if ttl_reject is not None:
+            return ttl_reject
+        remediation_round_cap, cap_reject = _coerce_int_field(
+            body.get("remediation_round_cap", 5),
+            "remediation_round_cap",
+            blocked_surface=_GATE_CONFIGURE_SURFACE,
+            request=request,
+        )
+        if cap_reject is not None:
+            return cap_reject
         # Audit-R3 (2026-05-18): drop made-up wire-level schema_version
         # "relay.gate.v1" (not in KNOWN_SCHEMA_IDS / envelopes.yaml /
         # openapi.yaml). Gates are internal configuration objects, not a
@@ -3938,10 +4015,8 @@ def build_runtime_app(
             "name": body.get("name", gate_id),
             "scope_type": body.get("scope_type", "run"),
             "enabled": bool(body.get("enabled", True)),
-            "draft_ttl_seconds": int(body.get("draft_ttl_seconds", 900)),
-            "remediation_round_cap": int(
-                body.get("remediation_round_cap", 5)
-            ),
+            "draft_ttl_seconds": draft_ttl_seconds,
+            "remediation_round_cap": remediation_round_cap,
             "cascade_on_block": bool(body.get("cascade_on_block", True)),
             "written_by": "control_plane",
             "updated_at": _now_iso_z(),
@@ -4170,7 +4245,19 @@ def build_runtime_app(
                         headers=_rate_limit_headers_for(request),
                     )
         worker_id = body.get("worker_id") or "worker-default"
-        round_n = int(body.get("round", 1))
+        # VAL-CANON-002: a non-numeric ``round`` must fail closed as a
+        # canonical RELAY-ING-001 422 rather than an unhandled ValueError.
+        round_n, round_reject = _coerce_int_field(
+            body.get("round", 1),
+            "round",
+            blocked_surface=_GATE_DRAFT_SURFACE,
+            request=request,
+        )
+        if round_reject is not None:
+            return round_reject
+        # round_reject is None implies a successful coercion, so round_n is
+        # a concrete int (narrowing for the type checker / dict-key types).
+        assert round_n is not None
         # Conflict detection: same (gate_id, round) from a different worker
         # while an earlier draft is still pending -> 409 RELAY-GATE-014.
         active = runtime.gate_drafts_active.get((gate_id, round_n))
@@ -4196,7 +4283,18 @@ def build_runtime_app(
         draft_id = f"draft-{uuid.uuid4().hex}"
         gate_round_id = f"round-{uuid.uuid4().hex}"
         gate_cfg = runtime.gates.get(gate_id, {})
-        draft_ttl = int(gate_cfg.get("draft_ttl_seconds", 900))
+        # VAL-CANON-002: gate_cfg["draft_ttl_seconds"] is normally an int
+        # (v1_put_gate now coerces it via _coerce_int_field), but wrap the
+        # read defensively so a non-int stored value can never escalate to
+        # an unhandled ValueError (bare HTTP 500); fail closed as 422.
+        draft_ttl, ttl_reject = _coerce_int_field(
+            gate_cfg.get("draft_ttl_seconds", 900),
+            "draft_ttl_seconds",
+            blocked_surface=_GATE_DRAFT_SURFACE,
+            request=request,
+        )
+        if ttl_reject is not None:
+            return ttl_reject
         draft_record = {
             "schema_version": "relay.gate_decision_draft.v1",
             "draft_id": draft_id,
