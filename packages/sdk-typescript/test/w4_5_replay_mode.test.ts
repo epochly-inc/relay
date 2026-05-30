@@ -149,6 +149,53 @@ describe("VAL-W4-035: undici interceptor catches non-loopback egress", () => {
     expect(isLoopbackHost("::ffff:127.255.255.255")).toBe(true);
   });
 
+  // VAL-PARITY-010: Node's ``new URL(...)`` (used by ``extractHost``)
+  // normalizes ``::ffff:127.0.0.1`` to the hex-compressed mapped form
+  // ``::ffff:7f00:1`` (high 16 bits ``7f00`` . low 16 bits ``0001``).
+  // Python's ``ipaddress.ip_address`` treats the hex-compressed form as
+  // the loopback IPv4 ``127.0.0.1`` (``is_loopback == True``); the TS
+  // classifier MUST agree or the two SDKs make divergent egress decisions
+  // for the very form Node produces.
+  it("isLoopbackHost accepts hex-compressed IPv4-mapped loopback ::ffff:7f00:1 (VAL-PARITY-010)", () => {
+    // ::ffff:7f00:1 == ::ffff:127.0.0.1  (7f00 -> 127.0, 0001 -> 0.1)
+    expect(isLoopbackHost("::ffff:7f00:1")).toBe(true);
+    expect(isLoopbackHost("[::ffff:7f00:1]")).toBe(true);
+    expect(isLoopbackHost("::FFFF:7F00:1")).toBe(true);
+    // ::ffff:7f00:0001 (uncompressed low group) is the same address.
+    expect(isLoopbackHost("::ffff:7f00:0001")).toBe(true);
+    // Full 127.0.0.0/8: ::ffff:7fff:ffff == ::ffff:127.255.255.255
+    expect(isLoopbackHost("::ffff:7fff:ffff")).toBe(true);
+  });
+
+  it("isLoopbackHost rejects non-loopback hex-compressed mapped forms (VAL-PARITY-010)", () => {
+    // ::ffff:808:808 == ::ffff:8.8.8.8 (Node normalizes 8.8.8.8 to this).
+    expect(isLoopbackHost("::ffff:808:808")).toBe(false);
+    // ::ffff:0a00:1 == ::ffff:10.0.0.1 (private, not loopback).
+    expect(isLoopbackHost("::ffff:a00:1")).toBe(false);
+    // Extra group: ::ffff:0:7f00:1 is NOT the ::ffff:<ipv4> mapped prefix.
+    expect(isLoopbackHost("::ffff:0:7f00:1")).toBe(false);
+    // High group out of the 16-bit range must not parse as loopback.
+    expect(isLoopbackHost("::ffff:7f00:1:1")).toBe(false);
+  });
+
+  // End-to-end via the interceptor, reproducing the exact divergence:
+  // an origin whose host is an IPv4-mapped IPv6 loopback. ``extractHost``
+  // routes it through ``new URL`` which normalizes to ``[::ffff:7f00:1]``.
+  // Before the fix this loopback origin is wrongly denied egress.
+  it("interceptor allows IPv4-mapped IPv6 loopback origin (VAL-PARITY-010)", () => {
+    const interceptor = buildEgressDenyInterceptor();
+    let inner_called = 0;
+    const dispatch = ((_o: { origin?: string }, _h: unknown) => {
+      inner_called += 1;
+      return true;
+    }) as (opts: { origin?: string; path?: string; method?: string }, handler: unknown) => boolean;
+    const wrapped = interceptor(dispatch);
+    // new URL normalizes the host to [::ffff:7f00:1]; must still be loopback.
+    const ok = wrapped({ origin: "https://[::ffff:127.0.0.1]:443", path: "/" }, {});
+    expect(ok).toBe(true);
+    expect(inner_called).toBe(1);
+  });
+
   it("isLoopbackHost accepts the full 127.0.0.0/8 range", () => {
     expect(isLoopbackHost("127.0.0.0")).toBe(true);
     expect(isLoopbackHost("127.255.255.255")).toBe(true);

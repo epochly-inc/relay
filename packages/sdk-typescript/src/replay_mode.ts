@@ -265,13 +265,56 @@ function _isLoopbackIp(addr: string): boolean {
   // embedded IPv4 itself is a loopback, but for parity with Python's
   // behaviour we follow the same rule: check the embedded IPv4 only when
   // the prefix is exactly ``::ffff:``.)
+  //
+  // Node's ``new URL(...)`` (used by :func:`extractHost`) does NOT preserve
+  // the dotted-decimal tail: it normalizes ``::ffff:127.0.0.1`` to the
+  // hex-compressed form ``::ffff:7f00:1`` (the two trailing 16-bit groups
+  // ``7f00`` and ``0001`` encode the four IPv4 octets). Python's
+  // ``ipaddress.ip_address`` parses both forms to the same address with
+  // ``is_loopback == True``. We must accept both the dotted tail AND the
+  // hex-compressed two-group tail so the two SDKs agree on the form Node
+  // actually produces (VAL-PARITY-010).
   if (addr.startsWith("::ffff:")) {
     const tail = addr.slice("::ffff:".length);
     if (tail.indexOf(".") >= 0) {
+      // Dotted form: ``::ffff:127.0.0.1``.
       return _isCanonicalIpv4Loopback(tail);
+    }
+    // Hex-compressed form: ``::ffff:HHHH:HHHH`` (exactly two 16-bit groups).
+    const dotted = _mappedHexGroupsToIpv4(tail);
+    if (dotted !== null) {
+      return _isCanonicalIpv4Loopback(dotted);
     }
   }
   return false;
+}
+
+/**
+ * Convert the trailing groups of a hex-compressed IPv4-mapped IPv6 address
+ * (the ``HHHH:HHHH`` after ``::ffff:``) into the dotted-decimal IPv4 string
+ * the embedded address represents. Returns ``null`` if ``tail`` is not
+ * exactly two valid 1-4 hex-digit groups (so callers reject extra groups
+ * like ``0:7f00:1`` and oversize groups, matching Python's parser).
+ *
+ * ``7f00:1`` -> ``"127.0.0.1"`` (high group 0x7f00 -> 127.0, low 0x0001 -> 0.1).
+ */
+function _mappedHexGroupsToIpv4(tail: string): string | null {
+  const groups = tail.split(":");
+  if (groups.length !== 2) return null;
+  const words: number[] = [];
+  for (const g of groups) {
+    // 1-4 hex digits per 16-bit group; anything else is not a valid group.
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    const w = Number.parseInt(g, 16);
+    if (!Number.isFinite(w) || w < 0 || w > 0xffff) return null;
+    words.push(w);
+  }
+  // length === 2 is guaranteed above; index directly so the compiler keeps
+  // the values non-nullable (tuple destructuring of number[] would not).
+  const hi = words[0]!;
+  const lo = words[1]!;
+  // Each 16-bit word splits into two IPv4 octets (big-endian).
+  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join(".");
 }
 
 /**
@@ -302,8 +345,10 @@ function _isCanonicalIpv4Loopback(addr: string): boolean {
 function extractHost(urlLike: string): string {
   try {
     const u = new URL(urlLike);
-    // u.hostname strips the brackets from IPv6 addresses; that's what
-    // isLoopbackHost expects.
+    // u.hostname KEEPS the surrounding brackets for IPv6 addresses (e.g.
+    // ``"[::1]"``, ``"[::ffff:7f00:1]"``) and normalizes IPv4-mapped IPv6
+    // to the hex-compressed form. isLoopbackHost strips the brackets and
+    // handles both the dotted and hex-compressed mapped tails (VAL-PARITY-010).
     return u.hostname;
   } catch {
     // Bare host fallback.
