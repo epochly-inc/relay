@@ -85,36 +85,92 @@ def _isolate_replay_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_requests_get_external_blocked_under_replay() -> None:
     """``requests.get('https://google.com')`` raises a Relay-typed deny.
 
-    The ``requests`` library uses ``urllib3`` -> stdlib ``http.client``
-    -> stdlib ``socket.create_connection``. The W7.3 socket-deny gate
-    patches ``socket.create_connection`` so the raise happens BEFORE
-    ``urllib3`` opens any TLS connection. The exception bubbles up
-    through ``requests`` and surfaces as ``ConnectionError`` whose
-    ``__cause__`` (or in newer urllib3, the chained
-    ``urllib3.exceptions.NewConnectionError`` wrapping)
-    is a :class:`RelaySocketDenyError`.
+    The ``requests`` library uses ``urllib3``. On the version pinned here
+    ``urllib3.util.connection.create_connection`` builds the socket itself
+    -- ``sock = socket.socket(af, socktype, proto)`` then ``sock.connect(sa)``
+    -- rather than delegating to stdlib ``socket.create_connection``. The
+    W7.3 socket-deny gate patches ``socket.socket.connect`` so the raise
+    happens on that ``connect`` call, BEFORE any TCP SYN leaves the
+    process. The exception bubbles up through ``requests`` and surfaces as
+    ``ConnectionError`` whose ``__cause__`` (or the chained
+    ``urllib3.exceptions.NewConnectionError`` wrapping) is a
+    :class:`RelaySocketDenyError`.
+
+    Socket-leak hygiene (the load-bearing reason this test owns explicit
+    cleanup): :class:`RelaySocketDenyError` is NOT an ``OSError`` subclass,
+    so urllib3's ``create_connection`` cleanup branch -- ``except OSError:
+    ... sock.close()`` -- does NOT fire on the deny path. The unbound
+    socket urllib3 just constructed (``laddr=('0.0.0.0', 0)``, never
+    connected) is therefore left open, pinned alive by the propagating
+    exception's ``__traceback__`` frames. If left to a later GC, CPython
+    emits ``ResourceWarning: unclosed <socket.socket ...>`` which pytest's
+    ``unraisableexception`` plugin elevates to a teardown ERROR under the
+    repo-wide ``filterwarnings = ["error", ...]`` policy -- and, because
+    the finalizer runs cross-file, the error is misattributed to whatever
+    UNRELATED test happens to be tearing down when the GC fires. To make
+    finalization deterministic and local, this test tracks every socket
+    ``urllib3`` constructs, closes them in ``finally``, breaks the
+    exception chain's ``__traceback__`` references, and forces a
+    ``gc.collect()`` inside the test body so no socket survives past it.
+    The negative-and-positive assertions are unchanged: the Relay deny
+    MUST be reachable in the cause chain with code RELAY-SDK-012 /
+    RELAY-SDK-SOCKET-DENY.
     """
     requests = pytest.importorskip("requests")
-    with replay_session():
-        with pytest.raises(Exception) as excinfo:
-            requests.get(f"https://{_NON_LOOPBACK_HOST}/", timeout=2.0)
-        # Walk the cause chain: requests wraps low-level errors in its
-        # own ConnectionError. The Relay deny MUST be reachable from
-        # the chain so operators can grep stack traces for the wire
-        # code RELAY-SDK-012 / RELAY-SDK-SOCKET-DENY.
-        seen_classes: list[str] = []
-        cur: BaseException | None = excinfo.value
-        while cur is not None:
-            seen_classes.append(type(cur).__name__)
-            if isinstance(cur, RelaySocketDenyError):
-                assert cur.code == "RELAY-SDK-012"
-                assert cur.error_class == "RELAY-SDK-SOCKET-DENY"
-                return
-            cur = cur.__cause__ or cur.__context__
-        pytest.fail(
-            "expected RelaySocketDenyError in cause chain; got "
-            + " <- ".join(seen_classes)
-        )
+    created_sockets: list[socket.socket] = []
+    original_socket_init = socket.socket.__init__
+
+    def _tracking_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        original_socket_init(self, *args, **kwargs)
+        created_sockets.append(self)
+
+    socket.socket.__init__ = _tracking_init  # type: ignore[assignment]
+    try:
+        with replay_session():
+            with pytest.raises(Exception) as excinfo:
+                requests.get(f"https://{_NON_LOOPBACK_HOST}/", timeout=2.0)
+            # Walk the cause chain: requests wraps low-level errors in its
+            # own ConnectionError. The Relay deny MUST be reachable from
+            # the chain so operators can grep stack traces for the wire
+            # code RELAY-SDK-012 / RELAY-SDK-SOCKET-DENY.
+            seen_classes: list[str] = []
+            found_deny = False
+            cur: BaseException | None = excinfo.value
+            while cur is not None:
+                seen_classes.append(type(cur).__name__)
+                if isinstance(cur, RelaySocketDenyError):
+                    assert cur.code == "RELAY-SDK-012"
+                    assert cur.error_class == "RELAY-SDK-SOCKET-DENY"
+                    found_deny = True
+                    break
+                cur = cur.__cause__ or cur.__context__
+            # Break every ``__traceback__`` reference in the exception
+            # chain BEFORE asserting, so even the failure path does not
+            # leave the unbound socket pinned by traceback frames. Drop
+            # pytest's own traceback copy too.
+            exc_chain: BaseException | None = excinfo.value
+            while exc_chain is not None:
+                next_link = exc_chain.__cause__ or exc_chain.__context__
+                exc_chain.__traceback__ = None
+                exc_chain = next_link
+            del cur, exc_chain
+            excinfo.traceback = excinfo.traceback[:0]
+            if not found_deny:
+                pytest.fail(
+                    "expected RelaySocketDenyError in cause chain; got "
+                    + " <- ".join(seen_classes)
+                )
+    finally:
+        socket.socket.__init__ = original_socket_init  # type: ignore[assignment]
+        for sk in created_sockets:
+            with contextlib.suppress(Exception):
+                sk.close()
+        # Force finalization of any socket urllib3 constructed on the deny
+        # path NOW, inside this test, so it never finalizes-late at a
+        # foreign test's teardown window.
+        import gc
+
+        gc.collect()
 
 
 @pytest.mark.fulfills("VAL-W7-080")
