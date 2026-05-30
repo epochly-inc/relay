@@ -787,7 +787,9 @@ async def test_engine_emits_state_invalid_transition_on_unknown_event(
             "WHERE scope_id = ? AND event_type = ?",
             (scope_id, INVALID_TRANSITION_EVENT_TYPE),
         ) as cur:
-            rows = await cur.fetchall()
+            # aiosqlite types fetchall() as Iterable[Row]; the runtime value
+            # is a list. Materialize so len()/indexing type-check unchanged.
+            rows = list(await cur.fetchall())
         assert len(rows) == 1, rows
         import json as _json
 

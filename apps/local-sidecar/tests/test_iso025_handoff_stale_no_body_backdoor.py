@@ -28,9 +28,8 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header, seed_three_anchor_handoff
+from _v2m02_w25_helpers import V2M02Client, scope_header, seed_three_anchor_handoff
 
 _ACTOR_HASH = "sha256-" + ("1" * 64)
 _MANIFEST_HASH = "sha256-" + ("0" * 64)
@@ -40,7 +39,7 @@ _MANIFEST_HASH = "sha256-" + ("0" * 64)
 @pytest.mark.fulfills("VAL-ISO-025")
 @pytest.mark.asyncio
 async def test_body_handoff_stale_flag_cannot_force_stale_path(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """A client-supplied ``handoff_stale=True`` must NOT force the stale
     rejection when the real three-anchor handoff is valid.
@@ -83,7 +82,7 @@ async def test_body_handoff_stale_flag_cannot_force_stale_path(
 @pytest.mark.fulfills("VAL-ISO-025")
 @pytest.mark.asyncio
 async def test_genuine_stale_handoff_still_rejected(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """The REAL stale-detection path (three-anchor mismatch) must still
     reject with 422 RELAY-GATE-021 -- removing the backdoor must not

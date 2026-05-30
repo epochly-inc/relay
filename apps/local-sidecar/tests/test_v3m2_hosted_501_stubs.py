@@ -30,10 +30,14 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from _v2m02_w25_helpers import V2M02Client
+
 import json
 from pathlib import Path
 
-import httpx
 import pytest
 import yaml
 
@@ -64,7 +68,7 @@ def _concretize(path_template: str, param_name: str) -> str:
 @pytest.mark.fulfills("VAL-V3M2-005")
 @pytest.mark.asyncio
 async def test_hosted_only_routes_return_501_envelope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Each of the 5 hosted-only routes returns 501 + structured envelope.
 

@@ -301,6 +301,9 @@ def test_timeout_raises_state_lock_timeout_under_one_second(tmp_path: Path) -> N
     proc.terminate()
     proc.join(timeout=5.0)
     if proc.is_alive():
+        # Process.pid is Optional (None before start); it is alive here, so
+        # the pid is set. Narrow before os.kill (kill by PID only).
+        assert proc.pid is not None
         os.kill(proc.pid, 9)
         proc.join(timeout=2.0)
 
@@ -405,6 +408,9 @@ def test_two_processes_no_deadlock_one_succeeds_one_times_out(
     blocker.terminate()
     blocker.join(timeout=5.0)
     if blocker.is_alive():
+        # Process.pid is Optional (None before start); it is alive here, so
+        # the pid is set. Narrow before os.kill (kill by PID only).
+        assert blocker.pid is not None
         os.kill(blocker.pid, 9)
         blocker.join(timeout=2.0)
 

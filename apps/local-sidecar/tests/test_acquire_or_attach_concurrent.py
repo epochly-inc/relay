@@ -12,6 +12,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 from collections.abc import Iterable
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 
 import pytest
@@ -99,7 +100,10 @@ def test_n10_concurrent_spawn_produces_exactly_one_spawned_event(
     ctx = mp.get_context("spawn")  # avoid fork to ensure clean child state
     queue: mp.Queue[tuple[str, str]] = ctx.Queue()
     barrier_path = relay_home_tmp / "barrier.txt"
-    procs: list[mp.Process] = []
+    # get_context("spawn").Process returns a SpawnProcess (sibling of the
+    # default-context mp.Process); annotate with their common base so the
+    # appends below type-check. start/join/is_alive all live on BaseProcess.
+    procs: list[BaseProcess] = []
     for _ in range(n):
         p = ctx.Process(
             target=_worker,

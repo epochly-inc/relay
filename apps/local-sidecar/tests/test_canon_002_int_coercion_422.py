@@ -26,7 +26,7 @@ import json
 
 import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header, seed_three_anchor_handoff
+from _v2m02_w25_helpers import V2M02Client, scope_header, seed_three_anchor_handoff
 
 # Anchors for the gate-draft POSTs. VAL-ISO-003 made the three-anchor
 # handoff validator run unconditionally (fail closed on unseeded
@@ -61,7 +61,7 @@ def _assert_canonical_422(r: httpx.Response) -> dict:
 @pytest.mark.fulfills("VAL-CANON-002")
 @pytest.mark.asyncio
 async def test_put_gate_non_int_remediation_round_cap_returns_422(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.put(
@@ -79,7 +79,7 @@ async def test_put_gate_non_int_remediation_round_cap_returns_422(
 @pytest.mark.fulfills("VAL-CANON-002")
 @pytest.mark.asyncio
 async def test_put_gate_non_int_draft_ttl_returns_422(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.put(
@@ -97,7 +97,7 @@ async def test_put_gate_non_int_draft_ttl_returns_422(
 @pytest.mark.fulfills("VAL-CANON-002")
 @pytest.mark.asyncio
 async def test_post_gate_draft_non_int_round_returns_422(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, db_path, _app = v2m02_client
     await seed_three_anchor_handoff(
@@ -131,7 +131,7 @@ async def test_post_gate_draft_non_int_round_returns_422(
 @pytest.mark.fulfills("VAL-CANON-002")
 @pytest.mark.asyncio
 async def test_draft_against_gate_with_rejected_ttl_does_not_500(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, db_path, _app = v2m02_client
     await seed_three_anchor_handoff(
@@ -170,7 +170,7 @@ async def test_draft_against_gate_with_rejected_ttl_does_not_500(
 @pytest.mark.fulfills("VAL-CANON-002")
 @pytest.mark.asyncio
 async def test_valid_int_fields_still_accepted(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, db_path, _app = v2m02_client
     await seed_three_anchor_handoff(

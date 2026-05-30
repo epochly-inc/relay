@@ -27,9 +27,8 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header, seed_three_anchor_handoff
+from _v2m02_w25_helpers import V2M02Client, scope_header, seed_three_anchor_handoff
 
 _ACTOR_HASH = "sha256-" + ("1" * 64)
 _MANIFEST_HASH = "sha256-" + ("0" * 64)
@@ -56,7 +55,7 @@ def _draft_body(worker_id: str, round_n: int = 1) -> dict:
 @pytest.mark.fulfills("VAL-ISO-026")
 @pytest.mark.asyncio
 async def test_within_ttl_conflict_still_blocks(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Within the TTL window, a different worker on the same (gate, round)
     is still rejected (mutual exclusion preserved)."""
@@ -87,7 +86,7 @@ async def test_within_ttl_conflict_still_blocks(
 @pytest.mark.fulfills("VAL-ISO-026")
 @pytest.mark.asyncio
 async def test_expired_ttl_admits_new_worker(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """After the first draft's ``draft_ttl_seconds`` has elapsed, a new
     worker on the same (gate, round) must be ADMITTED (202), not
@@ -134,7 +133,7 @@ async def test_expired_ttl_admits_new_worker(
 @pytest.mark.fulfills("VAL-ISO-026")
 @pytest.mark.asyncio
 async def test_same_worker_resubmit_not_blocked(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """The SAME worker re-submitting for the same (gate, round) within the
     TTL is not treated as a conflict (only a DIFFERENT worker is)."""

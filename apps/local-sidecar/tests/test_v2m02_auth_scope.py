@@ -14,16 +14,15 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header
+from _v2m02_w25_helpers import V2M02Client, scope_header
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M02-080")
 @pytest.mark.asyncio
 async def test_missing_bearer_returns_401(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     # No Authorization, no X-Relay-Scopes -> 401 RELAY-AUTH-001.
@@ -48,7 +47,7 @@ async def test_missing_bearer_returns_401(
 @pytest.mark.fulfills("VAL-V2M02-081")
 @pytest.mark.asyncio
 async def test_invalid_bearer_returns_401(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.put(
@@ -64,7 +63,7 @@ async def test_invalid_bearer_returns_401(
 @pytest.mark.fulfills("VAL-V2M02-082")
 @pytest.mark.asyncio
 async def test_token_without_scope_returns_403_across_routes(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, app = v2m02_client
     # Register a token with NO scopes.
@@ -124,7 +123,7 @@ async def test_token_without_scope_returns_403_across_routes(
 @pytest.mark.fulfills("VAL-V2M02-083")
 @pytest.mark.asyncio
 async def test_auth_check_before_idempotency(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, app = v2m02_client
     # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
@@ -160,7 +159,7 @@ async def test_auth_check_before_idempotency(
 @pytest.mark.fulfills("VAL-V2M02-084")
 @pytest.mark.asyncio
 async def test_hosted_only_token_endpoints_return_501(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r_post = await c.post("/v1/auth/tokens", json={})

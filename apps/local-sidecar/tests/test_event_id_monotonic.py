@@ -74,12 +74,18 @@ def test_event_id_unique_and_sequence_monotonic(tmp_path: Path) -> None:
                 "SELECT COUNT(DISTINCT event_id) FROM event_log_entries "
                 "WHERE event_kind = 'concurrent_seed'"
             ) as cur:
-                (distinct,) = await cur.fetchone()
+                # fetchone() is typed Optional[Row]; a COUNT(...) query always
+                # returns exactly one row, so assert-narrow before unpacking.
+                distinct_row = await cur.fetchone()
+                assert distinct_row is not None
+                (distinct,) = distinct_row
             async with reader.execute(
                 "SELECT COUNT(*) FROM event_log_entries "
                 "WHERE event_kind = 'concurrent_seed'"
             ) as cur:
-                (total,) = await cur.fetchone()
+                total_row = await cur.fetchone()
+                assert total_row is not None
+                (total,) = total_row
             assert distinct == total == N, (distinct, total, N)
 
             # ORDER BY ingest_sequence -- strictly increasing, no gaps.
@@ -145,7 +151,11 @@ def test_event_id_unique_across_two_passes(tmp_path: Path) -> None:
                 "SELECT COUNT(DISTINCT event_id), COUNT(*) FROM event_log_entries "
                 "WHERE event_kind = 'burst'"
             ) as cur:
-                distinct, total = await cur.fetchone()
+                # fetchone() is typed Optional[Row]; a COUNT(...) query always
+                # returns exactly one row, so assert-narrow before unpacking.
+                count_row = await cur.fetchone()
+                assert count_row is not None
+                distinct, total = count_row
             assert distinct == total == 2 * BURST, (distinct, total)
         finally:
             await db.close()

@@ -21,6 +21,7 @@ import json
 import httpx
 import pytest
 from _v2m02_w25_helpers import (
+    V2M02Client,
     no_scope_header,
     scope_header,
 )
@@ -50,7 +51,7 @@ async def _create_bundle(c: httpx.AsyncClient) -> str:
 @pytest.mark.fulfills("VAL-V2M02-049")
 @pytest.mark.asyncio
 async def test_create_evidence_bundle(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     # Audit fix (2026-05-17 P0): POST requires ``evidence:write``.
@@ -74,7 +75,7 @@ async def test_create_evidence_bundle(
 @pytest.mark.fulfills("VAL-V2M02-050")
 @pytest.mark.asyncio
 async def test_create_evidence_bundle_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.post(
@@ -91,7 +92,7 @@ async def test_create_evidence_bundle_enforces_scope(
 @pytest.mark.fulfills("VAL-V2M02-051")
 @pytest.mark.asyncio
 async def test_get_evidence_bundle_canonical(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, app = v2m02_client
     bid = await _create_bundle(c)
@@ -122,7 +123,7 @@ async def test_get_evidence_bundle_canonical(
 @pytest.mark.fulfills("VAL-V2M02-052")
 @pytest.mark.asyncio
 async def test_get_evidence_bundle_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.get(
@@ -139,7 +140,7 @@ async def test_get_evidence_bundle_enforces_scope(
 @pytest.mark.fulfills("VAL-V2M02-053")
 @pytest.mark.asyncio
 async def test_download_evidence_bundle(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, app = v2m02_client
     bid = await _create_bundle(c)
@@ -163,7 +164,7 @@ async def test_download_evidence_bundle(
 @pytest.mark.fulfills("VAL-V2M02-054")
 @pytest.mark.asyncio
 async def test_download_evidence_bundle_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.get(
@@ -179,7 +180,7 @@ async def test_download_evidence_bundle_enforces_scope(
 @pytest.mark.fulfills("VAL-V2M02-055")
 @pytest.mark.asyncio
 async def test_verify_evidence_bundle_public(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     bid = await _create_bundle(c)
@@ -206,7 +207,7 @@ async def test_verify_evidence_bundle_public(
 @pytest.mark.fulfills("VAL-V2M02-056")
 @pytest.mark.asyncio
 async def test_verify_evidence_bundle_bad_signature(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     bid = await _create_bundle(c)
@@ -229,7 +230,7 @@ async def test_verify_evidence_bundle_bad_signature(
 @pytest.mark.fulfills("VAL-CRYPTO-006")
 @pytest.mark.asyncio
 async def test_verify_no_green_signatures_without_real_crypto(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Regression for VAL-CRYPTO-006.
 
@@ -268,7 +269,7 @@ async def test_verify_no_green_signatures_without_real_crypto(
 @pytest.mark.fulfills("VAL-CRYPTO-007")
 @pytest.mark.asyncio
 async def test_verify_digest_detects_record_tampering(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Regression for VAL-CRYPTO-007.
 

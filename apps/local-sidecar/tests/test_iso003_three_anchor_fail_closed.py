@@ -26,9 +26,8 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header, seed_three_anchor_handoff
+from _v2m02_w25_helpers import V2M02Client, scope_header, seed_three_anchor_handoff
 
 # Anchors used across the tests. The actor/manifest hashes are the
 # sha256-<hex> wire form the validator requires.
@@ -40,7 +39,7 @@ _MANIFEST_HASH = "sha256-" + ("0" * 64)
 @pytest.mark.fulfills("VAL-ISO-003")
 @pytest.mark.asyncio
 async def test_gate_draft_on_unseeded_anchors_is_rejected(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Unseeded actors/manifest_versions -> handoff REJECTED (fail closed).
 
@@ -72,7 +71,7 @@ async def test_gate_draft_on_unseeded_anchors_is_rejected(
 @pytest.mark.fulfills("VAL-ISO-003")
 @pytest.mark.asyncio
 async def test_gate_draft_with_seeded_anchors_succeeds(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """A genuine, properly-seeded valid handoff still succeeds (202).
 
@@ -104,7 +103,7 @@ async def test_gate_draft_with_seeded_anchors_succeeds(
 @pytest.mark.fulfills("VAL-ISO-003")
 @pytest.mark.asyncio
 async def test_gate_draft_seeded_manifest_only_still_rejects_unknown_actor(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Manifest seeded but actor unknown -> ACTOR_NOT_REGISTERED.
 

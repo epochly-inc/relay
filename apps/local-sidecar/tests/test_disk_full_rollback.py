@@ -171,9 +171,13 @@ def test_relay_disk_full_error_envelope_has_correct_fields() -> None:
     assert env["error_class"] == "RELAY-SIDECAR-DISK-FULL"
     assert env["http_status"] == 507
     assert env["message"] == "test message"
-    assert env["details"]["table"] == "event_log_entries"
-    assert env["details"]["scope_id"] == _SCOPE_ID
-    assert env["details"]["os_errno"] == 28
+    # to_envelope() is typed dict[str, object]; narrow the nested details map
+    # so the field reads type-check without changing the assertions.
+    details = env["details"]
+    assert isinstance(details, dict)
+    assert details["table"] == "event_log_entries"
+    assert details["scope_id"] == _SCOPE_ID
+    assert details["os_errno"] == 28
 
 
 @pytest.mark.plumbing

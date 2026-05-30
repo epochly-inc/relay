@@ -25,9 +25,8 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header, seed_three_anchor_handoff
+from _v2m02_w25_helpers import V2M02Client, scope_header, seed_three_anchor_handoff
 
 # Same valid Crockford-base32 ULID Idempotency-Key for every request so the
 # ONLY differentiator across requests is the resolved path parameter.
@@ -45,7 +44,7 @@ _DRAFT_ACTOR_HASH = "sha256-" + ("1" * 64)
 @pytest.mark.fulfills("VAL-IDEMP-001")
 @pytest.mark.asyncio
 async def test_gate_draft_distinct_gates_do_not_alias_idempotency(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """POST /v1/gates/A/drafts and POST /v1/gates/B/drafts with an identical
     body + the same Idempotency-Key MUST NOT alias: gate B gets its own draft,
@@ -92,7 +91,7 @@ async def test_gate_draft_distinct_gates_do_not_alias_idempotency(
 @pytest.mark.fulfills("VAL-IDEMP-001")
 @pytest.mark.asyncio
 async def test_gate_draft_same_gate_retry_still_replays(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """A genuine retry of the SAME gate (same gate_id, same key, same body)
     MUST still collide -> identical response body + Idempotent-Replay: true.
@@ -131,7 +130,7 @@ async def test_gate_draft_same_gate_retry_still_replays(
 @pytest.mark.fulfills("VAL-IDEMP-001")
 @pytest.mark.asyncio
 async def test_put_gate_distinct_gate_ids_do_not_alias(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """PUT /v1/gates/{gate_id} shares the same un-interpolated surface bug.
     Two distinct gate_ids with the same key + body must not alias: gate B's
@@ -163,7 +162,7 @@ async def test_put_gate_distinct_gate_ids_do_not_alias(
 @pytest.mark.fulfills("VAL-IDEMP-001")
 @pytest.mark.asyncio
 async def test_put_gate_policy_distinct_policy_ids_do_not_alias(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """PUT /v1/gate-policies/{policy_id} carries the same defect on
     ``_GATE_POLICY_SURFACE``. Distinct policy_ids must not alias.

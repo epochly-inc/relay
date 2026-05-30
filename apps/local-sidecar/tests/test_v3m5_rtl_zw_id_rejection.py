@@ -27,11 +27,10 @@ spelled with explicit ``\\u`` escapes rather than literal glyphs.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import Any
 
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header
+from _v2m02_w25_helpers import V2M02Client, scope_header
 
 # The five banned code points enumerated in VAL-V3M5-008 plus contract.md
 # line 448. Spelled with explicit escapes so the source file stays ASCII.
@@ -96,7 +95,7 @@ _ID_ROUTES: list[tuple[str, str, str, str]] = [
     ids=[c[0] for c in _BANNED_CODEPOINTS],
 )
 async def test_banned_codepoint_in_path_id_rejected_400_relay_id_invalid(
-    v2m02_client: tuple[httpx.AsyncClient, Path, object],
+    v2m02_client: V2M02Client,
     route_case: str,
     method: str,
     path_template: str,
@@ -117,6 +116,11 @@ async def test_banned_codepoint_in_path_id_rejected_400_relay_id_invalid(
     headers = scope_header(scope)
     # PUT /v1/gates/{gate_id} requires a JSON body; the other routes
     # tolerate an empty body for read-shaped endpoints.
+    # Bag of optional request kwargs spread into c.request(**body_kwargs).
+    # Typed as dict[str, Any] so the heterogeneous "json" payloads (and the
+    # empty-body case) do not narrow to a value-type union that pyright then
+    # tries -- and fails -- to match against every httpx.request parameter.
+    body_kwargs: dict[str, Any]
     if method == "PUT":
         body_kwargs = {"json": {"name": "x", "scope_type": "run"}}
     elif method == "POST":
@@ -164,7 +168,7 @@ async def test_banned_codepoint_in_path_id_rejected_400_relay_id_invalid(
     ids=[c[0] for c in _BANNED_CODEPOINTS],
 )
 async def test_banned_codepoint_in_idempotency_key_rejected_400(
-    v2m02_client: tuple[httpx.AsyncClient, Path, object],
+    v2m02_client: V2M02Client,
     cp_case: str,
     banned_cp: str,
 ) -> None:
@@ -215,7 +219,7 @@ async def test_banned_codepoint_in_idempotency_key_rejected_400(
 @pytest.mark.fulfills("VAL-V3M5-008")
 @pytest.mark.asyncio
 async def test_clean_ascii_id_is_accepted(
-    v2m02_client: tuple[httpx.AsyncClient, Path, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Positive control: a clean ASCII ``gate_id`` reaches the gate
     handler. Without this case the validator could trivially be written

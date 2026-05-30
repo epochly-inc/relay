@@ -30,13 +30,11 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header
+from _v2m02_w25_helpers import V2M02Client, scope_header
 
 # --- 12-case input matrix (VAL-V3M2-006) ---------------------------------
 
@@ -92,7 +90,7 @@ INVALID_IDEMPOTENCY_KEYS: list[tuple[str, bytes]] = [
     ids=[c[0] for c in INVALID_IDEMPOTENCY_KEYS],
 )
 async def test_invalid_idempotency_key_rejected_400_relay_idempotency_014(
-    v2m02_client: tuple[httpx.AsyncClient, Path, object],
+    v2m02_client: V2M02Client,
     case_id: str,
     bad_key: bytes,
 ) -> None:
@@ -131,7 +129,7 @@ async def test_invalid_idempotency_key_rejected_400_relay_idempotency_014(
 @pytest.mark.fulfills("VAL-V3M2-006")
 @pytest.mark.asyncio
 async def test_valid_ulid_idempotency_key_accepted(
-    v2m02_client: tuple[httpx.AsyncClient, Path, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Positive control: a canonical 26-char Crockford-base32 ULID is
     accepted (i.e. the request reaches the gate handler and produces a
@@ -159,7 +157,7 @@ async def test_valid_ulid_idempotency_key_accepted(
 @pytest.mark.fulfills("VAL-V3M2-007")
 @pytest.mark.asyncio
 async def test_grammar_check_precedes_canonical_hashing(
-    v2m02_client: tuple[httpx.AsyncClient, Path, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """ULID grammar validation MUST run BEFORE
     ``_canonical_idempotency_key`` is invoked on a rejected input. We

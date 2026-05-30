@@ -32,6 +32,7 @@ import aiosqlite
 import httpx
 import pytest
 import pytest_asyncio
+from fastapi import FastAPI
 from relay_sidecar.health import HealthState, _bearer_digest_of
 from relay_sidecar.runtime import build_runtime_app
 
@@ -78,7 +79,7 @@ async def _bootstrap_db(db_path: Path) -> None:
 @pytest_asyncio.fixture
 async def audit_client_legacy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[tuple[httpx.AsyncClient, Path, object]]:
+) -> AsyncIterator[tuple[httpx.AsyncClient, Path, FastAPI]]:
     """Sidecar fixture WITH the legacy X-Relay-Scopes header enabled."""
     monkeypatch.setenv("RELAY_SIDECAR_IDLE_TIMEOUT_S", "60.0")
     monkeypatch.setenv("RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", "1")
@@ -100,7 +101,7 @@ async def audit_client_legacy(
 @pytest_asyncio.fixture
 async def audit_client_strict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[tuple[httpx.AsyncClient, Path, object]]:
+) -> AsyncIterator[tuple[httpx.AsyncClient, Path, FastAPI]]:
     """Sidecar fixture with the legacy X-Relay-Scopes header DISABLED
     (production default). Tests use bearer tokens.
     """
@@ -127,7 +128,7 @@ async def audit_client_strict(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_evidence_bundle_digest_uses_hyphen_form(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/evidence-bundles digest is sha256-<hex> (hyphen)."""
     c, _db, _app = audit_client_legacy
@@ -148,7 +149,7 @@ async def test_evidence_bundle_digest_uses_hyphen_form(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_manifest_commit_hash_uses_hyphen_form(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/manifests commit_hash is sha256-<hex> (hyphen) AND the
     manifest_versions CHECK constraint accepts it."""
@@ -176,7 +177,7 @@ async def test_manifest_commit_hash_uses_hyphen_form(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_replay_fixture_digest_uses_hyphen_form(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/replay-cases/{case_id}/fixtures digest is sha256-<hex>."""
     c, db, _app = audit_client_legacy
@@ -231,7 +232,7 @@ async def test_replay_fixture_digest_uses_hyphen_form(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_post_manifests_seeds_registry(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/manifests registers declared command_hashes in the
     in-memory ManifestRegistry so subsequent ingest can match them."""
@@ -260,7 +261,7 @@ async def test_post_manifests_seeds_registry(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_manifest_parent_vs_version_schema_version_split(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/manifests parent envelope uses
     ``relay.manifest_parent.v1`` (NOT ``relay.manifest.v1``); the
@@ -293,7 +294,7 @@ async def test_manifest_parent_vs_version_schema_version_split(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_redaction_policy_uses_canonical_envelope(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/redaction-policies returns ``relay.redaction.v1`` (NOT
     the made-up ``relay.redaction_policy.v1``) and carries the canonical
@@ -318,7 +319,7 @@ async def test_redaction_policy_uses_canonical_envelope(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_evidence_bundle_requires_write_scope(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/evidence-bundles requires ``evidence:write`` (was
     incorrectly ``evidence:read``)."""
@@ -343,7 +344,7 @@ async def test_evidence_bundle_requires_write_scope(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_evidence_bundle_canonical_fields(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """The stored bundle record carries the canonical EvidenceBundle
     envelope fields per envelopes.yaml:371-404."""
@@ -379,7 +380,7 @@ async def test_evidence_bundle_canonical_fields(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_replay_case_canonical_fields(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/replay-cases record carries canonical ReplayCase fields
     per envelopes.yaml:444-475."""
@@ -440,7 +441,7 @@ async def test_replay_case_canonical_fields(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_eval_dataset_response_drops_schema_version(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/eval-datasets no longer returns ``relay.eval_dataset.v1``
     (literal not in KNOWN_SCHEMA_IDS)."""
@@ -461,7 +462,7 @@ async def test_eval_dataset_response_drops_schema_version(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_spans_batch_raw_capture_runs_on_nonlist_spans(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """POST /v1/ingest/spans:batch raw_capture gate fires even when the
     ``spans`` field is omitted or non-list (was previously bypassed).
@@ -522,7 +523,7 @@ async def test_spans_batch_raw_capture_runs_on_nonlist_spans(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_legacy_scope_header_disabled_by_default(
-    audit_client_strict: tuple[httpx.AsyncClient, Path, object],
+    audit_client_strict: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """With ``RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER`` UNSET, an
     X-Relay-Scopes header is NOT honoured -- the request lands in the
@@ -542,7 +543,7 @@ async def test_legacy_scope_header_disabled_by_default(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_legacy_scope_header_enabled_with_env_var(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """With the env var SET, the legacy X-Relay-Scopes path works
     as before so existing W2.5+ tests keep passing."""
@@ -561,7 +562,7 @@ async def test_legacy_scope_header_enabled_with_env_var(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_post_gate_draft_rejects_unknown_actor(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """When actors + manifest_versions tables ARE seeded but the
     submitted actor_identity_hash is unknown, the gate-draft POST
@@ -605,7 +606,7 @@ async def test_post_gate_draft_rejects_unknown_actor(
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 async def test_post_gate_draft_rejects_when_tables_unseeded(
-    audit_client_legacy: tuple[httpx.AsyncClient, Path, object],
+    audit_client_legacy: tuple[httpx.AsyncClient, Path, FastAPI],
 ) -> None:
     """VAL-ISO-003 (fail closed): when the actors + manifest_versions
     registries are empty, the three-anchor handoff validator runs

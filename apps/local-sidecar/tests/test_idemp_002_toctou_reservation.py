@@ -41,9 +41,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, cast
 
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header, seed_three_anchor_handoff
+from _v2m02_w25_helpers import V2M02Client, scope_header, seed_three_anchor_handoff
 
 # One valid Crockford-base32 ULID Idempotency-Key shared by the racing pair so
 # the ONLY thing under test is the check-then-store reservation, not key
@@ -62,7 +61,7 @@ _DRAFT_ACTOR_HASH = "sha256-" + ("1" * 64)
 @pytest.mark.fulfills("VAL-IDEMP-002")
 @pytest.mark.asyncio
 async def test_concurrent_same_key_gate_draft_executes_exactly_once(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Race two concurrent POST /v1/gates/G/drafts with the SAME
     (surface, Idempotency-Key, body). Exactly ONE must execute the handler
@@ -140,7 +139,7 @@ async def test_concurrent_same_key_gate_draft_executes_exactly_once(
 @pytest.mark.fulfills("VAL-IDEMP-002")
 @pytest.mark.asyncio
 async def test_sequential_same_key_retry_still_replays(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """A genuine SEQUENTIAL retry (same key, same body, after the first
     completes) MUST still replay the stored result. The reservation change
@@ -187,7 +186,7 @@ async def test_sequential_same_key_retry_still_replays(
 @pytest.mark.fulfills("VAL-IDEMP-002")
 @pytest.mark.asyncio
 async def test_aborted_winner_does_not_wedge_the_key(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """If the request that reserves a key ABORTS before storing (an early
     validation 422 that never calls _store_idempotency), the reservation must

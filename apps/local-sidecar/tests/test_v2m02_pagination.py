@@ -17,9 +17,9 @@ import json
 import re
 import time
 
-import httpx
 import pytest
 from _v2m02_w25_helpers import (
+    V2M02Client,
     no_scope_header,
     scope_header,
     seed_three_anchor_handoff,
@@ -43,7 +43,7 @@ DOC_URL_RE = re.compile(r"^https://relay\.epochly\.com/docs/errors/[A-Z0-9-]+$")
 @pytest.mark.fulfills("VAL-V2M02-069")
 @pytest.mark.asyncio
 async def test_cursor_tampered_returns_400(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, db_path, _app = v2m02_client
     await seed_three_anchor_handoff(
@@ -91,7 +91,7 @@ async def test_cursor_tampered_returns_400(
 @pytest.mark.fulfills("VAL-V2M02-070")
 @pytest.mark.asyncio
 async def test_cursor_expires_after_1h(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     c, db_path, app = v2m02_client
@@ -152,7 +152,7 @@ async def test_cursor_expires_after_1h(
 @pytest.mark.fulfills("VAL-V2M02-071")
 @pytest.mark.asyncio
 async def test_list_limit_caps_and_validates(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, app = v2m02_client
     # Seed 600 round records via direct registry write so we can prove
@@ -198,7 +198,7 @@ async def test_list_limit_caps_and_validates(
 @pytest.mark.fulfills("VAL-V2M02-072")
 @pytest.mark.asyncio
 async def test_error_envelope_required_fields(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.put(
@@ -228,7 +228,7 @@ async def test_error_envelope_required_fields(
 @pytest.mark.fulfills("VAL-V2M02-073")
 @pytest.mark.asyncio
 async def test_documentation_url_matches_canonical(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.put(
@@ -247,7 +247,7 @@ async def test_documentation_url_matches_canonical(
 @pytest.mark.fulfills("VAL-V2M02-074")
 @pytest.mark.asyncio
 async def test_request_id_trace_id_ulid_unique(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     ids_seen: set[str] = set()

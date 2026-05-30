@@ -12,8 +12,16 @@ import aiosqlite
 import httpx
 import pytest
 import pytest_asyncio
+from fastapi import FastAPI
 from relay_sidecar.health import HealthState, _bearer_digest_of
 from relay_sidecar.runtime import build_runtime_app
+
+# The 3-tuple yielded by the ``v2m02_client`` fixture: the bound HTTP client,
+# the on-disk SQLite path (for direct-seed helpers), and the live FastAPI app
+# (for asserting against ``app.state.runtime`` internals). Exported so call
+# sites annotate the fixture parameter precisely instead of widening the app
+# to ``object`` (which masks ``app.state`` attribute access from the checker).
+V2M02Client = tuple[httpx.AsyncClient, Path, FastAPI]
 
 
 def make_health(port: int = 50095) -> HealthState:
@@ -127,7 +135,7 @@ def bearer_header(token: str) -> dict[str, str]:
 @pytest_asyncio.fixture
 async def v2m02_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[tuple[httpx.AsyncClient, Path, object]]:
+) -> AsyncIterator[V2M02Client]:
     monkeypatch.setenv("RELAY_SIDECAR_IDLE_TIMEOUT_S", "60.0")
     # Audit fix (2026-05-17 P0): legacy X-Relay-Scopes header is
     # disabled by default in production; these W2.5+ tests opt in.

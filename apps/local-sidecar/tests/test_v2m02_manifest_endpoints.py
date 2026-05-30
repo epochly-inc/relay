@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 from _v2m02_w25_helpers import (
+    V2M02Client,
     no_scope_header,
     scope_header,
 )
@@ -25,7 +25,7 @@ from _v2m02_w25_helpers import (
 @pytest.mark.fulfills("VAL-V2M02-057")
 @pytest.mark.asyncio
 async def test_post_manifest_upserts(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     body = {"name": "manifest-x", "commands": [{"id": "test-plumbing"}]}
@@ -48,7 +48,7 @@ async def test_post_manifest_upserts(
 @pytest.mark.fulfills("VAL-V2M02-058")
 @pytest.mark.asyncio
 async def test_post_manifest_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.post("/v1/manifests", json={}, headers=no_scope_header())
@@ -60,7 +60,7 @@ async def test_post_manifest_enforces_scope(
 @pytest.mark.fulfills("VAL-V2M02-059")
 @pytest.mark.asyncio
 async def test_get_manifest_version_returns_body(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     body = {"name": "m-v", "commands": []}
@@ -91,7 +91,7 @@ async def test_get_manifest_version_returns_body(
 @pytest.mark.fulfills("VAL-V2M02-060")
 @pytest.mark.asyncio
 async def test_get_manifest_version_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.get(

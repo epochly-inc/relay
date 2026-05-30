@@ -152,7 +152,9 @@ async def test_write_daily_snapshot_one_row_per_active_scope(
             "ORDER BY scope_id ASC",
             ("2026-05-19",),
         ) as cur:
-            rows = await cur.fetchall()
+            # aiosqlite types fetchall() as Iterable[Row]; the runtime value
+            # is a list. Materialize so len()/indexing type-check unchanged.
+            rows = list(await cur.fetchall())
         assert len(rows) == 4, rows
         snapped_pairs = {(r[0], r[1]) for r in rows}
         assert snapped_pairs == set(pairs), (snapped_pairs, set(pairs))
@@ -192,7 +194,11 @@ async def test_write_daily_snapshot_is_idempotent(
             "SELECT COUNT(*) FROM scope_state_snapshots WHERE snapshot_date = ?",
             ("2026-05-19",),
         ) as cur:
-            (count,) = await cur.fetchone()
+            # fetchone() is typed Optional[Row]; a COUNT(...) query always
+            # returns exactly one row, so assert-narrow before unpacking.
+            count_row = await cur.fetchone()
+            assert count_row is not None
+            (count,) = count_row
         assert count == 3, count
     finally:
         await db.close()
@@ -238,7 +244,11 @@ async def test_prune_old_scope_state_snapshots_deletes_beyond_window(
         async with reader.execute(
             "SELECT COUNT(*) FROM scope_state_snapshots"
         ) as cur:
-            (before,) = await cur.fetchone()
+            # fetchone() is typed Optional[Row]; a COUNT(...) query always
+            # returns exactly one row, so assert-narrow before unpacking.
+            before_row = await cur.fetchone()
+            assert before_row is not None
+            (before,) = before_row
         assert before == 8, before
 
         deleted = await prune_old_scope_state_snapshots(
@@ -392,7 +402,9 @@ async def test_write_daily_snapshot_admits_gate_scope_kind(
             "WHERE snapshot_date = ?",
             ("2026-05-19",),
         ) as cur:
-            rows = await cur.fetchall()
+            # aiosqlite types fetchall() as Iterable[Row]; the runtime value
+            # is a list. Materialize so len()/indexing type-check unchanged.
+            rows = list(await cur.fetchall())
         assert len(rows) == 1, rows
         (scope_kind, scope_id, state, epoch, snap_date) = rows[0]
         assert scope_kind == "gate", scope_kind

@@ -121,7 +121,11 @@ def test_raise_on_reject_surfaces_envelope() -> None:
     envelope = excinfo.value.to_envelope()
     assert envelope["code"] == BYPASS_MARKER_DETECTED_CODE
     assert envelope["error_class"] == BYPASS_MARKER_DETECTED_CLASS
-    assert "# TODO" in envelope["details"]["detected_tokens"]
+    # to_envelope() is typed dict[str, object]; narrow the nested details map
+    # so the membership check type-checks without changing the assertion.
+    details = envelope["details"]
+    assert isinstance(details, dict)
+    assert "# TODO" in details["detected_tokens"]
 
 
 @pytest.mark.plumbing

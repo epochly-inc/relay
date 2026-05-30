@@ -157,6 +157,9 @@ async def test_archive_digest_matches_file_bytes(
             db, home=relay_home_tmp, threshold_bytes=1024
         )
         assert result.archive_path is not None
+        # archive_path and digest_path are populated together when an archive
+        # is produced (retention.py); narrow both so the reads type-check.
+        assert result.digest_path is not None
         archive_bytes = result.archive_path.read_bytes()
         recomputed = hashlib.sha256(archive_bytes).hexdigest()
         assert recomputed == result.digest_hex
@@ -214,14 +217,20 @@ async def test_live_rows_deleted_after_archive(
 
         reader = db.acquire_reader()
         async with reader.execute("SELECT COUNT(*) FROM event_log_entries") as cur:
-            (before_count,) = await cur.fetchone()
+            # fetchone() is typed Optional[Row]; a COUNT(...) query always
+            # returns exactly one row, so assert-narrow before unpacking.
+            before_row = await cur.fetchone()
+            assert before_row is not None
+            (before_count,) = before_row
 
         result = await run_retention_pass(
             db, home=relay_home_tmp, threshold_bytes=1024
         )
 
         async with reader.execute("SELECT COUNT(*) FROM event_log_entries") as cur:
-            (after_count,) = await cur.fetchone()
+            after_row = await cur.fetchone()
+            assert after_row is not None
+            (after_count,) = after_row
         assert after_count == before_count - result.archived_rows, (
             before_count,
             after_count,

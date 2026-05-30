@@ -23,9 +23,8 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header
+from _v2m02_w25_helpers import V2M02Client, scope_header
 
 
 def _bucket_count(app: object) -> int:
@@ -37,7 +36,7 @@ def _bucket_count(app: object) -> int:
 @pytest.mark.asyncio
 async def test_stale_buckets_swept_on_access(
     monkeypatch: pytest.MonkeyPatch,
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Distinct attacker keys from PRIOR seconds must not accumulate.
 
@@ -91,7 +90,7 @@ async def test_stale_buckets_swept_on_access(
 @pytest.mark.asyncio
 async def test_active_window_rate_limit_still_enforced(
     monkeypatch: pytest.MonkeyPatch,
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Sweeping stale windows must NOT break rate-limiting for an active
     key in the current window.

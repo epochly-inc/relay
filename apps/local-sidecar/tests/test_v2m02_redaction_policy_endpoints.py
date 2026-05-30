@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 from _v2m02_w25_helpers import (
+    V2M02Client,
     no_scope_header,
     scope_header,
 )
@@ -26,7 +26,7 @@ from _v2m02_w25_helpers import (
 @pytest.mark.fulfills("VAL-V2M02-061")
 @pytest.mark.asyncio
 async def test_post_redaction_policy_create_and_raw_capture_denied(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     # Valid policy without raw_capture.
@@ -75,7 +75,7 @@ async def test_post_redaction_policy_create_and_raw_capture_denied(
 @pytest.mark.fulfills("VAL-V2M02-062")
 @pytest.mark.asyncio
 async def test_post_redaction_policy_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.post(
@@ -89,7 +89,7 @@ async def test_post_redaction_policy_enforces_scope(
 @pytest.mark.fulfills("VAL-V2M02-063")
 @pytest.mark.asyncio
 async def test_get_redaction_policy_returns_or_404(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     posted = await c.post(
@@ -113,7 +113,7 @@ async def test_get_redaction_policy_returns_or_404(
 @pytest.mark.fulfills("VAL-V2M02-064")
 @pytest.mark.asyncio
 async def test_get_redaction_policy_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.get(

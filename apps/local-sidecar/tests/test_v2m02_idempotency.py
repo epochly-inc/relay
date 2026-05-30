@@ -16,16 +16,15 @@ import json
 from datetime import datetime, timedelta
 
 import aiosqlite
-import httpx
 import pytest
-from _v2m02_w25_helpers import scope_header
+from _v2m02_w25_helpers import V2M02Client, scope_header
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M02-065")
 @pytest.mark.asyncio
 async def test_idempotency_key_replay_identical(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     body = {"name": "g", "scope_type": "run"}
@@ -49,7 +48,7 @@ async def test_idempotency_key_replay_identical(
 @pytest.mark.fulfills("VAL-V2M02-066")
 @pytest.mark.asyncio
 async def test_idempotency_key_body_on_ingest_runs(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """For POST /v1/ingest/runs the idempotency_key is in the body, not
     the header (per spec B.2 line 3377). Two posts with the same body
@@ -86,7 +85,7 @@ async def test_idempotency_key_body_on_ingest_runs(
 @pytest.mark.fulfills("VAL-V2M02-067")
 @pytest.mark.asyncio
 async def test_idempotency_key_different_digest_409(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     # V3M2 F03: Idempotency-Key header MUST match the Crockford-base32
@@ -114,7 +113,7 @@ async def test_idempotency_key_different_digest_409(
 @pytest.mark.fulfills("VAL-V2M02-068")
 @pytest.mark.asyncio
 async def test_idempotency_row_persisted_with_24h_ttl(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     """Audit fix (2026-05-17 P0): the persisted row mirrors the canonical
     Postgres shape declared at packages/schemas/sql/0002_control_plane.sql
@@ -162,7 +161,10 @@ async def test_idempotency_row_persisted_with_24h_ttl(
             (canonical_key,),
         ) as cur,
     ):
-        rows = await cur.fetchall()
+        # aiosqlite types fetchall() as Iterable[Row]; the runtime value is a
+        # list (sqlite3.Cursor.fetchall). Materialize so len()/indexing below
+        # type-check without changing behavior.
+        rows = list(await cur.fetchall())
     assert len(rows) == 1, rows
     (
         key,

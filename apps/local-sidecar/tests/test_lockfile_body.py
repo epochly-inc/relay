@@ -69,7 +69,11 @@ def test_parse_rejects_missing_key() -> None:
     assert exc.value.code == RELAY_SIDECAR_LOCKFILE_MALFORMED_CODE
     assert exc.value.error_class == RELAY_SIDECAR_LOCKFILE_MALFORMED
     details = exc.value.details or {}
-    assert "bearer_token_digest" in details.get("missing_keys", [])
+    # details is dict[str, object]; missing_keys is a list at runtime. Narrow
+    # before the membership check so it type-checks (assertion unchanged).
+    missing_keys = details.get("missing_keys", [])
+    assert isinstance(missing_keys, list)
+    assert "bearer_token_digest" in missing_keys
 
 
 @pytest.mark.plumbing

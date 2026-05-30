@@ -317,6 +317,11 @@ def test_sigterm_drain_inflight_200_new_503(sidecar_subprocess) -> None:
     new_status = results["new_status"]
     new_retry_after = results["new_retry_after"]
     new_body = results["new_body"]
+    # results is a dict[str, object] bag shared with the worker threads; the
+    # response bodies are the str from r.text. Narrow so json.loads (which
+    # wants str | bytes) type-checks below without changing behavior.
+    assert isinstance(slow_body, str)
+    assert isinstance(new_body, str)
 
     # The in-flight request completed with 200.
     assert slow_status == 200, f"in-flight request returned {slow_status}: {slow_body}"

@@ -15,9 +15,9 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-import httpx
 import pytest
 from _v2m02_w25_helpers import (
+    V2M02Client,
     no_scope_header,
     scope_header,
 )
@@ -48,7 +48,7 @@ def _freeze_runtime_clock(monkeypatch: pytest.MonkeyPatch) -> int:
 @pytest.mark.fulfills("VAL-V2M02-075")
 @pytest.mark.asyncio
 async def test_rate_limit_headers_on_2xx(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.put(
@@ -66,7 +66,7 @@ async def test_rate_limit_headers_on_2xx(
 @pytest.mark.fulfills("VAL-V2M02-076")
 @pytest.mark.asyncio
 async def test_rate_limit_headers_on_non_2xx(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     # 403 path.
@@ -117,7 +117,7 @@ async def test_rate_limit_headers_on_non_2xx(
 @pytest.mark.asyncio
 async def test_per_project_rate_limit_429(
     monkeypatch: pytest.MonkeyPatch,
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     # Deterministic assertion of the exact RPS=2 threshold: pre-seed the
     # per-project bucket at the limit (count == limit) for the CURRENT
@@ -150,7 +150,7 @@ async def test_per_project_rate_limit_429(
 @pytest.mark.asyncio
 async def test_per_jwt_rate_limit_429(
     monkeypatch: pytest.MonkeyPatch,
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     # See test_per_project_rate_limit_429 -- same deterministic
     # seed-at-limit pattern asserts the precise RPS=2 threshold for the
@@ -177,7 +177,7 @@ async def test_per_jwt_rate_limit_429(
 @pytest.mark.asyncio
 async def test_per_ip_verify_rate_limit_429(
     monkeypatch: pytest.MonkeyPatch,
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     # See test_per_project_rate_limit_429 -- same deterministic
     # seed-at-limit pattern for the per-IP verify bucket. X-Forwarded-For

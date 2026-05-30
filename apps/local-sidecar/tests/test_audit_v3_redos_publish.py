@@ -29,9 +29,9 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 from _v2m02_w25_helpers import (
+    V2M02Client,
     scope_header,
     v2m02_client,  # noqa: F401 -- re-export the fixture for pytest collection.
 )
@@ -48,7 +48,7 @@ _SENTINEL_64KIB = "a" * (64 * 1024)
 @pytest.mark.fulfills("VAL-V3M5-001")
 @pytest.mark.asyncio
 async def test_post_redaction_policy_rejects_redos_pattern_against_1kib_sentinel(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],  # noqa: F811
+    v2m02_client: V2M02Client,  # noqa: F811
 ) -> None:
     """POST /v1/redaction-policies with an adversarial regex matcher is
     rejected at publish with HTTP 400 + RELAY-REDACT-014.
@@ -89,7 +89,7 @@ async def test_post_redaction_policy_rejects_redos_pattern_against_1kib_sentinel
 @pytest.mark.fulfills("VAL-V3M5-002")
 @pytest.mark.asyncio
 async def test_post_redaction_policy_rejects_redos_pattern_against_64kib_sentinel(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],  # noqa: F811
+    v2m02_client: V2M02Client,  # noqa: F811
 ) -> None:
     """A matcher that happens to clear the 1 KiB budget but still
     exceeds 50 ms on a 64 KiB sentinel MUST also be rejected. The handler

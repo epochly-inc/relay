@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 from _v2m02_w25_helpers import (
+    V2M02Client,
     no_scope_header,
     scope_header,
     seed_three_anchor_handoff,
@@ -39,7 +39,7 @@ _DRAFT_ACTOR_HASH = "sha256-" + ("1" * 64)
 @pytest.mark.fulfills("VAL-V2M02-037")
 @pytest.mark.asyncio
 async def test_put_gate_upserts(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     body = {
@@ -73,7 +73,7 @@ async def test_put_gate_upserts(
 @pytest.mark.fulfills("VAL-V2M02-038")
 @pytest.mark.asyncio
 async def test_put_gate_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.put(
@@ -92,7 +92,7 @@ async def test_put_gate_enforces_scope(
 @pytest.mark.fulfills("VAL-V2M02-039")
 @pytest.mark.asyncio
 async def test_put_gate_policy_upserts(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     body = {
@@ -116,7 +116,7 @@ async def test_put_gate_policy_upserts(
 @pytest.mark.fulfills("VAL-V2M02-040")
 @pytest.mark.asyncio
 async def test_put_gate_policy_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.put(
@@ -133,7 +133,7 @@ async def test_put_gate_policy_enforces_scope(
 @pytest.mark.fulfills("VAL-V2M02-041")
 @pytest.mark.asyncio
 async def test_post_gate_draft_returns_202(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, db_path, _app = v2m02_client
     await seed_three_anchor_handoff(
@@ -164,7 +164,7 @@ async def test_post_gate_draft_returns_202(
 @pytest.mark.fulfills("VAL-V2M02-042")
 @pytest.mark.asyncio
 async def test_post_gate_draft_conflict_409(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, db_path, _app = v2m02_client
     await seed_three_anchor_handoff(
@@ -199,7 +199,7 @@ async def test_post_gate_draft_conflict_409(
 @pytest.mark.fulfills("VAL-V2M02-043")
 @pytest.mark.asyncio
 async def test_post_gate_draft_stale_handoff_422(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     # VAL-ISO-025: the prior version of this test forced the stale path
     # via a client-settable ``handoff_stale=True`` body flag. That flag was
@@ -235,7 +235,7 @@ async def test_post_gate_draft_stale_handoff_422(
 @pytest.mark.fulfills("VAL-V2M02-044")
 @pytest.mark.asyncio
 async def test_post_gate_draft_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.post(
@@ -252,7 +252,7 @@ async def test_post_gate_draft_enforces_scope(
 @pytest.mark.fulfills("VAL-V2M02-045")
 @pytest.mark.asyncio
 async def test_get_gate_decision_returns_canonical_or_404(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, app = v2m02_client
     runtime = app.state.runtime
@@ -282,7 +282,7 @@ async def test_get_gate_decision_returns_canonical_or_404(
 @pytest.mark.fulfills("VAL-V2M02-046")
 @pytest.mark.asyncio
 async def test_get_gate_decision_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.get(
@@ -299,7 +299,7 @@ async def test_get_gate_decision_enforces_scope(
 @pytest.mark.fulfills("VAL-V2M02-047")
 @pytest.mark.asyncio
 async def test_list_gate_rounds_paginated(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     # Create a few drafts to seed rounds.
@@ -328,7 +328,7 @@ async def test_list_gate_rounds_paginated(
 @pytest.mark.fulfills("VAL-V2M02-048")
 @pytest.mark.asyncio
 async def test_list_gate_rounds_enforces_scope(
-    v2m02_client: tuple[httpx.AsyncClient, object, object],
+    v2m02_client: V2M02Client,
 ) -> None:
     c, _db, _app = v2m02_client
     r = await c.get("/v1/gates/g/rounds", headers=no_scope_header())
