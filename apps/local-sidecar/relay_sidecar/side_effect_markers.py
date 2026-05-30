@@ -359,6 +359,32 @@ def _now_plus_seconds_iso(seconds: int) -> str:
     ).isoformat().replace("+00:00", "Z")
 
 
+def _parse_iso_to_aware_utc(value: str) -> datetime:
+    """Parse an RFC3339/ISO-8601 timestamp to a timezone-aware UTC datetime.
+
+    VAL-CANON-004: ``expires_at`` is serialized by
+    ``_now_plus_seconds_iso`` with a ``Z`` suffix, while the resurrection
+    cutoff is serialized by ``_now_iso`` with a ``+00:00`` suffix. Both
+    denote UTC, but a raw lexicographic string compare treats them as
+    distinct (``Z`` 0x5A sorts after ``+`` 0x2B and ``.`` 0x2E), so an
+    expired ``Z``-suffixed marker can be mis-classified as live. Normalize
+    BOTH sides through this parser before comparing.
+
+    ``datetime.fromisoformat`` accepts ``+00:00`` on all supported
+    Pythons; the ``Z`` suffix is only accepted natively from 3.11+, so we
+    normalize it to ``+00:00`` first to keep the parse robust. A naive
+    timestamp (no offset) is assumed to be UTC, matching the writer, which
+    only ever emits aware UTC values.
+    """
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 def build_marker_row(
     *,
     run_id: str,
@@ -524,7 +550,14 @@ async def scan_orphan_markers(
     VAL-V2M04-018: returns the orphan set. VAL-V2M04-019: non-expired
     in_flight markers are NOT included.
     """
-    cutoff = now_iso or _now_iso()
+    # VAL-CANON-004: do NOT filter by ``expires_at < cutoff`` in SQL. That
+    # is a lexicographic SQLite TEXT compare, and ``expires_at`` (``Z``
+    # suffix, from ``_now_plus_seconds_iso``) and the cutoff (``+00:00``
+    # suffix, from ``_now_iso``) are produced by two different serializers.
+    # ``Z`` sorts after ``+`` / ``.`` so an expired ``Z``-suffixed marker is
+    # wrongly treated as live (or vice-versa). Filter by ``state`` in SQL,
+    # then compare both sides as timezone-aware UTC datetimes in Python.
+    cutoff_dt = _parse_iso_to_aware_utc(now_iso or _now_iso())
     rows = []
     sql = (
         "SELECT m.marker_id, m.tool_name, m.policy_id, m.expires_at, "
@@ -532,16 +565,20 @@ async def scan_orphan_markers(
         "p.compensation_tool, p.max_retries "
         "FROM side_effect_markers m "
         "LEFT JOIN tool_side_effect_policies p ON p.policy_id = m.policy_id "
-        "WHERE m.state = ? AND m.expires_at < ?"
+        "WHERE m.state = ?"
     )
-    async with conn.execute(sql, (MARKER_STATE_IN_FLIGHT, cutoff)) as cur:
+    async with conn.execute(sql, (MARKER_STATE_IN_FLIGHT,)) as cur:
         async for row in cur:
+            expires_at = str(row[3])
+            if _parse_iso_to_aware_utc(expires_at) >= cutoff_dt:
+                # Not yet expired relative to the canonical cutoff.
+                continue
             rows.append(
                 ResurrectionFinding(
                     marker_id=str(row[0]),
                     tool_name=str(row[1]),
                     policy_id=str(row[2]),
-                    expires_at=str(row[3]),
+                    expires_at=expires_at,
                     state=str(row[4]),
                     idempotency_key=str(row[5]),
                     compensation_tool=str(row[6]) if row[6] is not None else None,

@@ -689,6 +689,84 @@ async def test_resurrection_skips_non_in_flight_states() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.asyncio
+@pytest.mark.fulfills("VAL-CANON-004")
+async def test_resurrection_scan_z_suffixed_expires_at_vs_plus0000_cutoff() -> None:
+    """VAL-CANON-004: a 'Z'-suffixed expires_at must compare correctly
+    against a '+00:00'-suffixed cutoff.
+
+    ``build_marker_row`` serializes ``expires_at`` via
+    ``_now_plus_seconds_iso`` which ends in ``Z`` (and omits the
+    fractional part on a whole second). The default cutoff is
+    ``_now_iso`` which ends in ``+00:00``. The old SQL did a
+    lexicographic SQLite TEXT compare (``expires_at < cutoff``):
+    ``Z`` (0x5A) sorts AFTER ``.`` (0x2E) and ``+`` (0x2B), so a marker
+    that expired CHRONOLOGICALLY BEFORE the cutoff is wrongly classified
+    as still live and silently dropped from the orphan set, breaking
+    side-effect orphan reclamation. Both sides must be normalized to a
+    single comparable UTC form before comparison.
+    """
+    conn = await _make_db_with_side_effect_tables()
+    try:
+        pid = await _seed_policy(conn)
+        # Whole-second 'Z' timestamp -- exactly what _now_plus_seconds_iso
+        # emits when microseconds are zero. Chronologically EARLIER than
+        # the cutoff below, so this marker IS expired and MUST be an orphan.
+        expired_z = "2026-05-28T20:03:44Z"
+        # A '+00:00'-suffixed cutoff one microsecond LATER (the form
+        # _now_iso produces). Lexicographically 'Z' > '.', so the buggy
+        # string compare reports expired_z is NOT < cutoff and drops it.
+        cutoff = "2026-05-28T20:03:44.000001+00:00"
+        await _seed_marker(
+            conn,
+            policy_id=pid,
+            state=MARKER_STATE_IN_FLIGHT,
+            expires_at=expired_z,
+        )
+        findings = await scan_orphan_markers(conn, now_iso=cutoff)
+        assert len(findings) == 1, (
+            "expired 'Z'-suffixed marker must be classified as an orphan "
+            "relative to a '+00:00' cutoff; raw string compare misclassifies "
+            "it as live"
+        )
+        assert findings[0].expires_at == expired_z
+    finally:
+        await conn.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+@pytest.mark.fulfills("VAL-CANON-004")
+async def test_resurrection_scan_z_suffixed_non_expired_not_orphaned() -> None:
+    """VAL-CANON-004 (control): a non-expired 'Z'-suffixed marker must NOT
+    be classified as an orphan against a '+00:00' cutoff.
+
+    Guards against an over-correction that flips every 'Z' marker to
+    expired. Here ``expires_at`` is chronologically LATER than the cutoff,
+    so the marker is still live and must be excluded.
+    """
+    conn = await _make_db_with_side_effect_tables()
+    try:
+        pid = await _seed_policy(conn)
+        # 'Z' timestamp one microsecond AFTER the cutoff => still live.
+        future_z = "2026-05-28T20:03:44.000002Z"
+        cutoff = "2026-05-28T20:03:44.000001+00:00"
+        await _seed_marker(
+            conn,
+            policy_id=pid,
+            state=MARKER_STATE_IN_FLIGHT,
+            expires_at=future_z,
+        )
+        findings = await scan_orphan_markers(conn, now_iso=cutoff)
+        assert findings == [], (
+            "non-expired 'Z'-suffixed marker must NOT be classified as an "
+            "orphan against a '+00:00' cutoff"
+        )
+    finally:
+        await conn.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
 @pytest.mark.fulfills("VAL-V2M04-020")
 async def test_resurrection_finding_carries_compensation_tool() -> None:
     """When the policy defines compensation_tool, the finding carries it."""
