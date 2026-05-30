@@ -73,6 +73,16 @@ def _resolve_sdk_version() -> str:
 
 SDK_VERSION: Final[str] = _resolve_sdk_version()
 
+# VAL-ISO-019: bounded drain budget for the async dispatcher at teardown.
+# ``Run._teardown`` joins the dispatcher's worker for at most this many
+# seconds so the terminal lifecycle envelope enqueued in ``__exit__`` is
+# delivered (not dropped) when the sidecar is responsive, while still
+# returning within a finite bound on an unreachable/hung sidecar
+# (VAL-W3-018). Shorter than the slow-handler block used by the
+# VAL-W3-018 tests so ``__exit__`` still returns before such a handler's
+# body completes.
+_TEARDOWN_DRAIN_TIMEOUT_S: Final[float] = 5.0
+
 
 def _utcnow_iso8601() -> str:
     """Return ISO-8601 UTC timestamp with millisecond precision."""
@@ -625,14 +635,28 @@ class Run:
         return self._dispatcher
 
     def _teardown(self) -> None:
-        """Release SDK-side resources without blocking on background work.
+        """Release SDK-side resources with a BOUNDED drain of queued work.
 
-        Per VAL-W3-018 ``__exit__`` MUST NOT block on ingest network
-        I/O when ``flush_policy.mode == 'async'``. The dispatcher's
-        worker thread is a daemon -- it continues after ``__exit__``
-        returns and is reaped at interpreter shutdown. Callers that
-        need deterministic drainage MUST call :meth:`Run.flush`
-        BEFORE exiting the context.
+        Per VAL-W3-018 ``__exit__`` MUST NOT block indefinitely on ingest
+        network I/O when ``flush_policy.mode == 'async'``; per VAL-ISO-019
+        it MUST NOT silently DROP the terminal lifecycle envelope it just
+        enqueued. The previous ``close(timeout=0.0)`` satisfied the former
+        by violating the latter: it returned before the worker had even
+        pulled the queued terminal envelope, so on a process that exits
+        right after the ``with`` block the daemon worker was reaped with
+        the envelope still queued and the lifecycle ``client_succeeded`` /
+        ``client_failed`` event was lost.
+
+        We reconcile both with a BOUNDED close: signal the worker via the
+        sentinel and join for at most ``_TEARDOWN_DRAIN_TIMEOUT_S``
+        seconds. A responsive sidecar drains the terminal envelope (and
+        any already-queued work) well within the budget; an unreachable or
+        hung sidecar still returns within the bound rather than wedging
+        ``__exit__`` forever. The budget is shorter than the slow-handler
+        block used by the VAL-W3-018 tests, so ``__exit__`` still returns
+        BEFORE such a handler's body completes. Callers that require
+        guaranteed drainage on a slow sidecar should still call
+        :meth:`Run.flush` BEFORE exiting.
 
         In sync mode there is no background worker to drain, so
         teardown is also non-blocking by construction.
@@ -641,12 +665,11 @@ class Run:
             return
         self._closed = True
         if self._dispatcher is not None:
-            # NON-BLOCKING close: signal the worker via the sentinel
-            # but do not wait for it to drain. The worker is a daemon
-            # thread; it continues running until either the queue
-            # empties or the interpreter shuts down. VAL-W3-018
-            # explicitly forbids blocking __exit__ on outbound I/O.
-            self._dispatcher.close(timeout=0.0)
+            # BOUNDED close: drains queued envelopes (including the
+            # terminal lifecycle envelope enqueued in __exit__) within a
+            # finite budget. VAL-ISO-019: do not drop queued work;
+            # VAL-W3-018: do not block forever.
+            self._dispatcher.close(timeout=_TEARDOWN_DRAIN_TIMEOUT_S)
         if self._client is not None:
             # Best-effort cleanup; teardown must never raise into the
             # host application even if the httpx client is already in

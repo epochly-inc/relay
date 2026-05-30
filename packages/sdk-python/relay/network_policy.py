@@ -226,6 +226,20 @@ def _classify(host: str) -> tuple[str, str] | None:
     # IPv6: check link-local fe80::/10 and the well-known metadata
     # literals (handled above by string match for fd00:ec2::254).
     if isinstance(ip, ipaddress.IPv6Address):
+        # VAL-ISO-018: an IPv4-mapped IPv6 address (``::ffff:a.b.c.d``)
+        # tunnels an IPv4 destination through an IPv6 literal. The stdlib
+        # ``is_*`` flags on the wrapper do not reliably reflect the
+        # embedded IPv4's class (e.g. ``::ffff:100.100.100.200`` -- the
+        # Alibaba metadata endpoint -- has EVERY ``is_*`` flag False), and
+        # the literal cloud-metadata match above never fires for the
+        # wrapped form. Unwrap and re-classify on the embedded IPv4 BEFORE
+        # the generic IPv6 flag checks so the denied_reason matches the
+        # bare-IPv4 form and no internal/metadata address bypasses the
+        # guard. ``ipv4_mapped`` is None for non-mapped IPv6 addresses, so
+        # native IPv6 falls through to the existing flag checks unchanged.
+        mapped = ip.ipv4_mapped
+        if mapped is not None:
+            return _classify(str(mapped))
         if ip.is_link_local:
             return ("link_local", "fe80::/10")
         # IPv6 private (ULA + loopback ::1) maps to rfc4193. Tag under

@@ -25,6 +25,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 from ._side_effects import (
+    NonDeterministicIdempotencyKey,
     SideEffectEvent,
     SideEffectMarkerMissing,
     SideEffectRecorder,
@@ -49,6 +50,7 @@ __all__ = [
     "MODEL_RATE_LIMIT",
     "MODEL_TIMEOUT",
     "MODEL_UNKNOWN",
+    "NonDeterministicIdempotencyKey",
     "NormalizedError",
     "SideEffectEvent",
     "SideEffectMarkerMissing",

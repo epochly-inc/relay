@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -30,6 +31,23 @@ from typing import Any
 class SideEffectMarkerMissing(Exception):
     """Raised when ``validate_pairing`` observes a post-success proof
     without a preceding pre-action marker."""
+
+
+class NonDeterministicIdempotencyKey(Exception):
+    """Raised when an idempotency key cannot be derived deterministically.
+
+    Per spec X and CLAUDE.md keystone invariant #6 a side-effecting tool's
+    idempotency key MUST be stable across runs and processes so a replayed
+    invocation matches its original marker. If a tool argument is not
+    JSON-serialisable and its ``str()`` falls back to CPython's default
+    ``object.__repr__`` (an ADDRESS-bearing form like ``<C object at
+    0x7f...>``), folding it into the key would embed a process-local
+    ``id()`` and make the key non-deterministic. We refuse to compute such
+    a key and require the caller to make the argument canonicalisable
+    (give it a stable ``__repr__`` / serialise it) or pass an explicit
+    stable idempotency key instead of silently emitting an
+    address-dependent digest.
+    """
 
 
 @dataclass
@@ -91,26 +109,86 @@ class SideEffectRecorder:
 # ---------------------------------------------------------------------------
 
 
-def _canonical_args(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
+# CPython's default ``object.__repr__`` form, e.g.
+# ``<module.Class object at 0x7f3c9a4b1d90>``. The embedded ``0x...`` is
+# the object's ``id()`` -- process-local and non-deterministic. Any value
+# whose ``str()`` lands here must NOT be folded into an idempotency key.
+_ADDRESS_BEARING_REPR = re.compile(r" at 0x[0-9a-fA-F]+>$")
+
+
+def _is_address_bearing(value: Any) -> bool:
+    """True if ``str(value)`` falls back to CPython's address-bearing
+    default ``object.__repr__`` (``<... at 0x...>``).
+
+    Objects that define a stable ``__str__``/``__repr__`` (e.g. datetimes,
+    enums, dataclasses with a content repr) are NOT address-bearing and
+    remain deterministically serialisable.
+    """
+    return _ADDRESS_BEARING_REPR.search(str(value)) is not None
+
+
+def _strict_default(value: Any) -> str:
+    """``json.dumps`` ``default`` callback for the idempotency-key path.
+
+    Refuse any non-JSON value that would serialise to an address-bearing
+    repr (non-deterministic). Otherwise fall back to a stable ``str()``.
+    """
+    if _is_address_bearing(value):
+        raise NonDeterministicIdempotencyKey(
+            "cannot derive a deterministic idempotency key from a value "
+            "whose str() is an address-bearing repr "
+            f"({str(value)!r}); give the argument a stable __repr__/JSON "
+            "form or supply an explicit stable idempotency key"
+        )
+    return str(value)
+
+
+def _canonical_args(
+    name: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    strict: bool = False,
+) -> bytes:
     """Produce a deterministic byte representation of (name, args, kwargs).
 
-    The output is JSON-encoded with sorted keys and ``default=str`` so
-    non-JSON types (datetimes, dataclasses without __dict__) fall back
-    to their string repr. Two identical invocations produce identical
-    bytes; differing invocations produce different bytes (by construction
-    of canonical JSON). The bytes feed both the args_hash and the
-    idempotency_key.
+    The output is JSON-encoded with sorted keys. Non-JSON types (datetimes,
+    dataclasses with a content repr) fall back to their string repr. Two
+    identical invocations produce identical bytes; differing invocations
+    produce different bytes (by construction of canonical JSON).
+
+    When ``strict`` is True (the idempotency-key path), a value whose
+    ``str()`` is an address-bearing default repr raises
+    :class:`NonDeterministicIdempotencyKey` instead of silently folding a
+    process-local ``id()`` into the bytes. The non-strict path preserves
+    the historical ``default=str`` behaviour for the args/result marker
+    hashes, which are observability digests rather than replay-matching
+    keys.
     """
+    default = _strict_default if strict else str
     try:
         encoded = json.dumps(
             {"name": name, "args": list(args), "kwargs": kwargs},
             sort_keys=True,
-            default=str,
+            default=default,
             separators=(",", ":"),
         ).encode("utf-8")
     except (TypeError, ValueError):
-        # Last-resort fallback: never raise from marker computation.
-        # Stringify everything via repr.
+        if strict:
+            # In strict mode the address-bearing repr would re-enter via
+            # repr() of the whole tuple; refuse rather than emit an
+            # id()-dependent key.
+            for value in (*args, *kwargs.values()):
+                if _is_address_bearing(value):
+                    raise NonDeterministicIdempotencyKey(
+                        "cannot derive a deterministic idempotency key "
+                        "from a value whose str() is an address-bearing "
+                        f"repr ({str(value)!r}); give the argument a "
+                        "stable __repr__/JSON form or supply an explicit "
+                        "stable idempotency key"
+                    ) from None
+        # Last-resort fallback for the non-strict marker path: never raise
+        # from marker computation. Stringify everything via repr.
         encoded = repr((name, args, kwargs)).encode("utf-8")
     return encoded
 
@@ -121,8 +199,15 @@ def compute_idempotency_key(
     """SHA-256 of the canonical (name, args, kwargs) bytes, hex digest.
 
     Stable across identical invocations; differs for different args.
+
+    Raises :class:`NonDeterministicIdempotencyKey` (VAL-ISO-017) when an
+    argument would only serialise to a process-local address-bearing repr,
+    which would make the key non-deterministic across runs/processes and
+    break replay idempotency (keystone #6).
     """
-    return hashlib.sha256(_canonical_args(name, args, kwargs)).hexdigest()
+    return hashlib.sha256(
+        _canonical_args(name, args, kwargs, strict=True)
+    ).hexdigest()
 
 
 def compute_args_hash(args_bytes: bytes) -> str:
@@ -235,6 +320,7 @@ def validate_pairing(events: list[dict[str, Any]]) -> None:
 
 
 __all__ = [
+    "NonDeterministicIdempotencyKey",
     "SideEffectEvent",
     "SideEffectMarkerMissing",
     "SideEffectRecorder",
