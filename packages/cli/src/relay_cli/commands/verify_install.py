@@ -103,7 +103,7 @@ from ..exit_codes import (
     EXIT_4XX_BLOCK,
     EXIT_SUCCESS,
 )
-from ..jwks_cache import load_jwks_from_cache
+from ..jwks_cache import cache_path_for_url, load_jwks_from_cache
 
 # -----------------------------------------------------------------------------
 # Wire codes (one per assertion + per check kind)
@@ -642,21 +642,6 @@ class _JwksUnavailableError(Exception):
         self.cache_path = cache_path
 
 
-def _jwks_cache_path_for(trust_anchor_url: str, home: Path | None) -> Path:
-    """Return the on-disk cache path for ``trust_anchor_url``.
-
-    Mirrors the layout used by :func:`load_jwks_from_cache`: the cache
-    lives under ``${RELAY_HOME}/jwks-cache/<host>.json``. We compute the
-    path so the error envelope can point auditors at exactly where they
-    must drop a cached JWKS to make verification succeed offline.
-    """
-    from urllib.parse import urlparse
-
-    base = home if home is not None else Path.home() / ".relay"
-    host = urlparse(trust_anchor_url).hostname or "unknown-host"
-    return base / "jwks-cache" / f"{host}.json"
-
-
 def _resolve_jwks(
     *,
     trust_anchor_url: str,
@@ -691,7 +676,14 @@ def _resolve_jwks(
     cached = load_jwks_from_cache(trust_anchor_url, home=home)
     if cached is not None:
         return cached, None
-    cache_path = _jwks_cache_path_for(trust_anchor_url, home=home)
+    # VAL-ISO-034: reuse the canonical path derivation so the diagnostic
+    # cache_path is byte-identical to what load_jwks_from_cache consulted
+    # (including the relay_home() / RELAY_HOME fallback when home is None,
+    # the port suffix, and charset sanitization). A bespoke helper here
+    # drifted: it fell back to Path.home()/.relay and re-derived the host
+    # filename by hand, reporting a path operators could not use to seed
+    # the cache.
+    cache_path = cache_path_for_url(trust_anchor_url, home=home)
     if offline:
         raise _JwksUnavailableError(
             reason="offline_jwks_cache_miss",

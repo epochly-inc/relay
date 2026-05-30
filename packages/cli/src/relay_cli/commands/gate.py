@@ -84,7 +84,11 @@ def _next_backoff_s(attempt: int) -> float:
     return max(0.01, clamped + jitter)
 
 
-_CANCELLED = {"flag": False}
+# Shared cancel state. ``flag`` is the async-signal-safe trip the SIGINT/
+# SIGTERM handler sets; ``draft_id`` (str) and ``signum`` (int) are recorded
+# so the FOREGROUND cancel path (VAL-ISO-033) can issue the cancel POST and
+# emit a correctly-labelled envelope. Heterogeneous values -> typed Any.
+_CANCELLED: dict[str, Any] = {"flag": False}
 
 
 def _install_cancel_handler() -> None:
@@ -92,38 +96,22 @@ def _install_cancel_handler() -> None:
 
     VAL-V2M07-017/018: on SIGTERM/SIGINT the CLI sends a best-effort
     cancel POST to the engine (if a draft_id is known) then exits 130.
-    The handler sets a global flag; the polling loop checks it between
-    sleeps so the cancel POST runs in the foreground, not a signal
-    context (where httpx is unsafe).
+
+    VAL-ISO-033: the handler is async-signal-safe -- it records ONLY the
+    signal number and sets ``_CANCELLED['flag'] = True``. It performs NO
+    network I/O (httpx connect/TLS is not async-signal-safe and can
+    deadlock if the signal arrives mid-allocation or while a lock is
+    held) and does NOT call ``sys.exit`` from the signal context. The
+    cancel POST + RELAY-CLI-130 envelope emit + ``sys.exit`` are all
+    performed by :func:`_perform_cancel_and_exit`, which the polling loop
+    invokes in the FOREGROUND once it observes the flag.
     """
 
     def _handler(signum: int, frame: Any) -> None:
         del frame
+        # Async-signal-safe: record the signal and set the flag only.
+        _CANCELLED["signum"] = signum
         _CANCELLED["flag"] = True
-        # Send the cancel POST + exit 130 directly from the handler.
-        # httpx is best-effort here; failures are swallowed.
-        draft = _CANCELLED.get("draft_id")
-        if isinstance(draft, str) and draft:
-            import contextlib
-            with contextlib.suppress(httpx.HTTPError):
-                httpx.post(
-                    f"{_sidecar_url()}/v1/gate-decisions/{draft}/cancel",
-                    timeout=1.0,
-                )
-        try:
-            signal_name = signal.Signals(signum).name
-        except (ValueError, AttributeError):
-            signal_name = f"signal_{signum}"
-        envelope = build_envelope(
-            code="RELAY-CLI-130",
-            http_status=499,
-            message=f"rly gate evaluate cancelled by {signal_name}",
-            blocked_surface="rly gate evaluate",
-            retry_advice="after_fix",
-            details={"signal": signal_name},
-        )
-        emit_envelope(envelope)
-        sys.exit(EXIT_SIGINT_INTERRUPTED)
 
     for sig_name in ("SIGINT", "SIGTERM"):
         sig = getattr(signal, sig_name, None)
@@ -133,6 +121,43 @@ def _install_cancel_handler() -> None:
             signal.signal(sig, _handler)
         except (ValueError, OSError):
             continue
+
+
+def _perform_cancel_and_exit(signum: int | None = None) -> None:
+    """Foreground cancel path: POST cancel, emit envelope, exit 130.
+
+    Runs OUTSIDE the signal context (called from the polling loop's flag
+    check), where httpx is safe. ``signum`` defaults to the value the
+    handler recorded in ``_CANCELLED`` so the emitted envelope names the
+    actual delivered signal.
+    """
+    if signum is None:
+        recorded = _CANCELLED.get("signum")
+        signum = recorded if isinstance(recorded, int) else signal.SIGINT
+    # Best-effort cancel POST to the engine (if a draft_id is known).
+    draft = _CANCELLED.get("draft_id")
+    if isinstance(draft, str) and draft:
+        import contextlib
+
+        with contextlib.suppress(httpx.HTTPError):
+            httpx.post(
+                f"{_sidecar_url()}/v1/gate-decisions/{draft}/cancel",
+                timeout=1.0,
+            )
+    try:
+        signal_name = signal.Signals(signum).name
+    except (ValueError, AttributeError):
+        signal_name = f"signal_{signum}"
+    envelope = build_envelope(
+        code="RELAY-CLI-130",
+        http_status=499,
+        message=f"rly gate evaluate cancelled by {signal_name}",
+        blocked_surface="rly gate evaluate",
+        retry_advice="after_fix",
+        details={"signal": signal_name},
+    )
+    emit_envelope(envelope)
+    sys.exit(EXIT_SIGINT_INTERRUPTED)
 
 
 def cmd_gate_evaluate(
@@ -229,8 +254,10 @@ def cmd_gate_evaluate(
     decision = None
     while True:
         if _CANCELLED["flag"]:
-            # Already handled by handler; defensive
-            raise typer.Exit(code=EXIT_SIGINT_INTERRUPTED)
+            # VAL-ISO-033: the handler set the flag only. Perform the
+            # cancel POST + envelope emit + exit HERE, in the foreground,
+            # where httpx is async-signal-safe.
+            _perform_cancel_and_exit()
         decision = _get_decision(draft_id)
         if isinstance(decision, dict) and decision.get("_clock_skew"):
             # VAL-V2M07-019: single retry with compensated timestamp.

@@ -93,6 +93,7 @@ SpawnAction = Literal[
     "attached",
     "stale_pid_cleared_and_spawned",
     "zombie_port_terminated_and_spawned",
+    "malformed_lockfile_cleared_and_spawned",
 ]
 
 
@@ -327,11 +328,38 @@ def _classify_and_act(
     raw = lockfile_path.read_bytes()
     try:
         body = parse_lockfile_body(raw)
-    except SidecarError:
-        # Treat malformed-but-present lockfile as a clearable state.
-        # Re-raise so callers see VAL-W2-002 (LOCKFILE-MALFORMED). The
-        # caller can decide whether to overwrite via a fresh spawn.
-        raise
+    except SidecarError as exc:
+        # VAL-ISO-027: a non-empty but unparseable canonical lockfile
+        # (partial bytes from a process that crashed mid-serialize, or
+        # on-disk corruption) is a CLEARABLE state, mirroring STALE_PID.
+        # Previously this re-raised LOCKFILE-MALFORMED out of
+        # ``acquire_or_attach``, permanently wedging startup despite the
+        # four-state recovery design. We hold the decision lock here, so
+        # clearing the canonical lockfile via the atomic primitive cannot
+        # race a peer mid-write. Clear it, emit a structured audit row so
+        # an operator can see we recovered from corruption, then SPAWN.
+        local_atomic_file_write(lockfile_path, b"", mode=0o600)
+        append_event(
+            "sidecar.malformed_lockfile_cleared",
+            scope_type="other",
+            actor_kind="control_plane",
+            payload={
+                "lockfile_size_bytes": len(raw),
+                "error_code": getattr(exc, "code", None),
+                "reason": (
+                    "lockfile_unparseable -- treating malformed non-empty "
+                    "lockfile as clearable, not wedging startup"
+                ),
+            },
+            home=home,
+        )
+        return _spawn_and_write(
+            lockfile_path=lockfile_path,
+            home=home,
+            runner=runner,
+            action="malformed_lockfile_cleared_and_spawned",
+            bearer_token=bearer_token,
+        )
 
     # ALREADY_RUNNING vs STALE_PID vs ZOMBIE_PORT.
     pid_alive = pid_is_alive(body.pid)
