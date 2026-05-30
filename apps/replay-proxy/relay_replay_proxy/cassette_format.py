@@ -880,14 +880,25 @@ def load_cassette(
             raise
         try:
             canonical_key = _read_canonical_key_for_fixture(session_dir, fixture)
-        except (json.JSONDecodeError, KeyError, binascii.Error) as exc:
+        except (
+            json.JSONDecodeError,
+            KeyError,
+            binascii.Error,
+            UnicodeError,
+            UnicodeDecodeError,
+        ) as exc:
             # The sidecar request.json exists but is malformed (invalid
-            # JSON, missing a required key like "method"/"url", or a
-            # non-base64 body_b64). Quarantine the cassette and re-raise as
-            # a structured corrupt error -- mirroring the JSON-parse,
-            # schema-validation, and output-digest steps above -- instead
-            # of letting an uncaught exception bypass the quarantine path
-            # (VAL-ISO-010).
+            # JSON, missing a required key like "method"/"url", a
+            # non-base64 body_b64, or non-UTF-8 file bytes that fail the
+            # ``read_text(encoding="utf-8")`` decode in
+            # _read_canonical_key_for_fixture). Quarantine the cassette and
+            # re-raise as a structured corrupt error -- mirroring the
+            # JSON-parse, schema-validation, and output-digest steps above
+            # -- instead of letting an uncaught exception bypass the
+            # quarantine path (VAL-ISO-010). UnicodeError is the base of
+            # UnicodeDecodeError (both listed for explicitness); the tuple
+            # stays narrow (no bare ValueError / Exception) so genuinely
+            # unexpected failures still surface.
             if quarantine_on_error:
                 _quarantine(cassette_path)
             raise RelayCassetteCorruptError(

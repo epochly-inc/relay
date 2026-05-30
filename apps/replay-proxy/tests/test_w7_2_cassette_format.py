@@ -662,6 +662,48 @@ def test_canonical_request_invalid_base64_body_quarantines(
 
 
 @pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_non_utf8_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json whose BYTES are not valid
+    UTF-8 MUST raise ``RelayCassetteCorruptError`` and quarantine -- NOT an
+    uncaught ``UnicodeDecodeError`` that bypasses the quarantine path.
+
+    ``_read_canonical_key_for_fixture`` decodes the sidecar with
+    ``read_text(encoding="utf-8")``; an invalid-encoding sidecar raises
+    ``UnicodeDecodeError`` (a ``ValueError`` subclass). The iso-010
+    quarantine catch tuple previously caught json.JSONDecodeError, KeyError,
+    and binascii.Error but NOT UnicodeDecodeError, so a non-UTF-8 malformed
+    fixture escaped quarantine.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    # 0xFF / 0xFE are never valid UTF-8 lead bytes -> read_text(utf-8) raises
+    # UnicodeDecodeError. Surround with otherwise JSON-looking ASCII so the
+    # failure is the decode step (not a later JSON-parse step) -- i.e. the
+    # UnicodeDecodeError path specifically.
+    request_path.write_bytes(b'{"method": "POST", "url": "\xff\xfe"}')
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    # The malformed (non-UTF-8) cassette MUST have been moved to quarantine.
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
 def test_valid_canonical_request_still_loads(
     empty_cassette_dir: Path,
     make_replay_fixture: Any,

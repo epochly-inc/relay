@@ -70,7 +70,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import AsyncIterator, Callable, MutableMapping
+from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -409,6 +409,22 @@ class RuntimeState:
     idempotency_inflight: dict[tuple[str, str], dict[str, Any]] = field(
         default_factory=dict
     )
+    # VAL-IDEMP-002 (test determinism seam): an OPTIONAL async hook fired
+    # inside _check_idempotency at the EXACT check-then-reserve TOCTOU
+    # window -- after the cache-miss lookup returns None and BEFORE the
+    # synchronous reservation install. Production leaves this ``None`` (the
+    # hook is never awaited, so there is zero behavioral or performance
+    # impact on the real path). Concurrency tests install a hook (e.g. an
+    # ``asyncio.Barrier(2)`` rendezvous) so BOTH racing same-(surface, key)
+    # coroutines are provably in-flight at the reservation window before
+    # either proceeds -- making the race the reservation closes deterministic
+    # under any event-loop scheduling. The hook is passed the
+    # ``(surface, key)`` reservation tuple. Any exception it raises propagates
+    # to the caller (so a misbehaving test fails loudly rather than silently
+    # skipping the rendezvous).
+    idempotency_reserve_hook: (
+        Callable[[tuple[str, str]], Awaitable[None]] | None
+    ) = None
     # W2.10 rate-limit buckets. bucket_key -> (window_start_epoch, count).
     rate_limit_buckets: dict[str, tuple[int, int]] = field(default_factory=dict)
     # W2.11 token registry. token -> {scopes: set[str], project_id: str}.
@@ -3758,6 +3774,19 @@ def build_runtime_app(
         # a concurrent coroutine cannot interleave and also win the race.
         reservation_key = (surface, key)
         inflight = runtime.idempotency_inflight
+        # VAL-IDEMP-002 (test determinism): fire the optional reserve hook at
+        # the EXACT check-then-reserve window -- AFTER the cache-miss lookup
+        # observed "no record" and BEFORE the synchronous reservation install
+        # below. Production leaves the hook None (never awaited). A
+        # concurrency test installs an ``asyncio.Barrier(2)`` here so BOTH
+        # racing same-(surface, key) coroutines are provably past the lookup
+        # and competing for the reservation at the same instant, making the
+        # race the reservation loop closes deterministic under any scheduling.
+        # This await is OUTSIDE the synchronous reservation loop, so the
+        # no-await atomicity of the check-then-reserve itself is preserved.
+        reserve_hook = runtime.idempotency_reserve_hook
+        if reserve_hook is not None:
+            await reserve_hook(reservation_key)
         while True:
             reservation = inflight.get(reservation_key)
             if reservation is None:

@@ -87,11 +87,46 @@ async def test_concurrent_same_key_gate_draft_executes_exactly_once(
         "round": 1,
     }
 
-    # Fire both concurrently so they interleave at the post-check awaits.
-    r1, r2 = await asyncio.gather(
-        c.post("/v1/gates/race-gate/drafts", json=body, headers=headers),
-        c.post("/v1/gates/race-gate/drafts", json=body, headers=headers),
-    )
+    # DETERMINISTIC TOCTOU: install a reserve-hook barrier on the runtime so
+    # BOTH racing same-(surface, key) coroutines are provably past the
+    # cache-miss lookup and competing for the in-flight reservation at the
+    # SAME instant, regardless of event-loop scheduling. _check_idempotency
+    # awaits this hook AFTER observing "no record" and BEFORE the synchronous
+    # reservation install -- so when the barrier releases, both coroutines
+    # have already seen the miss and exactly one must win the reservation while
+    # the other must wait + replay. Previously this test relied on
+    # asyncio.gather interleaving happening to land both coroutines in the
+    # check-then-reserve window, which was load-sensitive (it failed once
+    # under full-suite CPU contention). The barrier removes that timing
+    # dependence: the race the reservation closes is now exercised on every
+    # run. Scoped to the race key so only the intended pair rendezvous; any
+    # other surface/key passes the hook through without blocking.
+    runtime = cast(Any, app).state.runtime
+    barrier = asyncio.Barrier(2)
+
+    # VAL-IDEMP-001 folds the concrete gate_id into the idempotency surface
+    # (runtime.py: idemp_surface = f"POST /v1/gates/{gate_id}/drafts"), so the
+    # reservation key for the racing pair is this concrete surface, NOT a
+    # static template. Match it exactly so only the intended pair rendezvous.
+    _RACE_SURFACE = "POST /v1/gates/race-gate/drafts"
+
+    async def _reserve_barrier(reservation_key: tuple[str, str]) -> None:
+        # Only the two racing same-key gate-draft requests rendezvous; an
+        # unrelated key (none in this test, but defensive) must not deadlock
+        # waiting for a partner that never arrives.
+        if reservation_key == (_RACE_SURFACE, _RACE_KEY):
+            await barrier.wait()
+
+    runtime.idempotency_reserve_hook = _reserve_barrier
+    try:
+        # Fire both concurrently. The barrier forces both into the
+        # check-then-reserve window before either installs a reservation.
+        r1, r2 = await asyncio.gather(
+            c.post("/v1/gates/race-gate/drafts", json=body, headers=headers),
+            c.post("/v1/gates/race-gate/drafts", json=body, headers=headers),
+        )
+    finally:
+        runtime.idempotency_reserve_hook = None
 
     statuses = sorted((r1.status_code, r2.status_code))
     # Both calls succeed at the HTTP layer (the loser replays a 202 or is a
