@@ -95,6 +95,20 @@ exclude = [
   "packages/sdk-python/relay/_generated",
 ]
 
+# The sidecar test suite (apps/local-sidecar/tests) has no __init__.py and
+# relies on pytest's default `prepend` import mode, which inserts the test
+# directory onto sys.path so sibling helper modules resolve as top-level
+# imports (e.g. `from _v2m02_w25_helpers import v2m02_client`,
+# `from _w25_helpers import seed_db`, `from test_crash_kill_minus_9 import
+# ...`). pyright does not model pytest's sys.path insertion, so it reports
+# these runtime-valid imports as unresolved. Declaring the test directory as
+# an execution-environment root with itself on extraPaths mirrors the runtime
+# search path WITHOUT changing any test behavior. Scoped to this root only --
+# it does not affect type checking of any other tree.
+[[tool.pyright.executionEnvironments]]
+root = "apps/local-sidecar/tests"
+extraPaths = ["apps/local-sidecar/tests"]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = [
