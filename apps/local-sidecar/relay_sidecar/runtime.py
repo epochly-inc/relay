@@ -3955,8 +3955,17 @@ def build_runtime_app(
         if auth_reject is not None:
             return auth_reject
         body_bytes = await request.body()
+        # VAL-IDEMP-001: the idempotency surface MUST carry the resolved
+        # path parameter (the concrete gate_id), not the un-interpolated
+        # "{gate_id}" template. The canonical idempotency key derives the
+        # ONLY gate-distinguishing material from the surface string; passing
+        # the literal template aliases every gate_id to a single key, so a
+        # write to gate B is wrongly replayed as gate A's. Folding the
+        # concrete gate_id in keeps distinct gates distinct while a genuine
+        # retry of the SAME gate still collides (idempotent replay).
+        idemp_surface = f"PUT /v1/gates/{gate_id}"
         idemp_reject, idemp_key, idemp_digest = await _check_idempotency(
-            request, surface=_GATE_CONFIGURE_SURFACE, body_bytes=body_bytes
+            request, surface=idemp_surface, body_bytes=body_bytes
         )
         if idemp_reject is not None:
             return idemp_reject
@@ -4028,7 +4037,7 @@ def build_runtime_app(
         }
         if idemp_key and idemp_digest:
             await _store_idempotency(
-                surface=_GATE_CONFIGURE_SURFACE,
+                surface=idemp_surface,
                 key=idemp_key,
                 digest=idemp_digest,
                 response_status=status,
@@ -4052,8 +4061,12 @@ def build_runtime_app(
         if auth_reject is not None:
             return auth_reject
         body_bytes = await request.body()
+        # VAL-IDEMP-001: fold the resolved policy_id into the idempotency
+        # surface so two distinct policies never alias the same idempotency
+        # record (the un-interpolated "{policy_id}" template aliased them).
+        idemp_surface = f"PUT /v1/gate-policies/{policy_id}"
         idemp_reject, idemp_key, idemp_digest = await _check_idempotency(
-            request, surface=_GATE_POLICY_SURFACE, body_bytes=body_bytes
+            request, surface=idemp_surface, body_bytes=body_bytes
         )
         if idemp_reject is not None:
             return idemp_reject
@@ -4091,7 +4104,7 @@ def build_runtime_app(
         }
         if idemp_key and idemp_digest:
             await _store_idempotency(
-                surface=_GATE_POLICY_SURFACE,
+                surface=idemp_surface,
                 key=idemp_key,
                 digest=idemp_digest,
                 response_status=status,
@@ -4122,8 +4135,18 @@ def build_runtime_app(
         if auth_reject is not None:
             return auth_reject
         body_bytes = await request.body()
+        # VAL-IDEMP-001: _GATE_DRAFT_SURFACE is the un-interpolated template
+        # "POST /v1/gates/{gate_id}/drafts" (line 3007); the concrete gate_id
+        # was never substituted before the surface reached
+        # _canonical_idempotency_key. Because the surface is the only
+        # gate-distinguishing material in the key derivation, distinct gates
+        # (POST /v1/gates/A/drafts vs .../B/drafts) computed the SAME key, so
+        # gate B's draft was wrongly replayed as gate A's. Fold the resolved
+        # gate_id into the surface: distinct gates -> distinct keys, while a
+        # genuine retry of the same gate still collides (idempotent replay).
+        idemp_surface = f"POST /v1/gates/{gate_id}/drafts"
         idemp_reject, idemp_key, idemp_digest = await _check_idempotency(
-            request, surface=_GATE_DRAFT_SURFACE, body_bytes=body_bytes
+            request, surface=idemp_surface, body_bytes=body_bytes
         )
         if idemp_reject is not None:
             return idemp_reject
@@ -4331,7 +4354,7 @@ def build_runtime_app(
         }
         if idemp_key and idemp_digest:
             await _store_idempotency(
-                surface=_GATE_DRAFT_SURFACE,
+                surface=idemp_surface,
                 key=idemp_key,
                 digest=idemp_digest,
                 response_status=202,
