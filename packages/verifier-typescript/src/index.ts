@@ -129,6 +129,7 @@ export {
   TRUST_ANCHOR_SOURCE_CACHE,
   TRUST_ANCHOR_SOURCE_LIVE,
   cachePathForUrl,
+  checkHostConfusable,
   hostnameForUrl,
   loadBundledJwks,
   loadCachedJwks,

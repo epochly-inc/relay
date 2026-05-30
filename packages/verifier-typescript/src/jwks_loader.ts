@@ -22,6 +22,286 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import { DEFAULT_JWKS_URL } from "./constants.js";
+import { RELAY_VERIFY_CONFIG_INVALID, RelayVerifierError } from "./errors.js";
+
+// ----------------------------------------------------------------------------
+// UTS-39 confusables guard for trust_anchor URLs (VAL-V3M5-009 / VAL-PARITY-005)
+// ----------------------------------------------------------------------------
+//
+// Token-for-token port of the Python guard in
+// packages/verifier/src/relay_verifier/jwks_loader.py (`_CONFUSABLES_MAP`,
+// `_script_of`, `_ascii_skeleton`, `check_host_confusable`,
+// `_enforce_trust_anchor_homograph_guard`). The default trust_anchor URL is
+// `DEFAULT_JWKS_URL`; an attacker who substitutes a homograph (visually
+// identical) hostname for the canonical ASCII host bypasses the spec-pinned
+// anchor without the operator noticing. Spec section AI line 5659 calls for a
+// UTS-39 confusables guard. We implement the relevant subset against built-in
+// `String.prototype.normalize("NFKC")`:
+//
+//   1. The candidate host is NFKC-normalized.
+//   2. Pure-ASCII candidates (post-NFKC) pass: equal to the canonical host or a
+//      deliberately-chosen different ASCII host (the BYO escape hatch).
+//   3. Candidates containing any non-ASCII codepoint are folded to an ASCII
+//      "skeleton" via the curated confusables map below. If the skeleton
+//      equals the canonical host, the candidate is a homograph and is rejected
+//      with reason `confusable`. If the skeleton still contains non-ASCII
+//      codepoints after folding, the candidate is rejected with reason
+//      `non_ascii`.
+//   4. Mixed-script labels (a single DNS label mixing ASCII letters with a
+//      non-Common foreign script after NFKC) are rejected with reason
+//      `mixed_script` before the skeleton comparison so mixed-script attacks
+//      against UNRELATED canonical hosts still surface a structured rejection.
+//
+// This is a hand-rolled UTS-39 subset, not the full Unicode confusables table;
+// it MUST stay byte-for-byte equivalent to the Python map so Python<->TS agree
+// on accept/reject for every documented attack variant.
+//
+// Non-ASCII map keys are written via `String.fromCodePoint(0x....)` so this
+// source file stays pure ASCII per CLAUDE.md "ASCII-Safe Source".
+
+// Curated UTS-39 confusables to ASCII skeleton; mirrors Python
+// `_CONFUSABLES_MAP`. The hex codepoint and Unicode name appear inline.
+const CONFUSABLES_MAP: Readonly<Record<string, string>> = {
+  // Cyrillic small letters (most-targeted: e, a, o, p, c, x, y, i)
+  [String.fromCodePoint(0x0430)]: "a", // CYRILLIC SMALL LETTER A
+  [String.fromCodePoint(0x0435)]: "e", // CYRILLIC SMALL LETTER IE
+  [String.fromCodePoint(0x043e)]: "o", // CYRILLIC SMALL LETTER O
+  [String.fromCodePoint(0x0440)]: "p", // CYRILLIC SMALL LETTER ER
+  [String.fromCodePoint(0x0441)]: "c", // CYRILLIC SMALL LETTER ES
+  [String.fromCodePoint(0x0445)]: "x", // CYRILLIC SMALL LETTER HA
+  [String.fromCodePoint(0x0443)]: "y", // CYRILLIC SMALL LETTER U
+  [String.fromCodePoint(0x0456)]: "i", // CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I
+  [String.fromCodePoint(0x0458)]: "j", // CYRILLIC SMALL LETTER JE
+  [String.fromCodePoint(0x04bb)]: "h", // CYRILLIC SMALL LETTER SHHA
+  // Greek small letters (omicron, rho, kappa, nu, alpha, iota look-alikes)
+  [String.fromCodePoint(0x03bf)]: "o", // GREEK SMALL LETTER OMICRON
+  [String.fromCodePoint(0x03c1)]: "p", // GREEK SMALL LETTER RHO
+  [String.fromCodePoint(0x03ba)]: "k", // GREEK SMALL LETTER KAPPA
+  [String.fromCodePoint(0x03bd)]: "v", // GREEK SMALL LETTER NU (visually similar to v)
+  [String.fromCodePoint(0x03b1)]: "a", // GREEK SMALL LETTER ALPHA
+  [String.fromCodePoint(0x03b9)]: "i", // GREEK SMALL LETTER IOTA (close to i)
+  // Armenian small letters that visually echo ASCII
+  [String.fromCodePoint(0x0585)]: "o", // ARMENIAN SMALL LETTER OH
+  [String.fromCodePoint(0x0578)]: "n", // ARMENIAN SMALL LETTER VO -- visual approximation
+  [String.fromCodePoint(0x0570)]: "h", // ARMENIAN SMALL LETTER HO
+  [String.fromCodePoint(0x0566)]: "q", // ARMENIAN SMALL LETTER ZA (visual)
+};
+
+/**
+ * Return a coarse script bucket for a single character; mirrors Python
+ * `_script_of`. Buckets: `ascii` for ASCII letters/digits/hyphen,
+ * `cyrillic`, `greek`, `armenian`, `fullwidth`, `math`, `common` for
+ * punctuation/shared, `other` for anything else.
+ */
+function _scriptOf(ch: string): string {
+  const cp = ch.codePointAt(0) ?? 0;
+  if (cp < 0x80) {
+    // ASCII alphanumeric or hyphen -> `ascii`; other ASCII -> `common`.
+    if (/[A-Za-z0-9]/.test(ch) || ch === "-") {
+      return "ascii";
+    }
+    return "common";
+  }
+  if (cp >= 0x0400 && cp <= 0x04ff) return "cyrillic";
+  if (cp >= 0x0370 && cp <= 0x03ff) return "greek";
+  if (cp >= 0x0530 && cp <= 0x058f) return "armenian";
+  if (cp >= 0xff00 && cp <= 0xffef) return "fullwidth";
+  if (cp >= 0x1d400 && cp <= 0x1d7ff) return "math";
+  return "other";
+}
+
+/**
+ * Return the ASCII confusables skeleton of `host`; mirrors Python
+ * `_ascii_skeleton`. Applies NFKC normalization (folds Halfwidth/Fullwidth
+ * Forms and Mathematical Alphanumeric Symbols to ASCII), then substitutes
+ * every codepoint in `CONFUSABLES_MAP` with its ASCII partner. The output may
+ * still contain non-ASCII codepoints, which the caller treats as `non_ascii`.
+ */
+function _asciiSkeleton(host: string): string {
+  const nfkc = host.normalize("NFKC");
+  // Iterate by code point (surrogate-safe) to mirror Python's per-codepoint map.
+  let out = "";
+  for (const ch of nfkc) {
+    out += CONFUSABLES_MAP[ch] ?? ch;
+  }
+  return out;
+}
+
+function _isPureAscii(s: string): boolean {
+  for (const ch of s) {
+    if ((ch.codePointAt(0) ?? 0) >= 0x80) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Reject `host` if it is a UTS-39 confusable of `canonicalHost`. Mirrors
+ * Python `check_host_confusable` exactly.
+ *
+ * Pure-ASCII candidates pass unconditionally (operators may BYO an unrelated
+ * ASCII host on purpose). Any non-ASCII candidate is folded to its ASCII
+ * skeleton via NFKC + the curated confusables map; if the skeleton equals the
+ * canonical host (case-insensitive) the candidate is rejected with reason
+ * `confusable`. A mixed-script label is rejected with reason `mixed_script`
+ * before the skeleton check. A candidate whose skeleton still contains
+ * non-ASCII codepoints after folding is rejected with reason `non_ascii`.
+ *
+ * @throws RelayVerifierError code RELAY-VERIFY-003 when the host is a
+ *   confusable, a mixed-script label, or contains residual non-ASCII content.
+ */
+export function checkHostConfusable(host: string, canonicalHost: string): void {
+  if (!host) {
+    return;
+  }
+  const canonicalLower = canonicalHost.toLowerCase();
+
+  // Pure-ASCII candidates: legitimate BYO or canonical. Either way they
+  // cannot be a homograph of the canonical ASCII anchor.
+  if (_isPureAscii(host)) {
+    return;
+  }
+
+  // Per-label mixed-script detection. A label mixing ASCII letters with a
+  // single non-Common foreign script is the canonical mixed-script attack;
+  // reject before skeleton folding so the reason code attributes correctly
+  // even against UNRELATED canonical hosts.
+  for (const label of host.split(".")) {
+    const scripts = new Set<string>();
+    for (const ch of label) {
+      const s = _scriptOf(ch);
+      if (s === "ascii" || s === "common") {
+        continue;
+      }
+      scripts.add(s);
+    }
+    let hasAscii = false;
+    for (const ch of label) {
+      if (_scriptOf(ch) === "ascii") {
+        hasAscii = true;
+        break;
+      }
+    }
+    if (scripts.size >= 1 && hasAscii) {
+      // ASCII letters mixed with foreign-script letters in one label --
+      // canonical mixed-script attack. Fall through to the skeleton check
+      // first; if it folds to the canonical host the rejection is more
+      // specific (`confusable`).
+      const skeletonLabel = _asciiSkeleton(label);
+      if (_isPureAscii(skeletonLabel)) {
+        // Folds cleanly to ASCII -- attribute the broader skeleton check below.
+        continue;
+      }
+      throw new RelayVerifierError(`mixed-script label rejected: ${JSON.stringify(label)}`, {
+        code: RELAY_VERIFY_CONFIG_INVALID,
+        details: {
+          host,
+          canonical_host: canonicalHost,
+          reason: "mixed_script",
+          label,
+          scripts: Array.from(scripts).sort(),
+        },
+      });
+    }
+  }
+
+  const skeleton = _asciiSkeleton(host).toLowerCase();
+  if (skeleton === canonicalLower) {
+    throw new RelayVerifierError(
+      `trust_anchor host is a UTS-39 confusable of ${JSON.stringify(canonicalHost)}: ${JSON.stringify(host)}`,
+      {
+        code: RELAY_VERIFY_CONFIG_INVALID,
+        details: {
+          host,
+          canonical_host: canonicalHost,
+          reason: "confusable",
+          skeleton,
+        },
+      },
+    );
+  }
+
+  if (!_isPureAscii(skeleton)) {
+    throw new RelayVerifierError(
+      `trust_anchor host contains non-ASCII codepoints not covered by the UTS-39 fold: ${JSON.stringify(host)}`,
+      {
+        code: RELAY_VERIFY_CONFIG_INVALID,
+        details: {
+          host,
+          canonical_host: canonicalHost,
+          reason: "non_ascii",
+          skeleton,
+        },
+      },
+    );
+  }
+}
+
+// Authority extractor for the confusables guard. CRITICAL: we do NOT use
+// `new URL(url).hostname` here -- WHATWG URL applies IDNA/punycode to IDN
+// labels, so a Cyrillic homograph host like `relay.epochl<U+0443>.com` would
+// be returned as the ASCII punycode form `relay.xn--epochl-1rf.com`, which the
+// confusables fold treats as a benign pure-ASCII host and accepts. Python's
+// `urlparse(url).hostname` preserves the raw Unicode codepoints, so the fold
+// fires. To stay byte-for-byte parity with Python we parse the raw host
+// substring from the URL string ourselves (same rationale as
+// `hostnameForUrl` reading the explicit port from the raw string).
+//
+// Mirrors Python `urlparse(...).hostname` semantics: lowercases, strips the
+// `userinfo@` prefix, strips a bracketed IPv6 host's brackets, strips the
+// `:port` suffix.
+const _RAW_AUTHORITY_RE =
+  /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^/?#@]*@)?(\[[^\]]*\]|[^/:?#]*)(?::[0-9]*)?(?:[/?#]|$)/;
+
+/**
+ * Extract the lowercased raw (non-punycoded) hostname component of `url` for
+ * the confusables guard. Mirrors Python `_canonical_host_of`. Returns the
+ * empty string for a URL with no extractable host (the downstream resolver
+ * paths reject those with a more specific error; the homograph guard is a
+ * no-op there).
+ */
+function _canonicalHostOf(url: string): string {
+  const m = _RAW_AUTHORITY_RE.exec(url);
+  if (m === null) {
+    return "";
+  }
+  let host = m[1] ?? "";
+  // Strip IPv6 brackets to mirror `urlparse(...).hostname`.
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+  return host.toLowerCase();
+}
+
+/**
+ * Apply {@link checkHostConfusable} to the BYO trust-anchor URL. Mirrors
+ * Python `_enforce_trust_anchor_homograph_guard`: compares the candidate
+ * URL's host against the host of the compiled-in `DEFAULT_JWKS_URL`. Re-throws
+ * with the offending URL attached under `details.trust_anchor` so the
+ * CLI/verifier wrapper can surface the rejection envelope directly.
+ *
+ * @throws RelayVerifierError code RELAY-VERIFY-003 on rejection.
+ */
+function _enforceTrustAnchorHomographGuard(candidateUrl: string): void {
+  const candidateHost = _canonicalHostOf(candidateUrl);
+  const canonicalHost = _canonicalHostOf(DEFAULT_JWKS_URL);
+  if (!candidateHost) {
+    // Malformed URL -- the URL parser already returned an empty host. The
+    // downstream resolver paths reject this with a more specific error; the
+    // homograph guard is a no-op here.
+    return;
+  }
+  try {
+    checkHostConfusable(candidateHost, canonicalHost);
+  } catch (exc) {
+    if (exc instanceof RelayVerifierError) {
+      const details = { ...exc.details, trust_anchor: candidateUrl };
+      throw new RelayVerifierError(exc.message, { code: exc.code, details });
+    }
+    throw exc;
+  }
+}
 
 export const JWKS_CACHE_SCHEMA_VERSION = "relay.cli.jwks_cache.v1" as const;
 export const JWKS_CACHE_DIRNAME = "jwks-cache" as const;
@@ -233,12 +513,21 @@ export interface ResolveTrustAnchorArgs {
 export function resolveTrustAnchorUrl(args: ResolveTrustAnchorArgs): [string, TrustAnchorSource] {
   const flagUrl = args.flagUrl?.trim();
   if (flagUrl && flagUrl.length > 0) {
+    // VAL-PARITY-005 / VAL-V3M5-009: UTS-39 confusables guard on every BYO URL
+    // whose host could be a homograph of the canonical default. Pure-ASCII
+    // operator-chosen hosts pass; homograph hosts throw RelayVerifierError
+    // (RELAY-VERIFY-003) before the resolver ever touches the network or
+    // cache. Mirrors Python jwks_loader.py:657.
+    _enforceTrustAnchorHomographGuard(flagUrl);
     return [flagUrl, TRUST_ANCHOR_SOURCE_BYO_FLAG];
   }
   const configPath = args.configPath;
   if (configPath && existsSync(configPath)) {
     const configUrl = _loadConfigTrustAnchor(configPath);
     if (configUrl !== null) {
+      // Same homograph guard on the BYO config URL. Mirrors Python
+      // jwks_loader.py:662.
+      _enforceTrustAnchorHomographGuard(configUrl);
       return [configUrl, TRUST_ANCHOR_SOURCE_BYO_CONFIG];
     }
   }
