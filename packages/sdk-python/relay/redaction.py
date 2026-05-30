@@ -170,6 +170,123 @@ _INTERVAL_BODY_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9]+(,[0-9]*)?$")
 
 _REDOS_REASON: Final[str] = "redos_pattern"
 
+#: Inline-flag letters permitted inside a ``(?flags)`` / ``(?flags:...)``
+#: group prefix. A superset of the SDK's supported subset on purpose: the
+#: ReDoS scanner only needs to STEP OVER the prefix without mis-reading its
+#: ``?`` as a quantifier; whether the flag is ultimately supported is decided
+#: by :func:`_compile_regex_pattern` (Python) / ``compileRegexPattern`` (TS).
+#: MUST match the TypeScript ``_INLINE_FLAG_CHARS`` set.
+_INLINE_FLAG_CHARS: Final[frozenset[str]] = frozenset("imsxauL")
+
+
+def _group_open_prefix_end(raw_pattern: str, i: int) -> tuple[int, bool] | None:
+    """Classify a group-open token at ``raw_pattern[i]`` (which MUST be ``(``).
+
+    Recognizes the regex GROUP-PREFIX syntaxes whose leading ``?`` / flags /
+    ``:`` / ``=`` / ``!`` / ``<`` are NOT quantifiers and must not be counted as
+    such by the ReDoS scanner:
+
+      * ``(?:``                 non-capturing group
+      * ``(?i`` ``(?s`` ``(?m`` ``(?x`` ``(?a`` ``(?u`` and combinations,
+        either bare ``(?flags)`` (a leading inline-flag directive with NO body)
+        or scoped ``(?flags:...)`` (flags + a group body)
+      * ``(?=`` ``(?!``         lookahead / negative lookahead
+      * ``(?<=`` ``(?<!``       lookbehind / negative lookbehind
+      * ``(?P<name>`` ``(?<name>``   named group
+      * ``(?P=name)``          named backreference
+
+    Returns ``None`` when the token is a PLAIN capturing group ``(`` (no
+    prefix) -- the caller handles it with the ordinary push/scan path.
+
+    Otherwise returns ``(end, opens_body)``:
+
+      * ``end`` is the index just past the recognized prefix (or, for a
+        self-terminating construct, just past its own ``)``).
+      * ``opens_body`` is ``True`` when a group BODY follows the prefix and the
+        caller must push a group frame and let the matching ``)`` close it
+        (``(?:``, ``(?=``, ``(?!``, ``(?<=``, ``(?<!``, ``(?flags:``, and the
+        named-group forms ``(?P<name>`` / ``(?<name>``). It is ``False`` for the
+        self-terminating constructs that consume their own ``)`` and contribute
+        no quantifiable body (``(?flags)`` bare inline-flag directive,
+        ``(?P=name)`` named backreference); the caller advances to ``end`` and
+        pushes NO frame.
+
+    Mirrors the TypeScript ``groupOpenPrefixEnd`` byte-for-byte so both engines
+    skip the identical prefix set.
+    """
+    n = len(raw_pattern)
+    # A plain capturing group: not a prefixed group. Also covers a trailing
+    # bare ``(`` (malformed) -- treated as a plain open by the caller.
+    if i + 1 >= n or raw_pattern[i + 1] != "?":
+        return None
+    j = i + 2  # index just past ``(?``
+    if j >= n:
+        # ``(?`` at end of pattern: malformed; let the caller treat the ``(``
+        # as a plain open so the engine compile-error path surfaces it.
+        return None
+    c = raw_pattern[j]
+    if c == ":":
+        # Non-capturing group ``(?:...)``: body follows.
+        return (j + 1, True)
+    if c in ("=", "!"):
+        # Lookahead ``(?=...)`` / ``(?!...)``: body follows.
+        return (j + 1, True)
+    if c == "<":
+        # ``(?<=`` / ``(?<!`` lookbehind, or ``(?<name>`` named group.
+        if j + 1 < n and raw_pattern[j + 1] in ("=", "!"):
+            return (j + 2, True)
+        # Named group ``(?<name>``: consume through the closing ``>``; body
+        # follows.
+        k = j + 1
+        while k < n and raw_pattern[k] != ">":
+            k += 1
+        if k < n:  # consumed ``>``
+            return (k + 1, True)
+        return None  # malformed; let the caller treat ``(`` as plain open
+    if c == "P":
+        # Python named group ``(?P<name>...)`` (body) or named backreference
+        # ``(?P=name)`` (self-terminating). Note: these are rejected for the
+        # cross-language dialect by ``_compile_regex_pattern``; the ReDoS
+        # scanner must still parse the prefix so the rejection reason is
+        # ``named_group_unsupported``, never a spurious ``redos_pattern``.
+        if j + 1 < n and raw_pattern[j + 1] == "<":
+            k = j + 2
+            while k < n and raw_pattern[k] != ">":
+                k += 1
+            if k < n:  # consumed ``>``
+                return (k + 1, True)
+            return None
+        if j + 1 < n and raw_pattern[j + 1] == "=":
+            # Named backreference ``(?P=name)``: consume through ``)``; no body.
+            k = j + 2
+            while k < n and raw_pattern[k] != ")":
+                k += 1
+            if k < n:  # consumed ``)``
+                return (k + 1, False)
+            return None
+        return None
+    if c in _INLINE_FLAG_CHARS:
+        # Inline-flag group: ``(?flags)`` (bare directive) or ``(?flags:...)``
+        # (scoped, body follows). Consume the flag run first.
+        k = j
+        while k < n and raw_pattern[k] in _INLINE_FLAG_CHARS:
+            k += 1
+        if k < n and raw_pattern[k] == ":":
+            # Scoped flags ``(?flags:...)``: body follows the colon.
+            return (k + 1, True)
+        if k < n and raw_pattern[k] == ")":
+            # Bare inline-flag directive ``(?flags)``: self-terminating, no
+            # quantifiable body. Consume through its own ``)``.
+            return (k + 1, False)
+        return None  # malformed flag group; let the caller treat as plain open
+    # ``(?`` followed by something we do not recognize (e.g. ``(?#comment)``
+    # or an atomic group ``(?>...)``): do not special-case it here. Return
+    # None so the caller treats ``(`` as a plain open; the body scan and the
+    # final compile step decide its fate. Returning None never UNDER-detects:
+    # an unrecognized prefix is scanned as an ordinary group body, so a genuine
+    # nested quantifier inside it is still caught.
+    return None
+
 
 def _interval_quantifier_end(raw_pattern: str, start: int) -> int | None:
     """Return the index just past a well-formed ``{...}`` interval quantifier.
@@ -240,6 +357,28 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
             i += 1  # consume ']'
             continue
         if ch == "(":
+            # Recognize a GROUP-PREFIX (``(?:``, ``(?i``/inline flags,
+            # ``(?=``/``(?!``/``(?<=``/``(?<!`` lookaround, ``(?P<name>`` /
+            # ``(?<name>`` named group, ``(?P=name)`` backref) and SKIP it so
+            # its leading ``?`` / flags / ``:`` / ``=`` / ``!`` / ``<`` are
+            # never counted as a quantifier in the group body (the Gate-2
+            # mis-scan). A plain capturing ``(`` returns None and uses the
+            # ordinary push path below.
+            prefix = _group_open_prefix_end(raw_pattern, i)
+            if prefix is not None:
+                end, opens_body = prefix
+                if opens_body:
+                    # A group body follows the prefix; push a frame and let the
+                    # matching ``)`` close it normally so a genuine nested
+                    # quantifier in the BODY (``(?:a+)+``) is still detected.
+                    group_body_has_quantifier.append(False)
+                else:
+                    # Self-terminating directive (``(?flags)`` / ``(?P=name)``):
+                    # no quantifiable body and it consumes its own ``)``. Skip
+                    # the whole construct without pushing a frame.
+                    pass
+                i = end
+                continue
             group_body_has_quantifier.append(False)
             i += 1
             continue

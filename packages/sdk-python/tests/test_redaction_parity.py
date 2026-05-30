@@ -1115,7 +1115,37 @@ _REDOS_REASON = "redos_pattern"
 
 # The classic catastrophic-backtracking shape: a quantifier applied to a group
 # that itself ends in a quantifier. The contract trigger ``(a+)+$`` is first.
-_REDOS_PATTERNS = ["(a+)+$", "(a*)*$", "(a+)*", "(a*)+", "(.*a){10,}", r"(\w+\s?)*$"]
+# The last two are GROUP-PREFIX groups whose BODY (not the prefix) is quantified
+# AND that carry an outer quantifier -- genuine ReDoS that the group-prefix-aware
+# scan must STILL reject on BOTH runtimes (Gate-2 fix must not weaken detection).
+_REDOS_PATTERNS = [
+    "(a+)+$",
+    "(a*)*$",
+    "(a+)*",
+    "(a*)+",
+    "(.*a){10,}",
+    r"(\w+\s?)*$",
+    "(?:a+)+",
+    "(?i)(?:secret+)+",
+]
+
+# Gate-2: legitimate GROUP-PREFIX constructs (non-capturing / inline-flag /
+# lookaround) FOLLOWED by an outer quantifier. The introducing commit mis-read
+# the prefix ``?`` as a quantifier and falsely rejected these with RELAY-SDK-017,
+# disabling redaction for any policy that used them. They are LINEAR and MUST
+# load on BOTH runtimes after the fix. (Python named-group forms ``(?P<...>)``
+# are excluded here because both SDKs reject them for the separate
+# ``named_group_unsupported`` dialect reason, not redos.)
+_GROUP_PREFIX_SAFE_PATTERNS = [
+    "(?:abc)+",
+    "(?i)(?:secret)+",
+    "(?:sk-|key_)+[A-Za-z0-9]{20,}",
+    "(?=foo)bar+",
+    "(?!foo)bar+",
+    "(?<=foo)bar+",
+    "(?<!foo)bar+",
+    "(?s)(?:.+)x",
+]
 
 
 def _redos_policy(pattern: str) -> dict:
@@ -1253,12 +1283,45 @@ def test_redos_pattern_rejected_at_load_python(pattern: str) -> None:
         "(?i)password",
         "(?i)api[_-]?key",
         "(sk-|sk-ant-)[A-Za-z0-9]+",
+        # Gate-2: quantified group-prefix constructs MUST load (the prefix ``?``
+        # is not a quantifier).
+        *_GROUP_PREFIX_SAFE_PATTERNS,
     ],
 )
 def test_safe_patterns_not_rejected_python(pattern: str) -> None:
     """The ReDoS heuristic MUST NOT reject the default-policy patterns (single,
-    non-nested quantifiers); rejecting them would break every real policy.
+    non-nested quantifiers) NOR a legitimate group-prefix construct followed by
+    an outer quantifier; rejecting them would break every real policy.
     """
+    RedactionPolicy.load(_redos_policy(pattern))
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _GROUP_PREFIX_SAFE_PATTERNS)
+def test_group_prefix_pattern_loads_both_runtimes_via_node_subprocess(
+    pattern: str,
+) -> None:
+    """Python and TS MUST BOTH ACCEPT a legitimate group-prefix construct
+    followed by an outer quantifier at LOAD time (Gate-2 parity surface).
+
+    Pre-fix both runtimes mis-read the prefix ``?`` as a quantifier and rejected
+    these with RELAY-SDK-017 -- redaction was disabled for the policy. Post-fix
+    both load them identically.
+
+    Skipped when Node or the TS dist are unavailable (offline tier-1); when
+    present the test is authoritative.
+    """
+    outcome = _ts_load_outcome_via_node(_redos_policy(pattern))
+    if outcome is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language group-prefix acceptance parity cannot "
+            "be checked in this environment"
+        )
+    assert outcome["ok"] is True, (
+        f"TS falsely rejected group-prefix pattern {pattern!r}: {outcome!r}"
+    )
+    # Python must ACCEPT the same pattern (no exception).
     RedactionPolicy.load(_redos_policy(pattern))
 
 

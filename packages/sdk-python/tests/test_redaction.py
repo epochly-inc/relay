@@ -687,3 +687,109 @@ def test_nfkc_combining_mark_outside_match_is_not_left_as_fragment() -> None:
     assert _SECRET_API_KEY not in out
     # No fragment of the secret survives.
     assert "TUV" not in out
+
+
+# ---------------------------------------------------------------------------
+# Gate-2 (HIGH / correctness, introduced by redact-006): the ReDoS static
+# guard mis-read regex GROUP-PREFIX tokens (the ``?`` / flags / ``:`` / ``=`` /
+# ``!`` / ``<`` that follow ``(`` in a non-capturing group, inline-flag group,
+# lookaround, or named group) as a QUANTIFIER inside the group body. So a
+# legitimate group-prefix construct FOLLOWED by a quantifier
+# (``(?:abc)+``, ``(?i)(?:secret)+``, ``(?:sk-|key_)+[A-Za-z0-9]{20,}``) was
+# falsely rejected with RELAY-SDK-017 -- redaction was DISABLED for any policy
+# that used it. The fix recognizes and SKIPS the group-open prefix without
+# counting its ``?`` as a quantifier, while STILL tripping the nested-quantifier
+# heuristic for a genuine catastrophic-backtracking group body (``(a+)+`` etc.).
+# These tests exercise the guard function directly (so the named-group prefix
+# case is observable without the separate named_group_unsupported load reject).
+# ---------------------------------------------------------------------------
+
+_GROUP_PREFIX_SAFE_PATTERNS = [
+    "(?:abc)+",  # non-capturing group + outer quantifier
+    "(?i)(?:secret)+",  # inline flag prefix THEN non-capturing group + quantifier
+    "(?:sk-|key_)+[A-Za-z0-9]{20,}",  # the legitimate credential matcher
+    "(?=foo)bar+",  # lookahead followed by a quantified literal
+    "(?!foo)bar+",  # negative lookahead
+    "(?<=foo)bar+",  # lookbehind
+    "(?<!foo)bar+",  # negative lookbehind
+    "(?P<x>ab)+",  # named group + outer quantifier (prefix '?' must not count)
+    "(?P<x>a+)bc",  # named group, inner quantifier but group NOT quantified
+    "(?s)(?:.+)x",  # DOTALL inline flag + non-capturing group, no outer quant
+]
+
+_NESTED_QUANTIFIER_PATTERNS = [
+    "(a+)+$",  # classic
+    "(a*)*",  # star-of-star
+    "(.*a){10,}",  # interval over a quantified body
+    "((a+))+",  # deep nesting
+    "(?:a+)+",  # non-capturing group whose BODY is quantified + outer quant
+    "(?i)(?:secret+)+",  # inner '+' on body THEN outer '+' (genuine ReDoS)
+]
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _GROUP_PREFIX_SAFE_PATTERNS)
+def test_redos_guard_accepts_group_prefix_then_quantifier(pattern: str) -> None:
+    """The ReDoS guard MUST NOT mis-read a group-open prefix token as a
+    quantifier: a non-capturing / inline-flag / lookaround / named group
+    followed by an outer quantifier is LINEAR and MUST be accepted.
+
+    RED at the introducing commit: ``_check_regex_redos_safety`` returns a
+    redos dict (falsely rejected). GREEN after the group-prefix-aware scan.
+    """
+    from relay.redaction import _check_regex_redos_safety
+
+    assert _check_regex_redos_safety(pattern) is None, (
+        f"group-prefix construct {pattern!r} falsely flagged as ReDoS"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _NESTED_QUANTIFIER_PATTERNS)
+def test_redos_guard_still_rejects_nested_quantifiers(pattern: str) -> None:
+    """The group-prefix fix MUST NOT weaken detection: a quantifier applied to
+    a GROUP whose body itself contains a quantifier is genuine catastrophic
+    backtracking and MUST still be rejected -- including when the group is a
+    non-capturing/inline-flag group whose BODY (not the prefix) is quantified.
+    """
+    from relay.redaction import _check_regex_redos_safety
+
+    result = _check_regex_redos_safety(pattern)
+    assert result is not None, f"nested-quantifier {pattern!r} not flagged"
+    assert result["reason"] == "redos_pattern"
+
+
+@pytest.mark.plumbing
+def test_redos_group_prefix_credential_matcher_loads() -> None:
+    """The legitimate ``(?:sk-|key_)+[A-Za-z0-9]{20,}`` credential matcher MUST
+    LOAD end-to-end (full ``RedactionPolicy.load``), not just pass the guard --
+    pre-fix the policy raised RELAY-SDK-017 and redaction was disabled for it.
+    """
+    body = {
+        **_BASE_POLICY,
+        "matchers": [
+            {
+                "id": "cred",
+                "kind": "regex",
+                "pattern": "(?:sk-|key_)+[A-Za-z0-9]{20,}",
+                "action": "redact",
+            }
+        ],
+    }
+    policy = RedactionPolicy.load(body)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+    out = engine._apply_matchers_to_string("token sk-ABCDEFGHIJKLMNOPQRSTUV end")
+    assert "<redacted>" in out
+    assert "ABCDEFGHIJKLMNOPQRSTUV" not in out
+
+
+@pytest.mark.plumbing
+def test_redos_noncapturing_group_policy_loads() -> None:
+    """A non-capturing group + outer quantifier (``(?:abc)+``) MUST LOAD."""
+    body = {
+        **_BASE_POLICY,
+        "matchers": [
+            {"id": "nc", "kind": "regex", "pattern": "(?:abc)+", "action": "redact"}
+        ],
+    }
+    RedactionPolicy.load(body)

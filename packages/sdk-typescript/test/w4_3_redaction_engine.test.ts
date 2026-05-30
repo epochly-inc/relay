@@ -559,4 +559,65 @@ describe("VAL-REDACT-006: policy regex ReDoS guard (load-time rejection + leaf c
     }).model_call.input;
     expect(a).toBe(b);
   });
+
+  // Gate-2 (HIGH / correctness): the ReDoS guard mis-read regex GROUP-PREFIX
+  // tokens (the `?` / flags / `:` / `=` / `!` / `<` that follow `(` in a
+  // non-capturing group, inline-flag group, or lookaround) as a QUANTIFIER in
+  // the group body, so a legitimate group-prefix construct followed by an outer
+  // quantifier ((?:abc)+, (?i)(?:secret)+, (?:sk-|key_)+[A-Za-z0-9]{20,}) was
+  // falsely rejected with RELAY-SDK-017 and redaction was DISABLED for that
+  // policy. The fix skips the group-open prefix without counting its `?` as a
+  // quantifier, while still tripping the heuristic for a genuine
+  // catastrophic-backtracking group body ((a+)+, (?:a+)+, ...). Python and TS
+  // must accept / reject the IDENTICAL set; the live-Node parity surface is in
+  // packages/sdk-python/tests/test_redaction_parity.py.
+  describe("Gate-2: group-prefix tokens are not mis-read as quantifiers", () => {
+    // Loadable group-prefix constructs (no Python named groups, which JS would
+    // reject for the unrelated (?P<...>) dialect reason). Each is LINEAR and
+    // MUST load once the prefix `?` is no longer counted as a quantifier.
+    for (const pattern of [
+      "(?:abc)+",
+      "(?i)(?:secret)+",
+      "(?:sk-|key_)+[A-Za-z0-9]{20,}",
+      "(?=foo)bar+",
+      "(?!foo)bar+",
+      "(?<=foo)bar+",
+      "(?<!foo)bar+",
+      "(?s)(?:.+)x",
+    ]) {
+      it(`accepts group-prefix construct ${JSON.stringify(pattern)} at LOAD time`, () => {
+        expect(() => loadRedactionPolicy(redosPolicy(pattern))).not.toThrow();
+      });
+    }
+
+    // Genuine nested quantifiers MUST STILL be rejected -- including a
+    // non-capturing/inline-flag group whose BODY (not the prefix) is quantified.
+    for (const pattern of ["(?:a+)+", "(?i)(?:secret+)+", "((a+))+", "(.*a){10,}"]) {
+      it(`still rejects nested-quantifier ${JSON.stringify(pattern)} with RELAY-SDK-017`, () => {
+        let caught: unknown;
+        try {
+          loadRedactionPolicy(redosPolicy(pattern));
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(RelayRedactionPolicyError);
+        const e = caught as RelayRedactionPolicyError;
+        expect(e.code).toBe(REDOS_CODE);
+        expect((e.details as { reason?: string }).reason).toBe(REDOS_REASON);
+      });
+    }
+
+    it("the credential matcher (?:sk-|key_)+[A-Za-z0-9]{20,} loads AND redacts", () => {
+      const policy = loadRedactionPolicy(
+        redosPolicy("(?:sk-|key_)+[A-Za-z0-9]{20,}"),
+      );
+      const engine = new RedactionEngine({ policy, saltProvider });
+      const redacted = engine.redact({
+        model_call: { input: "token sk-ABCDEFGHIJKLMNOPQRSTUV end" },
+      }) as { model_call: { input: string } };
+      const out = redacted.model_call.input;
+      expect(out).toContain("<redacted>");
+      expect(out).not.toContain("ABCDEFGHIJKLMNOPQRSTUV");
+    });
+  });
 });
