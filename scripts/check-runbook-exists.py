@@ -35,7 +35,20 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Final
+from typing import Final, TypedDict
+
+
+class RunbookCheckResult(TypedDict):
+    """Structured result of :func:`check_runbook` (JSON-serializable)."""
+
+    runbook_path: str
+    exists: bool
+    missing_sections: list[str]
+    found_sections: list[str]
+    status: str
+    error_code: str | None
+    message: str
+    exit_code: int
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 DEFAULT_RUNBOOK_PATH: Final[Path] = REPO_ROOT / "docs" / "release" / "runbook.md"
@@ -77,7 +90,7 @@ REQUIRED_SECTIONS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
 )
 
 
-def check_runbook(runbook_path: Path) -> dict[str, object]:
+def check_runbook(runbook_path: Path) -> RunbookCheckResult:
     """Verify the runbook exists and contains every required section.
 
     Returns a structured result dict suitable for JSON serialization:

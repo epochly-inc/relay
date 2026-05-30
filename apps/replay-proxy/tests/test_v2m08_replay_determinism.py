@@ -335,7 +335,10 @@ def test_order_parallel_records_is_deterministic_across_runs(
         )
         for i in range(3)
     ]
-    runs: list[list[int]] = []
+    # parallel_index is `int | None` on the envelope; these fixtures all set
+    # a concrete index, asserted == [0, 1, 2] below, but the element type stays
+    # `int | None` to match the source field.
+    runs: list[list[int | None]] = []
     for _ in range(10):
         shuffled = list(base)
         rng.shuffle(shuffled)

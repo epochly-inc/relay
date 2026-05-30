@@ -43,7 +43,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -223,7 +223,11 @@ def _triggers(workflow: dict[str, Any]) -> dict[str, Any] | None:
     coercion of bare ``on:`` keys."""
     triggers = workflow.get("on")
     if triggers is None:
-        triggers = workflow.get(True)
+        # PyYAML coerces the bare YAML key ``on:`` to the boolean True, so a
+        # workflow that writes ``on:`` (no quotes) lands under the True key.
+        # The mapping is declared with str keys for the common case; cast to a
+        # permissive key type for this documented YAML-1.1 boolean-key lookup.
+        triggers = cast("dict[Any, Any]", workflow).get(True)
     if not isinstance(triggers, dict):
         return None
     return triggers

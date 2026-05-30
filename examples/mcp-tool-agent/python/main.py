@@ -266,8 +266,14 @@ def run_live_mode(*, project_key: str | None = None) -> int:
     # Lazy imports: cassette mode and module-load tests do not require
     # ``mcp`` or the full ``relay`` SDK surface at import time. This
     # keeps cassette mode self-contained per VAL-W16-014.
-    from mcp import ClientSession
-    from mcp.client.stdio import StdioServerParameters, stdio_client
+    # ``mcp`` is an optional live-mode dependency, not installed in the
+    # type-checking/dev environment; the imports are runtime-valid only when the
+    # example is run live, so suppress the unresolved-import reports here.
+    from mcp import ClientSession  # pyright: ignore[reportMissingImports]
+    from mcp.client.stdio import (  # pyright: ignore[reportMissingImports]
+        StdioServerParameters,
+        stdio_client,
+    )
     from relay import Relay
 
     server_command = os.environ["MCP_SERVER_COMMAND"]

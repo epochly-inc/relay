@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import json
 import re
 import sys
@@ -694,7 +695,7 @@ def _decode_statement(envelope: dict[str, Any]) -> dict[str, Any]:
         raise SystemExit(2)
     try:
         payload_bytes = base64.b64decode(payload_b64, validate=True)
-    except (ValueError, base64.binascii.Error) as exc:
+    except (ValueError, binascii.Error) as exc:
         print(f"FAIL: envelope.payload not valid base64: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
     try:

@@ -215,9 +215,9 @@ class _InProcDriver(_ProxyDriver):
             # Silence the default per-request stderr line; the harness
             # owns logging.
             def log_message(
-                self, fmt: str, *args: Any
-            ) -> None:  # noqa: A003 - signature is fixed
-                LOG.debug("inproc proxy: " + fmt, *args)
+                self, format: str, *args: Any
+            ) -> None:  # noqa: A002,A003 - parameter name matches the base override
+                LOG.debug("inproc proxy: " + format, *args)
 
             def _serve_from_cassette(self) -> None:
                 length = int(self.headers.get("Content-Length", "0") or "0")

@@ -127,7 +127,8 @@ def test_case_schema_present() -> None:
         "the per-UDF schema MUST exist so case files can be validated."
     )
     schema = _load_schema()
-    assert schema.get("$id", "").endswith("/udf-case.json"), (
+    schema_id = schema.get("$id", "")
+    assert isinstance(schema_id, str) and schema_id.endswith("/udf-case.json"), (
         f"VAL-W17-015: case.schema.json missing $id; got {schema.get('$id')!r}"
     )
 

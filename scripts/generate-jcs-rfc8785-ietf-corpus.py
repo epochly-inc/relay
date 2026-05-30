@@ -50,7 +50,9 @@ import hashlib
 import json
 import sys
 import unicodedata
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TypedDict
 
 # Import the verifier's reference encoder; the corpus's
 # expected_canonical_b64 is whatever this encoder emits, so the
@@ -569,21 +571,33 @@ def _assert_all_strings_are_post_nfc_idempotent_or_intentionally_not(
             )
 
 
-def build_corpus() -> dict[str, object]:
+class CorpusDict(TypedDict):
+    """Structured shape of :func:`build_corpus` output (JSON-serializable)."""
+
+    schema: str
+    schema_version: int
+    source: dict[str, str]
+    notes: str
+    case_counts: dict[str, int]
+    cases: list[dict[str, object]]
+    reject_cases: list[dict[str, str]]
+
+
+def build_corpus() -> CorpusDict:
     all_vectors = APPENDIX_B_VECTORS + NFC_VECTORS + NUM_EDGE_VECTORS + SORT_UTF16_VECTORS
     cases = [_build_value_case(n, c, v, notes) for n, c, v, notes in all_vectors]
     _check_for_duplicate_names(cases)
     _assert_all_strings_are_post_nfc_idempotent_or_intentionally_not(cases)
-    return {
-        "schema": SCHEMA_ID,
-        "schema_version": SCHEMA_VERSION,
-        "source": {
+    return CorpusDict(
+        schema=SCHEMA_ID,
+        schema_version=SCHEMA_VERSION,
+        source={
             "rfc": "RFC 8785",
             "title": "JSON Canonicalization Scheme (JCS)",
             "url": "https://datatracker.ietf.org/doc/html/rfc8785",
             "published": "2020-06",
         },
-        "notes": (
+        notes=(
             "W17.1 conformance corpus: RFC 8785 Appendix B vectors plus "
             "NFC, numeric edge case, and UTF-16 sort vectors. Loaded by "
             "both packages/verifier (Python) and "
@@ -592,15 +606,15 @@ def build_corpus() -> dict[str, object]:
             "packages/verifier-typescript/test/w17_1_*.test.ts. "
             "Regenerate via scripts/generate-jcs-rfc8785-ietf-corpus.py."
         ),
-        "case_counts": {
+        case_counts={
             "appendix_b": sum(1 for c in cases if c.get("category") == "appendix_b"),
             "nfc": sum(1 for c in cases if c.get("category") == "nfc"),
             "num_edge": sum(1 for c in cases if c.get("category") == "num_edge"),
             "sort_utf16": sum(1 for c in cases if c.get("category") == "sort_utf16"),
         },
-        "cases": cases,
-        "reject_cases": REJECT_CASES,
-    }
+        cases=cases,
+        reject_cases=REJECT_CASES,
+    )
 
 
 def build_pins() -> dict[str, object]:
@@ -634,7 +648,7 @@ def build_pins() -> dict[str, object]:
     }
 
 
-def _serialize_corpus(corpus: dict[str, object]) -> bytes:
+def _serialize_corpus(corpus: Mapping[str, object]) -> bytes:
     """Pretty-printed JSON with sorted keys and a trailing newline.
     Pretty-print is for human review of the checked-in file; sort_keys
     keeps diffs minimal across generator runs."""

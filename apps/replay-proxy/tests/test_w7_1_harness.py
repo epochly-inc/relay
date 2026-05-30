@@ -479,7 +479,7 @@ def test_proxy_returns_canonical_response_body(
     # Proxy-added headers documented in VAL-W7-009 are present.
     assert b"X-Relay-Replay-Hit: 1" in response
     assert (
-        b"X-Relay-Replay-Session: " + harness.handle.session_id.encode("ascii")
+        b"X-Relay-Replay-Session: " + handle.session_id.encode("ascii")
     ) in response
 
 

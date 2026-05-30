@@ -682,7 +682,11 @@ async def test_signature_required_before_commit(tmp_path) -> None:
                 run_id=f.scope_id,
             ),
         )
-        assert ok.ok and ok.evidence_bundle_id is not None
+        assert (
+            ok.ok
+            and ok.evidence_bundle_id is not None
+            and ok.gate_decision_id is not None
+        )
         async with aiosqlite.connect(str(f.database.db_path)) as conn:
             await conn.execute(
                 "UPDATE _sidecar_role SET role = ? WHERE id = 0",

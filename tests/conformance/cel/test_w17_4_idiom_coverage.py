@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -34,7 +35,7 @@ README_PATH = IDIOM_COVERAGE_DIR / "README.md"
 # path via importlib rather than via ``from ... import``.
 
 
-def _load_analyzer() -> object:
+def _load_analyzer() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "w17_4_idiom_coverage_analyzer", ANALYZER_PATH
     )

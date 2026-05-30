@@ -31,7 +31,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -563,7 +563,7 @@ def test_real_workflow_runs_on_tagged_pushes_only() -> None:
     # on flow context; tolerate both spellings.
     triggers = data.get("on")
     if triggers is None:
-        triggers = data.get(True)
+        triggers = cast("dict[Any, Any]", data).get(True)
     assert isinstance(triggers, dict), f"unexpected 'on' shape: {triggers!r}"
     push = triggers.get("push")
     assert isinstance(push, dict), "workflow must have an 'on.push' trigger"

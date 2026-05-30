@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiosqlite
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -269,7 +269,10 @@ async def fetch_one(
         aiosqlite.connect(str(db.db_path)) as conn,
         conn.execute(sql, params) as cur,
     ):
-        return await cur.fetchone()
+        # No row_factory is set on the connection, so aiosqlite returns a
+        # plain tuple (or None) at runtime; its stub types fetchone() as
+        # ``sqlite3.Row | None``. Cast to the runtime-accurate tuple shape.
+        return cast("tuple[Any, ...] | None", await cur.fetchone())
 
 
 async def fetch_count(

@@ -153,7 +153,11 @@ def run_drift_check(root: Path, *, verbose: bool = False) -> int:
         # driver that monkey-patches its _py_out_dir / _ts_out_dir functions.
         sys.path.insert(0, str(root / "packages" / "schemas" / "scripts"))
         try:
-            import codegen as _codegen_mod  # noqa: PLC0415
+            # ``codegen`` lives at packages/schemas/scripts/codegen.py and is
+            # resolved via the sys.path insertion above. pyright cannot model
+            # the runtime sys.path mutation, so it reports the import as
+            # unresolved even though it is valid at runtime.
+            import codegen as _codegen_mod  # noqa: PLC0415  # pyright: ignore[reportMissingImports]
         finally:
             sys.path.pop(0)
 

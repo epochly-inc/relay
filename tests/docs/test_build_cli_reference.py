@@ -32,6 +32,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import cast
 
 import pytest
 
@@ -89,10 +90,14 @@ def test_help_harvesting_uses_repo_cli_and_disables_invocation_recorder(
     observed: dict[str, object] = {}
 
     def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        observed["argv"] = args[0]
+        # _fetch_help calls subprocess.run(argv, ...) with argv as a list of
+        # str; narrow the first positional from ``object`` to that runtime
+        # shape so CompletedProcess(args=...) type-checks.
+        cmd = cast("list[str]", args[0])
+        observed["argv"] = cmd
         observed["env"] = kwargs["env"]
         return subprocess.CompletedProcess(
-            args=args[0],
+            args=cmd,
             returncode=0,
             stdout=(
                 '{"schema_version":"relay.cli.help.v1","command":"rly trace",'

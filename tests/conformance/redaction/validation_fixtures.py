@@ -152,12 +152,16 @@ class FixtureMismatch(Exception):
         }
 
 
-def _normalize_digest(value: str) -> str:
+def _normalize_digest(value: object) -> str:
     """Return ``value`` without its ``sha256-`` prefix, lowercased.
 
     Spec G.2 example uses ``"sha256-..."`` form for clarity; the
     harness compares the raw hex tail. We accept either ``"sha256-<hex>"``
     or ``"<hex>"`` directly and normalise both to the bare hex form.
+
+    ``value`` is typed ``object`` because callers pass raw policy-body
+    values (``Mapping.get(...)`` results) whose type is unknown; the
+    non-string case is validated and rejected below.
     """
     if not isinstance(value, str):
         raise RelayPolicyError(

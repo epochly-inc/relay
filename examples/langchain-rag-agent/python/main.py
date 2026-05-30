@@ -322,7 +322,10 @@ def run_live_mode(*, project_key: str | None = None) -> int:
         )
     # Lazy imports: cassette mode and module-load tests do not require
     # ``anthropic`` or the full ``relay`` SDK surface at import time.
-    import anthropic
+    # ``anthropic`` is an optional live-mode dependency, not installed in the
+    # type-checking/dev environment; the import is runtime-valid only when the
+    # example is run live, so suppress the unresolved-import report here.
+    import anthropic  # pyright: ignore[reportMissingImports]
     from relay import Relay
     from relay.adapters import wrap_anthropic
 

@@ -35,6 +35,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -98,7 +99,7 @@ def verify_hs_compact(token: str, shared_key: bytes) -> bool:
 
     try:
         header = _decode_protected_header(header_b64u)
-    except (ValueError, base64.binascii.Error, json.JSONDecodeError):
+    except (ValueError, binascii.Error, json.JSONDecodeError):
         return False
 
     alg = header.get("alg")
@@ -113,7 +114,7 @@ def verify_hs_compact(token: str, shared_key: bytes) -> bool:
 
     try:
         signature = _b64u_decode(sig_b64u)
-    except (ValueError, base64.binascii.Error):
+    except (ValueError, binascii.Error):
         return False
 
     signing_input = (header_b64u + "." + payload_b64u).encode("ascii")

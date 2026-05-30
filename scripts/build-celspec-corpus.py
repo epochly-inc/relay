@@ -200,6 +200,10 @@ def _tokenize(text: str) -> list[tuple[str, str]]:
             raise ValueError(f"tokenize failure at {i}: {text[i:i + 40]!r}")
         i = m.end()
         kind = m.lastgroup
+        # Every alternative in _TOKEN_RE is a named group, so a successful
+        # match always sets lastgroup to a non-None group name. Assert the
+        # invariant so the tuple value type narrows from `str | None` to `str`.
+        assert kind is not None
         if kind in ("ws", "comment"):
             continue
         toks.append((kind, m.group()))
