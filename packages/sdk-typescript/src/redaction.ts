@@ -1178,6 +1178,65 @@ function jsonPathToPointer(selector: string): string {
   return parts.length > 0 ? "/" + parts.join("/") : "";
 }
 
+/**
+ * Return ``true`` if RFC 6901 ``pointer`` matches a ``json_pointer`` matcher
+ * path, honoring a single-segment ``*`` wildcard (VAL-REDACT-001).
+ *
+ * Both arguments are RFC 6901 JSON Pointers built by the same convention used
+ * in ``RedactionEngine.walk``: a leading ``/`` then ``/``-separated reference
+ * tokens, each token escaped per RFC 6901 sec 4 (``~`` -> ``~0``, ``/`` ->
+ * ``~1``). Splitting on ``/`` therefore yields aligned, identically-escaped
+ * segments on both sides, so exact tokens compare correctly and a ``*`` token
+ * in the matcher path matches any single concrete segment.
+ *
+ * Wildcard semantics (byte-for-byte identical to the Python
+ * ``_json_pointer_matches`` in
+ * ``packages/sdk-python/relay/redaction.py``):
+ *
+ *   * A matcher token equal to ``*`` matches exactly one concrete segment
+ *     (any array index or object key) at that position.
+ *   * Every other matcher token must equal the concrete token exactly.
+ *   * The wildcard is single-segment, never a recursive-descent glob, so the
+ *     matcher path and the concrete pointer MUST have the same number of
+ *     segments to match. ``/messages/<star>/content/text`` does NOT match
+ *     ``/messages/0/extra/content/text``.
+ *
+ * A matcher path with no ``*`` token reduces to exact string equality,
+ * preserving prior behavior (and cross-runtime parity) for every non-wildcard
+ * ``json_pointer`` matcher.
+ */
+function jsonPointerMatches(matcherPath: string, pointer: string): boolean {
+  if (!matcherPath.includes("*")) {
+    // Fast path: no wildcard -> exact equality, identical to the
+    // pre-VAL-REDACT-001 ``includes`` behavior.
+    return matcherPath === pointer;
+  }
+  const matcherTokens = matcherPath.split("/");
+  const pointerTokens = pointer.split("/");
+  if (matcherTokens.length !== pointerTokens.length) {
+    return false;
+  }
+  for (let i = 0; i < matcherTokens.length; i += 1) {
+    const matcherToken = matcherTokens[i];
+    const pointerToken = pointerTokens[i];
+    if (matcherToken === "*") {
+      // Single-segment wildcard. The empty string only occurs as the
+      // synthetic leading segment (both sides share it); a leading-segment
+      // ``*`` would require the matcher path to start with ``*`` rather than
+      // ``/``, which never occurs for a well-formed RFC 6901 pointer, so an
+      // empty concrete token here would be a malformed pointer -- reject it.
+      if (pointerToken === "") {
+        return false;
+      }
+      continue;
+    }
+    if (matcherToken !== pointerToken) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
@@ -1485,10 +1544,18 @@ export class RedactionEngine {
    * Two matcher kinds participate in pointer-level evaluation:
    *
    *   * ``json_pointer`` (RFC 6901) -- raw pointers stored in
-   *     ``matcher.jsonPaths``.
+   *     ``matcher.jsonPaths``. A ``*`` reference token in a matcher path is a
+   *     single-segment wildcard (VAL-REDACT-001): it matches any one array
+   *     index or object key at that position. All other tokens must match
+   *     exactly. The wildcard is single-segment, never a recursive-descent
+   *     glob, so the matcher path and the concrete pointer must have the same
+   *     segment count to match. Mirrors the Python ``_json_pointer_matches``
+   *     byte-for-byte so both runtimes agree (keystone invariant #7).
    *   * ``json_path`` (RFC 9535 subset, VAL-V3M5-018) -- selectors
    *     compiled to RFC 6901 pointer form at policy load and stored in
-   *     ``matcher.jsonPointers``.
+   *     ``matcher.jsonPointers``. ``jsonPathToPointer`` rejects ``*``
+   *     selectors, so these compiled pointers contain no wildcards and are
+   *     compared by exact membership.
    *
    * Matchers are evaluated in declaration order. The root pointer
    * (empty string) never matches: matchers declare leaf paths like
@@ -1498,7 +1565,8 @@ export class RedactionEngine {
     if (pointer.length === 0) return null;
     for (const matcher of this._policy.matchers) {
       if (matcher.kind === "json_pointer") {
-        if (matcher.jsonPaths.includes(pointer)) return matcher;
+        if (matcher.jsonPaths.some((path) => jsonPointerMatches(path, pointer)))
+          return matcher;
       } else if (matcher.kind === "json_path") {
         if (matcher.jsonPointers.includes(pointer)) return matcher;
       }

@@ -575,6 +575,95 @@ def test_base_policy_parity_unchanged_by_wildcard_fix() -> None:
     )
 
 
+# The TS half of the VAL-REDACT-001 fix landed in
+# packages/sdk-typescript/src/redaction.ts (``jsonPointerMatches`` +
+# ``findJsonPointerMatch``). Before that fix the TS SDK used exact membership
+# (``matcher.jsonPaths.includes(pointer)``) so the hosted default matcher path
+# ``/messages/*/content/text`` never matched the concrete array-indexed pointer
+# ``/messages/0/content/text`` -- the TS SDK UNDER-REDACTED and LEAKED prompt
+# content. The Python single-segment ``*`` wildcard landed first
+# (``_json_pointer_matches``). This parity surface proves both runtimes now
+# redact ``/messages/<n>/content/text`` BYTE-IDENTICALLY for the hosted default
+# policy (keystone invariant #7: Python<->TS must agree byte-for-byte).
+#
+# The hosted-default matchers are all ``redact`` (no ``hash``), so the salt is
+# never resolved; the salt provider exists only to satisfy the engine contract
+# and is keyed by the hosted default ``salt_ref``.
+_HOSTED_DEFAULT_SALT = b"hosted-default-salt-do-not-use-in-prod"
+
+
+def _hosted_default_salt_provider(salt_ref: str) -> bytes:
+    if salt_ref == "hosted_default_salt":
+        return _HOSTED_DEFAULT_SALT
+    raise KeyError(salt_ref)
+
+
+@pytest.mark.plumbing
+def test_hosted_default_wildcard_pointer_byte_equal_typescript_via_node_subprocess() -> (
+    None
+):
+    """Python and TS MUST emit byte-identical canonical bytes for the hosted
+    default policy redacting an array-indexed message-content pointer
+    (``/messages/0/content/text`` and ``/messages/2/content/text``) via the
+    json_pointer ``*`` single-segment wildcard.
+
+    This is the VAL-REDACT-001 TS-parity surface (the TS half of the fix): the
+    SSN in the message content MUST be redacted byte-identically on BOTH
+    runtimes, and the wildcard MUST NOT over-match a different-segment-count
+    pointer (``/messages/0/meta`` stays verbatim). Pre-fix the TS SDK leaked the
+    SSN verbatim while Python redacted it -- the SDKs diverged. Post-fix they
+    agree byte-for-byte.
+
+    Skipped when Node or the TS dist are unavailable (offline tier-1); when
+    present (the gate environment rebuilds the dist first) the test is
+    authoritative.
+    """
+    payload = {
+        "messages": [
+            {"content": {"text": "first ssn 111-11-1111"}},
+            {"role": "assistant"},
+            {"content": {"text": "third ssn 333-33-3333"}},
+        ],
+        # Different segment count than /messages/*/content/text: the wildcard
+        # is single-segment, so this leaf MUST stay verbatim on both runtimes.
+        # The value deliberately avoids the hosted-default regex matchers
+        # (password / api[_-]?key / secret / token) so the assertion isolates
+        # the json_pointer wildcard behavior.
+        "model_call": {"input": "plain value here"},
+    }
+    ts_bytes = _ts_canonicalize_via_node(
+        HOSTED_DEFAULT_POLICY, payload, _HOSTED_DEFAULT_SALT
+    )
+    if ts_bytes is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language byte equality cannot be checked "
+            "in this environment"
+        )
+    policy = RedactionPolicy.load(HOSTED_DEFAULT_POLICY)
+    engine = RedactionEngine(
+        policy=policy, salt_provider=_hosted_default_salt_provider
+    )
+    py_bytes = redact_capture_payload(engine, payload)
+    assert py_bytes == ts_bytes, (
+        "cross-language byte mismatch on hosted-default wildcard pointer: "
+        f"py={py_bytes!r} ts={ts_bytes!r}"
+    )
+    # The indexed message content MUST be redacted (no SSN leak) on the Python
+    # side; byte-equality above guarantees the same on TS.
+    assert b"111-11-1111" not in py_bytes, (
+        f"message[0] content leaked: {py_bytes!r}"
+    )
+    assert b"333-33-3333" not in py_bytes, (
+        f"message[2] content leaked: {py_bytes!r}"
+    )
+    assert b"<redacted>" in py_bytes
+    # The wildcard did NOT over-match: the different-segment leaf is verbatim.
+    assert b"plain value here" in py_bytes, (
+        f"wildcard over-matched a different-segment pointer: {py_bytes!r}"
+    )
+
+
 @pytest.mark.plumbing
 def test_schema_version_unknown_still_rejected() -> None:
     """Regression guard: an unrelated literal is still refused."""
