@@ -27,10 +27,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   RELAY_REPLAY_BYPASS_CODE,
+  RELAY_REPLAY_PROXY_MISSING_CODE,
   RELAY_REPLAY_PROXY_NOT_SET_CODE,
   RELAY_REPLAY_UNINSTRUMENTED_CODE,
   RelayReplayBypassError,
   RelayReplayError,
+  RelayReplayProxyMissingError,
   RelayReplayUninstrumentedError,
 } from "../src/errors.js";
 import {
@@ -149,6 +151,83 @@ describe("VAL-W7-060: enterSession asserts HTTPS_PROXY is set", () => {
     ).toThrow(RelayReplayUninstrumentedError);
     expect(fake.setGlobalDispatcherCalls.length).toBe(0);
     expect(getSessionState().active).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// VAL-ISO-039: enterSession refuses a non-loopback HTTPS_PROXY.
+// -----------------------------------------------------------------------------
+
+describe("VAL-ISO-039: enterSession refuses a non-loopback HTTPS_PROXY", () => {
+  it("throws RelayReplayProxyMissingError when HTTPS_PROXY is a remote host", () => {
+    const fake = makeFakeUndici();
+    expect(() =>
+      enterSession({
+        env: { HTTPS_PROXY: "https://proxy.attacker.example:443" },
+        undiciModule: fake,
+        knownUninstrumentedClients: [],
+      }),
+    ).toThrow(RelayReplayProxyMissingError);
+    // Fail-closed: no dispatcher installed, session not active.
+    expect(fake.setGlobalDispatcherCalls.length).toBe(0);
+    expect(getSessionState().active).toBe(false);
+  });
+
+  it("error envelope carries the proxy-missing code and the offending host", () => {
+    try {
+      enterSession({
+        env: { HTTPS_PROXY: "https://10.0.0.5:8080" },
+        undiciModule: makeFakeUndici(),
+        knownUninstrumentedClients: [],
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RelayReplayProxyMissingError);
+      expect(err).toBeInstanceOf(RelayReplayError);
+      const envelope = (err as RelayReplayProxyMissingError).toEnvelope();
+      expect(envelope.code).toBe(RELAY_REPLAY_PROXY_MISSING_CODE);
+      const details = envelope.details as Record<string, unknown>;
+      const observed = details["observed"] as Record<string, unknown>;
+      expect(observed["HTTPS_PROXY"]).toBe("https://10.0.0.5:8080");
+    }
+  });
+
+  it("rejects a public DNS hostname proxy (e.g. proxy.example.com)", () => {
+    const fake = makeFakeUndici();
+    expect(() =>
+      enterSession({
+        env: { HTTPS_PROXY: "http://proxy.example.com:3128" },
+        undiciModule: fake,
+        knownUninstrumentedClients: [],
+      }),
+    ).toThrow(RelayReplayProxyMissingError);
+    expect(fake.setGlobalDispatcherCalls.length).toBe(0);
+    expect(getSessionState().active).toBe(false);
+  });
+
+  it("accepts a loopback proxy (127.0.0.1) and installs the dispatcher", () => {
+    const fake = makeFakeUndici();
+    const session = enterSession({
+      env: { HTTPS_PROXY: "http://127.0.0.1:9999" },
+      undiciModule: fake,
+      knownUninstrumentedClients: [],
+    });
+    expect(getSessionState().active).toBe(true);
+    expect(fake.setGlobalDispatcherCalls.length).toBe(1);
+    exitSession();
+    void session;
+  });
+
+  it("accepts an IPv4-mapped IPv6 loopback proxy ([::ffff:127.0.0.1])", () => {
+    const fake = makeFakeUndici();
+    enterSession({
+      env: { HTTPS_PROXY: "http://[::ffff:127.0.0.1]:9999" },
+      undiciModule: fake,
+      knownUninstrumentedClients: [],
+    });
+    expect(getSessionState().active).toBe(true);
+    expect(fake.setGlobalDispatcherCalls.length).toBe(1);
+    exitSession();
   });
 });
 

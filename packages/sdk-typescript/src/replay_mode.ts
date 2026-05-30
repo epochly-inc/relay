@@ -866,6 +866,31 @@ export function enterSession(options: EnterSessionOptions = {}): ReplaySessionHa
     );
   }
 
+  // Step 5b: the replay proxy MUST be loopback (default-deny egress,
+  // VAL-ISO-039). The routing interceptor below rewrites EVERY non-loopback
+  // dispatch origin to proxyOrigin and the http.request backstop rewrites the
+  // hostname/port to the proxy; if HTTPS_PROXY pointed at a remote host, all
+  // captured traffic would be exfiltrated to that host (egress/SSRF). Reuse
+  // the VAL-PARITY-010-hardened classifier (handles localhost, [::1],
+  // ::ffff:127.0.0.1, zone ids). Fail closed BEFORE installing any
+  // dispatcher so a non-loopback proxy can never take effect.
+  if (!isLoopbackHost(proxyHostname)) {
+    throw new RelayReplayProxyMissingError(
+      `Relay refused to enter replay session: HTTPS_PROXY host ${JSON.stringify(proxyHostname)} ` +
+        "is not loopback. The replay proxy must be local " +
+        "(127.0.0.0/8, ::1, ::ffff:127.x.x.x, or localhost); routing replay traffic through a " +
+        "non-loopback proxy would exfiltrate captured requests off-host.",
+      {
+        code: RELAY_REPLAY_PROXY_MISSING_CODE,
+        details: {
+          reason: "proxy_not_loopback",
+          proxy_host: proxyHostname,
+          observed: { HTTPS_PROXY: proxyUrlValue },
+        },
+      },
+    );
+  }
+
   // Step 6: build routing interceptor.
   const interceptor = buildProxyRoutingInterceptor(proxyOrigin);
 

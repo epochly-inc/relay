@@ -169,6 +169,82 @@ describe("VAL-W4-033 + VAL-W4-039: Anthropic streaming aggregates to one model_c
   });
 });
 
+describe("VAL-ISO-020: Anthropic streaming does not double-count output tokens", () => {
+  it("treats message_delta cumulative output_tokens as authoritative (assign, not add)", async () => {
+    const recorder = new SpanRecorder();
+    async function* fakeStream(): AsyncGenerator<unknown> {
+      // message_start carries the small initial output count (e.g. 2).
+      yield {
+        type: "message_start",
+        message: {
+          id: "msg_dbl_count",
+          model: "claude-3-5-sonnet",
+          usage: { input_tokens: 40, output_tokens: 2 },
+        },
+      };
+      yield {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      };
+      // message_delta carries the CUMULATIVE final output count (150),
+      // not a per-event delta. The correct reported total is 150, not 152.
+      yield {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { output_tokens: 150 },
+      };
+      yield { type: "message_stop" };
+    }
+    const stub = buildAnthropicStub({ stream: fakeStream() });
+    const wrapped = wrapAnthropic(stub, { recorder, sdkVersion: "anthropic@0.30.0" });
+    const stream = wrapped.messages.create({
+      model: "claude-3-5-sonnet",
+      stream: true,
+    }) as AsyncIterable<unknown>;
+    for await (const _evt of stream) {
+      void _evt;
+    }
+    const span = recorder.spansByKind("model_call")[0]!;
+    // input seeded from message_start only.
+    expect(span.attributes["input_tokens"]).toBe(40);
+    // output_tokens is the message_delta cumulative value, NOT 2 + 150.
+    expect(span.attributes["output_tokens"]).toBe(150);
+  });
+
+  it("falls back to message_start output_tokens when no message_delta usage arrives", async () => {
+    const recorder = new SpanRecorder();
+    async function* fakeStream(): AsyncGenerator<unknown> {
+      yield {
+        type: "message_start",
+        message: {
+          id: "msg_no_delta_usage",
+          model: "claude-3-5-sonnet",
+          usage: { input_tokens: 9, output_tokens: 3 },
+        },
+      };
+      // message_delta with no usage block: must not clobber the seed to 0.
+      yield {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+      };
+      yield { type: "message_stop" };
+    }
+    const stub = buildAnthropicStub({ stream: fakeStream() });
+    const wrapped = wrapAnthropic(stub, { recorder, sdkVersion: "anthropic@0.30.0" });
+    const stream = wrapped.messages.create({
+      model: "claude-3-5-sonnet",
+      stream: true,
+    }) as AsyncIterable<unknown>;
+    for await (const _evt of stream) {
+      void _evt;
+    }
+    const span = recorder.spansByKind("model_call")[0]!;
+    expect(span.attributes["input_tokens"]).toBe(9);
+    expect(span.attributes["output_tokens"]).toBe(3);
+  });
+});
+
 describe("VAL-W4-038: Anthropic adapter scrubs tool input args", () => {
   it("masks api_key keys in tool_use input", () => {
     const recorder = new SpanRecorder();

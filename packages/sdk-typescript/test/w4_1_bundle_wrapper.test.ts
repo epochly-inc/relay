@@ -519,6 +519,90 @@ describe("VAL-W4-007b: offline + cached bundle -> launched_from_cache, zero outb
   });
 });
 
+describe("VAL-ISO-021: cache launch re-hashes bundle.bin against the digest dir before launch", () => {
+  it("rejects a tampered cached bundle on the offline launch path (does not launch)", async () => {
+    const tmp = setupTmpHome();
+    try {
+      const f = buildMockFixture();
+      // Prime the cache with a fresh, fully-verified download.
+      const fresh = await launchSidecar({
+        home: tmp.home,
+        manifestUrl: f.manifestUrl,
+        fetchImpl: f.fetchImpl,
+        fetchBundleImpl: f.fetchBundleImpl,
+        fetchSigstoreImpl: f.fetchSigstoreImpl,
+        verifyBundleImpl: realVerifySeam,
+      });
+      expect(fresh.action).toBe("launched_fresh");
+      // Tamper: overwrite bundle.bin with arbitrary bytes whose SHA-256
+      // does NOT match the digest directory name.
+      const binPath = path.join(tmp.home, "sidecar-bundles", f.bundleDigest, "bundle.bin");
+      fs.writeFileSync(binPath, Buffer.from("TAMPERED-PAYLOAD-not-the-signed-bytes"));
+      // Offline launch must NOT trust the stale .verified marker; it must
+      // re-hash the on-disk bytes and fail closed.
+      await expect(
+        launchSidecar({ home: tmp.home, networkAvailable: false }),
+      ).rejects.toThrow(RelaySidecarBundleDigestMismatch);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  it("rejects a tampered cached bundle on the within-TTL fresh-manifest fast path (does not launch)", async () => {
+    const tmp = setupTmpHome();
+    try {
+      const f = buildMockFixture();
+      const fresh = await launchSidecar({
+        home: tmp.home,
+        manifestUrl: f.manifestUrl,
+        fetchImpl: f.fetchImpl,
+        fetchBundleImpl: f.fetchBundleImpl,
+        fetchSigstoreImpl: f.fetchSigstoreImpl,
+        verifyBundleImpl: realVerifySeam,
+      });
+      expect(fresh.action).toBe("launched_fresh");
+      const binPath = path.join(tmp.home, "sidecar-bundles", f.bundleDigest, "bundle.bin");
+      fs.writeFileSync(binPath, Buffer.from("CORRUPTED"));
+      // Online, within TTL: the fast path (manifest fresh + TTL hit) reads
+      // the cached bundle. It must re-hash before launching and fail closed
+      // on the mismatch rather than returning launched_from_cache.
+      await expect(
+        launchSidecar({
+          home: tmp.home,
+          manifestUrl: f.manifestUrl,
+          fetchImpl: f.fetchImpl,
+          fetchBundleImpl: f.fetchBundleImpl,
+          fetchSigstoreImpl: f.fetchSigstoreImpl,
+          verifyBundleImpl: realVerifySeam,
+        }),
+      ).rejects.toThrow(RelaySidecarBundleDigestMismatch);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  it("still launches an untampered cached bundle from cache (no false positives)", async () => {
+    const tmp = setupTmpHome();
+    try {
+      const f = buildMockFixture();
+      const fresh = await launchSidecar({
+        home: tmp.home,
+        manifestUrl: f.manifestUrl,
+        fetchImpl: f.fetchImpl,
+        fetchBundleImpl: f.fetchBundleImpl,
+        fetchSigstoreImpl: f.fetchSigstoreImpl,
+        verifyBundleImpl: realVerifySeam,
+      });
+      expect(fresh.action).toBe("launched_fresh");
+      const cached = await launchSidecar({ home: tmp.home, networkAvailable: false });
+      expect(cached.action).toBe("launched_from_cache");
+      expect(cached.digest).toBe(f.bundleDigest);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+});
+
 describe("VAL-W4-008: default trust root is relay.epochly.com; override requires escape hatch", () => {
   it("default trust root is relay.epochly.com", () => {
     expect(DEFAULT_TRUST_ROOT).toBe("relay.epochly.com");

@@ -481,20 +481,33 @@ async function launchFresh(
   if (options.now !== undefined) ttlEvalOpts.now = options.now;
   if (options.ttlSec !== undefined) ttlEvalOpts.ttlSec = options.ttlSec;
   const ttl = evaluateTtl(entry.sha256, ttlEvalOpts);
-  if (ttl.hit && readCachedBundle(entry.sha256, options.home) !== null) {
-    return {
-      action: "launched_from_cache",
-      source: "cache",
-      digest: entry.sha256,
-      verified_at: ttl.last_verified ?? new Date().toISOString(),
-      bundle_url: entry.url,
-      host_os: hostOs,
-      host_arch: hostArch,
-      trust_root: trustRoot,
-      cache_dir: bundleCacheDir(entry.sha256, options.home),
-      cache_hit: true,
-      ttl_remaining_sec: ttl.ttl_remaining_sec ?? 0,
-    };
+  if (ttl.hit) {
+    const cachedBytes = readCachedBundle(entry.sha256, options.home);
+    if (cachedBytes !== null) {
+      // Never launch unverified bytes. The .verified marker only attests that
+      // SOME bytes hashed to this digest at verification time; it does not
+      // vouch for the bytes currently on disk. Re-hash bundle.bin against the
+      // trusted digest directory name and fail closed on mismatch -- a
+      // tampered/corrupted cache entry must be refused, not launched
+      // (VAL-ISO-021). Reuses the existing fail-closed digest check.
+      verifyDigest(cachedBytes, entry.sha256, {
+        bundleUrl: entry.url,
+        bundleEntry: { os: entry.os, arch: entry.arch },
+      });
+      return {
+        action: "launched_from_cache",
+        source: "cache",
+        digest: entry.sha256,
+        verified_at: ttl.last_verified ?? new Date().toISOString(),
+        bundle_url: entry.url,
+        host_os: hostOs,
+        host_arch: hostArch,
+        trust_root: trustRoot,
+        cache_dir: bundleCacheDir(entry.sha256, options.home),
+        cache_hit: true,
+        ttl_remaining_sec: ttl.ttl_remaining_sec ?? 0,
+      };
+    }
   }
   // Step C: fetch the bundle bytes and Sigstore bundle.
   const bundleFetcher = options.fetchBundleImpl ?? defaultBundleFetcher(options.fetchImpl);
@@ -571,6 +584,11 @@ function tryOfflineFromCache(
     const bundle = readCachedBundle(digest, home);
     const sigstore = readCachedSigstoreBundle(digest, home);
     if (bundle === null || sigstore === null) continue;
+    // Never launch unverified bytes (VAL-ISO-021). The .verified marker does
+    // not attest to the bytes currently on disk; re-hash bundle.bin against
+    // the trusted digest directory name and fail closed on mismatch. A
+    // tampered/corrupted offline cache entry must be refused, not launched.
+    verifyDigest(bundle, digest, { bundleUrl: "(offline)" });
     return {
       action: "launched_from_cache",
       source: "cache",

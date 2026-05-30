@@ -322,7 +322,11 @@ function ingestEvent(state: StreamState, event: unknown): void {
     const usage = getProp(message, "usage");
     if (usage !== null && usage !== undefined) {
       state.cumInputTokens += asInt(getProp(usage, "input_tokens"));
-      state.cumOutputTokens += asInt(getProp(usage, "output_tokens"));
+      // message_start carries only the small initial output count (seed).
+      // message_delta later supplies the authoritative CUMULATIVE total, so
+      // we seed here but do not treat this as a delta to be summed; adding
+      // both would double-count (VAL-ISO-020).
+      state.cumOutputTokens = asInt(getProp(usage, "output_tokens"));
     }
   } else if (eventType === "content_block_start") {
     const block = getProp(event, "content_block");
@@ -355,7 +359,11 @@ function ingestEvent(state: StreamState, event: unknown): void {
   } else if (eventType === "message_delta") {
     const usage = getProp(event, "usage");
     if (usage !== null && usage !== undefined) {
-      state.cumOutputTokens += asInt(getProp(usage, "output_tokens"));
+      // Anthropic's message_delta usage.output_tokens is the AUTHORITATIVE
+      // CUMULATIVE final output count, not a per-event increment. Assign it
+      // (do not add) so the running total is not double-counted with the
+      // message_start seed (VAL-ISO-020). Absent usage leaves the seed intact.
+      state.cumOutputTokens = asInt(getProp(usage, "output_tokens"));
     }
     const delta = getProp(event, "delta");
     const stopReason = asString(getProp(delta, "stop_reason"), "");
