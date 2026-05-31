@@ -244,6 +244,70 @@ def test_downgrade_db_ahead_of_binary_still_exits_5(
     details = envelope["details"]
     assert details["observed_version"] == SUPPORTED_SCHEMA_VERSION + 1, details
     assert details["supported_version"] == SUPPORTED_SCHEMA_VERSION, details
+    # Filename-set model: the foreign migration is surfaced explicitly.
+    assert "9999_future_migration_from_newer_binary.sql" in (
+        details.get("unknown_migrations") or []
+    ), details
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-001")
+def test_count_matches_but_foreign_filename_refuses_exit_5(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DEEPER FAIL-OPEN (codex-review schema-drift-filename-set, P1).
+
+    The prior gate compared the COUNT of applied migrations against the
+    shipped count. COUNT is not identity: a production DB can have
+    ``COUNT(__schema_migrations) == SUPPORTED`` while ONE applied row is an
+    UNKNOWN/foreign migration filename (e.g. a future or out-of-band
+    migration) AND one shipped migration is ABSENT. The count matches, the
+    directional ``observed > supported`` check sees ``observed ==
+    supported`` and PASSES, and the OLD binary boots against an UNKNOWN
+    schema -- a fail-open.
+
+    Fix: drive the decision from the FILENAME SET, not the count. ``applied
+    - shipped`` is non-empty here (the foreign filename), so the gate MUST
+    refuse with exit 5 / RELAY-SIDECAR-SCHEMA-VERSION-UNKNOWN.
+
+    RED at base (count == supported -> passes); GREEN after the
+    filename-set fix."""
+    db_path = tmp_path / "count-match-foreign.db"
+    all_migrations = _migration_filenames()
+    # Same COUNT as shipped, but swap the LAST shipped migration out for a
+    # FOREIGN one: drop the real HEAD migration, add an unknown filename.
+    # len(applied) == len(shipped) == SUPPORTED, yet identity differs.
+    foreign = "9998_foreign_out_of_band_migration.sql"
+    applied = [*all_migrations[:-1], foreign]
+    assert len(applied) == SUPPORTED_SCHEMA_VERSION, (
+        "fixture invariant: count must equal SUPPORTED so the OLD count "
+        "check would have passed (proving the deeper fail-open)"
+    )
+    assert foreign not in all_migrations, "fixture invariant: foreign is unknown"
+    _seed_db_with_applied_migrations(
+        db_path, applied=applied, frozen_legacy_version=8
+    )
+    captured = _patch_exit(monkeypatch)
+
+    with pytest.raises(_ExitInterceptedError):
+        recover_or_refuse(db_path)
+
+    assert len(captured) == 1, (
+        "filename-set drift: a foreign applied migration (even when the "
+        f"count matches) MUST refuse with exit 5; captured={captured}"
+    )
+    code, envelope = captured[0]
+    assert code == EXIT_CODE_SCHEMA_VERSION_UNKNOWN == 5
+    assert envelope["error_class"] == "RELAY-SIDECAR-SCHEMA-VERSION-UNKNOWN"
+    details = envelope["details"]
+    # The foreign filename is surfaced so an operator can diagnose the drift.
+    assert foreign in (details.get("unknown_migrations") or []), details
+    # The missing-but-shipped HEAD migration is NOT reported as unknown
+    # (it is behind, not foreign); only the foreign extra is unknown.
+    assert all_migrations[-1] not in (
+        details.get("unknown_migrations") or []
+    ), details
+    assert details["supported_version"] == SUPPORTED_SCHEMA_VERSION, details
 
 
 @pytest.mark.plumbing

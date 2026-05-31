@@ -80,6 +80,26 @@ QUICK_CHECK_BUDGET_S: float = 2.0
 _DEFAULT_MIGRATIONS_DIR: Path = Path(__file__).resolve().parent.parent / "migrations"
 
 
+def _shipped_migration_filenames(
+    migrations_dir: Path = _DEFAULT_MIGRATIONS_DIR,
+) -> set[str]:
+    """Return the SET of ``*.sql`` migration filenames shipped with the binary.
+
+    This is the authoritative SHIPPED set. It reuses the EXACT same glob the
+    runner uses (``SidecarDatabase._run_migrations`` iterates
+    ``sorted(migrations.glob("*.sql"))`` and records ``sql_file.name`` into
+    ``__schema_migrations``), so the shipped set and the runner's applied
+    set cannot drift apart in their notion of what a migration "is".
+
+    Returns an empty set when the directory is absent (e.g. a packaged
+    distribution that resolves the path differently); callers treat an
+    empty shipped set as "cannot determine", never refusing on it.
+    """
+    if not migrations_dir.is_dir():
+        return set()
+    return {p.name for p in migrations_dir.glob("*.sql")}
+
+
 def _count_migration_files(migrations_dir: Path = _DEFAULT_MIGRATIONS_DIR) -> int:
     """Return the number of ``*.sql`` migration files shipped with the binary.
 
@@ -91,14 +111,19 @@ def _count_migration_files(migrations_dir: Path = _DEFAULT_MIGRATIONS_DIR) -> in
     ``__schema_migrations``; the count of applied rows therefore equals
     this number on a fully-migrated DB.
 
+    Retained for the LEGACY fallback path (``__schema_migrations`` absent),
+    where only the numeric ``_sidecar_schema_version`` row is available and
+    no filename set exists to compare. The primary drift decision is driven
+    by ``_shipped_migration_filenames`` (the filename SET), which COUNT
+    alone cannot express (a foreign filename can match the count yet differ
+    in identity -- the codex-review schema-drift-filename-set fail-open).
+
     Falls back to ``0`` if the directory is absent (e.g. a packaged
     distribution that resolves the path differently); callers treat a
     derived supported version of 0 as "cannot determine", never refusing
     on it.
     """
-    if not migrations_dir.is_dir():
-        return 0
-    return len(list(migrations_dir.glob("*.sql")))
+    return len(_shipped_migration_filenames(migrations_dir))
 
 
 # Schema version constant. LIVE, derived from the count of migration
@@ -310,22 +335,24 @@ def _read_schema_version(db_path: Path) -> int | None:
         return None
 
 
-def _read_applied_migration_count(db_path: Path) -> int | None:
-    """Return the number of rows in the live ``__schema_migrations`` table.
+def _read_applied_migration_filenames(db_path: Path) -> set[str] | None:
+    """Return the SET of applied migration filenames in ``__schema_migrations``.
 
     ``__schema_migrations`` is the runner's authoritative record: it holds
-    exactly one row per applied migration filename
-    (``SidecarDatabase._run_migrations``). The row count is therefore the
-    LIVE schema version of the database, and is what VAL-ISO-001 requires
-    the recovery gate to compare against -- not the frozen
-    ``_sidecar_schema_version`` row, which migration 0008 seeds with
-    INSERT OR IGNORE and which no later migration ever advances.
+    exactly one row per applied migration filename keyed on a
+    ``filename TEXT PRIMARY KEY`` column (``SidecarDatabase._run_migrations``
+    -- db.py:609-616). The SET of those filenames is the LIVE identity of
+    the database's schema, and is what the recovery gate compares against
+    the SHIPPED set -- NOT the row COUNT, which is identity-blind (a foreign
+    filename can match the count yet differ in identity; the codex-review
+    schema-drift-filename-set fail-open).
 
     Returns ``None`` when the ``__schema_migrations`` table is absent
     (pristine DB created before the runner, or a unit-test fixture that
-    seeds only the legacy row); the caller then falls back to the legacy
-    ``_read_schema_version``. Never raises; SQL errors collapse to
-    ``None``.
+    seeds only the legacy ``_sidecar_schema_version`` row); the caller then
+    falls back to the legacy numeric ``_read_schema_version``. Returns an
+    empty set when the table exists but holds no rows. Never raises; SQL
+    errors collapse to ``None``.
     """
     if not db_path.exists():
         return None
@@ -338,16 +365,41 @@ def _read_applied_migration_count(db_path: Path) -> int | None:
             )
             if cur.fetchone() is None:
                 return None
-            cur = conn.execute("SELECT COUNT(*) FROM __schema_migrations")
-            row = cur.fetchone()
-            if row is None:
-                return None
-            return int(row[0])
+            cur = conn.execute("SELECT filename FROM __schema_migrations")
+            return {str(row[0]) for row in cur.fetchall()}
         finally:
             with contextlib.suppress(Exception):
                 conn.close()
     except sqlite3.DatabaseError:
         return None
+
+
+def _read_applied_migration_count(db_path: Path) -> int | None:
+    """Return the number of rows in the live ``__schema_migrations`` table.
+
+    ``__schema_migrations`` is the runner's authoritative record: it holds
+    exactly one row per applied migration filename
+    (``SidecarDatabase._run_migrations``). The row count is therefore the
+    LIVE schema version of the database, and is what VAL-ISO-001 requires
+    the recovery gate to surface against -- not the frozen
+    ``_sidecar_schema_version`` row, which migration 0008 seeds with
+    INSERT OR IGNORE and which no later migration ever advances.
+
+    Retained for the ``schema_version`` summary field and the envelope's
+    ``observed_version`` (a human-facing count). The drift DECISION is now
+    made on the filename SET (``_read_applied_migration_filenames`` vs
+    ``_shipped_migration_filenames``), which COUNT cannot express.
+
+    Returns ``None`` when the ``__schema_migrations`` table is absent
+    (pristine DB created before the runner, or a unit-test fixture that
+    seeds only the legacy row); the caller then falls back to the legacy
+    ``_read_schema_version``. Never raises; SQL errors collapse to
+    ``None``.
+    """
+    applied = _read_applied_migration_filenames(db_path)
+    if applied is None:
+        return None
+    return len(applied)
 
 
 def _read_observed_schema_version(db_path: Path) -> int | None:
@@ -580,45 +632,77 @@ def recover_or_refuse(db_path: Path) -> dict[str, object]:
             # If WAL replay itself fails, the slow-path will catch it.
             pass
 
-    # Step 5: schema version check (VAL-W2-054 + VAL-ISO-001).
+    # Step 5: schema-drift gate (VAL-W2-054 + VAL-ISO-001 + codex-review
+    # schema-drift-filename-set).
     #
-    # The observed version is read LIVE from ``__schema_migrations`` (the
-    # runner's authoritative per-migration record), falling back to the
-    # legacy ``_sidecar_schema_version`` row only when that table is
-    # absent. ``SUPPORTED_SCHEMA_VERSION`` is derived from the count of
-    # migration files shipped with this binary. This replaces the
-    # frozen-at-8 mechanism that let a DB migrated past 0008 pass
-    # undetected (VAL-ISO-001).
+    # The drift DECISION is driven by the migration-filename SET, NOT the
+    # row COUNT. COUNT is identity-blind: a production DB can have
+    # ``COUNT(__schema_migrations) == SUPPORTED`` while one applied row is
+    # a FOREIGN/UNKNOWN migration filename and one shipped migration is
+    # absent. The count matches, the old directional ``observed >
+    # supported`` check sees ``observed == supported`` and PASSES, and the
+    # OLD binary boots against an UNKNOWN schema -- a fail-open. The
+    # filename-set comparison closes it and SUBSUMES the directional count
+    # check.
+    #
+    #   - ``applied - shipped`` NON-EMPTY -> the DB has migrations this
+    #     binary does NOT ship (a newer binary's migration, a foreign /
+    #     out-of-band migration, or a genuine downgrade). There are no
+    #     down-migrations and destructive ALTER/DROP/RENAME migrations
+    #     leave this binary facing a schema it does not understand. REFUSE
+    #     (exit 5 / RELAY-SIDECAR-SCHEMA-VERSION-UNKNOWN).
+    #   - ``applied`` is a SUBSET of (or equal to) ``shipped`` -> the DB is
+    #     BEHIND-or-CURRENT. The NORMAL UPGRADE path: the binary ships
+    #     migrations not yet applied. Proceed so ``SidecarDatabase.open``
+    #     -> ``_run_migrations`` applies the pending migrations and
+    #     reconciles the live set to ``shipped``. Do NOT refuse.
+    #
+    # ``observed_version`` (a human-facing COUNT) is still surfaced in the
+    # summary and the refuse envelope for diagnostics, but it is NOT the
+    # decision input.
     observed_version = _read_observed_schema_version(db_path)
-    # ``None`` is the "pristine pre-runner DB" path; the migration runner
-    # will create the tables on first lifespan startup.
-    # ``SUPPORTED_SCHEMA_VERSION == 0`` means the migrations dir could not
-    # be located (packaged distribution edge case); we cannot determine
-    # drift in that case, so we never refuse on it.
-    #
-    # DIRECTIONAL gate (schema-drift upgrade-gate fix). The earlier strict
-    # ``!=`` bricked EVERY incremental upgrade: a production DB at the
-    # previous migration count (observed = supported - 1), opened by a
-    # binary shipping one new migration, read observed != supported and
-    # exited 5 BEFORE migrations ran -- so the new migration that would
-    # reconcile the count could never run. We must distinguish direction:
-    #
-    #   - observed > supported  -> DB is AHEAD of the binary. A NEWER
-    #     binary migrated this DB and an OLDER binary is now opening it:
-    #     a genuine, UNSAFE DOWNGRADE. There are no down-migrations, and
-    #     destructive ALTER/DROP/RENAME migrations leave this binary
-    #     facing a schema it does not understand. REFUSE (exit 5).
-    #   - observed == supported -> current; proceed.
-    #   - observed < supported  -> DB is BEHIND the binary. The NORMAL
-    #     UPGRADE path: the binary ships migrations not yet applied.
-    #     Proceed so ``SidecarDatabase.open`` -> ``_run_migrations``
-    #     applies the pending migrations and reconciles observed to
-    #     supported. Do NOT refuse.
-    if (
+    applied_migrations = _read_applied_migration_filenames(db_path)
+
+    if applied_migrations is not None:
+        # LIVE filename-set path: ``__schema_migrations`` is present.
+        # ``shipped`` is the SET of ``*.sql`` files this binary carries,
+        # enumerated by the SAME glob the runner uses, so the two notions
+        # of "a migration" cannot drift. An empty shipped set means the
+        # migrations dir could not be located (packaged-distribution edge
+        # case); we cannot determine drift, so we never refuse on it.
+        shipped_migrations = _shipped_migration_filenames()
+        unknown_migrations = applied_migrations - shipped_migrations
+        if shipped_migrations and unknown_migrations:
+            envelope = {
+                "code": RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN_CODE,
+                "error_class": RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN,
+                "message": (
+                    "sidecar refuses to start: database has applied "
+                    "migrations this binary does not ship (foreign / ahead "
+                    "of binary); no down-migrations exist"
+                ),
+                "details": {
+                    "db_path": str(db_path),
+                    "observed_version": observed_version,
+                    "supported_version": SUPPORTED_SCHEMA_VERSION,
+                    "unknown_migrations": sorted(unknown_migrations),
+                },
+            }
+            exit_with_structured_error(
+                EXIT_CODE_SCHEMA_VERSION_UNKNOWN, envelope
+            )
+    elif (
         observed_version is not None
         and SUPPORTED_SCHEMA_VERSION > 0
         and observed_version > SUPPORTED_SCHEMA_VERSION
     ):
+        # LEGACY numeric fallback: ``__schema_migrations`` is absent, so the
+        # filename set is unavailable and only the numeric
+        # ``_sidecar_schema_version`` row exists (pre-runner DBs and
+        # unit-test fixtures that seed only the legacy row, VAL-W2-054).
+        # We keep the DIRECTIONAL count check here: ``observed > supported``
+        # is the AHEAD/downgrade case and still refuses (exit 5);
+        # ``observed <= supported`` proceeds so the runner reconciles.
         envelope = {
             "code": RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN_CODE,
             "error_class": RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN,

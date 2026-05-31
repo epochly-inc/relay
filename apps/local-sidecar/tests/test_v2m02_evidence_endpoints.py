@@ -292,3 +292,49 @@ async def test_verify_digest_detects_record_tampering(
     # The divergence between the live record and its claimed digest MUST
     # be detected -- the tautology could never do this.
     assert payload["digest_ok"] is False, payload
+
+
+# ---- VAL-CRYPTO-006 (fail-closed boolean): unverified OSS stub bundle
+#      MUST report signatures_ok=false (a real JSON boolean), not null ----
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CRYPTO-006")
+@pytest.mark.asyncio
+async def test_verify_unverified_bundle_signatures_ok_is_false_not_null(
+    v2m02_client: V2M02Client,
+) -> None:
+    """Fail-closed boolean regression (codex-review verify-signatures-ok-false).
+
+    For an UNVERIFIED (non-tampered) OSS stub bundle the handler previously
+    set ``signatures_ok = None`` and per-signature ``valid = None``,
+    serialising to JSON ``null``. The verifier-output schema
+    (packages/schemas/raw/verifier-output.yaml) declares ``signatures_ok``
+    as ``type: boolean`` (non-nullable) and per-signature ``ok`` as a
+    required boolean. ``null`` violates that contract and is NOT fail-closed:
+    a consumer doing a boolean check (``if signatures_ok``) treats null as
+    falsy by luck, not by contract, and a strict equality check sees an
+    ambiguous third state. Per keystone fail-closed (#2, #11) an unverified
+    bundle MUST report a concrete boolean ``false``.
+
+    Distinct from ``test_verify_no_green_signatures_without_real_crypto``,
+    which only asserts ``is not True`` (passes under the buggy null state).
+    This test asserts the strict boolean ``is False``.
+    """
+    c, _db, _app = v2m02_client
+    bid = await _create_bundle(c)
+    # No body -> the UNVERIFIED (non-tampered) OSS stub path.
+    r = await c.post(f"/v1/evidence-bundles/{bid}/verify")
+    assert r.status_code == 200, r.text
+    payload = json.loads(r.text)
+    # Strict: a real JSON boolean false, never null.
+    assert payload["signatures_ok"] is False, payload
+    # Honest verification_status is preserved.
+    assert payload.get("verification_status") == "unverified", payload
+    # Every per-signature verdict is a concrete boolean false, not null.
+    sigs = payload.get("signatures_checked", [])
+    assert sigs, "fixture invariant: created bundle ships >= 1 signature"
+    for sig in sigs:
+        assert sig.get("valid") is False, sig
+    # A human-readable reason still explains the unverified state.
+    assert payload.get("signatures_reason"), payload

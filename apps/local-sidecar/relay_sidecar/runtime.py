@@ -5055,14 +5055,25 @@ def build_runtime_app(
                 {
                     "signer_key_id": sig.get("signer_key_id"),
                     "algorithm": sig.get("algorithm", "ed25519"),
-                    # Honest: this signature was not cryptographically
-                    # verified by this route. ``null`` (not true) signals
-                    # "not verified here", false signals an explicit failure.
-                    "valid": False if tampered else None,
+                    # Fail-closed boolean (codex-review verify-signatures-ok-
+                    # false). The OSS stub performs NO cryptographic
+                    # verification, so a signature is never proven valid here.
+                    # ``valid`` MUST be a concrete boolean ``false`` -- never
+                    # ``null``: the verifier-output schema
+                    # (packages/schemas/raw/verifier-output.yaml) declares the
+                    # per-signature verdict (``ok``) as a required boolean, and
+                    # ``null`` is neither schema-conformant nor fail-closed (a
+                    # consumer's boolean check would treat null as falsy by
+                    # luck, not by contract). The honest "not verified here"
+                    # signal lives in ``verification_status: unverified`` and
+                    # ``failure_reason`` below, not in a null tri-state.
+                    "valid": False,
                     "failure_reason": signatures_reason,
                 }
             )
-        signatures_ok = False if tampered else None
+        # Fail-closed: an unverified bundle reports ``signatures_ok: false``
+        # (a real JSON boolean), never ``null`` (keystone invariants #2/#11).
+        signatures_ok = False
 
         verify_result = {
             "bundle_id": bundle_id,
