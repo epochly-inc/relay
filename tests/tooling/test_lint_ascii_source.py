@@ -249,6 +249,117 @@ def test_plain_code_homoglyph_still_flagged(
 
 
 # ---------------------------------------------------------------------------
+# Template-literal ${...} interpolation: code, not string (codex P3).
+#
+# A template literal `...${EXPR}...` is part string (the literal TEXT
+# between interpolations, exempt) and part CODE (the EXPR inside each
+# ${...}). The earlier lexer blanked the ENTIRE backtick literal including
+# the interpolation expressions, so a non-ASCII homoglyph in a real code
+# token inside ${...} was hidden -> a vacuous pass.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+def test_nonascii_inside_template_interpolation_is_flagged(
+    tmp_path: Path, lint_module, monkeypatch
+):
+    """A non-ASCII CODE token inside ${...} interpolation MUST be flagged.
+
+    `const s = `hi ${pXss}`;` where X is a Cyrillic 'a' homoglyph: the
+    identifier `pаss` is a CODE token inside the interpolation, not string
+    text. Before the fix the whole template literal was blanked and the
+    homoglyph was hidden (the RED case). It must be flagged on line 1.
+    """
+    bad_ident = "p" + CYRILLIC_A + "ss"  # 'pаss' -- Cyrillic 'a'
+    src = "const s = `hi ${" + bad_ident + "}`;\nconst ok = 1;\n"
+    target = tmp_path / "packages" / "demo" / "src" / "interp.ts"
+    _write(target, src)
+
+    vios = lint_module.scan_js(target)
+    assert vios, (
+        "non-ASCII code token inside ${...} interpolation was masked "
+        f"(vacuous pass); src={src!r}"
+    )
+    assert any(
+        v["line"] == 1 and v["detail"].endswith("in code token")
+        for v in vios
+    ), vios
+
+
+@pytest.mark.plumbing
+def test_nonascii_in_template_literal_text_still_exempt(
+    tmp_path: Path, lint_module, monkeypatch
+):
+    """Non-ASCII in the literal TEXT of a template (not interpolation) stays
+    exempt -- it is string content, like a quoted string."""
+    src = "const s = `h" + CYRILLIC_A + "i`;\nconst ok = 1;\n"
+    target = tmp_path / "packages" / "demo" / "src" / "tpltext.ts"
+    _write(target, src)
+    assert lint_module.scan_js(target) == [], (
+        "non-ASCII in template-literal TEXT must remain exempt (string "
+        "content)"
+    )
+
+
+@pytest.mark.plumbing
+def test_nonascii_in_template_text_with_clean_interpolation_exempt(
+    tmp_path: Path, lint_module, monkeypatch
+):
+    """A template literal with non-ASCII only in TEXT and a CLEAN (ASCII)
+    interpolation expression stays exempt; the interpolation is re-entered
+    as code but contains no non-ASCII."""
+    src = (
+        "const s = `gr" + CYRILLIC_A + "y ${count} items`;\n"
+        "const ok = 1;\n"
+    )
+    target = tmp_path / "packages" / "demo" / "src" / "mixed.ts"
+    _write(target, src)
+    assert lint_module.scan_js(target) == [], (
+        "clean interpolation + non-ASCII literal text must remain exempt"
+    )
+
+
+@pytest.mark.plumbing
+def test_clean_template_literal_passes(
+    tmp_path: Path, lint_module, monkeypatch
+):
+    """A fully ASCII template literal with interpolation produces no
+    violations."""
+    src = "const s = `hi ${name} ok ${a + b}`;\nconst ok = 1;\n"
+    target = tmp_path / "packages" / "demo" / "src" / "clean_tpl.ts"
+    _write(target, src)
+    assert lint_module.scan_js(target) == [], (
+        "a clean ASCII template literal must not be flagged"
+    )
+
+
+@pytest.mark.plumbing
+def test_nested_template_in_interpolation_handles_braces(
+    tmp_path: Path, lint_module, monkeypatch
+):
+    """A nested template literal (and brace objects) inside ${...} must be
+    handled: brace counting must not exit the interpolation early.
+
+    `const s = `outer ${ {k: `in ${vXl}`} }`;` -- the object literal `{...}`
+    inside the interpolation introduces braces, and a nested template
+    `in ${vXl}` carries its own interpolation with a homoglyph code token.
+    The homoglyph must be flagged and the surrounding literal text exempt.
+    """
+    bad_ident = "v" + CYRILLIC_A + "l"  # 'vаl'
+    src = (
+        "const s = `outer ${ {k: `in ${" + bad_ident + "}`} } end`;\n"
+        "const ok = 1;\n"
+    )
+    target = tmp_path / "packages" / "demo" / "src" / "nested.ts"
+    _write(target, src)
+    vios = lint_module.scan_js(target)
+    assert any(v["line"] == 1 for v in vios), (
+        "nested-template interpolation hid the homoglyph (brace counting or "
+        f"nested-template re-entry is wrong); got {vios!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Whole-tree: the live repo must still lint clean (no new false positives).
 # ---------------------------------------------------------------------------
 

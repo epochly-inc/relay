@@ -1045,6 +1045,63 @@ def check_g4_f3_keyless_identity_token(workflow: dict[str, Any]) -> CheckResult:
     return CheckResult(assertion, code, True)
 
 
+# Tokens that, when interpolated INTO the asset-base-url value, pin it to the
+# release tag. Either a GitHub Actions expression (evaluated to the tag at run
+# time) or a shell variable carrying the tag. The release workflow sets
+# ``RELEASE_TAG: ${{ github.ref_name }}`` and builds the base URL from it, so
+# both spellings are accepted.
+_RELEASE_TAG_INTERP_TOKENS: tuple[str, ...] = (
+    "github.ref_name",
+    "github.ref",  # covers github.ref and github.ref_name
+    "${RELEASE_TAG}",
+    "${RELEASE_TAG#",  # ${RELEASE_TAG#v} (strip leading v)
+    "${GITHUB_REF_NAME}",
+    "${GITHUB_REF}",
+)
+
+
+def _resolve_asset_base_url(run: str, env: dict[str, Any]) -> str | None:
+    """Return the value passed to ``--asset-base-url`` in ``run``.
+
+    The argument may be a literal URL or a shell-variable reference such as
+    ``"${MANIFEST_ASSET_BASE_URL}"`` that the step ``env`` defines. When it is
+    a variable reference whose name is found in ``env``, the env value is
+    returned (this is the string the manifest's bundle URLs are actually built
+    from). Returns None if the flag is absent or its value cannot be resolved.
+    """
+    m = re.search(
+        r"--asset-base-url[=\s]+(\S+)",
+        run,
+    )
+    if m is None:
+        return None
+    raw = m.group(1).strip().strip("'\"")
+    # Shell variable forms: "${VAR}", "$VAR", or bare "${VAR}" already stripped
+    # of quotes above. Resolve against the step env if the name matches.
+    var_match = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", raw)
+    if var_match is not None:
+        name = var_match.group(1)
+        val = env.get(name)
+        if isinstance(val, str):
+            return val
+        # Variable reference we cannot resolve from this step's env.
+        return None
+    # Literal URL passed directly on the command line.
+    return raw
+
+
+def _asset_base_url_is_version_pinned(value: str) -> bool:
+    """True iff ``value`` interpolates the release tag into the base URL.
+
+    A correctly version-pinned base URL carries the release tag as a path
+    segment, e.g.
+    ``https://relay.epochly.com/.well-known/relay-sidecar-bundle/${{ github.ref_name }}``.
+    The check is on the asset-base-url value ONLY (codex P2): the presence of
+    an unrelated flag such as ``--sidecar-version`` must NOT make this true.
+    """
+    return any(token in value for token in _RELEASE_TAG_INTERP_TOKENS)
+
+
 def check_g4_f5_manifest_asset_base_url(workflow: dict[str, Any]) -> CheckResult:
     """G4-F5: the aggregated manifest's bundle asset URLs must resolve to
     where the artifacts actually exist.
@@ -1088,39 +1145,54 @@ def check_g4_f5_manifest_asset_base_url(workflow: dict[str, Any]) -> CheckResult
             "does not resolve to the versioned hosted-mirror path where the "
             "wrapper/CLI fetch bundles",
         )
-    # The asset base URL must be version-pinned. The workflow interpolates
-    # the release tag into it (github.ref_name or a step env that does).
+    # The asset base URL must be version-pinned. Resolve the ACTUAL value
+    # passed to --asset-base-url (which may be a shell variable that the
+    # step env defines) and require that value -- not merely the presence of
+    # some other flag -- to carry the release-tag interpolation.
+    #
+    # codex P2: the earlier predicate counted "sidecar-version" presence as
+    # proof of version-pinning. But EVERY valid assemble invocation passes
+    # --sidecar-version (it pins the manifest's sidecar_version field), so
+    # that token was ALWAYS present and the predicate was vacuously true: an
+    # --asset-base-url lacking the /<version>/ segment passed. The asset base
+    # URL is what carries the bundle url/sigstore_url into the manifest, so
+    # ITS value -- and only its value -- must be version-pinned.
     env = _step_env(sign, "assemble aggregated release manifest")
-    base_url_value = ""
-    for key, val in env.items():
-        if "ASSET_BASE_URL" in key.upper() and isinstance(val, str):
-            base_url_value = val
-            break
-    haystack = run + "\n" + base_url_value
-    version_pinned = (
-        "github.ref_name" in haystack
-        or "${RELEASE_TAG}" in haystack
-        or "sidecar-version" in haystack
-    )
-    if not version_pinned:
+    base_url_value = _resolve_asset_base_url(run, env)
+    if base_url_value is None:
+        return CheckResult(
+            assertion,
+            code,
+            False,
+            "could not resolve the --asset-base-url value (its argument is "
+            "neither a literal nor a step-env variable); cannot verify it is "
+            "version-pinned",
+        )
+    # A correctly version-pinned base URL interpolates the release tag into a
+    # path segment, matching the canonical workflow form
+    # https://relay.epochly.com/.well-known/relay-sidecar-bundle/<tag>. The
+    # tag is injected via GitHub-expression (${{ github.ref_name }} / .ref) or
+    # a shell variable carrying it (${RELEASE_TAG} / ${GITHUB_REF...}).
+    if not _asset_base_url_is_version_pinned(base_url_value):
         return CheckResult(
             assertion,
             code,
             False,
             "assemble --asset-base-url is not version-pinned (no release-tag "
-            "interpolation); the hosted mirror stores assets under a "
+            "interpolation in the resolved value "
+            f"{base_url_value!r}); the hosted mirror stores assets under a "
             "/<version>/ prefix",
         )
     # The base URL must target the hosted mirror the wrapper actually reads
     # (relay.epochly.com/.well-known/relay-sidecar-bundle), matching
     # packages/sdk-typescript/release-manifest.url.
-    if "relay-sidecar-bundle" not in haystack:
+    if "relay-sidecar-bundle" not in base_url_value:
         return CheckResult(
             assertion,
             code,
             False,
             "assemble --asset-base-url does not target the canonical "
-            "relay-sidecar-bundle mirror prefix",
+            f"relay-sidecar-bundle mirror prefix (resolved {base_url_value!r})",
         )
     return CheckResult(assertion, code, True)
 
@@ -1184,19 +1256,38 @@ def check_sr2_001_manifest_no_basename_collision(
             "publish job has no 'gh release upload' step",
         )
     effective = _strip_shell_comments(run)
-    # 1. The broad basename glob must be gone. Either quoting form is a
-    # collision: find matches per-cell dist/<cell>/manifest.json too.
-    if "-name 'manifest.json'" in effective or '-name "manifest.json"' in effective:
+    # 1. The broad basename glob must be gone. UNQUOTED, single-quoted, and
+    # double-quoted spellings are all a collision: find matches per-cell
+    # dist/<cell>/manifest.json too.
+    #
+    # codex P2: the earlier check only string-matched the quoted spellings
+    # ("-name 'manifest.json'" / '-name "manifest.json"'), so the equally
+    # valid UNQUOTED shell form ``-name manifest.json`` slipped through. We
+    # now match -name followed by an optional matching quote, then exactly
+    # ``manifest.json``, then a token boundary so the longer literal
+    # ``manifest.json.sigstore`` (uploaded by explicit path, never a
+    # collision) is NOT misread as the manifest.json basename glob.
+    #
+    #   -name\s+(['"]?)manifest\.json\1(?![\w.])
+    #
+    # The backreference \1 forces the closing quote to match the opening one
+    # (or both be absent for the unquoted form). The (?![\w.]) lookahead
+    # rejects ``manifest.json.sigstore`` / ``manifest.jsonx``.
+    collision_glob = re.search(
+        r"-name\s+(['\"]?)manifest\.json\1(?![\w.])",
+        effective,
+    )
+    if collision_glob is not None:
         return CheckResult(
             assertion,
             code,
             False,
-            "publish step uses the broad \"-name 'manifest.json'\" find glob; "
-            "it matches the per-cell build manifests "
-            "(dist/<cell>/manifest.json) too, and gh release upload --clobber "
-            "keys by basename so a per-cell manifest can clobber the "
-            "aggregated dist/manifest.json (SR2-001). Upload the aggregated "
-            "manifest by explicit path instead.",
+            "publish step uses a broad '-name manifest.json' find glob "
+            f"(matched {collision_glob.group(0)!r}); it matches the per-cell "
+            "build manifests (dist/<cell>/manifest.json) too, and gh release "
+            "upload --clobber keys by basename so a per-cell manifest can "
+            "clobber the aggregated dist/manifest.json (SR2-001). Upload the "
+            "aggregated manifest by explicit path instead.",
         )
     # 2. The aggregated manifest must be uploaded by its explicit path. Use a
     # word-boundary match so 'dist/manifest.json.sigstore' does not satisfy

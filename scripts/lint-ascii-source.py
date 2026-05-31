@@ -279,12 +279,15 @@ def _strip_js_comments_and_strings(text: str) -> str:
 
       * line comments  ``// ...``
       * block comments ``/* ... */``
-      * single-quoted, double-quoted, and backtick template literals
-        (with backslash escapes; template-literal ``${...}`` interpolation
-        bytes are conservatively treated as part of the literal -- a
-        unicode identifier inside an interpolation is rare and erring
-        toward NOT flagging avoids false positives, matching the
-        "string literals are exempt" rule).
+      * single-quoted, double-quoted, and backtick template literals (with
+        backslash escapes). A template literal is part string and part code:
+        the literal TEXT spans are exempt, but each ``${...}`` interpolation
+        is a real JS expression and is RE-ENTERED as code so a non-ASCII
+        token smuggled into an interpolation identifier/operator is still
+        flagged (codex P3). An escaped ``\\${`` is literal text, not an
+        interpolation. Nested braces (object literals, nested template
+        literals) inside an interpolation are balanced via a brace-depth
+        stack so the interpolation does not close early.
       * regex literals ``/.../flags`` -- disambiguated from the division
         operator by :func:`_regex_allowed_after` (a ``/`` begins a regex
         only where an expression may begin). The regex body honors
@@ -314,6 +317,17 @@ def _strip_js_comments_and_strings(text: str) -> str:
     # Whether the regex lexer is currently inside a ``[...]`` char class
     # (where ``/`` is literal). Reset on each regex entry.
     in_char_class = False
+    # Template-literal ${...} interpolation handling (codex P3). A template
+    # literal `text${EXPR}text` is part string (the TEXT spans, exempt) and
+    # part CODE (each EXPR inside ${...}). When we enter an interpolation from
+    # 'tpl' state we switch to 'code' and push the brace depth at which the
+    # interpolation closes (its matching `}` returns to 'tpl'). The stack
+    # supports nested templates and object/block braces inside interpolations.
+    #   brace_depth: current { } nesting in 'code' state.
+    #   interp_return_depth: stack of brace depths; a `}` that drops the depth
+    #     to a stacked value closes that interpolation and pops back to 'tpl'.
+    brace_depth = 0
+    interp_return_depth: list[int] = []
     while i < n:
         ch = text[i]
         nxt = text[i + 1] if i + 1 < n else ""
@@ -353,6 +367,28 @@ def _strip_js_comments_and_strings(text: str) -> str:
                 out.append(" ")
                 i += 1
                 state = "tpl"
+                continue
+            if ch == "{":
+                brace_depth += 1
+                prev_significant = ch
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "}":
+                # Does this `}` close an active template interpolation? An
+                # interpolation entered at brace_depth d closes when a `}`
+                # would drop the depth below d (i.e. it is the `}` matching
+                # the `${`). Otherwise it is an ordinary closing brace.
+                if interp_return_depth and brace_depth == interp_return_depth[-1]:
+                    interp_return_depth.pop()
+                    out.append(" ")  # the `}` is template syntax, not a token
+                    i += 1
+                    state = "tpl"
+                    continue
+                brace_depth -= 1
+                prev_significant = ch
+                out.append(ch)
+                i += 1
                 continue
             if not ch.isspace():
                 prev_significant = ch
@@ -413,9 +449,43 @@ def _strip_js_comments_and_strings(text: str) -> str:
             out.append("\n" if ch == "\n" else " ")
             i += 1
             continue
-        # string / template states: consume until matching delimiter,
-        # honoring backslash escapes. Preserve newlines for line accuracy.
-        if state in ("sq", "dq", "tpl"):
+        # Template literal: literal TEXT spans are exempt (string content),
+        # but ${...} interpolation expressions are CODE and must be scanned
+        # (codex P3). Escapes (\`, \$, \\) are honored FIRST so an escaped
+        # dollar (\${) is literal text, not an interpolation start.
+        if state == "tpl":
+            if ch == "\\":
+                out.append(" ")
+                if nxt:
+                    out.append("\n" if nxt == "\n" else " ")
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if ch == "$" and nxt == "{":
+                # Enter the interpolation as code. The matching `}` closes it
+                # when brace_depth returns to its current value (recorded on
+                # the stack). Blank the `${` -- it is template syntax, and the
+                # `{` must NOT be counted as an ordinary code brace.
+                interp_return_depth.append(brace_depth)
+                out.append("  ")
+                i += 2
+                state = "code"
+                # Fresh expression context: a leading `/` in `${/re/...}` is a
+                # regex, not division.
+                prev_significant = ""
+                continue
+            if ch == "`":
+                out.append(" ")
+                i += 1
+                state = "code"
+                continue
+            out.append("\n" if ch == "\n" else " ")
+            i += 1
+            continue
+        # single / double quoted string states: consume until the matching
+        # delimiter, honoring backslash escapes. Preserve newlines.
+        if state in ("sq", "dq"):
             if ch == "\\":
                 # Escape: blank out the backslash and the escaped char.
                 out.append(" ")
@@ -425,7 +495,7 @@ def _strip_js_comments_and_strings(text: str) -> str:
                 else:
                     i += 1
                 continue
-            close = {"sq": "'", "dq": '"', "tpl": "`"}[state]
+            close = {"sq": "'", "dq": '"'}[state]
             if ch == close:
                 out.append(" ")
                 i += 1

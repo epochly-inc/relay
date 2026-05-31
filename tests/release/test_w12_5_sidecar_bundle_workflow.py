@@ -689,6 +689,70 @@ def test_g4_f5_manifest_asset_base_url_is_explicit_and_versioned() -> None:
     )
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CRYPTO-003")
+def test_g4_f5_unversioned_asset_base_url_with_sidecar_version_is_rejected() -> None:
+    """G4-F5 non-vacuity (codex P2): --sidecar-version presence must NOT
+    satisfy the version-pinned predicate.
+
+    Every valid assemble invocation passes ``--sidecar-version`` (it pins
+    the manifest's ``sidecar_version`` field). The earlier guard wrongly
+    counted ``--sidecar-version`` presence as proof the ASSET BASE URL was
+    version-pinned. So an ``--asset-base-url`` lacking the ``/<version>/``
+    path segment (e.g. ``.../relay-sidecar-bundle`` with no tag interpolation)
+    PASSED the guard though the bundle url/sigstore_url entries it produces
+    do NOT resolve to the versioned hosted-mirror layout. This test pins the
+    bug: an unversioned base URL must be REJECTED even when --sidecar-version
+    is present, and a correctly version-pinned URL must PASS.
+    """
+    guard = _load_guard_module()
+
+    # GREEN: the real workflow's --asset-base-url IS version-pinned
+    # (env MANIFEST_ASSET_BASE_URL interpolates github.ref_name into the
+    # /<version>/ segment). It must pass.
+    wf = _load_workflow_dict()
+    ok = guard.check_g4_f5_manifest_asset_base_url(wf)
+    assert ok.passed, ok.message
+
+    # RED (the codex finding): mutate ONLY the asset base URL to the
+    # UNVERSIONED hosted-mirror prefix (no /<version>/ segment, no tag
+    # interpolation). --sidecar-version is left fully intact. The guard MUST
+    # reject this; before the fix it wrongly PASSED because --sidecar-version
+    # was in the run body.
+    mutated = _load_workflow_dict()
+    sign = mutated["jobs"]["sign"]
+    patched = False
+    for step in sign["steps"]:
+        run = step.get("run")
+        if isinstance(run, str) and "assemble-release-manifest.py" in run:
+            assert "--sidecar-version" in run, (
+                "expected --sidecar-version in the assemble invocation; the "
+                "test premise (that it stays present) no longer holds"
+            )
+            env = step.get("env")
+            assert isinstance(env, dict) and "MANIFEST_ASSET_BASE_URL" in env, (
+                "expected MANIFEST_ASSET_BASE_URL env on the assemble step"
+            )
+            # Unversioned prefix: no /<tag>/ segment, no ref_name / RELEASE_TAG
+            # interpolation. This is the exact unpinned form the guard must
+            # reject.
+            env["MANIFEST_ASSET_BASE_URL"] = (
+                "https://relay.epochly.com/.well-known/relay-sidecar-bundle"
+            )
+            patched = True
+            break
+    assert patched, "could not locate assemble step to mutate"
+    bad = guard.check_g4_f5_manifest_asset_base_url(mutated)
+    assert not bad.passed, (
+        "guard accepted an UNVERSIONED --asset-base-url while "
+        "--sidecar-version was present (codex P2 vacuous version-pin "
+        "predicate); the URL is not version-pinned and must be rejected"
+    )
+    assert "version-pinned" in (bad.message or "").lower(), (
+        f"rejection reason should cite version-pinning; got {bad.message!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Gate-2-r2 remediation SR2-001: the publish step must upload the AGGREGATED
 # wrapper-facing manifest by an unambiguous path so no per-cell build
@@ -774,4 +838,96 @@ def test_sr2_001_publish_uploads_aggregated_manifest_unambiguously() -> None:
     assert not bad.passed, (
         "guard accepted a publish step with the broad -name 'manifest.json' "
         "find glob (SR2-001 defect); check is vacuous"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CRYPTO-003")
+def test_sr2_001_unquoted_name_manifest_json_glob_is_rejected() -> None:
+    """SR2-001 non-vacuity (codex P2): the basename-collision guard must
+    catch UNQUOTED ``-name manifest.json`` too, not only the quoted forms.
+
+    In POSIX shell, ``find dist -type f -name manifest.json`` (no quotes
+    around the pattern) is valid and behaves identically to the quoted
+    forms: it matches the per-cell ``dist/<cell>/manifest.json`` build
+    manifests by basename, so ``gh release upload --clobber`` (which keys
+    by basename) can publish a per-cell manifest under the manifest.json
+    asset name while manifest.json.sigstore signed the aggregated one ->
+    the fail-closed wrapper rejects the mismatch and breaks every npx
+    launch. The earlier guard only string-matched the SINGLE- and
+    DOUBLE-quoted spellings, so the UNQUOTED form slipped through. This
+    test pins the bug.
+    """
+    guard = _load_guard_module()
+
+    # GREEN: the real publish step (quoted relay-sidecar-* glob + explicit
+    # aggregated-manifest upload) still passes.
+    wf = _load_workflow_dict()
+    ok = guard.check_sr2_001_manifest_no_basename_collision(wf)
+    assert ok.passed, ok.message
+
+    # RED: a publish step that reintroduces the broad collision glob using
+    # the UNQUOTED ``-name manifest.json`` spelling, while still uploading
+    # the aggregated manifest + signature by explicit path (so only the
+    # basename-glob check #1 is the discriminator). Before the fix the guard
+    # PASSED this -- the exact codex P2 hole.
+    mutated = _load_workflow_dict()
+    publish = mutated["jobs"]["publish"]
+    patched = False
+    for step in publish["steps"]:
+        run = step.get("run")
+        if isinstance(run, str) and "gh release upload" in run:
+            step["run"] = (
+                "set -euo pipefail\n"
+                'gh release upload "${RELEASE_TAG}" \\\n'
+                "  $(find dist -type f \\( -name relay-sidecar-* "
+                "-o -name manifest.json -o -name *.sigstore "
+                "-o -name *.intoto.jsonl \\)) \\\n"
+                "  --clobber\n"
+                'gh release upload "${RELEASE_TAG}" \\\n'
+                "  dist/manifest.json \\\n"
+                "  dist/manifest.json.sigstore \\\n"
+                "  --clobber\n"
+            )
+            patched = True
+            break
+    assert patched, "could not locate publish step to mutate"
+    bad = guard.check_sr2_001_manifest_no_basename_collision(mutated)
+    assert not bad.passed, (
+        "guard accepted UNQUOTED '-name manifest.json' in the publish find "
+        "glob (codex P2 basename-collision hole); a per-cell "
+        "dist/<cell>/manifest.json can clobber the aggregated "
+        "dist/manifest.json by basename"
+    )
+
+    # The double-quoted form must also still be rejected (regression guard).
+    m_dq = _load_workflow_dict()
+    for step in m_dq["jobs"]["publish"]["steps"]:
+        run = step.get("run")
+        if isinstance(run, str) and "gh release upload" in run:
+            step["run"] = (
+                'gh release upload "${RELEASE_TAG}" \\\n'
+                '  $(find dist -type f \\( -name "relay-sidecar-*" '
+                '-o -name "manifest.json" -o -name "*.sigstore" \\)) \\\n'
+                "  --clobber\n"
+            )
+            break
+    bad_dq = guard.check_sr2_001_manifest_no_basename_collision(m_dq)
+    assert not bad_dq.passed, (
+        "guard accepted the double-quoted '-name \"manifest.json\"' glob"
+    )
+
+    # A publish step with NO manifest.json basename glob (real form) and the
+    # explicit aggregated upload must NOT be a false positive -- in
+    # particular ``-not -name 'manifest.json.sigstore'`` must not be read as
+    # a ``manifest.json`` basename glob.
+    real_run = _find_publish_run()
+    assert "manifest.json.sigstore" in real_run, (
+        "test premise: real publish run references manifest.json.sigstore"
+    )
+    ok_again = guard.check_sr2_001_manifest_no_basename_collision(wf)
+    assert ok_again.passed, (
+        "guard false-positived on the real publish step (the "
+        "'-not -name manifest.json.sigstore' clause must not be read as a "
+        f"manifest.json basename glob); {ok_again.message!r}"
     )
