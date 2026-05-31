@@ -224,6 +224,26 @@ interface VerifyOutcome {
 }
 
 /**
+ * RFC 3161 PKIStatus gate, fail-closed. A TimeStampToken is present only
+ * when PKIStatus is granted(0) or grantedWithMods(1); every other value --
+ * rejection(2), waiting(3), revocationWarning(4), revocationNotification(5),
+ * any out-of-range integer, a missing/undefined status from a malformed
+ * TSTInfo, or a large INTEGER decoded as a string by @peculiar/asn1-schema
+ * -- MUST be rejected.
+ *
+ * Mirrors the Python posture: rfc3161_client verify.py raises
+ * VerificationError("PKIStatus is not GRANTED") for non-granted statuses and
+ * PKIStatus(value) raises ValueError for an out-of-range integer; the Python
+ * verifier returns outcome="invalid" either way.
+ *
+ * Uses STRICT identity against the JS numbers 0 and 1 so the string "0", a
+ * BigInt(0), NaN, and 0.5 all fail (none is the number 0 or 1).
+ */
+export function _isAcceptablePkiStatus(statusVal: unknown): boolean {
+  return statusVal === 0 || statusVal === 1;
+}
+
+/**
  * Decode + verify a real RFC 3161 ``TimeStampResp`` DER blob against the
  * bundle binding digest and the supplied trust roots.
  *
@@ -245,8 +265,15 @@ function _verifyCryptographicSignature(args: {
   tsrDer: Buffer;
   bundleDigestBytes: Buffer;
   trustRoots: X509Certificate[];
+  /**
+   * The TSA gen_time. Per RFC 3161 the cert chain need only be valid AT the
+   * timestamp time (not now), so the validity window is checked against this
+   * instant. Mirrors rfc3161_client verify.py:347-352 which supplies
+   * tst_info.gen_time as the PKCS7 verification time.
+   */
+  genTime: Date;
 }): VerifyOutcome {
-  const { tsrDer, bundleDigestBytes, trustRoots } = args;
+  const { tsrDer, bundleDigestBytes, trustRoots, genTime } = args;
   if (trustRoots.length === 0) {
     return { ok: false, reason: "tsa_cert_chain_unknown_root" };
   }
@@ -260,11 +287,19 @@ function _verifyCryptographicSignature(args: {
   }
 
   // 2. PKIStatus must indicate granted (== 0) or grantedWithMods (== 1).
-  // PKIStatus is encoded as an INTEGER; the @peculiar/asn1-tsp class
-  // exposes the parsed enum on `tsr.status.status` as a numeric value.
+  // PKIStatus is encoded as an INTEGER; @peculiar/asn1-schema decodes small
+  // INTEGERs to a JS number but yields a *string* for values beyond
+  // Number.MAX_SAFE_INTEGER, and a malformed TSTInfo leaves the field
+  // undefined. The gate MUST fail closed on every non-granted shape -- the
+  // prior `typeof statusVal === "number" && ...` form SKIPPED the check
+  // entirely for non-numeric / missing / out-of-range status, letting a
+  // non-granted (or garbage) TSR slip past. Python rejects all of these:
+  // rfc3161_client verify.py raises VerificationError("PKIStatus is not
+  // GRANTED") and PKIStatus(value) raises ValueError on an out-of-range
+  // integer (parity).
   const statusVal = tsr.status?.status;
-  if (typeof statusVal === "number" && statusVal !== 0 && statusVal !== 1) {
-    return { ok: false, reason: `tsr_status_${statusVal}` };
+  if (!_isAcceptablePkiStatus(statusVal)) {
+    return { ok: false, reason: `tsr_status_${String(statusVal)}` };
   }
 
   // 3. TimeStampToken (ContentInfo wrapping SignedData).
@@ -308,7 +343,7 @@ function _verifyCryptographicSignature(args: {
   // test fixture. checkIssued(parent) + parent.verify(parent.publicKey)
   // covers the single-hop case; if the leaf is itself self-signed (root)
   // we still require it to appear in trustRoots.
-  const chainOk = _verifyLeafChainsToTrustRoots(leafCert, trustRoots);
+  const chainOk = _verifyLeafChainsToTrustRoots(leafCert, trustRoots, genTime);
   if (!chainOk) {
     return { ok: false, reason: "tsa_cert_chain_unknown_root" };
   }
@@ -456,10 +491,43 @@ function _trimIntLeadingZero(b: Buffer): Buffer {
   return b;
 }
 
+/**
+ * Is `cert` within its validity window (notBefore <= t <= notAfter) at
+ * instant `t`? RFC 5280 sec 4.1.2.5 defines the validity period as the
+ * closed interval [notBefore, notAfter], so both bounds are INCLUSIVE.
+ * This matches the Python/Rust path-validation semantics used by
+ * rfc3161_client (the certs "only need to be valid at timestamp time").
+ *
+ * node:crypto exposes validFrom/validTo as RFC-2822-ish date strings; we
+ * parse them with the Date constructor (the same way inspectTsaChain does)
+ * and reject (return false) if either parses to NaN -- fail closed.
+ */
+function _certValidAt(cert: X509Certificate, t: Date): boolean {
+  const notBefore = new Date(cert.validFrom).getTime();
+  const notAfter = new Date(cert.validTo).getTime();
+  if (Number.isNaN(notBefore) || Number.isNaN(notAfter)) {
+    return false;
+  }
+  const tt = t.getTime();
+  if (Number.isNaN(tt)) {
+    return false;
+  }
+  return notBefore <= tt && tt <= notAfter;
+}
+
 function _verifyLeafChainsToTrustRoots(
   leaf: X509Certificate,
   trustRoots: X509Certificate[],
+  genTime: Date,
 ): boolean {
+  // Per RFC 3161 the cert chain need only be valid AT the timestamp time
+  // (gen_time), not now. An expired-at-gen_time or not-yet-valid-at-gen_time
+  // leaf (or root) MUST be rejected even when the signature chains cleanly --
+  // matching rfc3161_client verify.py:347-352 which supplies gen_time as the
+  // PKCS7 verification time and validates every cert in the path against it.
+  if (!_certValidAt(leaf, genTime)) {
+    return false;
+  }
   // Single-hop chain: leaf -> root in trustRoots. The Python fixture
   // builder produces exactly this shape (root issues leaf directly).
   // node:crypto.X509Certificate.publicKey is already a KeyObject of type
@@ -469,6 +537,8 @@ function _verifyLeafChainsToTrustRoots(
     try {
       // checkIssued: does leaf claim to be issued by root (issuer == root.subject)?
       if (!leaf.checkIssued(root)) continue;
+      // The issuing root must ALSO be valid at gen_time (full-path validity).
+      if (!_certValidAt(root, genTime)) continue;
       // verify: does the leaf's signature verify under root's public key?
       if (leaf.verify(root.publicKey)) {
         return true;
@@ -477,7 +547,8 @@ function _verifyLeafChainsToTrustRoots(
       continue;
     }
   }
-  // Self-signed leaf? Accept if the leaf itself is one of the trust roots.
+  // Self-signed leaf? Accept if the leaf itself is one of the trust roots
+  // AND it is valid at gen_time (the leaf-window check above already passed).
   for (const root of trustRoots) {
     if (leaf.raw.equals(root.raw)) {
       return true;
@@ -558,9 +629,9 @@ function _extractSignedAttrValue(
   return null;
 }
 
-function _decodeAttrOctetString(val: ArrayBuffer): Buffer | null {
+export function _decodeAttrOctetString(val: ArrayBuffer): Buffer | null {
   // Attribute values for message_digest are DER-encoded OCTET STRINGs:
-  // 0x04 <len> <bytes>. Strip the 2- or 3-byte header.
+  // 0x04 <len> <bytes>. Strip the 2- to 5-byte header.
   const buf = Buffer.from(val);
   if (buf.length < 2 || buf[0] !== 0x04) {
     return null;
@@ -581,9 +652,21 @@ function _decodeAttrOctetString(val: ArrayBuffer): Buffer | null {
     for (let i = 0; i < lengthOfLength; i++) {
       const b = buf[2 + i];
       if (b === undefined) return null;
-      contentLen = (contentLen << 8) | b;
+      // Use Number arithmetic (contentLen * 256 + b), NOT the 32-bit bitwise
+      // form (contentLen << 8) | b. For a 4-byte length whose top bit is set
+      // (>= 0x80000000) the bitwise `<<` overflows JS's signed 32-bit
+      // operand and yields a NEGATIVE length, which then mis-handles the
+      // bounds check below. Number arithmetic keeps contentLen a correct
+      // non-negative integer for all 4-byte lengths (max 0xFFFFFFFF, well
+      // within Number.MAX_SAFE_INTEGER).
+      contentLen = contentLen * 256 + b;
     }
   }
+  // Fail closed on a length that runs past the buffer (DoS guard) rather
+  // than relying on the exact-fit equality check below. contentLen is
+  // guaranteed non-negative here, so a claimed length larger than the
+  // available bytes is a clean reject, never a wrapped/negative slice.
+  if (contentLen > buf.length - headerLen) return null;
   if (buf.length !== headerLen + contentLen) return null;
   return buf.subarray(headerLen, headerLen + contentLen);
 }
@@ -766,6 +849,9 @@ export function validateTsaToken(args: {
     tsrDer,
     bundleDigestBytes,
     trustRoots,
+    // The token gen_time parsed above is the RFC 3161 verification time for
+    // the cert chain validity window (notBefore <= gen_time <= notAfter).
+    genTime,
   });
   if (!verify.ok) {
     result.outcome = "invalid";
