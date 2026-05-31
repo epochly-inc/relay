@@ -33,6 +33,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import ipaddress
+import socket
 import unicodedata
 from collections.abc import Iterable
 from typing import Any, Final
@@ -66,6 +67,17 @@ _RFC1918_NETWORKS: Final[tuple[ipaddress.IPv4Network, ...]] = (
 # Link-local IPv4 range.
 _LINK_LOCAL_V4: Final[ipaddress.IPv4Network] = ipaddress.IPv4Network(
     "169.254.0.0/16"
+)
+
+# IPv4-in-IPv6 transition ranges whose embedded IPv4 lives in the low 32
+# bits (structural-review BUG 2). 6to4 (2002::/16) is unwrapped via the
+# stdlib ``IPv6Address.sixtofour`` accessor instead of a low-32-bit mask
+# because its IPv4 is embedded in bits 16-48, not the low 32.
+_NAT64_NETWORK: Final[ipaddress.IPv6Network] = ipaddress.IPv6Network(
+    "64:ff9b::/96"
+)
+_IPV4_COMPAT_NETWORK: Final[ipaddress.IPv6Network] = ipaddress.IPv6Network(
+    "::/96"
 )
 
 # Hostname denylist (BUG-B2 / audit-r3). The stdlib ``ipaddress.ip_address``
@@ -155,6 +167,63 @@ def _extract_host(entry: str) -> str:
     return host
 
 
+def _canonical_numeric_ipv4(host: str) -> str | None:
+    """Return the dotted-decimal IPv4 a libc resolver would derive from a
+    numeric-IPv4 literal, or ``None`` if ``host`` is not such a literal.
+
+    Structural-review SSRF under-block (BUG 1): ``ipaddress.ip_address``
+    REJECTS the non-dotted-decimal IPv4 encodings that ``inet_aton`` /
+    ``gethostbyname`` (and therefore libcurl, requests-via-socket, and the
+    OS resolver) silently accept: integer-form (``2130706433`` ==
+    127.0.0.1), hex-form (``0x7f000001``), octal-form (``0177.0.0.1``),
+    and short 1-to-4-part forms (``127.1`` -> 127.0.0.1). Left unhandled
+    these raised ValueError in ``_classify``, fell through the hostname
+    denylist (no match), and were ALLOWED -- a default-deny egress bypass
+    because the HTTP client still reaches the internal IP.
+
+    We canonicalize the SAME WAY the libc resolver does (``inet_aton`` ->
+    ``inet_ntoa``) so the dotted-decimal result can be re-run through the
+    existing classification. CRITICAL: this only NORMALIZES; the caller
+    must still classify the result, so a numeric form normalizing to a
+    PUBLIC IP stays ALLOWED exactly like its dotted-decimal twin. We do
+    NOT block all-numeric strings wholesale.
+
+    Alpha-guard: ``inet_aton`` accepts only digits, dots, and a leading
+    ``0x``/``0X`` hex prefix per part; a real DNS name (``api.openai.com``,
+    ``localhost``) raises OSError and returns ``None`` here so it stays on
+    the hostname path. We additionally reject any host carrying an alpha
+    char outside a ``0x`` hex prefix, so an accidental ``inet_aton`` accept
+    of a name-like token never coerces a hostname into the numeric path.
+    """
+    # Reject anything that is not an IPv4 literal: only ASCII digits, dots,
+    # and 'x'/'X' (the hex-prefix marker) are permitted. Hex letters a-f
+    # appear only after a '0x' marker, so a part like '0xff' is fine while a
+    # bare 'face' (a hostname label) is rejected. We enforce that every 'x'
+    # is immediately preceded by a '0' (i.e. a valid '0x' prefix) and that
+    # no other alpha appears except hex digits inside a hex part.
+    if not host:
+        return None
+    for part in host.split("."):
+        if not part:
+            # Empty part (e.g. leading/trailing/double dot) -- not a clean
+            # numeric literal; let inet_aton decide but most will OSError.
+            continue
+        lowered = part.lower()
+        if lowered.startswith("0x"):
+            body = lowered[2:]
+            if not body or any(c not in "0123456789abcdef" for c in body):
+                return None
+        else:
+            # Non-hex part must be pure (decimal/octal) digits.
+            if any(not c.isdigit() for c in lowered):
+                return None
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return None
+    return socket.inet_ntoa(packed)
+
+
 def _classify(host: str) -> tuple[str, str] | None:
     """Return ``(denied_reason, denied_cidr_or_endpoint)`` or ``None``
     if ``host`` is not denied by the SSRF guard.
@@ -182,6 +251,17 @@ def _classify(host: str) -> tuple[str, str] | None:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
+        # Structural-review BUG 1: ``ipaddress.ip_address`` rejects the
+        # non-dotted-decimal IPv4 encodings (integer / hex / octal /
+        # short-form) that the libc resolver -- and therefore the HTTP
+        # client that will actually dial this host -- silently accepts.
+        # Canonicalize them the SAME WAY ``inet_aton`` does and re-run the
+        # full classification so e.g. ``2130706433`` is rejected as
+        # 127.0.0.1 while ``134744072`` stays ALLOWED as the public
+        # 8.8.8.8 (no over-block of numeric forms that resolve public).
+        canonical = _canonical_numeric_ipv4(host)
+        if canonical is not None and canonical != host:
+            return _classify(canonical)
         # Not a literal IP -- run the hostname denylist (BUG-B2).
         # Normalize: lowercase + strip a single trailing dot (FQDN root).
         normalized = host.lower()
@@ -240,6 +320,29 @@ def _classify(host: str) -> tuple[str, str] | None:
         mapped = ip.ipv4_mapped
         if mapped is not None:
             return _classify(str(mapped))
+        # Structural-review BUG 2: IPv4-in-IPv6 TRANSITION forms also tunnel
+        # an IPv4 destination through an IPv6 literal, and like ipv4_mapped
+        # their wrapper ``is_*`` flags do not reflect the embedded IPv4's
+        # class. Unwrap each and re-classify on the embedded IPv4 so the
+        # denied_reason matches the bare-IPv4 form. Unwrap BEFORE the native
+        # flag checks below because some transition wrappers carry a
+        # misleading native flag (e.g. a 6to4 address wrapping the PUBLIC
+        # 8.8.8.8 reports ``is_private == True`` -- classifying it on the
+        # wrapper would OVER-BLOCK a legitimate public destination). Only
+        # the embedded IPv4's real class decides.
+        #
+        # 6to4 (2002::/16): the stdlib exposes the embedded IPv4 directly.
+        sixto = ip.sixtofour
+        if sixto is not None:
+            return _classify(str(sixto))
+        # NAT64 (64:ff9b::/96) and the deprecated IPv4-compatible (::/96)
+        # forms both carry the IPv4 in the low 32 bits. The native flag
+        # checks for loopback (``::1``) and unspecified (``::``) run first
+        # below so those specials keep their own reasons; remaining ::/96
+        # and all NAT64 addresses unwrap to their embedded IPv4 here.
+        if ip in _NAT64_NETWORK:
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+            return _classify(str(embedded))
         if ip.is_link_local:
             return ("link_local", "fe80::/10")
         # IPv6 private (ULA + loopback ::1) maps to rfc4193. Tag under
@@ -254,6 +357,19 @@ def _classify(host: str) -> tuple[str, str] | None:
             return ("multicast", "ff00::/8")
         if ip.is_unspecified:
             return ("reserved", "::/128")
+        # Structural-review BUG 2 (cont.): the deprecated IPv4-compatible
+        # form (``::/96``, e.g. ``::a9fe:a9fe`` for 169.254.169.254) carries
+        # the IPv4 in the low 32 bits. The loopback ``::1`` and unspecified
+        # ``::`` specials are already handled above (``is_private`` and
+        # ``is_unspecified`` respectively), so by here a ``::/96`` address
+        # is a genuine IPv4-compatible wrapper -- unwrap to its embedded
+        # IPv4 and re-classify (public embedded IPv4 stays ALLOWED). This
+        # runs before ``is_reserved`` because ``::/96`` addresses report
+        # ``is_reserved == True`` on the wrapper, which would otherwise
+        # over-block a public-wrapping compat form.
+        if ip in _IPV4_COMPAT_NETWORK:
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+            return _classify(str(embedded))
         if ip.is_reserved:
             return ("reserved", "ipv6_reserved")
     return None
