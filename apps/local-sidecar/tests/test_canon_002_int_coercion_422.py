@@ -201,3 +201,106 @@ async def test_valid_int_fields_still_accepted(
     )
     assert d.status_code == 202, d.text
     assert json.loads(d.text)["draft_ttl_seconds"] == 1200
+
+
+# ---- Non-integral JSON number rejection (codex-review P2) -----------------
+# _coerce_int_field used a bare ``int(raw)``, which TRUNCATES a non-integral
+# JSON float (1.9 -> 1, 0.5 -> 0) while REJECTING a non-integral numeric
+# STRING ("1.9" -> ValueError). That asymmetry silently accepted malformed
+# input. The fix rejects a non-integral float symmetrically (same canonical
+# RELAY-ING-001 422 the string-float reject path emits), while still
+# accepting integer-valued numbers (1.0 -> 1) and integer numeric strings.
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-002")
+@pytest.mark.asyncio
+async def test_post_gate_draft_non_integral_float_round_returns_422(
+    v2m02_client: V2M02Client,
+) -> None:
+    """``round: 1.9`` MUST be rejected (was: truncated to round 1)."""
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
+    r = await c.post(
+        "/v1/gates/gate-canon2-frac-round/drafts",
+        json={
+            "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+            "actor_identity_hash": _DRAFT_ACTOR_HASH,
+            "worker_id": "worker-canon2",
+            "round": 1.9,
+        },
+        headers=scope_header("gates:execute"),
+    )
+    _assert_canonical_422(r)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-002")
+@pytest.mark.asyncio
+async def test_put_gate_non_integral_float_ttl_returns_422(
+    v2m02_client: V2M02Client,
+) -> None:
+    """``draft_ttl_seconds: 0.5`` MUST be rejected (was: truncated to 0)."""
+    c, _db, _app = v2m02_client
+    r = await c.put(
+        "/v1/gates/gate-canon2-frac-ttl",
+        json={"name": "g", "draft_ttl_seconds": 0.5},
+        headers=scope_header("gates:configure"),
+    )
+    _assert_canonical_422(r)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-002")
+@pytest.mark.asyncio
+async def test_post_gate_draft_integer_valued_float_round_accepted(
+    v2m02_client: V2M02Client,
+) -> None:
+    """``round: 1.0`` (integer-valued JSON number) MUST still be accepted."""
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
+    r = await c.post(
+        "/v1/gates/gate-canon2-int-float-round/drafts",
+        json={
+            "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+            "actor_identity_hash": _DRAFT_ACTOR_HASH,
+            "worker_id": "worker-canon2",
+            "round": 1.0,
+        },
+        headers=scope_header("gates:execute"),
+    )
+    assert r.status_code == 202, r.text
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-002")
+@pytest.mark.asyncio
+async def test_post_gate_draft_plain_int_round_accepted(
+    v2m02_client: V2M02Client,
+) -> None:
+    """``round: 2`` (plain JSON integer) MUST still be accepted."""
+    c, db_path, _app = v2m02_client
+    await seed_three_anchor_handoff(
+        db_path,
+        actor_identity_hash=_DRAFT_ACTOR_HASH,
+        manifest_commit_hash=_DRAFT_MANIFEST_HASH,
+    )
+    r = await c.post(
+        "/v1/gates/gate-canon2-plain-int-round/drafts",
+        json={
+            "manifest_commit_hash": _DRAFT_MANIFEST_HASH,
+            "actor_identity_hash": _DRAFT_ACTOR_HASH,
+            "worker_id": "worker-canon2",
+            "round": 2,
+        },
+        headers=scope_header("gates:execute"),
+    )
+    assert r.status_code == 202, r.text

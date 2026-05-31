@@ -240,6 +240,96 @@ def _write_archived_ids_manifest(
     local_atomic_file_write(manifest_path, body, mode=0o600)
 
 
+def _pending_manifest_filename(now: datetime | None = None) -> str:
+    """Return the durable PENDING-archive manifest filename for the month.
+
+    VAL-ISO-009 (codex-review P2): the archived-ids manifest at
+    ``_manifest_filename`` records ids whose archive frame is COMMITTED but
+    whose live-table DELETE has not. That alone does not close the narrower
+    window between the archive byte-append and the archived-ids manifest
+    write: a crash there leaves a committed zstd frame on disk that NO
+    manifest records, so the next pass re-archives those ids (duplicates).
+
+    This PENDING manifest is written and fsync'd (via the atomic-file
+    primitive) BEFORE the archive bytes are appended. It records both the
+    candidate ``event_id``s and the SHA-256 the archive file WILL carry once
+    the append commits. On the next pass we reconcile: if the on-disk
+    archive digest matches ``expected_archive_digest`` the append committed
+    (promote the pending ids to archived, delete-only); otherwise the append
+    never committed (clear pending, archive the ids normally this pass).
+    Because the archive write is an atomic rename (all-or-nothing fsync), the
+    on-disk archive is exactly the pre-append OR the post-append bytes -- the
+    digest comparison is therefore decisive and an event is written into AT
+    MOST ONE committed frame across any crash.
+    """
+    return f"{_archive_filename(now)}.pending-archive.json"
+
+
+def _read_pending_archive_manifest(
+    pending_path: Path,
+) -> tuple[set[str], str | None]:
+    """Load the PENDING-archive manifest: (pending ids, expected digest).
+
+    Returns ``(set(), None)`` when the manifest is absent, empty, or
+    unreadable -- a missing/corrupt pending manifest simply means "no
+    in-flight append to reconcile", which degrades to the no-pending path.
+    Never raises.
+    """
+    if not pending_path.exists():
+        return set(), None
+    try:
+        raw = pending_path.read_bytes()
+    except OSError:
+        return set(), None
+    if not raw.strip():
+        return set(), None
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return set(), None
+    if not isinstance(data, dict):
+        return set(), None
+    ids = data.get("pending_event_ids")
+    digest = data.get("expected_archive_digest")
+    if not isinstance(ids, list):
+        return set(), None
+    pending = {str(x) for x in ids}
+    expected = digest if isinstance(digest, str) and digest else None
+    return pending, expected
+
+
+def _write_pending_archive_manifest(
+    pending_path: Path, event_ids: set[str], expected_digest: str
+) -> None:
+    """Durably record the ids about to be appended + the expected archive
+    digest, BEFORE the append. fsync'd via the atomic-file primitive.
+    """
+    body = json.dumps(
+        {
+            "pending_event_ids": sorted(event_ids),
+            "expected_archive_digest": expected_digest,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    local_atomic_file_write(pending_path, body, mode=0o600)
+
+
+def _clear_pending_archive_manifest(pending_path: Path) -> None:
+    """Durably clear the PENDING-archive manifest to the empty state.
+
+    Writing the empty record (rather than unlinking) keeps file presence
+    non-load-bearing and matches ``_write_archived_ids_manifest``'s
+    convention.
+    """
+    body = json.dumps(
+        {"pending_event_ids": [], "expected_archive_digest": ""},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    local_atomic_file_write(pending_path, body, mode=0o600)
+
+
 async def run_retention_pass(
     database: SidecarDatabase,
     *,
@@ -333,19 +423,59 @@ async def run_retention_pass(
         archive_path = archive_root / archive_name
         digest_path = archive_root / f"{archive_name}.sha256"
         manifest_path = archive_root / _manifest_filename(now)
+        pending_path = archive_root / _pending_manifest_filename(now)
 
-        # VAL-ISO-009 crash-safety reconciliation. The manifest records the
-        # event_ids written into this month's archive frame(s) by a prior
-        # pass whose live-table DELETE may NOT have committed (the process
-        # could have crashed in the window between the archive write and
-        # the DELETE COMMIT). Such ids are STILL live (we read them above)
-        # but they are ALREADY in the archive: re-archiving them would
-        # duplicate events. We therefore partition the candidate rows into
-        #   - ``to_delete_only``: ids already in the manifest -> delete, do
-        #     NOT re-archive.
-        #   - rows to archive: ids absent from the manifest -> archive then
-        #     delete.
+        # VAL-ISO-009 crash-safety reconciliation. Two durable records guard
+        # the archive-then-delete sequence:
+        #   - ARCHIVED manifest (``manifest_path``): ids whose archive frame
+        #     is COMMITTED but whose live-table DELETE may NOT have committed.
+        #     Such ids are STILL live (we read them above) but are ALREADY in
+        #     the archive: re-archiving would duplicate events. They are
+        #     delete-only on this pass.
+        #   - PENDING manifest (``pending_path``): ids whose archive byte-
+        #     append was IN FLIGHT when a prior pass crashed -- the narrow
+        #     window (codex-review P2) between the atomic archive append and
+        #     the ARCHIVED-manifest promotion. The PENDING record is written
+        #     BEFORE the append and carries the digest the archive WILL have
+        #     once the append commits. We reconcile it here: because the
+        #     append is an atomic rename, the on-disk archive equals exactly
+        #     the pre-append OR the post-append bytes, so comparing the
+        #     current archive digest against the recorded expected digest is
+        #     decisive.
         already_archived = _read_archived_ids_manifest(manifest_path)
+        pending_ids, expected_pending_digest = _read_pending_archive_manifest(
+            pending_path
+        )
+        if pending_ids:
+            current_archive_digest: str | None = None
+            if archive_path.exists():
+                current_archive_digest = hashlib.sha256(
+                    archive_path.read_bytes()
+                ).hexdigest()
+            if (
+                expected_pending_digest is not None
+                and current_archive_digest == expected_pending_digest
+            ):
+                # The in-flight append COMMITTED before the crash: the frame
+                # for the pending ids is durably in the archive. Promote them
+                # to the ARCHIVED manifest (delete-only henceforth) and clear
+                # PENDING. They must NOT be re-archived.
+                already_archived.update(pending_ids)
+                _write_archived_ids_manifest(manifest_path, already_archived)
+                _clear_pending_archive_manifest(pending_path)
+            else:
+                # The in-flight append did NOT commit (digest mismatch or
+                # archive absent): the on-disk archive is the pre-append
+                # state and contains NO frame for the pending ids. Clear
+                # PENDING; the ids are not yet archived and will be archived
+                # normally on this pass -- still at-most-once.
+                _clear_pending_archive_manifest(pending_path)
+
+        # Partition the candidate rows:
+        #   - ``delete_only_event_ids``: ids already in the ARCHIVED manifest
+        #     -> delete, do NOT re-archive.
+        #   - rows to archive: ids absent from the ARCHIVED manifest ->
+        #     archive then delete.
 
         archived_rows: list[dict[str, Any]] = []
         archived_event_ids: list[str] = []
@@ -412,15 +542,36 @@ async def run_retention_pass(
 
             # Append-or-create semantics: if a prior pass already wrote this
             # month's archive, concatenate (zstandard frames concatenate
-            # losslessly). Then re-hash the resulting bytes.
+            # losslessly). We pre-compute the exact bytes the archive WILL
+            # hold after the append, and therefore the post-append digest,
+            # BEFORE writing anything. This lets us record the PENDING
+            # manifest (ids + expected digest) durably ahead of the append.
             if archive_path.exists():
                 existing = archive_path.read_bytes()
                 combined = existing + archive_bytes
-                local_atomic_file_write(archive_path, combined, mode=0o600)
-                final_digest = hashlib.sha256(combined).hexdigest()
             else:
-                local_atomic_file_write(archive_path, archive_bytes, mode=0o600)
-                final_digest = hashlib.sha256(archive_bytes).hexdigest()
+                combined = archive_bytes
+            final_digest = hashlib.sha256(combined).hexdigest()
+
+            # VAL-ISO-009 (codex-review P2) crash-safe sequence. Record the
+            # candidate ids + the post-append digest in the PENDING manifest
+            # (fsync'd via the atomic-file primitive) BEFORE the append. If
+            # the process crashes AFTER the append but BEFORE the ARCHIVED-
+            # manifest promotion below, the next pass reconciles via this
+            # PENDING record: the on-disk archive digest will equal
+            # ``final_digest`` (the append is an atomic rename, so the file
+            # is exactly ``combined``), so the next pass promotes these ids
+            # to delete-only WITHOUT re-archiving. If instead the crash
+            # happened BEFORE the append committed, the on-disk archive
+            # equals the pre-append bytes (digest != ``final_digest``) and
+            # the next pass clears PENDING and archives normally. Either way
+            # an event is written into AT MOST ONE committed frame.
+            _write_pending_archive_manifest(
+                pending_path, set(archived_event_ids), final_digest
+            )
+
+            # Single atomic append-or-create write of the combined bytes.
+            local_atomic_file_write(archive_path, combined, mode=0o600)
 
             # Atomic write of the digest sidecar (text form:
             # "<hex>  <basename>\n" matches GNU coreutils sha256sum output).
@@ -444,13 +595,19 @@ async def run_retention_pass(
                     threshold_bytes=limit,
                 )
 
-            # VAL-ISO-009: durably record the newly-archived ids in the
-            # manifest BEFORE the DELETE. If the process crashes after this
-            # point but before the DELETE COMMIT, the rows remain live AND
-            # are recorded here, so the next pass deletes them WITHOUT
+            # VAL-ISO-009 promotion: the archive frame is verified committed,
+            # so promote the pending ids into the ARCHIVED manifest BEFORE the
+            # DELETE, then clear PENDING. Order matters: the ARCHIVED record
+            # must be durable before PENDING is cleared, so a crash between
+            # the two writes leaves BOTH records present and the next pass's
+            # reconcile is still correct (digest matches -> promote again,
+            # idempotently -> clear). After this point, if the process
+            # crashes before the DELETE COMMIT, the rows remain live AND are
+            # recorded as archived, so the next pass deletes them WITHOUT
             # re-archiving -- no duplicate events.
             already_archived.update(archived_event_ids)
             _write_archived_ids_manifest(manifest_path, already_archived)
+            _clear_pending_archive_manifest(pending_path)
         elif archive_path.exists():
             # No new rows to archive (every candidate was a previously-
             # archived delete-only id). The archive on disk is unchanged;

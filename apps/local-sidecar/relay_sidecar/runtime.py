@@ -3551,6 +3551,15 @@ def build_runtime_app(
         is caught; no other error is masked. Booleans are rejected because
         ``int(True)`` would silently coerce to 1 -- a non-int JSON type is a
         malformed field, not a numeric value.
+
+        Codex-review P2: a non-integral JSON number (e.g. ``1.9``, ``0.5``)
+        is also rejected. Previously a bare ``int(raw)`` TRUNCATED such a
+        float (``1.9 -> 1``, ``0.5 -> 0``), silently accepting malformed
+        input, while a non-integral numeric STRING (``"1.9"``) was already
+        rejected (``int("1.9")`` raises ``ValueError``). Number and string
+        handling are now symmetric: both reject non-integral values. An
+        integer-valued number (``1.0``) is still accepted, coerced to its
+        exact int.
         """
         if isinstance(raw, bool):
             return None, JSONResponse(
@@ -3561,6 +3570,27 @@ def build_runtime_app(
                     message=(
                         f"field {field_name!r} MUST be an integer, "
                         "not a boolean"
+                    ),
+                    blocked_surface=blocked_surface,
+                    details={"field": field_name},
+                ),
+                headers=_rate_limit_headers_for(request),
+            )
+        # Reject non-integral JSON numbers BEFORE int() so a fractional
+        # float is not silently truncated. float.is_integer() is True only
+        # for whole-valued floats (1.0, -3.0); NaN/inf return False, so they
+        # are rejected too (int(nan) would raise anyway, but rejecting here
+        # keeps the message consistent). int subclasses (real JSON integers)
+        # are not float, so they skip this branch and pass through unchanged.
+        if isinstance(raw, float) and not raw.is_integer():
+            return None, JSONResponse(
+                status_code=422,
+                content=_build_error_envelope(
+                    code="RELAY-ING-001",
+                    http_status=422,
+                    message=(
+                        f"field {field_name!r} MUST be an integer-valued "
+                        "JSON number or numeric string"
                     ),
                     blocked_surface=blocked_surface,
                     details={"field": field_name},
