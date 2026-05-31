@@ -444,6 +444,77 @@ def test_manifest_loader_rejects_oversize_canonical_json() -> None:
         safe_load_yaml(big)
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-016")
+def test_manifest_loader_accepts_under_canonical_limit_despite_spaced_dump() -> None:
+    """VAL-ISO-016 / AI.1 (codex P2): the size cap is on CANONICAL/compact
+    JSON. A payload whose COMPACT canonical form is under 256 KiB but whose
+    spaced ``json.dumps`` default form exceeds it MUST load.
+
+    The pre-fix size check measured ``json.dumps(obj)`` with the DEFAULT
+    separators ``(', ', ': ')`` (spaces), so a list of 88000 zeros measured
+    264000 bytes (over the 262144 cap) and was WRONGLY rejected, even though
+    its compact canonical form is 176001 bytes (well under the cap).
+    """
+    import json
+
+    from relay_schemas.manifest import MAX_YAML_CANONICAL_BYTES, safe_load_yaml
+
+    payload = [0] * 88000
+    compact = len(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
+    spaced = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    # Precondition: the example straddles the cap exactly as codex reported.
+    assert compact <= MAX_YAML_CANONICAL_BYTES < spaced, (
+        f"test fixture invalid: compact={compact} spaced={spaced} "
+        f"cap={MAX_YAML_CANONICAL_BYTES}"
+    )
+    doc = "[" + ",".join(["0"] * 88000) + "]"
+    out = safe_load_yaml(doc)
+    assert out == payload
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-016")
+def test_manifest_loader_rejects_oversize_compact_canonical_json() -> None:
+    """VAL-ISO-016 / AI.1 (codex P2): the cap still rejects a payload whose
+    COMPACT canonical form genuinely exceeds 256 KiB.
+
+    Guards against the fix over-relaxing the budget: a list whose compact
+    canonical bytes exceed the cap MUST still raise ``YamlSizeExceededError``.
+    """
+    import json
+
+    from relay_schemas.manifest import (
+        MAX_YAML_CANONICAL_BYTES,
+        MAX_YAML_EXPANDED_NODES,
+        YamlSizeExceededError,
+        safe_load_yaml,
+    )
+
+    # 40000 eight-char strings: 40001 nodes (under the 100000 node cap, so the
+    # alias-bomb check does NOT fire first) yet ~440 KiB compact (over the
+    # 256 KiB size cap). This isolates the SIZE check from the node-count cap.
+    count = 40000
+    item = "x" * 8
+    payload = [item] * count
+    compact = len(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
+    # Preconditions: compact form is genuinely over the SIZE cap, and the node
+    # count stays under the alias-bomb cap so we exercise the size path.
+    assert compact > MAX_YAML_CANONICAL_BYTES, (
+        f"test fixture invalid: compact={compact} cap={MAX_YAML_CANONICAL_BYTES}"
+    )
+    assert count + 1 <= MAX_YAML_EXPANDED_NODES, (
+        f"test fixture invalid: nodes={count + 1} node_cap={MAX_YAML_EXPANDED_NODES}"
+    )
+    doc = "[" + ",".join([item] * count) + "]"
+    with pytest.raises(YamlSizeExceededError):
+        safe_load_yaml(doc)
+
+
 # ---------------------------------------------------------------------------
 # VAL-V3M5-012: contract DSL YAML loader enforces depth <= 16.
 # ---------------------------------------------------------------------------

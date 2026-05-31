@@ -261,7 +261,25 @@ def safe_load_yaml(stream: str | bytes, *, max_depth: int = MAX_YAML_DEPTH) -> A
     _scan_yaml_event_stream(stream, max_depth=max_depth)
     result = yaml.safe_load(stream)
     if result is not None:
-        size = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        # The cap is defined on CANONICAL (compact, key-sorted) JSON per spec
+        # AI.1 / :data:`MAX_YAML_CANONICAL_BYTES`. Measure the canonical form:
+        # default ``json.dumps`` separators are ``(', ', ': ')`` (with
+        # whitespace), which OVER-COUNTS every key/element boundary and would
+        # wrongly reject a payload whose canonical form is under the cap (e.g.
+        # a flat list whose spaced dump straddles the limit). Compact
+        # separators ``(',', ':')`` match the JCS canonical bytes the rest of
+        # the package emits (relay_schemas.envelopes.canonical_bytes); key
+        # sorting does not change the byte count but pins the canonical form.
+        # ``allow_nan`` is left at its permissive default so a YAML doc with
+        # ``.inf`` / ``.nan`` is size-measured rather than newly rejected here.
+        size = len(
+            json.dumps(
+                result,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
         if size > MAX_YAML_CANONICAL_BYTES:
             raise YamlSizeExceededError(size)
     return result

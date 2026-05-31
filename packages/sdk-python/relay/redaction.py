@@ -108,6 +108,30 @@ DEFAULT_APPLIES_TO_FIELDS: Final[tuple[str, ...]] = (
 # Python side too so the same policy body loads (or is rejected) identically.
 _PYTHON_NAMED_GROUP_RE: Final[re.Pattern[str]] = re.compile(r"\(\?P[<=]")
 
+# Inline-flag letters the cross-language dialect SUPPORTS inside a
+# ``(?flags)`` (global) or ``(?flags:...)`` (scoped) group. This MUST equal
+# the TypeScript ``SUPPORTED_INLINE_FLAGS`` key set ({i, s, m}) so the two
+# SDKs agree on which flag groups compile. Every OTHER flag letter Python's
+# ``re`` tolerates (``a`` ASCII, ``u`` UNICODE, ``x`` VERBOSE, ``L`` LOCALE)
+# is rejected below: JavaScript ``RegExp`` cannot compile any of those flag
+# groups (``Invalid group``), so accepting them on Python only would mean one
+# SDK silently has no redaction rule while the other errors -- a Py<->TS
+# divergence (codex P2). ``L`` is already refused by Python's ``re`` for str
+# patterns; rejecting it here too keeps the failure on the same path.
+_SUPPORTED_INLINE_FLAGS: Final[frozenset[str]] = frozenset("ism")
+
+# A ``(?<flagrun>`` group open where ``<flagrun>`` is a maximal run of the
+# inline-flag letters, terminated by ``)`` (global form ``(?flags)``) or
+# ``:`` (scoped form ``(?flags:...)``). Mirrors the ReDoS scanner's
+# inline-flag recognition (:func:`_group_open_prefix_end`); used here only to
+# detect a flag group so its flag set can be checked against the supported
+# subset. Other ``(?...)`` constructs (``(?:``, ``(?=``, ``(?<name>`` ...)
+# do not match because their first char after ``(?`` is not an inline-flag
+# letter.
+_INLINE_FLAG_GROUP_RE: Final[re.Pattern[str]] = re.compile(
+    r"\(\?([imsxauL]+)[:)]"
+)
+
 
 def _compile_regex_pattern(raw_pattern: str) -> re.Pattern[str]:
     """Compile a policy regex matcher under the pinned cross-language dialect.
@@ -115,10 +139,21 @@ def _compile_regex_pattern(raw_pattern: str) -> re.Pattern[str]:
     Mirrors the TypeScript ``compileRegexPattern`` bridge (VAL-REDACT-003):
     Python's ``re`` natively understands leading inline flags such as
     ``(?i)password`` (the default policy uses them), so we let ``re.compile``
-    handle flag translation. We additionally reject Python named groups
-    ``(?P<name>...)`` / ``(?P=name)`` so the supported dialect is identical
-    on both runtimes -- TS cannot compile that syntax, and a matcher must not
-    silently match on one SDK while throwing on the other.
+    handle flag translation for the SUPPORTED subset {i, s, m}. We reject:
+
+      - Python named groups ``(?P<name>...)`` / ``(?P=name)`` (TS cannot
+        compile that syntax).
+      - Inline-flag groups carrying a flag OUTSIDE {i, s, m} -- the scoped
+        ``(?a:...)`` / ``(?u:...)`` / ``(?x:...)`` / ``(?L:...)`` forms and the
+        global ``(?a)`` / ``(?u)`` / ``(?x)`` / ``(?L)`` forms. Python's ``re``
+        accepts the ``a`` / ``u`` / ``x`` forms (and ``L`` only fails late),
+        but JavaScript ``RegExp`` rejects every one of them; accepting them on
+        Python alone would make a matcher silently inert on one SDK while
+        throwing on the other (codex P2 Py<->TS divergence).
+
+    So that the same policy body loads (or is rejected) identically on both
+    runtimes, a matcher must not silently match on one SDK while throwing on
+    the other.
 
     Raises :class:`re.error` for invalid syntax (the caller maps it to a
     ``bad_regex`` policy error). Named-group rejection raises
@@ -130,6 +165,16 @@ def _compile_regex_pattern(raw_pattern: str) -> re.Pattern[str]:
             "Python named groups '(?P<name>...)' / '(?P=name)' are not part "
             "of the supported cross-language regex dialect"
         )
+    for flag_run in _INLINE_FLAG_GROUP_RE.findall(raw_pattern):
+        unsupported = sorted(set(flag_run) - _SUPPORTED_INLINE_FLAGS)
+        if unsupported:
+            raise re.error(
+                "unsupported inline regex flag(s) "
+                f"'{''.join(unsupported)}' in '(?{flag_run})': only the "
+                "(?i), (?s), (?m) inline flags (and their scoped "
+                "'(?i:...)' forms) are part of the supported "
+                "cross-language regex dialect"
+            )
     return re.compile(raw_pattern)
 
 

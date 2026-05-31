@@ -169,3 +169,50 @@ describe("VAL-REDACT-003: pinned dialect rejects mid-pattern global flags", () =
     expect(() => loadRedactionPolicy(policyWithRegex("(sk-|key_)[A-Za-z0-9]{20,}"))).not.toThrow();
   });
 });
+
+// -----------------------------------------------------------------------------
+// codex P2 follow-up: Python-only inline flags (a/u/x/L) are rejected on TS,
+// mirroring the Python SDK. Python's ``re`` accepts the scoped ``(?a:...)`` /
+// ``(?u:...)`` / ``(?x:...)`` groups and the global ``(?a)`` / ``(?u)`` /
+// ``(?x)`` forms, but JavaScript ``RegExp`` cannot compile any of them. The
+// Python SDK now rejects them too; this test pins that TS already rejects them
+// consistently so the two SDKs agree on accept/reject for the same policy.
+// -----------------------------------------------------------------------------
+
+describe("codex P2: Python-only inline flags (a/u/x/L) rejected on TS too", () => {
+  const PYTHON_ONLY_INLINE_FLAG_PATTERNS = [
+    "(?a:password)",
+    "(?u:password)",
+    "(?x:password)",
+    "(?a)password",
+    "(?u)password",
+    "(?x)password",
+    "(?L:password)",
+    "(?L)password",
+  ];
+
+  for (const pattern of PYTHON_ONLY_INLINE_FLAG_PATTERNS) {
+    it(`${pattern} is rejected with a RelayRedactionPolicyError`, () => {
+      let caught: unknown = null;
+      try {
+        loadRedactionPolicy(policyWithRegex(pattern));
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(RelayRedactionPolicyError);
+      expect(caught).toBeInstanceOf(RelayPolicyError);
+      const err = caught as RelayRedactionPolicyError;
+      // The rejection lands on an existing dialect-rejection reason; the
+      // scoped forms fail JS RegExp compilation (bad_regex) while the global
+      // forms are caught as unsupported leading inline flags. Either way the
+      // policy is rejected, agreeing with the Python SDK on accept/reject.
+      expect(["bad_regex", "unsupported_inline_flag"]).toContain(
+        err.details["reason"],
+      );
+    });
+  }
+
+  it("the supported (?i)foo still loads (no over-rejection)", () => {
+    expect(() => loadRedactionPolicy(policyWithRegex("(?i)foo"))).not.toThrow();
+  });
+});

@@ -1001,6 +1001,113 @@ def test_python_named_backreference_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# VAL-REDACT-003 (codex P2 follow-up): Python-only scoped / global inline
+# flags must be rejected so the supported dialect agrees with TS on
+# accept/reject. Python's ``re`` accepts the scoped ASCII / Unicode flag
+# groups ``(?a:...)`` / ``(?u:...)`` and the global ``(?a)`` / ``(?u)`` forms
+# (and tolerates verbose ``(?x:...)`` / ``(?x)``), but JavaScript ``RegExp``
+# rejects all of them (``Invalid group``). Pre-fix a matcher using
+# ``(?a:password)`` LOADED on Python but THREW on TS -- a Py<->TS divergence
+# where one SDK silently has no rule while the other errors. Post-fix Python
+# rejects them too via the existing ``bad_regex`` path so both SDKs agree.
+# ``(?L:...)`` / ``(?L)`` were already rejected by Python's ``re`` (str
+# patterns cannot use the LOCALE flag) and by TS; kept here for coverage.
+# ---------------------------------------------------------------------------
+
+# Patterns Python USED to accept but TS rejects (and a couple Python already
+# rejected). After the fix every one of these must be rejected by BOTH SDKs.
+_PYTHON_ONLY_INLINE_FLAG_PATTERNS: tuple[str, ...] = (
+    "(?a:password)",
+    "(?u:password)",
+    "(?x:password)",
+    "(?a)password",
+    "(?u)password",
+    "(?x)password",
+    "(?L:password)",
+    "(?L)password",
+)
+
+
+def _inline_flag_policy(pattern: str) -> dict:
+    return {
+        **_INLINE_FLAG_POLICY,
+        "matchers": [
+            {"id": "m", "kind": "regex", "pattern": pattern, "action": "redact"}
+        ],
+    }
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _PYTHON_ONLY_INLINE_FLAG_PATTERNS)
+def test_python_only_inline_flag_rejected(pattern: str) -> None:
+    """A Python-only scoped/global inline-flag group MUST be rejected by the
+    Python SDK so a pattern TS cannot compile is also rejected on Python.
+
+    Pre-fix Python ``re.compile`` accepted ``(?a:password)`` / ``(?u:...)`` /
+    ``(?x:...)`` (and the global forms) while TS threw 'Invalid group' --
+    one SDK silently had no redaction rule. Post-fix Python rejects them via
+    the existing ``RelayPolicyError`` policy-load path (code RELAY-SDK-010).
+    """
+    with pytest.raises(RelayPolicyError) as excinfo:
+        RedactionPolicy.load(_inline_flag_policy(pattern))
+    # Reuses an existing rejection reason -- no new code is invented. The
+    # rejection lands on the same policy-load failure path as other
+    # unsupported regex constructs (bad_regex / unsupported_inline_flag).
+    reason = excinfo.value.details.get("reason")
+    assert reason in ("bad_regex", "unsupported_inline_flag"), (
+        f"unexpected rejection reason for {pattern!r}: {reason!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _PYTHON_ONLY_INLINE_FLAG_PATTERNS)
+def test_python_only_inline_flag_rejected_like_typescript(pattern: str) -> None:
+    """Py<->TS parity: a Python-only inline-flag pattern that Python now
+    rejects MUST also be rejected by the TS ``loadRedactionPolicy``.
+
+    Authoritative when Node + the TS dist are present; skipped otherwise
+    (offline tier-1). Asserts the two SDKs AGREE on reject for the same
+    policy body.
+    """
+    outcome = _ts_load_outcome_via_node(_inline_flag_policy(pattern))
+    if outcome is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language accept/reject parity cannot be checked"
+        )
+    assert outcome["ok"] is False, (
+        f"TS unexpectedly ACCEPTED {pattern!r}: {outcome!r}; "
+        "Py<->TS accept/reject parity broken"
+    )
+
+
+@pytest.mark.plumbing
+def test_supported_inline_flag_not_over_rejected() -> None:
+    """The supported ``(?i)foo`` matcher MUST still load on Python (the fix
+    must not over-reject patterns BOTH runtimes accept)."""
+    policy = RedactionPolicy.load(_inline_flag_policy("(?i)foo"))
+    assert len(policy.matchers) == 1
+
+
+@pytest.mark.plumbing
+def test_supported_inline_flag_not_over_rejected_like_typescript() -> None:
+    """Py<->TS parity: the supported ``(?i)foo`` matcher loads on BOTH SDKs.
+
+    Guards against the fix over-rejecting a pattern both runtimes accept.
+    Authoritative when Node + the TS dist are present; skipped otherwise.
+    """
+    outcome = _ts_load_outcome_via_node(_inline_flag_policy("(?i)foo"))
+    if outcome is None:
+        pytest.skip(
+            "node binary or TS dist (packages/sdk-typescript/dist) not "
+            "available; cross-language accept/reject parity cannot be checked"
+        )
+    assert outcome["ok"] is True, (
+        f"TS unexpectedly REJECTED supported '(?i)foo': {outcome!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # VAL-REDACT-004 (HIGH / security): overlapping matcher spans merge to their
 # INTERVAL UNION on BOTH runtimes. The Python interval-union merge landed as
 # VAL-REDACT-002 (relay/packages/sdk-python/relay/redaction.py
