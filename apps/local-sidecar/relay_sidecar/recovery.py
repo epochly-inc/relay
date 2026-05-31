@@ -511,8 +511,17 @@ def recover_or_refuse(db_path: Path) -> dict[str, object]:
          the post-recovery state is also clean.
       6. Read the LIVE schema version (``__schema_migrations`` count,
          legacy ``_sidecar_schema_version`` row as fallback) and compare
-         to ``SUPPORTED_SCHEMA_VERSION`` (the migration-file count);
-         mismatch -> exit 5 (VAL-ISO-001).
+         to ``SUPPORTED_SCHEMA_VERSION`` (the migration-file count).
+         Refuse (exit 5) ONLY when the DB is AHEAD of the binary
+         (``observed > supported``): that is a genuine DOWNGRADE -- a
+         newer binary applied migrations this older binary cannot undo
+         (no down-migrations exist; destructive ALTER/DROP/RENAME
+         migrations would leave this binary referencing a schema it does
+         not understand). A DB BEHIND the binary (``observed < supported``)
+         is the NORMAL UPGRADE path: the binary ships migrations not yet
+         applied, so boot proceeds and ``SidecarDatabase.open`` ->
+         ``_run_migrations`` reconciles the count to ``supported``
+         (VAL-ISO-001, schema-drift upgrade-gate fix).
       7. If WAL was present at startup, emit a single
          ``sidecar.crash_recovered`` event_log row.
 
@@ -582,22 +591,40 @@ def recover_or_refuse(db_path: Path) -> dict[str, object]:
     # undetected (VAL-ISO-001).
     observed_version = _read_observed_schema_version(db_path)
     # ``None`` is the "pristine pre-runner DB" path; the migration runner
-    # will create the tables on first lifespan startup. We only refuse
-    # when a version source EXISTS but disagrees with the binary.
+    # will create the tables on first lifespan startup.
     # ``SUPPORTED_SCHEMA_VERSION == 0`` means the migrations dir could not
     # be located (packaged distribution edge case); we cannot determine
     # drift in that case, so we never refuse on it.
+    #
+    # DIRECTIONAL gate (schema-drift upgrade-gate fix). The earlier strict
+    # ``!=`` bricked EVERY incremental upgrade: a production DB at the
+    # previous migration count (observed = supported - 1), opened by a
+    # binary shipping one new migration, read observed != supported and
+    # exited 5 BEFORE migrations ran -- so the new migration that would
+    # reconcile the count could never run. We must distinguish direction:
+    #
+    #   - observed > supported  -> DB is AHEAD of the binary. A NEWER
+    #     binary migrated this DB and an OLDER binary is now opening it:
+    #     a genuine, UNSAFE DOWNGRADE. There are no down-migrations, and
+    #     destructive ALTER/DROP/RENAME migrations leave this binary
+    #     facing a schema it does not understand. REFUSE (exit 5).
+    #   - observed == supported -> current; proceed.
+    #   - observed < supported  -> DB is BEHIND the binary. The NORMAL
+    #     UPGRADE path: the binary ships migrations not yet applied.
+    #     Proceed so ``SidecarDatabase.open`` -> ``_run_migrations``
+    #     applies the pending migrations and reconciles observed to
+    #     supported. Do NOT refuse.
     if (
         observed_version is not None
         and SUPPORTED_SCHEMA_VERSION > 0
-        and observed_version != SUPPORTED_SCHEMA_VERSION
+        and observed_version > SUPPORTED_SCHEMA_VERSION
     ):
         envelope = {
             "code": RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN_CODE,
             "error_class": RELAY_SIDECAR_SCHEMA_VERSION_UNKNOWN,
             "message": (
-                "sidecar refuses to start: schema_version mismatch between "
-                "database and binary"
+                "sidecar refuses to start: database schema is AHEAD of this "
+                "binary (downgrade); no down-migrations exist"
             ),
             "details": {
                 "db_path": str(db_path),

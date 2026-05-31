@@ -17,22 +17,44 @@ record of which migrations the DB has applied), falling back to the
 legacy ``_sidecar_schema_version`` row only when ``__schema_migrations``
 is absent (pre-runner / unit-seed DBs).
 
-These tests are RED at base commit (frozen 8) and GREEN after the fix.
+Follow-on defect (structural-review schema-drift upgrade-gate, P1): the
+LIVE version made the gate's strict ``!=`` comparison upgrade-breaking.
+``recover_or_refuse`` runs BEFORE the migration runner (runtime.py:510 in
+lifespan, runtime.py:5802 in run_uvicorn, both before
+``SidecarDatabase.open`` -> ``_run_migrations``). A production DB at
+N-1 applied migrations, opened by a binary shipping migration N, read
+observed=N-1 != supported=N and exited 5 BEFORE migrations could run --
+so the migration that would reconcile the count was permanently
+unreachable. EVERY incremental upgrade bricked the sidecar.
+
+Directional fix: the gate refuses ONLY on ``observed > supported`` (DB
+AHEAD of binary = genuine unsafe DOWNGRADE; no down-migrations exist).
+``observed == supported`` is current; ``observed < supported`` is the
+normal UPGRADE path and proceeds so the runner applies the pending
+migrations. Downgrade refusal (exit 5 /
+RELAY-SIDECAR-SCHEMA-VERSION-UNKNOWN) is preserved.
+
+These tests are RED at base commit (frozen 8 / strict-!= gate) and GREEN
+after the fix.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
 
 from __future__ import annotations
 
+import asyncio
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import NoReturn
 
 import pytest
 from relay_sidecar import recovery
+from relay_sidecar.db import SidecarDatabase
 from relay_sidecar.recovery import (
     EXIT_CODE_SCHEMA_VERSION_UNKNOWN,
     SUPPORTED_SCHEMA_VERSION,
+    _read_observed_schema_version,
     recover_or_refuse,
 )
 
@@ -149,17 +171,66 @@ def test_drift_detected_when_legacy_row_frozen_but_migrations_advanced(
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-ISO-001")
-def test_drift_detected_when_db_behind_binary(
+def test_upgrade_path_db_behind_binary_boots_does_not_exit_5(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A DB that applied only the 0008-era migrations (8 rows) opened by a
-    binary whose migration set is the full count must be detected as drift
-    and refused with exit 5 -- the frozen-8 mechanism missed this."""
+    """UPGRADE PATH (schema-drift upgrade-gate fix).
+
+    A DB that applied only the first N-1 migrations (``observed <
+    supported``), opened by a binary shipping the Nth migration, is the
+    NORMAL incremental-upgrade case. The recovery gate MUST NOT exit 5:
+    refusing here bricked every upgrade because the gate runs BEFORE the
+    migration runner, so the Nth migration that would reconcile the count
+    could never run.
+
+    The earlier strict ``!=`` codified the WRONG direction (this test
+    previously asserted observed<supported -> exit 5). Inverted: the gate
+    must let boot proceed so ``SidecarDatabase.open`` -> ``_run_migrations``
+    applies the pending migration(s)."""
     db_path = tmp_path / "behind.db"
-    eight = _migration_filenames()[:8]
-    assert len(eight) == 8
+    all_migrations = _migration_filenames()
+    behind = all_migrations[:-1]
+    assert len(behind) == SUPPORTED_SCHEMA_VERSION - 1, (
+        "fixture invariant: behind set is exactly one migration short of HEAD"
+    )
     _seed_db_with_applied_migrations(
-        db_path, applied=eight, frozen_legacy_version=8
+        db_path, applied=behind, frozen_legacy_version=8
+    )
+    captured = _patch_exit(monkeypatch)
+
+    summary = recover_or_refuse(db_path)
+
+    assert captured == [], (
+        "schema-drift upgrade-gate: a DB BEHIND the binary (observed < "
+        "supported) is the normal upgrade path and MUST NOT exit 5; the "
+        f"migration runner reconciles it on open. envelope(s)={captured}"
+    )
+    # The observed version at the gate is the (count - 1) live migration
+    # count; reconciliation to ``supported`` happens in the migration
+    # runner (covered end-to-end by the e2e test below).
+    assert summary["schema_version"] == SUPPORTED_SCHEMA_VERSION - 1, summary
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-001")
+def test_downgrade_db_ahead_of_binary_still_exits_5(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DOWNGRADE PATH (preserved safety gate).
+
+    A DB AHEAD of the binary (``observed > supported``) means a NEWER
+    binary migrated this DB and an OLDER binary is now opening it -- a
+    genuine, UNSAFE downgrade. There are no down-migrations, and
+    destructive ALTER/DROP/RENAME migrations leave the older binary
+    facing a schema it does not understand. The gate MUST still refuse
+    with exit 5 / RELAY-SIDECAR-SCHEMA-VERSION-UNKNOWN."""
+    db_path = tmp_path / "ahead.db"
+    all_migrations = _migration_filenames()
+    # Inject a higher __schema_migrations count than the binary ships by
+    # recording one extra (synthetic) future migration filename.
+    ahead = [*all_migrations, "9999_future_migration_from_newer_binary.sql"]
+    _seed_db_with_applied_migrations(
+        db_path, applied=ahead, frozen_legacy_version=8
     )
     captured = _patch_exit(monkeypatch)
 
@@ -171,5 +242,77 @@ def test_drift_detected_when_db_behind_binary(
     assert code == EXIT_CODE_SCHEMA_VERSION_UNKNOWN == 5
     assert envelope["error_class"] == "RELAY-SIDECAR-SCHEMA-VERSION-UNKNOWN"
     details = envelope["details"]
-    assert details["observed_version"] == 8, details
+    assert details["observed_version"] == SUPPORTED_SCHEMA_VERSION + 1, details
     assert details["supported_version"] == SUPPORTED_SCHEMA_VERSION, details
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-001")
+def test_e2e_upgrade_at_head_minus_one_boots_and_applies_pending_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """END-TO-END (schema-drift upgrade-gate fix): the real boot order.
+
+    Builds a DB at the genuine HEAD~1 state by running the REAL migration
+    runner against a migrations dir containing only the first N-1 ``.sql``
+    files, then reproduces production boot order on the FULL set:
+
+        recover_or_refuse(db) -> SidecarDatabase(full_migrations).open()
+
+    Proves the new migration N (currently 0034, and any future one) is NOT
+    bricked: the gate lets boot proceed and the runner applies the pending
+    migration so the observed live count reconciles to
+    ``SUPPORTED_SCHEMA_VERSION``."""
+    all_migrations = _migration_filenames()
+    assert len(all_migrations) == SUPPORTED_SCHEMA_VERSION
+
+    # Stage a migrations dir holding only the first N-1 real migration
+    # files, then build the HEAD~1 DB with the REAL runner (not a stubbed
+    # __schema_migrations seed) so the schema is genuinely at the prior
+    # release.
+    head_minus_one_dir = tmp_path / "migrations_head_minus_one"
+    head_minus_one_dir.mkdir()
+    for name in all_migrations[:-1]:
+        shutil.copy2(_MIGRATIONS_DIR / name, head_minus_one_dir / name)
+
+    db_path = tmp_path / "sidecar.db"
+
+    async def _build_head_minus_one() -> None:
+        db = SidecarDatabase(
+            db_path=db_path,
+            reader_count=1,
+            migrations_dir=head_minus_one_dir,
+        )
+        await db.open()
+        await db.close()
+
+    asyncio.run(_build_head_minus_one())
+
+    # Sanity: the DB is genuinely one migration behind the binary.
+    assert _read_observed_schema_version(db_path) == SUPPORTED_SCHEMA_VERSION - 1
+
+    # Production boot order: recovery gate FIRST (it ran before migrations
+    # at runtime.py:510 / :5802). With the fix, observed < supported is the
+    # upgrade path and the gate must not refuse.
+    captured = _patch_exit(monkeypatch)
+    summary = recover_or_refuse(db_path)
+    assert captured == [], (
+        "e2e upgrade: HEAD~1 DB must clear the recovery gate so migrations "
+        f"can run; envelope(s)={captured}"
+    )
+    assert summary["schema_version"] == SUPPORTED_SCHEMA_VERSION - 1, summary
+
+    # Then SidecarDatabase.open() -> _run_migrations applies the pending
+    # migration(s) against the FULL (default) migrations dir, reconciling
+    # the live count to supported.
+    async def _open_full() -> None:
+        db = SidecarDatabase(db_path=db_path, reader_count=1)
+        await db.open()
+        await db.close()
+
+    asyncio.run(_open_full())
+
+    assert _read_observed_schema_version(db_path) == SUPPORTED_SCHEMA_VERSION, (
+        "e2e upgrade: after boot the migration runner must reconcile the "
+        "live __schema_migrations count to SUPPORTED_SCHEMA_VERSION"
+    )
