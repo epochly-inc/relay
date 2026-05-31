@@ -137,6 +137,51 @@ describe("VAL-PARITY-005 trust-anchor homograph guard (config branch)", () => {
   });
 });
 
+describe("VAL-PARITY-005 trust-anchor homograph guard (userinfo @ bypass)", () => {
+  // RFC 3986: a URL userinfo component MAY contain '@' (e.g. an email-style
+  // username). The host is the authority component AFTER the FINAL '@'.
+  // Python `urlparse(...).hostname` extracts the host after the last '@';
+  // the TS confusables guard MUST inspect that SAME host (the string the
+  // fetch will actually connect to), not the first-'@' split.
+  //
+  // Attack: `https://a@b@relay.epochl<U+0443>.com/...` -- Node's
+  // `new URL(...)` parses the real host as the punycode of the Cyrillic
+  // homograph (`relay.xn--...com`, the connection target). If the guard
+  // splits userinfo at the FIRST '@' it inspects `b@relay.epochl<U+0443>.com`
+  // (with the leading `b@` still attached), which is NOT the canonical-host
+  // skeleton, so the homograph slips through (fail-open).
+  const USERINFO_HOMOGRAPH_URL = `https://a@b@${CYRILLIC_HOMOGRAPH_HOST}/.well-known/jwks.json`;
+  // Legit ASCII host with a benign userinfo prefix -- must be ACCEPTED (the
+  // guard must not false-positive on the userinfo bytes).
+  const USERINFO_LEGIT_URL = "https://user@relay.epochly.com/.well-known/jwks.json";
+
+  test("homograph host hidden behind a second '@' userinfo is REJECTED", () => {
+    let caught: unknown;
+    try {
+      resolveTrustAnchorUrl({ flagUrl: USERINFO_HOMOGRAPH_URL });
+    } catch (exc) {
+      caught = exc;
+    }
+    expect(caught).toBeInstanceOf(RelayVerifierError);
+    const err = caught as RelayVerifierError;
+    expect(err.code).toBe(RELAY_VERIFY_CONFIG_INVALID);
+    expect(err.details["reason"]).toBe("confusable");
+    expect(err.details["trust_anchor"]).toBe(USERINFO_HOMOGRAPH_URL);
+  });
+
+  test("resolveJwks rejects the userinfo-hidden homograph before fetching", async () => {
+    await expect(
+      resolveJwks({ flagUrl: USERINFO_HOMOGRAPH_URL, fetcher: trapFetcher }),
+    ).rejects.toMatchObject({ code: RELAY_VERIFY_CONFIG_INVALID });
+  });
+
+  test("legit ASCII host with benign userinfo prefix is ACCEPTED (no false positive)", async () => {
+    const out = await resolveJwks({ flagUrl: USERINFO_LEGIT_URL, fetcher: okFetcher });
+    expect(out.trust_anchor_url).toBe(USERINFO_LEGIT_URL);
+    expect(out.source).toBe("byo_flag");
+  });
+});
+
 describe("VAL-PARITY-005 checkHostConfusable Py<->TS parity", () => {
   test("Cyrillic-u host folds to canonical skeleton -> confusable rejection", () => {
     let caught: unknown;

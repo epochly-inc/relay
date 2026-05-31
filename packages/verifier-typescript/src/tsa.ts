@@ -21,7 +21,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { X509Certificate, verify as cryptoVerify } from "node:crypto";
+import { X509Certificate, verify as cryptoVerify, createHash } from "node:crypto";
 
 import { AsnParser, AsnSerializer } from "@peculiar/asn1-schema";
 import { TimeStampResp, TSTInfo } from "@peculiar/asn1-tsp";
@@ -375,10 +375,7 @@ function _verifyCryptographicSignature(args: {
   if (tstInfoDer === null) {
     return { ok: false, reason: "tsr_decode_failed: eContent absent" };
   }
-  const expectedTstInfoDigest = require("node:crypto")
-    .createHash("sha256")
-    .update(tstInfoDer)
-    .digest();
+  const expectedTstInfoDigest = createHash("sha256").update(tstInfoDer).digest();
   const messageDigestAttrVal = _extractSignedAttrValue(
     signerInfo.signedAttrs,
     "1.2.840.113549.1.9.4", // id-messageDigest

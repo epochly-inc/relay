@@ -349,9 +349,22 @@ def _decode_jws_parts(jws: str) -> tuple[str, str, bytes]:
     if len(parts) != 3:
         raise ValueError("invalid JWS: expected 3 dot-separated parts")
     header_b64 = parts[0]
+    payload_b64 = parts[1]
     sig_b64 = parts[2]
     if not header_b64 or not sig_b64:
         raise ValueError("invalid JWS: empty header or signature segment")
+    # RFC 7515 detached content (Appendix F): the JWS Payload is detached,
+    # so the compact serialization's middle segment MUST be empty
+    # (``header_b64..sig_b64``). The signature is verified ONLY over the
+    # recomputed canonical detached content, so a non-empty middle segment
+    # is an attacker-spliced payload that would otherwise be silently
+    # accepted while the signature still verifies -- a forged-payload
+    # fail-open. Reject it before any signature work.
+    if payload_b64 != "":
+        raise ValueError(
+            "invalid JWS: detached signature must have an empty payload "
+            "segment (got non-empty payload)"
+        )
     try:
         header = json.loads(_b64u_decode(header_b64))
     except (ValueError, binascii.Error, json.JSONDecodeError, UnicodeDecodeError) as exc:

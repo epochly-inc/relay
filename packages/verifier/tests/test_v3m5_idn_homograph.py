@@ -142,3 +142,59 @@ def test_resolve_jwks_accepts_canonical_default() -> None:
         emit_warning=False,
     )
     assert result.trust_anchor_url == DEFAULT_JWKS_URL
+
+
+# -----------------------------------------------------------------------------
+# Userinfo @ split parity: the host is the authority AFTER the FINAL '@'.
+# urlparse(...).hostname extracts the host after the last '@'; the TS port
+# MUST match (a first-'@' split would inspect 'b@relay.epochly.com', missing
+# the homograph). This is the Python ground truth for the TS parity test in
+# packages/verifier-typescript/test/parity_005_trust_anchor_homograph_guard.ts.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M5-009")
+def test_canonical_host_of_splits_userinfo_at_last_at() -> None:
+    """A homograph host behind a second '@' userinfo is the extracted host."""
+    from relay_verifier.jwks_loader import _canonical_host_of
+
+    url = "https://a@b@" + _CYRILLIC_HOST + "/.well-known/jwks.json"
+    # The host is everything after the FINAL '@', lowercased.
+    assert _canonical_host_of(url) == _CYRILLIC_HOST.lower()
+    # A benign single-userinfo legit URL yields the bare ASCII host.
+    legit = "https://user@" + _CANONICAL + "/.well-known/jwks.json"
+    assert _canonical_host_of(legit) == _CANONICAL
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M5-009")
+def test_resolve_jwks_rejects_userinfo_hidden_homograph() -> None:
+    """`https://a@b@<homograph>/...` is rejected; the guard sees the real host."""
+    from relay_verifier.errors import RelayConfigInvalidError
+    from relay_verifier.jwks_loader import resolve_jwks
+
+    homograph_url = "https://a@b@" + _CYRILLIC_HOST + "/.well-known/jwks.json"
+
+    def _trap(_u: str) -> dict[str, object]:
+        raise AssertionError("fetcher must not be reached for a rejected host")
+
+    with pytest.raises(RelayConfigInvalidError) as exc:
+        resolve_jwks(flag_url=homograph_url, fetcher=_trap, emit_warning=False)
+    assert exc.value.details.get("trust_anchor") == homograph_url
+    assert exc.value.details.get("reason") == "confusable"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M5-009")
+def test_resolve_jwks_accepts_legit_userinfo_ascii_host() -> None:
+    """A benign userinfo prefix on a legit ASCII host is NOT a false positive."""
+    from relay_verifier.jwks_loader import resolve_jwks
+
+    legit_url = "https://user@" + _CANONICAL + "/.well-known/jwks.json"
+    result = resolve_jwks(
+        flag_url=legit_url,
+        fetcher=lambda u: {"keys": [{"kty": "OKP", "kid": "test"}]},
+        emit_warning=False,
+    )
+    assert result.trust_anchor_url == legit_url

@@ -148,6 +148,46 @@ def test_valid_signed_bundle_verifies_crypto_001() -> None:
     assert all(c.ok for c in result.signature_checks)
 
 
+def test_detached_jws_with_nonempty_payload_segment_rejected_crypto_001() -> None:
+    """A detached JWS MUST carry an empty payload segment (header..sig).
+
+    RFC 7515 Appendix F: with detached content the JWS Payload is detached,
+    so the compact serialization's middle segment is the empty string. A
+    valid Relay ACEF signature is ``header_b64 .. sig_b64``. If an attacker
+    splices a forged payload into the middle segment
+    (``header_b64 . ATTACKER . sig_b64``) the verifier MUST reject the
+    signature -- otherwise the embedded payload is silently accepted while
+    the signature is verified only over the recomputed detached content,
+    breaking the detached-JWS contract (forged-payload fail-open).
+
+    The valid (empty middle segment) form must still verify -- the ACCEPT
+    case below stays green so the guard introduces no false positives.
+    """
+    bundle, jwks = _ed25519_signed_bundle()
+
+    # ACCEPT: the genuine detached form (empty middle segment) verifies.
+    valid_jws = bundle["signatures"][0]["jws"]
+    parts = valid_jws.split(".")
+    assert len(parts) == 3
+    assert parts[1] == "", "fixture signer must emit a detached (empty-payload) JWS"
+    accept = verify_acef_bundle(bundle, jwks, offline=True)
+    assert accept.signatures_ok is True
+    assert accept.verified_signature_count == 1
+
+    # RED before fix: splice a non-empty payload into the middle segment.
+    # The signature segment and header are untouched, so the signature still
+    # verifies over the recomputed detached content -- but the embedded
+    # payload must NOT be accepted for a detached JWS.
+    forged_jws = f"{parts[0]}.QVRUQUNLRVJfUEFZTE9BRA.{parts[2]}"  # b64u("ATTACKER_PAYLOAD")
+    forged = copy.deepcopy(bundle)
+    forged["signatures"][0]["jws"] = forged_jws
+    result = verify_acef_bundle(forged, jwks, offline=True)
+    assert result.signatures_ok is False
+    assert result.verified_signature_count == 0
+    # Surfaced through the existing malformed-JWS failure path (str(ValueError)).
+    assert any(not c.ok for c in result.signature_checks)
+
+
 def test_tampered_bundle_fails_closed_crypto_001() -> None:
     """Tamper a claim, keep the original signature -> verification FAILS.
 

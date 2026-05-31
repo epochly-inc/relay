@@ -251,8 +251,23 @@ export function checkHostConfusable(host: string, canonicalHost: string): void {
 // Mirrors Python `urlparse(...).hostname` semantics: lowercases, strips the
 // `userinfo@` prefix, strips a bracketed IPv6 host's brackets, strips the
 // `:port` suffix.
+//
+// SECURITY: the userinfo component MAY itself contain `@` (RFC 3986
+// userinfo = *( unreserved / pct-encoded / sub-delims / ":" ); but in
+// practice clients/`urlparse` split the authority at the LAST `@`, treating
+// everything before it as userinfo and the host as the part after the final
+// `@`). The host (reg-name / IP-literal) cannot contain `@`. We therefore:
+//   - match userinfo greedily up to the FINAL `@` ( `[^/?#]*@` ), so a
+//     `https://a@b@evil.example/...` URL yields host `evil.example`, NOT
+//     `b@evil.example`; and
+//   - exclude `@` from the host group ( `[^/:?#@]*` ) so the host capture can
+//     never absorb leftover userinfo.
+// This keeps the confusables guard inspecting the SAME host string the WHATWG
+// `new URL(...)`/fetch will actually connect to (byte-for-byte parity with
+// Python `urlparse(...).hostname`; verified against the Python reference in
+// packages/verifier/tests/test_v3m5_idn_homograph.py).
 const _RAW_AUTHORITY_RE =
-  /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^/?#@]*@)?(\[[^\]]*\]|[^/:?#]*)(?::[0-9]*)?(?:[/?#]|$)/;
+  /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^/?#]*@)?(\[[^\]]*\]|[^/:?#@]*)(?::[0-9]*)?(?:[/?#]|$)/;
 
 /**
  * Extract the lowercased raw (non-punycoded) hostname component of `url` for
