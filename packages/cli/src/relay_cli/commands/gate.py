@@ -37,6 +37,7 @@ from ..exit_codes import (
     EXIT_CASSETTE_MISS,
     EXIT_SIGINT_INTERRUPTED,
     EXIT_SUCCESS,
+    EXIT_UNCAUGHT_INTERNAL,
 )
 from ..output import emit_json
 
@@ -121,6 +122,29 @@ def _install_cancel_handler() -> None:
             signal.signal(sig, _handler)
         except (ValueError, OSError):
             continue
+
+
+def _emit_gate_internal_and_exit(message: str, draft_id: str) -> None:
+    """Emit the structured RELAY-GATE-INTERNAL envelope and exit 70.
+
+    Centralizes the gate command's internal-error exit path so every
+    internal-error branch (polling exited without a decision; a 200 body
+    that is not a JSON object; a fixture seam carrying a non-dict body)
+    emits an identical structured envelope instead of letting an
+    AttributeError escape into the generic RELAY-CLI-070 wrapper. The
+    code/http_status/exit code match the §P.1 internal-error contract:
+    RELAY-GATE-INTERNAL -> http 500 -> exit 70 (EXIT_UNCAUGHT_INTERNAL).
+    """
+    envelope = build_envelope(
+        code="RELAY-GATE-INTERNAL",
+        http_status=500,
+        message=message,
+        blocked_surface="rly gate evaluate",
+        retry_advice="after_fix",
+        details={"draft_id": draft_id},
+    )
+    emit_envelope(envelope)
+    raise typer.Exit(code=EXIT_UNCAUGHT_INTERNAL)
 
 
 def _perform_cancel_and_exit(signum: int | None = None) -> None:
@@ -229,6 +253,14 @@ def cmd_gate_evaluate(
             )
             emit_envelope(envelope)
             raise typer.Exit(code=70) from exc
+        if not isinstance(decision, dict):
+            # VAL-ISO-042: the fixture seam shares the same unguarded
+            # ``.get`` hazard as the live path. A non-dict fixture body
+            # (bare array/string/number/null) emits the structured
+            # internal-error envelope rather than an AttributeError.
+            _emit_gate_internal_and_exit(
+                "gate fixture body is not a JSON object", ""
+            )
         _emit_decision_envelope(decision, start_time)
         raise typer.Exit(code=_exit_for_action(decision.get("action", "accept")))
 
@@ -300,6 +332,16 @@ def cmd_gate_evaluate(
             )
             emit_envelope(envelope)
             raise typer.Exit(code=EXIT_CASSETTE_MISS)
+        if isinstance(decision, dict) and decision.get("_malformed_payload"):
+            # VAL-ISO-042: a 200 whose body is not a JSON object is a
+            # malformed engine response, not a valid decision. Emit the
+            # structured internal-error envelope rather than dereferencing
+            # ``.get`` on a non-dict payload (AttributeError -> traceback).
+            _flush_backoff_log(backoff_log)
+            _emit_gate_internal_and_exit(
+                "engine returned a 200 with a non-object decision body",
+                draft_id,
+            )
         if isinstance(decision, dict) and decision.get("_resolved"):
             break
         # Transient: backoff and retry
@@ -328,18 +370,19 @@ def cmd_gate_evaluate(
 
     _flush_backoff_log(backoff_log)
     if decision is None or not isinstance(decision, dict):
-        envelope = build_envelope(
-            code="RELAY-GATE-INTERNAL",
-            http_status=500,
-            message="polling exited without a decision",
-            blocked_surface="rly gate evaluate",
-            retry_advice="after_fix",
-            details={"draft_id": draft_id},
+        _emit_gate_internal_and_exit(
+            "polling exited without a decision", draft_id
         )
-        emit_envelope(envelope)
-        raise typer.Exit(code=70)
 
     payload = decision.get("payload", decision)
+    if not isinstance(payload, dict):
+        # VAL-ISO-042 defense-in-depth: ``_get_decision`` already rejects a
+        # non-dict 200 body, but guard here too so any future resolution
+        # path that yields a non-dict payload emits the structured
+        # internal-error envelope instead of an AttributeError traceback.
+        _emit_gate_internal_and_exit(
+            "resolved decision payload is not a JSON object", draft_id
+        )
     _emit_decision_envelope(payload, start_time)
     raise typer.Exit(code=_exit_for_action(payload.get("action", "accept")))
 
@@ -444,9 +487,12 @@ def _get_decision(
 
     Return-shape conventions for the polling loop:
       * ``{"_resolved": True, "payload": {...}}`` -- decision available
+        (``payload`` is guaranteed to be a dict)
       * ``{"_stale_handoff": True}`` -- RELAY-GATE-021 surfaced
       * ``{"_ttl_expired": True}`` -- RELAY-GATE-024 surfaced
       * ``{"_clock_skew": True}`` -- RELAY-AUTH-017 surfaced
+      * ``{"_malformed_payload": True}`` -- 200 with a non-dict/undecodable
+        body; RELAY-GATE-INTERNAL surfaced (VAL-ISO-042)
       * ``{}`` -- not yet resolved (404 from engine), continue polling
     """
     seam = os.environ.get(ENV_GATE_DECISION_RESPONSES, "").strip()
@@ -468,7 +514,18 @@ def _get_decision(
     except httpx.HTTPError:
         return {}  # Treat as transient; loop will backoff
     if resp.status_code == 200:
-        return {"_resolved": True, "payload": resp.json()}
+        # The engine MUST return a JSON object (gate_decision) on 200. A
+        # bare array/string/number/null body -- or an undecodable body --
+        # is a malformed response, NOT a valid decision. Surface it as a
+        # structured internal error so the loop emits RELAY-GATE-INTERNAL
+        # rather than letting ``payload.get(...)`` raise AttributeError.
+        try:
+            body = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            return {"_malformed_payload": True}
+        if not isinstance(body, dict):
+            return {"_malformed_payload": True}
+        return {"_resolved": True, "payload": body}
     if resp.status_code == 404:
         return {}  # Not yet resolved
     if resp.status_code in (401, 422):
