@@ -420,13 +420,44 @@ describe("VAL-CRYPTO-003: release manifest signature is cryptographically verifi
     }
   });
 
-  it("GATE: legacy unsigned manifest is ALLOWED by default (transition policy)", async () => {
+  it("GATE: an ABSENT manifest signature is REJECTED by default (fail-closed; plan A3 Step-2)", async () => {
     requireToolchain();
     const tmp = setupTmpHome();
     try {
-      // No manifest.json.sigstore is served (current legacy releases).
-      // With RELAY_REQUIRE_SIGNED_MANIFEST unset, the wrapper must NOT
-      // break npx -- it proceeds with the legacy unsigned manifest.
+      // No manifest.json.sigstore is served. With RELAY_REQUIRE_SIGNED_MANIFEST
+      // UNSET (the default after the Step-2 flip), an absent manifest signature
+      // is a fail-OPEN verification surface and MUST be rejected. The signing
+      // step shipped (.github/workflows/release-sidecar-bundle.yml signs
+      // dist/manifest.json -> dist/manifest.json.sigstore), so a missing
+      // signature now indicates a downgrade / legacy manifest, not the norm.
+      const f = buildManifestFixture({ omitManifestSignature: true });
+      await expect(
+        launchSidecar({
+          home: tmp.home,
+          manifestUrl: f.manifestUrl,
+          fetchImpl: f.fetchImpl,
+          fetchBundleImpl: f.fetchBundleImpl,
+          fetchSigstoreImpl: f.fetchSigstoreImpl,
+          fetchManifestSigstoreImpl: f.fetchManifestSigstoreImpl,
+          verifyBundleImpl: realVerifySeam,
+        }),
+      ).rejects.toThrow(RelaySidecarBundleUnverified);
+      // Fail-closed: nothing cached.
+      const cacheBase = path.join(tmp.home, "sidecar-bundles");
+      expect(fs.existsSync(cacheBase) ? fs.readdirSync(cacheBase).length : 0).toBe(0);
+    } finally {
+      tmp.cleanup();
+    }
+  });
+
+  it("OPT-OUT: an ABSENT manifest signature is tolerated under RELAY_REQUIRE_SIGNED_MANIFEST=0 (documented downgrade)", async () => {
+    requireToolchain();
+    const tmp = setupTmpHome();
+    try {
+      // Explicit, deliberate opt-out for forks / self-hosters / legacy
+      // releases that publish no manifest signature. The per-binary digest +
+      // Sigstore checks still run, so the bytes remain hash-pinned.
+      process.env[REQUIRE_SIGNED_MANIFEST_ENV] = "0";
       const f = buildManifestFixture({ omitManifestSignature: true });
       const decision = await launchSidecar({
         home: tmp.home,
@@ -578,15 +609,17 @@ describe("VAL-CRYPTO-003 (G1-F5): transport/non-404 errors on the manifest signa
     }
   });
 
-  it("a CLEAN 404 on the .sigstore request is tolerated under the transition default (legacy still launches)", async () => {
+  it("a CLEAN 404 on the .sigstore request is tolerated under the opt-out (RELAY_REQUIRE_SIGNED_MANIFEST=0)", async () => {
     requireToolchain();
     const tmp = setupTmpHome();
     try {
-      // RELAY_REQUIRE_SIGNED_MANIFEST unset: a genuine 404 means the
-      // signature was legitimately never published for this legacy release.
-      // npx must keep working via the per-binary digest + Sigstore checks.
-      // The DEFAULT fetcher must map this clean 404 (and only a clean 404)
-      // to the tolerated-absent path.
+      // Under the explicit opt-out a genuine 404 means the signature was
+      // legitimately never published for this legacy release, so npx keeps
+      // working via the per-binary digest + Sigstore checks. The DEFAULT
+      // fetcher must map this clean 404 (and ONLY a clean 404) to the
+      // tolerated-absent path; transport errors / non-404 statuses fail closed
+      // even under the opt-out (covered by the FAIL CLOSED cases above).
+      process.env[REQUIRE_SIGNED_MANIFEST_ENV] = "0";
       const f = buildManifestFixture({ omitManifestSignature: true });
       const decision = await launchSidecar({
         home: tmp.home,

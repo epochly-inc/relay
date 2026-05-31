@@ -259,12 +259,17 @@ function buildMockFixture(
     if (url === manifestSigstoreUrl) {
       // These orchestration fixtures model a LEGACY release that predates
       // manifest signing: the release-manifest signature was never published,
-      // so the signature object returns a CLEAN 404. Under the transition
-      // default (RELAY_REQUIRE_SIGNED_MANIFEST unset) the wrapper tolerates a
-      // genuinely-absent signature and proceeds with the per-binary digest +
-      // Sigstore checks (VAL-CRYPTO-003 / G1-F5). We deliberately do NOT throw
-      // a transport error here: a transport error must FAIL CLOSED and would
-      // mask the digest/trust-root/cache behavior these tests exercise.
+      // so the signature object returns a CLEAN 404. The wrapper now fails
+      // closed on an absent manifest signature BY DEFAULT (plan A3 Step-2), so
+      // these tests set the explicit opt-out RELAY_REQUIRE_SIGNED_MANIFEST=0 in
+      // beforeEach to exercise the legacy/unsigned path without weakening the
+      // production default. The wrapper then tolerates the genuinely-absent
+      // signature and proceeds with the per-binary digest + Sigstore checks
+      // (VAL-CRYPTO-003 / G1-F5). We deliberately do NOT throw a transport
+      // error here: a transport error must FAIL CLOSED even under the opt-out
+      // and would mask the digest/trust-root/cache behavior these tests
+      // exercise. Manifest-signature ENFORCEMENT itself is covered in
+      // w4_6_manifest_signature.test.ts.
       return new Response("not found", { status: 404 });
     }
     throw new Error(`unexpected fetch URL in test: ${url}`);
@@ -311,11 +316,19 @@ const ENV_KEYS = [
   "RELAY_HOME",
   "RELAY_BUNDLE_VERIFY_TTL",
   "RELAY_ALLOW_CUSTOM_TRUST_ROOT",
+  "RELAY_REQUIRE_SIGNED_MANIFEST",
 ];
 beforeEach(() => {
   envBackup = {};
   for (const k of ENV_KEYS) envBackup[k] = process.env[k];
   for (const k of ENV_KEYS) delete process.env[k];
+  // These orchestration fixtures intentionally model a LEGACY release with no
+  // published manifest signature (the .sigstore object 404s). The wrapper now
+  // fails closed on an absent manifest signature BY DEFAULT (plan A3 Step-2),
+  // so opt out explicitly here to exercise the digest/trust-root/cache
+  // behavior without weakening the production default. Enforcement of the
+  // fail-closed default itself lives in w4_6_manifest_signature.test.ts.
+  process.env.RELAY_REQUIRE_SIGNED_MANIFEST = "0";
 });
 afterEach(() => {
   for (const k of ENV_KEYS) {

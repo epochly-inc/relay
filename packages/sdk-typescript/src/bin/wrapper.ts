@@ -88,30 +88,51 @@ export type VerifySigstoreBundleFn = (
 export const ALLOW_CUSTOM_TRUST_ROOT_ENV = "RELAY_ALLOW_CUSTOM_TRUST_ROOT";
 
 /**
- * Transition flag for VAL-CRYPTO-003 release-manifest signing rollout.
+ * Fail-closed enforcement flag for VAL-CRYPTO-003 release-manifest signing.
  *
- * The release pipeline (.github/workflows/release-sidecar-bundle.yml) now
+ * The release pipeline (.github/workflows/release-sidecar-bundle.yml)
  * keyless-signs the aggregated ``manifest.json`` and publishes
- * ``manifest.json.sigstore`` alongside it. The wrapper ALWAYS enforces a
- * signature that is PRESENT: a present-but-invalid manifest signature
- * fails closed. The remaining question is what to do when NO signature is
- * present (a legacy release cut before the signing step shipped):
+ * ``manifest.json.sigstore`` alongside it (the "Keyless-sign the aggregated
+ * manifest.json" step; asserted by scripts/check-sidecar-bundle.py). Current
+ * releases therefore ship a signed manifest. The wrapper ALWAYS enforces a
+ * signature that is PRESENT: a present-but-invalid manifest signature fails
+ * closed. The remaining question is what to do when NO signature is present:
  *
- *   - With ``RELAY_REQUIRE_SIGNED_MANIFEST`` unset/!="1" (the transition
- *     default): an ABSENT manifest signature is tolerated so existing
- *     legacy releases keep launching via ``npx`` -- the per-binary digest +
- *     Sigstore checks still run. This is a DEGRADED trust mode and is the
- *     ONLY path that trusts an unsigned manifest.
- *   - With ``RELAY_REQUIRE_SIGNED_MANIFEST=1`` (the end state): an ABSENT
- *     manifest signature is REJECTED fail-closed.
+ *   - DEFAULT (env unset, or ``=1``/``=true``): an ABSENT manifest signature
+ *     is REJECTED fail-closed. A missing signature is treated as a downgrade
+ *     / forgery surface, not as the norm. This is the post-rollout end state
+ *     (plan A3 Step-2): the signing step has shipped, so an absent signature
+ *     is anomalous and must not be silently trusted.
+ *   - OPT-OUT (``=0``/``=false``): an ABSENT manifest signature is tolerated
+ *     so forks, self-hosters, and legacy releases cut before the signing step
+ *     keep launching via ``npx``. This is a DEGRADED trust mode -- the
+ *     per-binary digest + Sigstore checks still run (the bundle BYTES remain
+ *     hash-pinned), but the manifest provenance signature is skipped. The
+ *     wrapper emits a stderr WARNING so the downgrade is never silent.
  *
- * PRODUCTION ROLLOUT NOTE: once signed releases exist for all supported
- * cells and the oldest still-fetchable manifest is signed, the DEFAULT of
- * this flag MUST flip to enforce-by-default (require a manifest signature
- * unconditionally). That flip is a coordinated change tracked with the
- * orchestrator; until then the transition default keeps npx working.
+ * A present-but-invalid signature ALWAYS fails closed regardless of this flag.
  */
 export const REQUIRE_SIGNED_MANIFEST_ENV = "RELAY_REQUIRE_SIGNED_MANIFEST";
+
+/**
+ * Resolve whether a PRESENT manifest signature is mandatory, i.e. whether an
+ * ABSENT signature must fail closed.
+ *
+ * Semantics (case- and whitespace-insensitive):
+ *   - unset                      -> required (fail-closed default)
+ *   - ``1`` / ``true``           -> required (explicit; back-compat with the
+ *                                   prior ``=1`` enforcement value)
+ *   - ``0`` / ``false``          -> NOT required (explicit documented opt-out)
+ *   - any other non-empty value  -> required (fail closed; an unrecognized
+ *                                   value must never silently downgrade)
+ */
+export function manifestSignatureRequired(): boolean {
+  const raw = process.env[REQUIRE_SIGNED_MANIFEST_ENV];
+  if (raw === undefined) return true;
+  const v = raw.trim().toLowerCase();
+  if (v === "0" || v === "false") return false;
+  return true;
+}
 
 /** Derive the manifest's cosign-bundle URL: ``<manifestUrl>.sigstore``. */
 export function manifestSignatureUrl(manifestUrl: string): string {
@@ -255,15 +276,15 @@ function defaultSigstoreFetcher(
  * Default fetcher for the release-manifest cosign-bundle
  * (``manifest.json.sigstore``). VAL-CRYPTO-003.
  *
- * Trust-downgrade hardening (G1-F5): the caller's transition policy tolerates
- * an ABSENT manifest signature when ``RELAY_REQUIRE_SIGNED_MANIFEST`` != "1"
- * (so legacy unsigned releases keep launching via npx). That tolerance is
- * ONLY safe for a signature that is GENUINELY not published. We therefore
- * distinguish:
+ * Trust-downgrade hardening (G1-F5): the caller's policy tolerates an ABSENT
+ * manifest signature ONLY under the explicit opt-out
+ * (``RELAY_REQUIRE_SIGNED_MANIFEST=0``) so forks / self-hosters / legacy
+ * unsigned releases keep launching via npx. That tolerance is ONLY safe for a
+ * signature that is GENUINELY not published. We therefore distinguish:
  *
  *   - a CLEAN HTTP 404 -> ``ManifestSignatureAbsent``. This is the only
  *     status that means "the signer never published a signature for this
- *     (legacy) release"; the transition policy may tolerate it.
+ *     (legacy) release"; the opt-out policy may tolerate it.
  *   - a TRANSPORT / connection error (fetch rejects, e.g. ECONNRESET) ->
  *     ``RelaySidecarBundleUnverified`` (FAIL CLOSED). We cannot conclude the
  *     signature is absent -- an active MITM that serves a forged manifest but
@@ -346,17 +367,18 @@ export class ManifestSignatureAbsent extends Error {
 
 /**
  * Verify a Sigstore signature over the EXACT release-manifest bytes
- * (VAL-CRYPTO-003), applying the signed-release transition policy.
+ * (VAL-CRYPTO-003), applying the fail-closed signed-release policy.
  *
  * Trust model:
  *   - A signature that is PRESENT is ALWAYS cryptographically verified over
  *     ``raw.rawBytes`` (the bytes received), rooted in ``trustRoot``,
  *     reusing the real crypto in :func:`verifySigstoreBundle`. A
  *     present-but-invalid signature fails closed (RELAY-SIDECAR-020).
- *   - A signature that is ABSENT (404 / network error -> ManifestSignatureAbsent)
- *     is tolerated ONLY when ``RELAY_REQUIRE_SIGNED_MANIFEST`` is not "1"
- *     (the transition default that keeps legacy unsigned releases working);
- *     when the flag is "1" an absent signature is REJECTED fail-closed.
+ *   - A signature that is ABSENT (clean 404 -> ManifestSignatureAbsent) is
+ *     REJECTED fail-closed BY DEFAULT (plan A3 Step-2). It is tolerated ONLY
+ *     under the explicit documented opt-out ``RELAY_REQUIRE_SIGNED_MANIFEST=0``
+ *     (forks / self-hosters / legacy unsigned releases), which emits a stderr
+ *     WARNING; the per-binary digest + Sigstore checks still run.
  *
  * Note: we deliberately do NOT bind ``expectedSha256`` here -- the
  * manifest's own digest is not pinned anywhere external; the binding that
@@ -377,15 +399,28 @@ async function verifyManifestSignature(
     manifestSigstoreJson = await fetcher(sigUrl);
   } catch (cause) {
     if (cause instanceof ManifestSignatureAbsent) {
-      const required = process.env[REQUIRE_SIGNED_MANIFEST_ENV] === "1";
-      if (!required) {
-        // Transition default: tolerate a legacy unsigned manifest. The
-        // per-binary digest + Sigstore checks still run downstream.
+      if (!manifestSignatureRequired()) {
+        // Explicit, documented opt-out (RELAY_REQUIRE_SIGNED_MANIFEST=0):
+        // tolerate an unsigned manifest for forks / self-hosters / legacy
+        // releases. The per-binary digest + Sigstore checks still run
+        // downstream, so the bundle BYTES remain hash-pinned; only the
+        // manifest provenance signature is skipped. Emit a clear warning so
+        // the downgrade is never silent.
+        process.stderr.write(
+          `[relay] WARNING: release manifest signature verification was SKIPPED ` +
+            `because ${REQUIRE_SIGNED_MANIFEST_ENV} opts out of fail-closed ` +
+            `enforcement. The manifest at ${raw.url} carries no Sigstore signature ` +
+            `(${cause.message}); its provenance is UNVERIFIED. Per-binary digest + ` +
+            `Sigstore checks still apply, but the manifest fields are trusted ` +
+            `without a signature. Unset ${REQUIRE_SIGNED_MANIFEST_ENV} to restore ` +
+            `fail-closed enforcement.\n`,
+        );
         return;
       }
       throw new RelaySidecarBundleUnverified(
-        "release manifest has no Sigstore signature and " +
-          `${REQUIRE_SIGNED_MANIFEST_ENV}=1 requires one; refusing to trust the manifest`,
+        "release manifest has no Sigstore signature; a signed manifest is " +
+          `required by default (set ${REQUIRE_SIGNED_MANIFEST_ENV}=0 to opt out). ` +
+          "Refusing to trust the manifest",
         {
           code: RELAY_SIDECAR_BUNDLE_UNVERIFIED_CODE,
           details: {
