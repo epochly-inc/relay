@@ -47,6 +47,21 @@ def _make_health(port: int = 50001) -> HealthState:
     )
 
 
+def _register_ingest_token(app, token: str, *scopes: str) -> dict[str, str]:
+    """Register a bearer token with ``scopes`` and return its auth header.
+
+    Mirrors ``test_iso_r2_ingest_bearer_scope._register_token``. Used by the
+    V2M03 legacy-manifest-only-path auth follow-up (2026-05-31): the legacy
+    anchor-only acceptance path now requires ``ingest:write`` (the same gate
+    as the full-envelope path), so anchor-only callers must authenticate.
+    """
+    app.state.runtime.registered_tokens[token] = {
+        "scopes": frozenset(scopes),
+        "project_id": "project-id-test",
+    }
+    return {"Authorization": f"Bearer {token}"}
+
+
 async def _register_manifest_row(
     db_path: Path,
     *,
@@ -433,12 +448,200 @@ async def test_ingest_runs_accepts_matched_anchors(
             command_hashes=[_DECLARED_CMD_HASH],
         )
 
+        # V2M03 legacy-path auth follow-up (2026-05-31): the legacy
+        # manifest-only acceptance path now requires ``ingest:write``
+        # (same gate as the full-envelope path). Authenticate with a
+        # bearer token; the legacy 200 + {accepted: True} shape is
+        # preserved for authenticated anchor-only callers.
+        hdrs = _register_ingest_token(app, "tok-v2m03-anchor", "ingest:write")
         r = await client.post(
             "/v1/ingest/runs",
             json={
                 "manifest_commit_hash": _FAKE_MANIFEST_HASH,
                 "command_hash": _DECLARED_CMD_HASH,
             },
+            headers=hdrs,
+        )
+        assert r.status_code == 200, r.text
+        body = json.loads(r.text)
+        assert body["accepted"] is True
+        assert body["endpoint"] == "/v1/ingest/runs"
+
+
+# ---------------------------------------------------------------------------
+# Legacy manifest-only path auth follow-up (2026-05-31).
+#
+# Structural-review finding: the legacy anchor-only acceptance path
+# (runtime.py v1_ingest_runs, the ``not non_anchor_keys`` branch) returned
+# 200 {accepted: True} WITHOUT any auth check, while the full-envelope path
+# required ``ingest:write``. An UNAUTHENTICATED client could POST
+# {manifest_commit_hash, command_hash} and obtain a 200 acceptance (and a
+# quiesce tracker op) in the secure-default config -- an auth bypass.
+#
+# Fix: run ``_check_auth(required_scope="ingest:write")`` once after manifest
+# anchor enforcement so BOTH the legacy and full-envelope paths require the
+# scope. The legacy 200 + {accepted: True} response SHAPE is preserved for
+# AUTHENTICATED anchor-only callers (see test_ingest_runs_accepts_matched_
+# anchors, updated to authenticate). Manifest enforcement stays the OUTERMOST
+# gate, so mismatched-anchor rejections still surface 422 RELAY-GATE-021
+# before auth (the two reject tests above are unaffected).
+# ---------------------------------------------------------------------------
+
+
+async def _build_anchor_app(tmp_path, monkeypatch):
+    """Build a sidecar app with the manifest+command registered so the
+    anchor gate passes and auth owns the response for anchor-only bodies.
+
+    Returns (app, transport). Caller drives the lifespan + client.
+    """
+    monkeypatch.setenv("RELAY_SIDECAR_IDLE_TIMEOUT_S", "60.0")
+    # Secure default: legacy X-Relay-Scopes disabled unless a test enables it.
+    monkeypatch.delenv(
+        "RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", raising=False
+    )
+    monkeypatch.setenv("RELAY_HOME", str(tmp_path / "relay-home"))
+    (tmp_path / "relay-home").mkdir(exist_ok=True)
+    db_path = tmp_path / "sidecar.db"
+    await _register_manifest_row(
+        db_path,
+        commit_hash=_FAKE_MANIFEST_HASH,
+        effective_until=None,
+    )
+    app = build_runtime_app(health=_make_health(), sqlite_path=db_path)
+    transport = httpx.ASGITransport(app=app)
+    return app, transport
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M03-012")
+@pytest.mark.asyncio
+async def test_ingest_runs_anchor_only_unauthenticated_rejected(
+    tmp_path, monkeypatch
+) -> None:
+    """UNAUTHENTICATED anchor-only POST is now rejected 401 RELAY-AUTH-001
+    (no bearer, no legacy header). Was 200 at the base commit -- the
+    auth-bypass the structural review flagged."""
+    app, transport = await _build_anchor_app(tmp_path, monkeypatch)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=transport, base_url="http://sidecar.test"
+        ) as client,
+    ):
+        app.state.runtime.manifest_registry.register_commands(
+            manifest_commit_hash=_FAKE_MANIFEST_HASH,
+            command_hashes=[_DECLARED_CMD_HASH],
+        )
+        r = await client.post(
+            "/v1/ingest/runs",
+            json={
+                "manifest_commit_hash": _FAKE_MANIFEST_HASH,
+                "command_hash": _DECLARED_CMD_HASH,
+            },
+        )
+        assert r.status_code == 401, r.text
+        assert json.loads(r.text)["code"] == "RELAY-AUTH-001"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M03-012")
+@pytest.mark.asyncio
+async def test_ingest_runs_anchor_only_bearer_ingest_write_accepted(
+    tmp_path, monkeypatch
+) -> None:
+    """AUTHENTICATED (bearer ingest:write) anchor-only POST still returns the
+    legacy 200 + {accepted: True} shape (shape preserved for authed callers).
+    """
+    app, transport = await _build_anchor_app(tmp_path, monkeypatch)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=transport, base_url="http://sidecar.test"
+        ) as client,
+    ):
+        app.state.runtime.manifest_registry.register_commands(
+            manifest_commit_hash=_FAKE_MANIFEST_HASH,
+            command_hashes=[_DECLARED_CMD_HASH],
+        )
+        hdrs = _register_ingest_token(app, "tok-anchor-ok", "ingest:write")
+        r = await client.post(
+            "/v1/ingest/runs",
+            json={
+                "manifest_commit_hash": _FAKE_MANIFEST_HASH,
+                "command_hash": _DECLARED_CMD_HASH,
+            },
+            headers=hdrs,
+        )
+        assert r.status_code == 200, r.text
+        body = json.loads(r.text)
+        assert body["accepted"] is True
+        assert body["endpoint"] == "/v1/ingest/runs"
+        assert "operation_id" in body
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M03-012")
+@pytest.mark.asyncio
+async def test_ingest_runs_anchor_only_wrong_scope_rejected(
+    tmp_path, monkeypatch
+) -> None:
+    """A bearer token WITHOUT ingest:write (only runs:read) is rejected 403
+    RELAY-AUTH-014 on the anchor-only path -- the fix does NOT widen the
+    required scope."""
+    app, transport = await _build_anchor_app(tmp_path, monkeypatch)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=transport, base_url="http://sidecar.test"
+        ) as client,
+    ):
+        app.state.runtime.manifest_registry.register_commands(
+            manifest_commit_hash=_FAKE_MANIFEST_HASH,
+            command_hashes=[_DECLARED_CMD_HASH],
+        )
+        hdrs = _register_ingest_token(app, "tok-anchor-bad", "runs:read")
+        r = await client.post(
+            "/v1/ingest/runs",
+            json={
+                "manifest_commit_hash": _FAKE_MANIFEST_HASH,
+                "command_hash": _DECLARED_CMD_HASH,
+            },
+            headers=hdrs,
+        )
+        assert r.status_code == 403, r.text
+        assert json.loads(r.text)["code"] == "RELAY-AUTH-014"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M03-012")
+@pytest.mark.asyncio
+async def test_ingest_runs_anchor_only_legacy_scope_header_accepted(
+    tmp_path, monkeypatch
+) -> None:
+    """API-key/legacy path preserved: with the legacy header enabled, an
+    X-Relay-Scopes: ingest:write anchor-only POST still returns the legacy
+    200 + {accepted: True} shape (_check_auth merges the legacy header)."""
+    monkeypatch.setenv("RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", "1")
+    app, transport = await _build_anchor_app(tmp_path, monkeypatch)
+    # _build_anchor_app deletes the legacy env var; re-enable AFTER it runs.
+    monkeypatch.setenv("RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", "1")
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=transport, base_url="http://sidecar.test"
+        ) as client,
+    ):
+        app.state.runtime.manifest_registry.register_commands(
+            manifest_commit_hash=_FAKE_MANIFEST_HASH,
+            command_hashes=[_DECLARED_CMD_HASH],
+        )
+        r = await client.post(
+            "/v1/ingest/runs",
+            json={
+                "manifest_commit_hash": _FAKE_MANIFEST_HASH,
+                "command_hash": _DECLARED_CMD_HASH,
+            },
+            headers={"X-Relay-Scopes": "ingest:write"},
         )
         assert r.status_code == 200, r.text
         body = json.loads(r.text)

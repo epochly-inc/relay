@@ -1705,20 +1705,48 @@ def build_runtime_app(
         enforced = await _enforce_manifest_anchors(body)
         if isinstance(enforced, JSONResponse):
             return enforced
+        # Auth gate. Runs ONCE here -- after manifest-anchor enforcement (the
+        # outermost invariant, keystone #3/#4) and before the body-shape
+        # branch -- so it covers BOTH the legacy manifest-only acceptance
+        # path AND the full-envelope path. ``ingest:write`` is required on
+        # every path; no widening.
+        #
+        # Security follow-up (2026-05-31): the legacy manifest-only path
+        # previously returned 200 {accepted: True} with NO auth check
+        # (scope-system-exempt; V2M03 landed before scope auth), letting an
+        # UNAUTHENTICATED client POST {manifest_commit_hash, command_hash}
+        # and obtain an acceptance + a quiesce tracker op in the secure
+        # default. A structural review flagged this as an auth bypass.
+        # Hoisting the single ``_check_auth`` above the body-shape branch
+        # closes that path while preserving the legacy 200 response SHAPE
+        # for authenticated anchor-only callers.
+        #
+        # ``_check_auth`` (vs the older ``_check_required_scope``, migrated
+        # in the VAL-ISO-002 round-2 follow-up) merges bearer-token scopes
+        # with the legacy ``X-Relay-Scopes`` header so both auth paths work;
+        # the exact required scope and the legacy/API-key path are preserved.
+        scope_reject = _check_auth(
+            request,
+            required_scope="ingest:write",
+            blocked_surface=_RUNS_SURFACE,
+        )
+        if scope_reject is not None:
+            return scope_reject
         # Body-shape detection: V2M03 manifest-enforcement tests submit
         # the two anchor fields only; preserve the legacy 200 +
         # {accepted=True} response shape for that path so V2M03's contract
         # assertions keep their semantics. Bodies that carry any
-        # non-anchor field MUST pass the full v2m02 shape + scope checks.
+        # non-anchor field MUST pass the full v2m02 shape checks below.
         non_anchor_keys = set(body) - {
             "manifest_commit_hash",
             "command_hash",
         }
         if not non_anchor_keys:
-            # Legacy manifest-only acceptance path (V2M03-012). The scope
-            # system did not exist when V2M03 landed; preserving that
-            # contract avoids cross-feature regressions while v2m02 owns
-            # the full-envelope code path below.
+            # Legacy manifest-only acceptance path (V2M03-012). Auth has
+            # already been enforced above (ingest:write), so this branch
+            # only short-circuits the v2m02 full-envelope body shape while
+            # preserving the legacy 200 + {accepted: True} contract for
+            # authenticated anchor-only callers.
             tracker = runtime.quiesce.tracker
             # Populated in lifespan startup before any route runs; route
             # handlers never execute pre-startup (invariant narrowing).
@@ -1733,21 +1761,8 @@ def build_runtime_app(
                     },
                 )
         # ---- v2m02 full-envelope path ----
-        # Auth is the FIRST gate on this path (before the canonical-write /
-        # required-field / raw_capture gates below). Migrated from
-        # ``_check_required_scope`` to ``_check_auth`` (round-2 follow-up to
-        # VAL-ISO-002): ``_check_required_scope`` consulted only the legacy
-        # ``X-Relay-Scopes`` header (empty in the secure default), rejecting
-        # a bearer token with ``ingest:write`` 403. ``_check_auth`` merges
-        # the bearer-token scopes while preserving the exact required scope
-        # and the legacy header path.
-        scope_reject = _check_auth(
-            request,
-            required_scope="ingest:write",
-            blocked_surface=_RUNS_SURFACE,
-        )
-        if scope_reject is not None:
-            return scope_reject
+        # Auth was the FIRST gate above (shared with the legacy path); the
+        # canonical-write / required-field / raw_capture gates follow.
         invalid_fields = sorted(
             f for f in _CANONICAL_WRITE_FIELDS if f in body
         )
