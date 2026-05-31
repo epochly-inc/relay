@@ -133,11 +133,17 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
         # for ``.sql`` files so comments / string payloads are not
         # mistaken for executable writes (VAL-ISO-035).
         is_sql = path.suffix == ".sql"
+        # ``//`` is a line comment ONLY in TS/JS family sources. Python
+        # (``.py``/``.pyi``) uses ``//`` as floor division and SQL uses
+        # ``--`` for comments, so neither may treat ``//`` as a comment.
+        slash_is_comment = path.suffix not in (".py", ".pyi", ".sql")
         for line_no_minus_one, line in enumerate(text.split("\n")):
             m = _CANONICAL_WRITE_RE.search(line)
             if m is None:
                 continue
-            if _match_is_documentation(line, m.start(), sql=is_sql):
+            if _match_is_documentation(
+                line, m.start(), sql=is_sql, slash_comment=slash_is_comment
+            ):
                 continue
             findings.append(
                 Finding(

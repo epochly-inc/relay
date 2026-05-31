@@ -86,7 +86,7 @@ def _is_in_primitive_dir(rel_posix: str) -> bool:
 
 
 def _match_is_documentation(
-    line: str, match_start: int, *, sql: bool = False
+    line: str, match_start: int, *, sql: bool = False, slash_comment: bool = True
 ) -> bool:
     """Return True iff the match position appears inside a documentation context.
 
@@ -94,9 +94,10 @@ def _match_is_documentation(
     explicit documentation syntax):
 
       1. The leftmost non-whitespace character on the line is ``#`` or
-         ``//`` (or ``--`` when ``sql=True``) -> entire line is a comment
-         -> documentation.
-      2. A standalone ``#`` (Python/shell comment, or SQL ``--`` when
+         ``//`` (when ``slash_comment=True``) (or ``--`` when ``sql=True``)
+         -> entire line is a comment -> documentation.
+      2. A standalone ``#`` (Python/shell comment), ``//`` (TS/JS comment,
+         only when ``slash_comment=True``), or SQL ``--`` (when
          ``sql=True``) appears in the line BEFORE the match position, NOT
          inside a string literal -> the match is inside a trailing
          comment.
@@ -131,12 +132,26 @@ def _match_is_documentation(
     ``.sql`` migration files (VAL-ISO-035): SQL line comments start with
     ``--`` (not ``#``/``//``), and a canonical-table name mentioned
     inside a string literal (an error message) is not an executable
-    write. The default (``sql=False``) preserves the exact Python/TS
-    behavior for every other caller.
+    write.
+
+    ``slash_comment`` selects whether ``//`` is a line-comment marker for
+    the scanned language. It MUST be ``True`` only for languages where
+    ``//`` actually begins a comment -- TS/JS/JSX/MJS/CJS. For PYTHON
+    (``.py``/``.pyi``) it MUST be ``False``: in Python ``//`` is the
+    FLOOR-DIVISION operator, not a comment. Treating ``//`` as a comment
+    on Python source makes a real bypass invisible -- a production line
+    such as ``chunk = size // 2; db.execute(q)`` would be falsely
+    classified as documentation and the keystone-#8 violation SKIPPED,
+    going vacuous for that line. ``.sql`` files also pass
+    ``slash_comment=False`` (SQL uses ``--``, not ``//``). The default
+    ``slash_comment=True`` preserves the historical TS/JS behavior for any
+    caller that does not specify a language.
     """
     # Heuristic 1: full-line comment.
     stripped = line.lstrip()
-    if stripped.startswith("#") or stripped.startswith("//"):
+    if stripped.startswith("#"):
+        return True
+    if slash_comment and stripped.startswith("//"):
         return True
     if sql and stripped.startswith("--"):
         return True
@@ -158,7 +173,8 @@ def _match_is_documentation(
                 continue
             quote_count += 1
         elif ch == "#" and quote_count % 2 == 0 or (
-            ch == "/"
+            slash_comment
+            and ch == "/"
             and quote_count % 2 == 0
             and idx + 1 < len(line)
             and line[idx + 1] == "/"
@@ -213,11 +229,20 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        # ``//`` is a line comment ONLY in TS/JS family languages. In
+        # Python (``.py``/``.pyi``) ``//`` is the floor-division operator,
+        # so we must NOT treat it as a comment -- otherwise a production
+        # line like ``chunk = size // 2; db.execute(q)`` would be falsely
+        # classified as documentation and the keystone-#8 violation would
+        # be skipped, making this guard vacuous for that line.
+        slash_is_comment = path.suffix not in (".py", ".pyi")
         for line_no_minus_one, line in enumerate(text.split("\n")):
             m = _PRIMITIVE_BYPASS_RE.search(line)
             if m is None:
                 continue
-            if _match_is_documentation(line, m.start()):
+            if _match_is_documentation(
+                line, m.start(), slash_comment=slash_is_comment
+            ):
                 continue
             findings.append(
                 Finding(
