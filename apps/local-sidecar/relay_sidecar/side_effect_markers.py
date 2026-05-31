@@ -41,6 +41,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -340,6 +341,61 @@ def _new_uuid() -> str:
     return str(uuid.uuid4())
 
 
+# VAL-CANON-004 follow-up: the canonical, lexicographically-sortable UTC
+# string form for marker ``expires_at`` and the resurrection cutoff.
+#
+# Form: ``YYYY-MM-DDTHH:MM:SS.ffffff+00:00`` -- fixed width, microsecond
+# precision, explicit ``+00:00`` offset. Two properties make it the right
+# choice for an index-backed range scan:
+#
+#   1. Fixed width + identical suffix: every value has the same byte
+#      length and shares the ``+00:00`` tail, so SQLite's lexicographic
+#      TEXT compare on the ``(state, expires_at)`` composite index sorts
+#      EXACTLY in chronological order. (A bare ``+00:00`` convention is
+#      NOT sufficient on its own: a whole-second value rendered without a
+#      fraction -- ``...44+00:00`` -- sorts BEFORE ``...44.000001+00:00``
+#      because ``+`` (0x2B) < ``.`` (0x2E). Forcing the microsecond
+#      fraction removes that hazard.)
+#   2. Single canonical writer form: the marker write path emits ONLY
+#      this form, and the cutoff is computed in the same form, so the SQL
+#      ``expires_at < cutoff`` compare is both correct AND able to use the
+#      composite index's range bound -- restoring the index efficiency
+#      that the canon-004 correctness fix had dropped.
+#
+# A ``Z`` suffix would be equally sortable, but ``+00:00`` is what the
+# Pydantic wire layer and ``_now_iso`` already emit on the sidecar, so we
+# standardize on it to minimize churn. Legacy / non-canonical rows are
+# still classified correctly by the Python ``_parse_iso_to_aware_utc``
+# re-check in ``scan_orphan_markers`` (the SQL index narrows; Python
+# confirms), so correctness is never weaker than the canon-004
+# Python-only compare.
+def _canonical_expires_at(dt: datetime) -> str:
+    """Return ``dt`` as the canonical sortable UTC string.
+
+    Naive datetimes are assumed UTC (matching the writer, which only ever
+    constructs aware UTC values). The result is always
+    ``YYYY-MM-DDTHH:MM:SS.ffffff+00:00``.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+# Exact match for the canonical form. Used by ``scan_orphan_markers`` to
+# tell, cheaply and without parsing, whether a stored ``expires_at`` is
+# already in the lexicographically-sortable form (so its lexicographic
+# order against the canonical cutoff equals its chronological order) or is
+# a legacy / non-canonical value that needs the Python datetime re-check.
+_CANONICAL_EXPIRES_AT_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$"
+)
+
+
+def _is_canonical_expires_at(value: str) -> bool:
+    """True if ``value`` is exactly the canonical sortable UTC form."""
+    return bool(_CANONICAL_EXPIRES_AT_RE.match(value))
+
+
 # Default marker lifetime when no policy-derived expires_at is supplied.
 # Spec V2M04: an in_flight marker's expires_at controls when the
 # resurrection scan (scan_orphan_markers) classifies it as orphaned. The
@@ -354,9 +410,13 @@ DEFAULT_MARKER_TTL_SECONDS: int = 3600
 
 
 def _now_plus_seconds_iso(seconds: int) -> str:
-    return (
-        datetime.now(tz=UTC) + timedelta(seconds=seconds)
-    ).isoformat().replace("+00:00", "Z")
+    # VAL-CANON-004 follow-up: emit the canonical, lexicographically-
+    # sortable UTC form (microsecond precision, ``+00:00`` suffix) so the
+    # stored ``expires_at`` is index-comparable against the cutoff. The
+    # prior ``.replace("+00:00", "Z")`` produced a ``Z`` suffix that sorted
+    # inconsistently against the ``+00:00`` cutoff and was variable width
+    # on a whole second.
+    return _canonical_expires_at(datetime.now(tz=UTC) + timedelta(seconds=seconds))
 
 
 def _parse_iso_to_aware_utc(value: str) -> datetime:
@@ -540,6 +600,44 @@ class ResurrectionFinding:
     max_retries: int
 
 
+def _orphan_scan_sql(cutoff_iso: str) -> tuple[str, tuple[Any, ...]]:
+    """Build the resurrection-scan SQL + params.
+
+    VAL-CANON-004 follow-up: the filter is index-backed AND correct.
+
+    Correctness AND efficiency both rely on the single canonical
+    ``expires_at`` form (``_canonical_expires_at`` /
+    ``_now_plus_seconds_iso``): every value written by the marker writer is
+    fixed-width, microsecond-precision, ``+00:00``-suffixed, so SQLite's
+    lexicographic TEXT compare on the ``(state, expires_at)`` composite
+    index (``side_effect_markers_state``) sorts EXACTLY in chronological
+    order. The cutoff is canonicalized to the same form below, so
+    ``m.expires_at < ?`` is a true index range bound -- a
+    ``SEARCH ... USING INDEX side_effect_markers_state (state=? AND
+    expires_at<?)`` plan rather than a scan of every in_flight row.
+
+    The earlier canon-004 fix dropped this range bound (``WHERE m.state =
+    ?`` only) because the two serializers disagreed (``Z`` vs ``+00:00``)
+    and a lexicographic compare mis-ordered them; canonicalizing both
+    sides removes that hazard while keeping the index.
+
+    The SQL filter NARROWS by the index; the Python
+    ``_parse_iso_to_aware_utc`` re-check in ``scan_orphan_markers`` then
+    CONFIRMS each candidate AND rescues any legacy / non-canonical row the
+    string compare would mis-order (so correctness is never weaker than the
+    canon-004 Python-only compare). See ``scan_orphan_markers``.
+    """
+    sql = (
+        "SELECT m.marker_id, m.tool_name, m.policy_id, m.expires_at, "
+        "m.state, m.idempotency_key, "
+        "p.compensation_tool, p.max_retries "
+        "FROM side_effect_markers m "
+        "LEFT JOIN tool_side_effect_policies p ON p.policy_id = m.policy_id "
+        "WHERE m.state = ? AND m.expires_at < ?"
+    )
+    return sql, (MARKER_STATE_IN_FLIGHT, cutoff_iso)
+
+
 async def scan_orphan_markers(
     conn: aiosqlite.Connection,
     *,
@@ -549,42 +647,104 @@ async def scan_orphan_markers(
 
     VAL-V2M04-018: returns the orphan set. VAL-V2M04-019: non-expired
     in_flight markers are NOT included.
+
+    VAL-CANON-004 (+ perf follow-up): the cutoff and every written
+    ``expires_at`` share a single canonical, lexicographically-sortable UTC
+    form, so the SQL ``state = ? AND expires_at < ?`` filter is BOTH correct
+    AND index-backed by the ``(state, expires_at)`` composite index
+    (``side_effect_markers_state``). Correctness is kept NO WEAKER than the
+    canon-004 Python-only compare via two disjoint passes, both keyed on
+    the ``state`` equality so both use the index:
+
+      Pass 1 -- the index range scan ``expires_at < cutoff``. For a
+        canonical row this lexicographic bound is exactly chronological, so
+        it is the fast common path. Each matched row is CONFIRMED by the
+        Python ``_parse_iso_to_aware_utc`` compare, which also rejects any
+        non-canonical row that the lexicographic bound matched but is not
+        actually expired (a false positive).
+
+      Pass 2 -- the complement ``expires_at >= cutoff``, restricted to
+        NON-canonical (legacy) rows. These are exactly the rows whose
+        lexicographic order against the canonical cutoff can disagree with
+        their chronological order (e.g. a ``Z``-suffixed or fraction-less
+        value not yet normalized by migration 0034), so pass 1's bound may
+        have skipped a genuinely-expired one (a false negative). Pass 2
+        classifies them purely by the timezone-aware datetime compare.
+
+    Together the two passes cover every in_flight row exactly once and the
+    orphan classification ultimately rests on the timezone-aware datetime
+    compare, identical to the canon-004 Python-only behavior. Once
+    migration 0034 has normalized all rows, pass 2 matches no legacy rows
+    and the scan is a pure index range scan.
     """
-    # VAL-CANON-004: do NOT filter by ``expires_at < cutoff`` in SQL. That
-    # is a lexicographic SQLite TEXT compare, and ``expires_at`` (``Z``
-    # suffix, from ``_now_plus_seconds_iso``) and the cutoff (``+00:00``
-    # suffix, from ``_now_iso``) are produced by two different serializers.
-    # ``Z`` sorts after ``+`` / ``.`` so an expired ``Z``-suffixed marker is
-    # wrongly treated as live (or vice-versa). Filter by ``state`` in SQL,
-    # then compare both sides as timezone-aware UTC datetimes in Python.
+    # Canonicalize the cutoff to the single sortable form so the SQL bound
+    # compares like-for-like against canonical ``expires_at`` values.
     cutoff_dt = _parse_iso_to_aware_utc(now_iso or _now_iso())
-    rows = []
-    sql = (
+    cutoff_canonical = _canonical_expires_at(cutoff_dt)
+
+    rows: list[ResurrectionFinding] = []
+    seen_marker_ids: set[str] = set()
+
+    def _accept(row: Any) -> None:
+        marker_id = str(row[0])
+        if marker_id in seen_marker_ids:
+            return
+        seen_marker_ids.add(marker_id)
+        rows.append(
+            ResurrectionFinding(
+                marker_id=marker_id,
+                tool_name=str(row[1]),
+                policy_id=str(row[2]),
+                expires_at=str(row[3]),
+                state=str(row[4]),
+                idempotency_key=str(row[5]),
+                compensation_tool=str(row[6]) if row[6] is not None else None,
+                max_retries=int(row[7]) if row[7] is not None else 0,
+            )
+        )
+
+    # Pass 1: index-backed range scan over canonical values. The Python
+    # re-check confirms each candidate against the timezone-aware cutoff.
+    sql, params = _orphan_scan_sql(cutoff_canonical)
+    async with conn.execute(sql, params) as cur:
+        async for row in cur:
+            if _parse_iso_to_aware_utc(str(row[3])) < cutoff_dt:
+                _accept(row)
+
+    # Pass 2: defensive fallback for legacy / non-canonical ``expires_at``
+    # rows whose lexicographic order against the canonical cutoff does NOT
+    # match their chronological order (so the index range bound in pass 1
+    # could have skipped them). We scan the remaining in_flight rows that
+    # are NOT in canonical form and classify them purely by the
+    # timezone-aware datetime compare -- guaranteeing correctness is never
+    # weaker than the canon-004 Python-only compare. The
+    # ``expires_at >= ?`` predicate restricts pass 2 to exactly the rows
+    # pass 1 did not already match (still using the same index for the
+    # ``state`` equality), so the two passes are disjoint and the common
+    # case (all-canonical) does zero extra per-row datetime parsing beyond
+    # the confirmation in pass 1.
+    fallback_sql = (
         "SELECT m.marker_id, m.tool_name, m.policy_id, m.expires_at, "
         "m.state, m.idempotency_key, "
         "p.compensation_tool, p.max_retries "
         "FROM side_effect_markers m "
         "LEFT JOIN tool_side_effect_policies p ON p.policy_id = m.policy_id "
-        "WHERE m.state = ?"
+        "WHERE m.state = ? AND m.expires_at >= ?"
     )
-    async with conn.execute(sql, (MARKER_STATE_IN_FLIGHT,)) as cur:
+    async with conn.execute(
+        fallback_sql, (MARKER_STATE_IN_FLIGHT, cutoff_canonical)
+    ) as cur:
         async for row in cur:
             expires_at = str(row[3])
-            if _parse_iso_to_aware_utc(expires_at) >= cutoff_dt:
-                # Not yet expired relative to the canonical cutoff.
+            # A value already in canonical form cannot be chronologically
+            # before the canonical cutoff while lexicographically >=, so the
+            # only rows that flip here are non-canonical (legacy). Skip
+            # canonical rows cheaply to avoid double-classifying.
+            if _is_canonical_expires_at(expires_at):
                 continue
-            rows.append(
-                ResurrectionFinding(
-                    marker_id=str(row[0]),
-                    tool_name=str(row[1]),
-                    policy_id=str(row[2]),
-                    expires_at=expires_at,
-                    state=str(row[4]),
-                    idempotency_key=str(row[5]),
-                    compensation_tool=str(row[6]) if row[6] is not None else None,
-                    max_retries=int(row[7]) if row[7] is not None else 0,
-                )
-            )
+            if _parse_iso_to_aware_utc(expires_at) < cutoff_dt:
+                _accept(row)
+
     return rows
 
 

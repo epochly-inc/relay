@@ -765,6 +765,276 @@ async def test_resurrection_scan_z_suffixed_non_expired_not_orphaned() -> None:
         await conn.close()
 
 
+# ---------------------------------------------------------------------------
+# CANON-004 follow-up: orphan-scan index efficiency (canonical expires_at)
+#
+# The canon-004 correctness fix dropped the index-backed ``expires_at <
+# cutoff`` range bound (it filtered by ``state`` only and re-compared in
+# Python). These tests pin the follow-up: a single canonical,
+# lexicographically-sortable UTC string form for ``expires_at`` and the
+# cutoff so the SQL ``expires_at < ?`` compare is BOTH correct AND
+# index-backed, with a Python fallback keeping correctness no weaker than
+# the Python-only compare.
+# ---------------------------------------------------------------------------
+
+
+async def _make_db_with_canonical_expires_migration() -> aiosqlite.Connection:
+    """Open a fresh in-memory DB, apply 0018 then the canon-004 follow-up
+    migration (0034) that normalizes ``expires_at`` and confirms the
+    composite ``(state, expires_at)`` index. Returns the connection."""
+    conn = await aiosqlite.connect(":memory:")
+    await conn.execute("PRAGMA foreign_keys = ON")
+    migrations_dir = (
+        _REPO_ROOT / "apps" / "local-sidecar" / "migrations"
+    )
+    for name in ("0018_side_effects.sql", "0034_side_effect_markers_expires_at_canonical.sql"):
+        sql = (migrations_dir / name).read_text(encoding="utf-8")
+        await conn.executescript(sql)
+    await conn.commit()
+    return conn
+
+
+def _canonical_form_re() -> re.Pattern[str]:
+    # YYYY-MM-DDTHH:MM:SS.ffffff+00:00 -- fixed width, microsecond
+    # precision, explicit +00:00 UTC suffix.
+    return re.compile(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-004")
+def test_build_marker_row_expires_at_is_canonical_sortable_form() -> None:
+    """The marker write path must emit ``expires_at`` in the single
+    canonical, lexicographically-sortable UTC form so the SQL range
+    compare is correct AND index-backed.
+
+    RED at base: ``_now_plus_seconds_iso`` emits a ``Z`` suffix and omits
+    the microsecond fraction on a whole second, so the value is neither
+    ``+00:00``-suffixed nor fixed width.
+    """
+    row = build_marker_row(
+        run_id=_new_uuid(),
+        span_id=_new_uuid(),
+        tool_name="create_case_note",
+        idempotency_key=f"key-{_new_uuid()}",
+        policy_id=_new_uuid(),
+    )
+    expires_at = row["expires_at"]
+    assert _canonical_form_re().match(expires_at), (
+        "expires_at must be canonical YYYY-MM-DDTHH:MM:SS.ffffff+00:00 so "
+        f"lexicographic order == chronological order; got {expires_at!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-004")
+def test_canonical_form_lexicographic_order_matches_chronological() -> None:
+    """The canonical form sorts lexicographically in chronological order
+    across whole-second and microsecond boundaries -- the property the
+    index range scan relies on."""
+    from relay_sidecar.side_effect_markers import _canonical_expires_at
+
+    earlier = _canonical_expires_at(datetime(2026, 5, 28, 20, 3, 44, 0, tzinfo=UTC))
+    later_us = _canonical_expires_at(datetime(2026, 5, 28, 20, 3, 44, 1, tzinfo=UTC))
+    next_sec = _canonical_expires_at(datetime(2026, 5, 28, 20, 3, 45, 0, tzinfo=UTC))
+    assert earlier < later_us < next_sec
+    # All same width => raw string sort is total and chronological.
+    assert len({len(earlier), len(later_us), len(next_sec)}) == 1
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+@pytest.mark.fulfills("VAL-CANON-004")
+async def test_orphan_scan_uses_index_search_not_full_scan() -> None:
+    """EXPLAIN QUERY PLAN for the orphan scan must SEARCH the
+    ``(state, expires_at)`` composite index, not full-SCAN the table.
+
+    RED at base: the canon-004 query is ``WHERE m.state = ?`` only, so the
+    plan shows ``SEARCH ... USING INDEX side_effect_markers_state (state=?)``
+    with no range bound on ``expires_at`` -- the index is used for the
+    equality prefix but the ``expires_at`` range is evaluated in Python,
+    pulling every in_flight row. This test asserts the ``expires_at``
+    range bound appears in the plan.
+    """
+    conn = await _make_db_with_canonical_expires_migration()
+    try:
+        sql, params = _orphan_scan_explain_sql()
+        rows = []
+        async with conn.execute("EXPLAIN QUERY PLAN " + sql, params) as cur:
+            async for row in cur:
+                rows.append(str(row[-1]))
+        plan = "\n".join(rows)
+        assert "side_effect_markers" in plan, plan
+        # Must SEARCH via an index, never full SCAN the markers table.
+        assert "SCAN side_effect_markers" not in plan, (
+            "orphan scan must not full-SCAN side_effect_markers; "
+            f"plan was:\n{plan}"
+        )
+        assert "USING INDEX side_effect_markers_state" in plan, (
+            "orphan scan must SEARCH the (state, expires_at) composite "
+            f"index; plan was:\n{plan}"
+        )
+        # The index range bound on expires_at (the perf-restoring part)
+        # must appear: SQLite renders it as "(state=? AND expires_at<?)".
+        assert "expires_at<?" in plan.replace(" ", ""), (
+            "orphan scan must apply an index range bound on expires_at "
+            f"(state=? AND expires_at<?); plan was:\n{plan}"
+        )
+    finally:
+        await conn.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+@pytest.mark.fulfills("VAL-CANON-004")
+async def test_orphan_scan_correct_with_canonical_written_markers() -> None:
+    """End-to-end: markers written through the canonical write path are
+    correctly classified by the index-backed scan (expired => orphan,
+    fresh => excluded)."""
+    conn = await _make_db_with_canonical_expires_migration()
+    try:
+        pid = await _seed_policy(conn)
+        from relay_sidecar.side_effect_markers import _canonical_expires_at
+
+        expired = _canonical_expires_at(datetime.now(tz=UTC) - timedelta(hours=1))
+        fresh = _canonical_expires_at(datetime.now(tz=UTC) + timedelta(hours=1))
+        await _seed_marker(
+            conn, policy_id=pid, state=MARKER_STATE_IN_FLIGHT, expires_at=expired
+        )
+        await _seed_marker(
+            conn, policy_id=pid, state=MARKER_STATE_IN_FLIGHT, expires_at=fresh
+        )
+        findings = await scan_orphan_markers(conn)
+        assert len(findings) == 1
+        assert findings[0].expires_at == expired
+    finally:
+        await conn.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+@pytest.mark.fulfills("VAL-CANON-004")
+async def test_orphan_scan_python_fallback_classifies_legacy_noncanonical_row() -> None:
+    """A legacy row whose ``expires_at`` is NOT in canonical form (e.g. a
+    ``Z`` suffix or no fraction) must still be classified correctly by the
+    Python re-check, even when the SQL index bound (lexicographic) would
+    mis-order it. Correctness must never be weaker than the canon-004
+    Python-only compare.
+
+    The defensive case: a legacy expired ``Z``-suffixed value that the
+    canonical-cutoff string compare would NOT catch (Z sorts after the
+    cutoff) MUST still be returned as an orphan via the Python fallback.
+    """
+    conn = await _make_db_with_canonical_expires_migration()
+    try:
+        pid = await _seed_policy(conn)
+        # Legacy whole-second Z form, chronologically BEFORE the cutoff =>
+        # expired. Lexicographically "...44Z" > "...44.000001+00:00"
+        # (Z=0x5A > .=0x2E), so a pure SQL range bound would drop it; the
+        # Python fallback must still classify it as an orphan.
+        legacy_expired_z = "2026-05-28T20:03:44Z"
+        cutoff = "2026-05-28T20:03:44.000001+00:00"
+        await _seed_marker(
+            conn,
+            policy_id=pid,
+            state=MARKER_STATE_IN_FLIGHT,
+            expires_at=legacy_expired_z,
+        )
+        findings = await scan_orphan_markers(conn, now_iso=cutoff)
+        assert len(findings) == 1, (
+            "legacy non-canonical expired Z marker must still be an orphan "
+            "via the Python fallback; the SQL index bound must not be the "
+            "sole filter when the row is non-canonical"
+        )
+        assert findings[0].expires_at == legacy_expired_z
+    finally:
+        await conn.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+@pytest.mark.fulfills("VAL-CANON-004")
+async def test_migration_0034_normalizes_existing_expires_at_to_canonical() -> None:
+    """The 0034 migration must rewrite existing ``expires_at`` values to the
+    canonical form so legacy rows benefit from the index range bound.
+
+    Seed legacy ``Z`` / fraction-less rows under the bare 0018 schema, then
+    apply 0034, and assert every ``expires_at`` is canonical and denotes
+    the same instant."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await conn.execute("PRAGMA foreign_keys = ON")
+        migrations_dir = _REPO_ROOT / "apps" / "local-sidecar" / "migrations"
+        await conn.executescript(
+            (migrations_dir / "0018_side_effects.sql").read_text(encoding="utf-8")
+        )
+        await conn.commit()
+        pid = await _seed_policy(conn)
+        # Two legacy non-canonical forms denoting the same instants.
+        z_form = "2026-05-28T20:03:44Z"
+        whole_plus = "2026-05-28T20:03:45+00:00"
+        await _seed_marker(
+            conn, policy_id=pid, state=MARKER_STATE_IN_FLIGHT, expires_at=z_form
+        )
+        await _seed_marker(
+            conn, policy_id=pid, state=MARKER_STATE_IN_FLIGHT, expires_at=whole_plus
+        )
+        # Apply the normalization migration.
+        await conn.executescript(
+            (
+                migrations_dir
+                / "0034_side_effect_markers_expires_at_canonical.sql"
+            ).read_text(encoding="utf-8")
+        )
+        await conn.commit()
+
+        canon_re = _canonical_form_re()
+        async with conn.execute(
+            "SELECT expires_at FROM side_effect_markers ORDER BY expires_at"
+        ) as cur:
+            values = [str(r[0]) async for r in cur]
+        assert len(values) == 2
+        for v in values:
+            assert canon_re.match(v), f"expires_at not canonical after 0034: {v!r}"
+        # Same instants preserved (Z 44 < +00:00 45).
+        assert values[0] == "2026-05-28T20:03:44.000000+00:00"
+        assert values[1] == "2026-05-28T20:03:45.000000+00:00"
+    finally:
+        await conn.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+@pytest.mark.fulfills("VAL-CANON-004")
+async def test_side_effect_markers_state_index_exists() -> None:
+    """The composite ``(state, expires_at)`` index must exist after the
+    follow-up migration (the index the range scan depends on)."""
+    conn = await _make_db_with_canonical_expires_migration()
+    try:
+        async with conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='side_effect_markers_state'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None, "side_effect_markers_state index must exist"
+        async with conn.execute(
+            "PRAGMA index_info('side_effect_markers_state')"
+        ) as cur:
+            cols = [str(r[2]) async for r in cur]
+        assert cols == ["state", "expires_at"], cols
+    finally:
+        await conn.close()
+
+
+def _orphan_scan_explain_sql() -> tuple[str, tuple[Any, ...]]:
+    """Return (sql, params) matching scan_orphan_markers's query so the
+    EXPLAIN QUERY PLAN test exercises the production statement shape."""
+    from relay_sidecar.side_effect_markers import _orphan_scan_sql
+
+    return _orphan_scan_sql("2026-05-28T20:03:44.000001+00:00")
+
+
 @pytest.mark.plumbing
 @pytest.mark.asyncio
 @pytest.mark.fulfills("VAL-V2M04-020")
