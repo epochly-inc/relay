@@ -1523,6 +1523,22 @@
       "py_jcs_b64": "MS41"
     },
     {
+      "bindings": {},
+      "expression": "100.0",
+      "id": "coerce_dbl_whole_small_accepted",
+      "idiom": "type-coercion",
+      "kind": "eval_value",
+      "py_jcs_b64": "MTAw"
+    },
+    {
+      "bindings": {},
+      "expression": "9007199254740991.0",
+      "id": "coerce_dbl_whole_max_safe_integer_accepted",
+      "idiom": "type-coercion",
+      "kind": "eval_value",
+      "py_jcs_b64": "OTAwNzE5OTI1NDc0MDk5MQ=="
+    },
+    {
       "bindings": {
         "m": {
           "k0": {
@@ -1793,6 +1809,13 @@
       "bindings": {},
       "expression": "9007199254740992 + 1",
       "id": "err_int_two_pow_53_plus_one_add",
+      "idiom": "numeric-out-of-bounds",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
+      "expression": "9007199254740994.0",
+      "id": "err_dbl_whole_above_safe_range",
       "idiom": "numeric-out-of-bounds",
       "kind": "eval_error"
     },

@@ -258,7 +258,7 @@ def _check_finite(value: Any) -> Any:
     unchanged when no violation is found (caller may keep it for
     canonicalisation).
 
-    Two classes are rejected here so the result can be canonicalised
+    Three classes are rejected here so the result can be canonicalised
     cross-runtime byte-identically (CLAUDE.md keystone invariant #11):
 
       - NaN / +Inf / -Inf: RFC 8785 JCS cannot canonicalise them
@@ -269,6 +269,15 @@ def _check_finite(value: Any) -> Any:
         (VAL-PARITY-001). 2**53 itself is NOT a safe integer (a rounded
         overflow may land on it) so it is rejected; only magnitude
         <= MAX_SAFE_INTEGER is accepted.
+      - Whole-valued DOUBLES (DoubleType, ``.is_integer()``) with abs value
+        > MAX_SAFE_INTEGER: cel-js erases the CEL int/double distinction at
+        the result boundary (it classifies any whole-valued number as int and
+        rejects it via the same bound), so cel-python MUST reject the
+        whole-valued double too or the two runtimes diverge -- cel-python
+        ACCEPT, cel-js REJECT (VAL-PARITY-001 whole-double branch). Note that
+        no representable float64 of magnitude > MAX_SAFE_INTEGER is
+        non-integral (the ULP at 2**53 is 2.0), so a genuinely non-integral
+        double (e.g. 1.5) is always within the safe range and stays accepted.
     """
 
     if isinstance(value, bool):
@@ -284,17 +293,42 @@ def _check_finite(value: Any) -> Any:
         # preserves it exactly while cel-js loses precision, diverging the
         # cross-runtime digest. Fail-closed in both runtimes. ``int`` covers
         # cel-python's IntType (a subclass); bool was already routed out
-        # above. Whole-valued floats are NOT treated as ints here -- they are
-        # cel-python DoubleType (float subclass) and live on the float code
-        # path. A CEL double is float64 in BOTH runtimes, so it canonicalises
-        # byte-identically and is exempt from this integer bound; only CEL
-        # ints (exact in cel-python, rounded in cel-js) carry the
-        # exact-vs-rounded divergence hazard this bound guards against. (The
-        # cel-js mirror cannot make this distinction because cel-js erases the
-        # int/double type at the result boundary -- see evaluator.ts
-        # checkFinite NOTE -- so a whole-valued double >= 2**53 is the one
-        # value where the two runtimes still diverge; documented there.)
+        # above. cel-python DoubleType (a float subclass) does NOT match this
+        # ``int`` branch -- whole-valued doubles beyond the bound are caught by
+        # the dedicated float branch just below, which closes the residual
+        # whole-double divergence (the bound originally exempted doubles; see
+        # the whole-double branch comment).
         if isinstance(value, int) and abs(value) > SAFE_INTEGER_BOUND:
+            raise RelayCelNumericOutOfBoundsError(
+                "Relay CEL evaluator rejects integer outside the IEEE-754 "
+                "safe range [-(2**53 - 1), 2**53 - 1]: a cel-js double would "
+                f"lose precision and diverge the cross-runtime digest: {value!r}"
+            )
+        # VAL-PARITY-001 (whole-valued double branch): a CEL DOUBLE whose value
+        # is whole (``.is_integer()``) and whose magnitude exceeds
+        # MAX_SAFE_INTEGER is rejected too, so cel-python and cel-js give the
+        # SAME verdict. cel-js (cel-js 0.8.2) collapses CEL int and CEL double
+        # to a bare JS ``number`` and re-derives the type from the value
+        # (``getCelType`` classifies ANY whole-valued number as int), so the
+        # DOUBLE literal ``9007199254740994.0`` is INDISTINGUISHABLE there from
+        # the int ``9007199254740994`` and is rejected by the int bound in
+        # evaluator.ts checkFinite. cel-python preserves the type (DoubleType,
+        # a float subclass routed onto THIS branch -- bool was excluded at the
+        # top, NaN/Inf raised just above so ``.is_integer()`` only runs on a
+        # finite float), so the int-only bound above let cel-python ACCEPT this
+        # double while cel-js REJECTED it -- a cross-runtime divergence (the
+        # residual gap documented in evaluator.ts checkFinite NOTE). Rejecting
+        # the whole-valued double here closes it, fail-closed in BOTH runtimes.
+        #
+        # No representable float64 of magnitude > MAX_SAFE_INTEGER is
+        # non-integral (the ULP at 2**53 is 2.0), so this branch NEVER fires on
+        # a fractional double; a genuinely non-integral double (e.g. 1.5) is
+        # always within the safe range and stays accepted.
+        if (
+            isinstance(value, float)
+            and value.is_integer()
+            and abs(value) > SAFE_INTEGER_BOUND
+        ):
             raise RelayCelNumericOutOfBoundsError(
                 "Relay CEL evaluator rejects integer outside the IEEE-754 "
                 "safe range [-(2**53 - 1), 2**53 - 1]: a cel-js double would "

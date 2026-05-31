@@ -506,6 +506,82 @@ def test_nested_out_of_range_int_rejected_via_check_finite() -> None:
     assert ctx.value.subtype == SUBTYPE_NUMERIC_OOB
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-001")
+def test_whole_double_above_safe_range_in_result_rejected() -> None:
+    """A whole-valued DOUBLE literal whose magnitude exceeds MAX_SAFE_INTEGER
+    (2**53 - 1) is rejected at the evaluation-result boundary, matching the
+    cel-js mirror so BOTH runtimes fail-closed identically.
+
+    cel-js (cel-js 0.8.2) collapses CEL int and CEL double to a bare JS
+    ``number`` and re-derives the type from the value -- it classifies any
+    whole-valued number as int, so the DOUBLE literal ``9007199254740994.0``
+    is INDISTINGUISHABLE there from the int ``9007199254740994`` and is
+    rejected by the safe-integer bound. cel-python preserves the type
+    (``DoubleType``), so a bound restricted to ``isinstance(value, int)``
+    let cel-python ACCEPT this double while cel-js REJECTED it -- a
+    cross-runtime divergence (the residual gap left by the integer-only
+    fix in commit b873f22). The whole-valued-double branch closes it.
+
+    RED at commit b873f22: evaluate() returns DoubleType(9007199254740994.0)
+    with no raise.
+    """
+
+    evaluator = RelayCelEvaluator()
+    with pytest.raises(RelayCelNumericOutOfBoundsError) as ctx_pos:
+        evaluator.evaluate("9007199254740994.0")
+    assert ctx_pos.value.code == "RELAY-CEL-006"
+    assert ctx_pos.value.subtype == SUBTYPE_NUMERIC_OOB
+    # Symmetric: the negation is rejected too.
+    with pytest.raises(RelayCelNumericOutOfBoundsError) as ctx_neg:
+        evaluator.evaluate("-9007199254740994.0")
+    assert ctx_neg.value.subtype == SUBTYPE_NUMERIC_OOB
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-001")
+def test_two_pow_53_minus_one_whole_double_accepted() -> None:
+    """The whole-valued double ``9007199254740991.0`` (== 2**53 - 1 ==
+    MAX_SAFE_INTEGER) is ACCEPTED: abs is NOT > the bound. It is exact in
+    cel-python and exactly representable as a float64 in cel-js, so it
+    canonicalises byte-identically. cel-js classifies it as int (whole value)
+    and ALSO accepts it (abs not > bound). The whole-double reject branch
+    MUST NOT over-reject this boundary value."""
+
+    evaluator = RelayCelEvaluator()
+    pos = evaluator.evaluate("9007199254740991.0")
+    assert float(pos) == 9007199254740991.0
+    neg = evaluator.evaluate("-9007199254740991.0")
+    assert float(neg) == -9007199254740991.0
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-001")
+def test_small_whole_double_accepted() -> None:
+    """A small whole-valued double like ``100.0`` is well within the safe
+    range and ACCEPTED by both runtimes. Guards against the whole-double
+    branch firing on any whole double regardless of magnitude."""
+
+    evaluator = RelayCelEvaluator()
+    out = evaluator.evaluate("100.0")
+    assert float(out) == 100.0
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-001")
+def test_non_integral_double_within_range_accepted() -> None:
+    """A genuinely non-integral double within the safe range (``1.5``) is
+    ACCEPTED -- the whole-double branch only fires on ``.is_integer()`` values
+    beyond the bound, never on a fractional double. (No representable float64
+    of magnitude > MAX_SAFE_INTEGER is non-integral -- the ULP at 2**53 is 2.0
+    -- so the only non-integral doubles to protect live within the safe
+    range.)"""
+
+    evaluator = RelayCelEvaluator()
+    out = evaluator.evaluate("1.5")
+    assert float(out) == 1.5
+
+
 # ---------------------------------------------------------------------------
 # VAL-W6-007: regex backreference rejected at parse/check time
 # ---------------------------------------------------------------------------

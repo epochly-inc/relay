@@ -159,4 +159,73 @@ describe("VAL-PARITY-001: cel-js rejects out-of-safe-range integer results", () 
     }
     expect(Number(out)).toBe(4);
   });
+
+  // VAL-PARITY-001 whole-DOUBLE branch (Py<->TS parity closure): cel-js 0.8.2
+  // collapses CEL int and CEL double to a bare JS `number` and re-derives the
+  // type from the value (getCelType classifies any whole-valued number as
+  // int), so a whole-valued CEL DOUBLE literal >= 2**53 is INDISTINGUISHABLE
+  // here from the same-magnitude CEL int and is rejected by the integral
+  // bound. cel-python preserved the DoubleType, so its int-only bound let
+  // cel-python ACCEPT the double while cel-js REJECTED it. cel-python now
+  // rejects the whole-valued double too (evaluator.py _check_finite
+  // whole-double branch), so BOTH runtimes give the SAME verdict on these.
+  test("a whole-valued double literal >= 2**53 is rejected", () => {
+    // 9007199254740994.0 -- a DOUBLE literal; cel-js sees the bare number
+    // 9007199254740994 (whole) and rejects via the integral bound.
+    const ev = new RelayCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
+    let caught: unknown = null;
+    try {
+      ev.evaluate("9007199254740994.0");
+    } catch (e) {
+      caught = e;
+    } finally {
+      ev.dispose();
+    }
+    expect(caught).toBeInstanceOf(RelayCelNumericOutOfBoundsError);
+    const err = caught as RelayCelNumericOutOfBoundsError;
+    expect(err.code).toBe("RELAY-CEL-006");
+    expect(err.subtype).toBe(SUBTYPE_NUMERIC_OOB);
+  });
+
+  test("the negation of a whole-valued double >= 2**53 is rejected", () => {
+    const ev = new RelayCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
+    let caught: unknown = null;
+    try {
+      ev.evaluate("-9007199254740994.0");
+    } catch (e) {
+      caught = e;
+    } finally {
+      ev.dispose();
+    }
+    expect(caught).toBeInstanceOf(RelayCelNumericOutOfBoundsError);
+    expect((caught as RelayCelNumericOutOfBoundsError).subtype).toBe(
+      SUBTYPE_NUMERIC_OOB,
+    );
+  });
+
+  test("a whole-valued double == MAX_SAFE_INTEGER (2**53 - 1) is accepted", () => {
+    // 9007199254740991.0 -- the LARGEST whole double accepted (abs not > the
+    // bound). Must NOT over-reject: the whole-double branch fires only beyond
+    // the bound.
+    const ev = new RelayCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
+    let out: unknown;
+    try {
+      out = ev.evaluate("9007199254740991.0");
+    } finally {
+      ev.dispose();
+    }
+    expect(Number(out)).toBe(SAFE_INTEGER_BOUND);
+    expect(Number(out)).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  test("a small whole-valued double (100.0) is accepted", () => {
+    const ev = new RelayCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
+    let out: unknown;
+    try {
+      out = ev.evaluate("100.0");
+    } finally {
+      ev.dispose();
+    }
+    expect(Number(out)).toBe(100);
+  });
 });

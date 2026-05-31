@@ -429,6 +429,25 @@ def coercion_edge_cases() -> list[tuple[str, str, dict[str, Any], str, str | Non
         ("coerce_dbl_div_whole_result", "10.0 / 5.0", {}, "type-coercion", None),
         ("coerce_int_var_pos", "x", {"x": 5}, "type-coercion", None),
         ("coerce_dbl_var", "x", {"x": 1.5}, "type-coercion", None),
+        # VAL-PARITY-001 whole-double ACCEPT boundary (lock the no-over-reject
+        # edge against the err_dbl_whole_above_safe_range REJECT case):
+        #   - 100.0: a small whole DOUBLE, comfortably within the safe range;
+        #     both runtimes ACCEPT and canonicalise byte-identically.
+        #   - 9007199254740991.0 (== MAX_SAFE_INTEGER as a whole DOUBLE): the
+        #     LARGEST whole double accepted (abs is NOT > the bound). It is
+        #     exact in cel-python and exactly representable as a float64 in
+        #     cel-js, so it emits byte-identically. The whole-double reject
+        #     branch MUST NOT fire here -- the very next whole double (2**53)
+        #     is rejected (covered by err_dbl_whole_above_safe_range above for
+        #     a value beyond it).
+        ("coerce_dbl_whole_small_accepted", "100.0", {}, "type-coercion", None),
+        (
+            "coerce_dbl_whole_max_safe_integer_accepted",
+            "9007199254740991.0",
+            {},
+            "type-coercion",
+            None,
+        ),
     ]
 
 
@@ -649,6 +668,27 @@ def numeric_out_of_bounds_eval_error_cases() -> (
         (
             "err_int_two_pow_53_plus_one_add",
             "9007199254740992 + 1",
+            {},
+            "numeric-out-of-bounds",
+        ),
+        # VAL-PARITY-001 whole-DOUBLE branch (found by `codex review`: CEL
+        # whole-double >= 2**53 Py<->TS parity). A whole-valued DOUBLE literal
+        # whose magnitude exceeds MAX_SAFE_INTEGER. cel-js (cel-js 0.8.2)
+        # collapses CEL int and CEL double to a bare JS number and re-derives
+        # the type from the value (``getCelType`` classifies any whole-valued
+        # number as int), so the DOUBLE 9007199254740994.0 is INDISTINGUISHABLE
+        # there from the int 9007199254740994 and is rejected by the int bound.
+        # cel-python preserved the DoubleType, so the prior int-only bound let
+        # cel-python ACCEPT this double while cel-js REJECTED it -- a
+        # cross-runtime divergence. The whole-double branch in evaluator.py
+        # _check_finite now rejects it too, so BOTH runtimes fail-closed.
+        # (Note: no representable float64 of magnitude > MAX_SAFE_INTEGER is
+        # non-integral -- the ULP at 2**53 is 2.0 -- so this is the
+        # double-typed analogue of the integer bound, not an additional class
+        # of values.)
+        (
+            "err_dbl_whole_above_safe_range",
+            "9007199254740994.0",
             {},
             "numeric-out-of-bounds",
         ),
