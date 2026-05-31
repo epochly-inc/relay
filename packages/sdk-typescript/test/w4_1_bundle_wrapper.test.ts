@@ -6,8 +6,9 @@
  *   VAL-W4-005: bundle digest verified against manifest BEFORE Sigstore
  *               step; corrupted bundle exits with RELAY-SIDECAR-021 and
  *               never invokes Sigstore.
- *   VAL-W4-006: 5-cell host arch matrix supported; unsupported tuple
- *               surfaces RELAY-SIDECAR-023.
+ *   VAL-W4-006: supported host arch matrix (4 cells; Intel macOS /
+ *               darwin-x64 unsupported); unsupported tuple surfaces
+ *               RELAY-SIDECAR-023.
  *   VAL-W4-007: offline + no cache -> RELAY-SIDECAR-022 with
  *               retry_advice.mode = after_state_change.
  *   VAL-W4-007b: offline + cached bundle -> launched_from_cache, zero
@@ -448,7 +449,7 @@ describe("VAL-W4-005: digest verified BEFORE Sigstore; corrupted bundle short-ci
   });
 });
 
-describe("VAL-W4-006: 5-cell host arch matrix; unsupported tuple raises RelaySidecarBundleArchUnsupported", () => {
+describe("VAL-W4-006: supported host arch matrix (4 cells); unsupported tuple raises RelaySidecarBundleArchUnsupported", () => {
   it("every supported (os, arch) cell resolves to a manifest entry", () => {
     const f = buildMockFixture();
     for (const cell of SUPPORTED_OS_ARCH) {
@@ -474,6 +475,48 @@ describe("VAL-W4-006: 5-cell host arch matrix; unsupported tuple raises RelaySid
     expect(() => resolveBundleEntry(trimmed, "linux", "x64")).toThrowError(
       RelaySidecarBundleArchUnsupported,
     );
+  });
+
+  it("does NOT list Intel macOS (darwin/x64) as a supported cell", () => {
+    // The release matrix builds only macos-arm64; Intel macOS is
+    // unsupported. SUPPORTED_OS_ARCH must not advertise darwin/x64,
+    // otherwise the wrapper would pass the matrix check and then throw the
+    // confusing manifest_missing_arch on a genuine Intel Mac.
+    const hasIntelMac = SUPPORTED_OS_ARCH.some(
+      (cell) => cell.os === "darwin" && cell.arch === "x64",
+    );
+    expect(hasIntelMac).toBe(false);
+    // Apple Silicon macOS remains supported.
+    const hasAppleSilicon = SUPPORTED_OS_ARCH.some(
+      (cell) => cell.os === "darwin" && cell.arch === "arm64",
+    );
+    expect(hasAppleSilicon).toBe(true);
+  });
+
+  it("rejects Intel macOS (darwin/x64) as host_not_in_matrix, not manifest_missing_arch", () => {
+    // The manifest enumerates only the four built cells (no darwin/x64),
+    // mirroring what assemble-release-manifest.py emits. A genuine Intel
+    // Mac must get a clean unsupported-platform error (host_not_in_matrix)
+    // -- NOT manifest_missing_arch, which is the symptom of advertising
+    // darwin/x64 in the matrix while the manifest omits it.
+    const f = buildMockFixture();
+    let captured: unknown;
+    try {
+      resolveBundleEntry(f.manifest, "darwin", "x64");
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured).toBeInstanceOf(RelaySidecarBundleArchUnsupported);
+    const e = captured as RelaySidecarBundleArchUnsupported;
+    expect(e.details.reason).toBe("host_not_in_matrix");
+    expect(e.details.reason).not.toBe("manifest_missing_arch");
+  });
+
+  it("still resolves native Apple-Silicon macOS (darwin/arm64) -- regression", () => {
+    const f = buildMockFixture();
+    const entry = resolveBundleEntry(f.manifest, "darwin", "arm64");
+    expect(entry.os).toBe("darwin");
+    expect(entry.arch).toBe("arm64");
   });
 });
 

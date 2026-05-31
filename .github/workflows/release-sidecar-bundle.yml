@@ -122,8 +122,12 @@ jobs:
           # decision documented in CHANGELOG v0.1.16). GitHub's free
           # Intel-macOS runner pool is perpetually queue-starved (40+ min
           # waits make releases non-deterministic); Apple stopped
-          # shipping Intel Macs in 2022; the remaining Intel-Mac install
-          # base runs the arm64 binary through Rosetta.
+          # shipping Intel Macs in 2022. Intel macOS (darwin/x64) is now
+          # UNSUPPORTED: Rosetta 2 translates x86_64 -> arm64 (it runs Intel
+          # binaries on Apple Silicon), NOT arm64 -> x86_64, so the arm64
+          # binary cannot run on an Intel host. The launcher / wrapper / CLI
+          # refuse darwin/x64 with a clean unsupported-platform error rather
+          # than claiming a (nonexistent) reverse-Rosetta fallback.
           #
           # Self-hosted runners (registered 2026-05-28) provide the build
           # capacity for 3 of the 4 cells. The "linux-arm64" cell stays

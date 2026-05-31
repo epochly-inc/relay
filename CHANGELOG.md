@@ -17,6 +17,35 @@ The tag `v0.3-audit-resolution-complete` points at the same commit as
 
 ## [Unreleased]
 
+### Fixed
+- **Intel macOS (darwin/x64) distribution inconsistency** (two halves of
+  one bug, found by `codex review`). v0.1.16 dropped `macos-x86_64` from
+  the build matrix but left the consumer-side resolution advertising
+  `darwin/x64`, producing two failure modes on a genuine Intel Mac:
+  - `packages/sdk-typescript-sidecar-bundle/src/bin/launcher.ts`:
+    `resolveLaunchCell({hostOs:"darwin", hostArch:"x64"})` mapped to the
+    `macos-arm64` binary with a "Rosetta" claim. This is backwards --
+    Rosetta 2 translates x86_64 -> arm64 (Intel binaries on Apple
+    Silicon), not arm64 -> x86_64 -- so `spawn()` would have failed to
+    exec an arm64 binary on an Intel host. The launcher now fails closed
+    with a clear unsupported-platform error and never resolves the arm64
+    entry.
+  - `packages/sdk-typescript/src/bin/types.ts` `SUPPORTED_OS_ARCH` and
+    `packages/cli/src/relay_cli/bundle.py` `SUPPORTED_OS_ARCH` still
+    listed `darwin/x64`, while the aggregated manifest
+    (`scripts/assemble-release-manifest.py`) and the CLI's pinned
+    `bundle_manifest.json` did not. `resolveBundleEntry` / `install_bundle`
+    therefore passed the matrix check and then threw the confusing
+    `manifest_missing_arch` on an Intel Mac. `darwin/x64` is removed from
+    both `SUPPORTED_OS_ARCH` matrices and from the shipped
+    `bundle_manifest.json`, so an Intel Mac now gets a clean
+    `host_not_in_matrix` / arch-unsupported error before any fetch.
+  - `darwin/arm64` (native Apple Silicon), `linux/x64`, `linux/arm64`,
+    and `win32/x64` resolution are unchanged.
+  - The false "runs the arm64 binary through Rosetta" rationale is
+    corrected in the README, the workflow + build-script comments, the
+    v0.1.16 changelog note above, and the matrix doc comments.
+
 ## [v0.1.20] - 2026-05-28
 
 CI-infrastructure patch: ships the all-self-hosted sidecar-bundle
@@ -147,9 +176,12 @@ canonical sidecar matrix. The cell was the bottleneck on every
 release-sidecar-bundle run since v0.1.9 because GitHub's free
 Intel-macOS runner pool is perpetually queue-starved (40+ minute
 waits made the pipeline non-deterministic). Apple stopped shipping
-Intel Macs in 2022; the remaining Intel-Mac install base runs the
-arm64 binary through Rosetta, which Apple has shipped on every macOS
-since Big Sur (11.0, 2020). The contract assertion VAL-W12-020 was
+Intel Macs in 2022. (Correction, see [Unreleased]: the original v0.1.16
+note claimed Intel Macs would "run the arm64 binary through Rosetta" --
+this is wrong. Rosetta 2 translates x86_64 -> arm64, not arm64 -> x86_64,
+so the arm64 binary cannot run on an Intel host. Intel macOS is
+unsupported; the consumer-side fix lands in [Unreleased] below.) The
+contract assertion VAL-W12-020 was
 previously enforced as "5-arch matrix, removing never allowed";
 this release revises it to "4-arch matrix, removing requires
 board-level decision". Future removals require an equivalent

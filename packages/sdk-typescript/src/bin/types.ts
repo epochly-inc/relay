@@ -10,7 +10,7 @@
  * ASCII-only per CLAUDE.md "ASCII-Safe Source".
  */
 
-/** Supported sidecar bundle OS+arch tuples (5 cells, per VAL-W4-006). */
+/** Supported sidecar bundle OS+arch tuples (4 cells, per VAL-W4-006). */
 export type SupportedOs = "darwin" | "linux" | "win32";
 export type SupportedArch = "x64" | "arm64";
 
@@ -39,10 +39,28 @@ export interface ReleaseManifest {
   readonly bundles: ReadonlyArray<BundleEntry>;
 }
 
-/** 5x3 supported matrix (per VAL-W4-006). */
+/**
+ * Supported sidecar-bundle host matrix (4 cells, per VAL-W4-006).
+ *
+ * Mirrors the build matrix in scripts/build-sidecar-bundle.py
+ * (CANONICAL_MATRIX) and scripts/assemble-release-manifest.py
+ * (_CANONICAL_SLUGS), expressed in Node's process.platform / process.arch
+ * vocabulary:
+ *   - macos-arm64    -> darwin/arm64
+ *   - linux-x86_64   -> linux/x64
+ *   - linux-arm64    -> linux/arm64
+ *   - windows-x86_64 -> win32/x64
+ *
+ * Intel macOS (darwin/x64) is intentionally absent: the release matrix
+ * builds only macos-arm64 (macos-x86_64 was dropped 2026-05-28 by
+ * board-level decision; see CHANGELOG v0.1.16), and Rosetta 2 translates
+ * x86_64 -> arm64 (Intel binaries on Apple Silicon), not arm64 -> x86_64.
+ * Advertising darwin/x64 here would let resolveBundleEntry pass the matrix
+ * check and then throw the confusing manifest_missing_arch on a genuine
+ * Intel Mac; omitting it surfaces a clean host_not_in_matrix error instead.
+ */
 export const SUPPORTED_OS_ARCH: ReadonlyArray<{ os: SupportedOs; arch: SupportedArch }> =
   Object.freeze([
-    Object.freeze({ os: "darwin" as const, arch: "x64" as const }),
     Object.freeze({ os: "darwin" as const, arch: "arm64" as const }),
     Object.freeze({ os: "linux" as const, arch: "x64" as const }),
     Object.freeze({ os: "linux" as const, arch: "arm64" as const }),

@@ -344,7 +344,8 @@ export function parseReleaseManifest(value: unknown, sourceUrl?: string): Releas
  * (platform, arch).
  *
  * Throws :class:`RelaySidecarBundleArchUnsupported` if either the host is
- * not in the 5-cell supported matrix, or the manifest does not enumerate
+ * not in the supported host matrix (SUPPORTED_OS_ARCH; 4 cells -- Intel
+ * macOS / darwin-x64 is unsupported), or the manifest does not enumerate
  * the matching entry.
  */
 export function resolveBundleEntry(

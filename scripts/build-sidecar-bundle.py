@@ -52,8 +52,11 @@ from pathlib import Path
 # Adding to this requires a board-level decision (orchestrator
 # sidecar-bundle-arch pin). macos-x86_64 was removed on 2026-05-28 by
 # board-level decision (GitHub Intel-macOS runner pool starvation,
-# Apple 2022 Intel discontinuation, Rosetta fallback). See CHANGELOG
-# v0.1.16. Further removals require an equivalent board-level decision.
+# Apple 2022 Intel discontinuation). See CHANGELOG v0.1.16. Intel macOS
+# (darwin/x64) is consequently unsupported: Rosetta 2 translates x86_64 ->
+# arm64 (Intel binaries on Apple Silicon), not arm64 -> x86_64, so the
+# arm64 binary cannot run on an Intel host. Further removals require an
+# equivalent board-level decision.
 CANONICAL_MATRIX: tuple[tuple[str, str], ...] = (
     ("macos", "arm64"),
     ("linux", "x86_64"),

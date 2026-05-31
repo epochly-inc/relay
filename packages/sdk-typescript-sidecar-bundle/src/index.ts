@@ -30,9 +30,11 @@ export const DEFAULT_TRUST_ANCHOR_URL: string =
  * Adding to this matrix requires a board-level decision (orchestrator
  * sidecar-bundle-arch pin). macos-x86_64 was removed on 2026-05-28 by
  * board-level decision (GitHub Intel-macOS runner pool starvation,
- * Apple 2022 Intel discontinuation, Rosetta fallback). See CHANGELOG
- * v0.1.16. Subsequent removals require an equivalent board-level
- * decision.
+ * Apple 2022 Intel discontinuation). See CHANGELOG v0.1.16. Intel macOS
+ * (darwin/x64) is consequently unsupported: there is no compatible binary
+ * and Rosetta 2 cannot run the arm64 binary on an Intel host (it
+ * translates x86_64 -> arm64, not arm64 -> x86_64). Subsequent removals
+ * require an equivalent board-level decision.
  */
 export const CANONICAL_MATRIX: ReadonlyArray<{ os: string; arch: string }> =
   Object.freeze([

@@ -28,9 +28,12 @@
  * crypto), then:
  *
  *   - Maps the host to a CANONICAL_MATRIX cell (see src/index.ts). The
- *     manifest has no darwin/x64 entry; an Intel mac runs the macos-arm64
- *     binary through Rosetta (per the package README), so the launcher
- *     asks the wrapper to resolve the arm64 entry on darwin/x64.
+ *     matrix builds only macos-arm64 for macOS; Intel macOS (darwin/x64)
+ *     is unsupported. Rosetta 2 translates x86_64 -> arm64 (it runs Intel
+ *     binaries on Apple Silicon), NOT arm64 -> x86_64, so there is no way
+ *     to run the arm64 binary on an Intel host. darwin/x64 therefore fails
+ *     closed with a clear unsupported-platform error and never resolves to
+ *     the arm64 entry.
  *   - Translates the wrapper's wire codes into the package's documented
  *     diagnostic codes so an operator can tell STEP A from STEP B:
  *       RELAY-SIDECAR-021 (digest)   -> RELAY-RELEASE-025-DIGEST
@@ -122,13 +125,12 @@ export interface LaunchCell {
    * The (platform, arch) the wrapper must resolve the manifest entry by.
    * Matches Node's process.platform / process.arch vocabulary
    * (darwin/linux/win32 x x64/arm64) because that is what
-   * @epochly/relay's manifest parser keys on. For an Intel mac this is the
-   * arm64 entry (Rosetta), not the host's x64.
+   * @epochly/relay's manifest parser keys on. Every supported host maps to
+   * its own (os, arch); there is no cross-arch override (Intel macOS is
+   * unsupported, not silently mapped to arm64).
    */
   readonly wrapperHostOs: string;
   readonly wrapperHostArch: string;
-  /** True when the host arch differs from the binary arch (Rosetta path). */
-  readonly viaRosetta: boolean;
 }
 
 /**
@@ -136,34 +138,36 @@ export interface LaunchCell {
  *
  * Mapping (Node -> canonical):
  *   darwin/arm64 -> macos/arm64
- *   darwin/x64   -> macos/arm64  (Rosetta; the matrix has no macos-x86_64)
+ *   darwin/x64   -> UNSUPPORTED (Intel macOS; the matrix has only
+ *                   macos-arm64 and Rosetta 2 cannot run an arm64 binary
+ *                   on an Intel host)
  *   linux/x64    -> linux/x86_64
  *   linux/arm64  -> linux/arm64
  *   win32/x64    -> windows/x86_64
  *
- * Any other tuple is unsupported and fails closed with
- * RelaySidecarBundleArchUnsupported (the @epochly/relay typed leaf, so the
- * launcher and the SDK agree on the error shape). There is no silent
+ * Any other tuple (including darwin/x64) is unsupported and fails closed
+ * with RelaySidecarBundleArchUnsupported (the @epochly/relay typed leaf, so
+ * the launcher and the SDK agree on the error shape). There is no silent
  * fallback: an unsupported arch must surface a clear error, never run a
  * wrong-arch binary.
  */
 export function resolveLaunchCell(hostOs: string, hostArch: string): LaunchCell {
-  // Normalize the canonical (os, arch) and the wrapper host override.
+  // Normalize the canonical (os, arch). The wrapper resolves the manifest
+  // entry by the host's own (os, arch); no cross-arch override exists.
   let canonicalOs: string | null = null;
   let canonicalArch: string | null = null;
-  let wrapperHostArch = hostArch;
-  let viaRosetta = false;
+  const wrapperHostArch = hostArch;
 
   if (hostOs === "darwin") {
     canonicalOs = "macos";
     if (hostArch === "arm64") {
       canonicalArch = "arm64";
-    } else if (hostArch === "x64") {
-      // Intel mac: the matrix has only macos-arm64; run it via Rosetta.
-      canonicalArch = "arm64";
-      wrapperHostArch = "arm64";
-      viaRosetta = true;
     }
+    // darwin/x64 (Intel macOS) is intentionally NOT mapped: the build matrix
+    // produces only macos-arm64, and Rosetta 2 translates x86_64 -> arm64
+    // (Intel binaries on Apple Silicon), not arm64 -> x86_64. Leaving
+    // canonicalArch null makes the null-check below fail closed with a clear
+    // unsupported-platform error instead of spawning a wrong-arch binary.
   } else if (hostOs === "linux") {
     canonicalOs = "linux";
     if (hostArch === "x64") {
@@ -218,7 +222,6 @@ export function resolveLaunchCell(hostOs: string, hostArch: string): LaunchCell 
     slug: cellSlug(canonicalOs, canonicalArch),
     wrapperHostOs: hostOs,
     wrapperHostArch,
-    viaRosetta,
   };
 }
 
@@ -346,8 +349,9 @@ export async function runLauncher(options: RunLauncherOptions = {}): Promise<num
 
   // 2-5. Reuse the @epochly/relay verify+download orchestrator. It verifies
   //      the signed manifest fail-closed, runs digest-first then Sigstore +
-  //      Rekor, and writes the verified binary to the cache. For an Intel mac
-  //      we ask it to resolve the arm64 entry (Rosetta).
+  //      Rekor, and writes the verified binary to the cache. The wrapper
+  //      resolves the entry by the host's own (os, arch); unsupported hosts
+  //      (e.g. Intel macOS) have already failed closed at step 1.
   let decision: LaunchDecision;
   try {
     const launchOptions: LaunchSidecarOptions = {
@@ -374,11 +378,6 @@ export async function runLauncher(options: RunLauncherOptions = {}): Promise<num
   // 6. Launch ONLY after verification passed. The verified binary is
   //    bundle.bin under the digest-keyed cache dir.
   const binaryPath = path.join(decision.cache_dir, "bundle.bin");
-  if (cell.viaRosetta) {
-    writeErr(
-      `relay-sidecar-bundle: launching macos-arm64 binary on Intel mac via Rosetta\n`,
-    );
-  }
   try {
     return await spawnImpl(binaryPath, argv);
   } catch (err) {

@@ -208,4 +208,81 @@ def test_driver_emits_json_on_stdout_without_manifest_out(
     assert proc.returncode == 0, proc.stderr
     manifest = json.loads(proc.stdout)
     assert manifest["schema"] == "relay.sidecar-bundle-manifest.v1"
-    assert manifest["matrix_complete"] is False  # only 1 of 5 cells built
+    assert manifest["matrix_complete"] is False  # only 1 of 4 cells built
+
+
+# ---------------------------------------------------------------------------
+# Aggregated wrapper-facing manifest (scripts/assemble-release-manifest.py)
+# omits Intel macOS (darwin/x64).
+#
+# The release matrix builds only macos-arm64 (macos-x86_64 dropped
+# 2026-05-28; CHANGELOG v0.1.16). The assembled, wrapper-facing manifest
+# must therefore enumerate exactly the four built cells in the wrapper's
+# process.platform / process.arch vocabulary, and must NOT advertise a
+# darwin/x64 bundle the release never produces. This is the manifest the
+# npx wrapper (SUPPORTED_OS_ARCH, 4 cells) and the CLI installer both
+# resolve against; a darwin/x64 entry here would be the supply half of the
+# Intel-macOS distribution inconsistency.
+# ---------------------------------------------------------------------------
+
+ASSEMBLE_SCRIPT: Path = REPO_ROOT / "scripts" / "assemble-release-manifest.py"
+
+# Build-cell slug -> wrapper (os, arch) vocabulary. Mirrors
+# scripts/assemble-release-manifest.py _OS_MAP / _ARCH_MAP.
+_WRAPPER_CELLS: tuple[tuple[str, str], ...] = (
+    ("darwin", "arm64"),
+    ("linux", "x64"),
+    ("linux", "arm64"),
+    ("win32", "x64"),
+)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-020")
+def test_assembled_manifest_omits_intel_macos(tmp_path: Path) -> None:
+    """The aggregated wrapper-facing manifest enumerates exactly the four
+    built cells and contains no darwin/x64 bundle."""
+    out_root = tmp_path / "dist"
+    # Build all four cells in dry-run mode (placeholder binaries).
+    build = _run_driver(
+        ["--dry-run", "--out-root", str(out_root)]
+    )
+    assert build.returncode == 0, build.stderr
+
+    manifest_path = tmp_path / "manifest.json"
+    assemble = subprocess.run(
+        [
+            sys.executable,
+            str(ASSEMBLE_SCRIPT),
+            "--dist-root",
+            str(out_root),
+            "--sidecar-version",
+            "0.1.0",
+            "--trust-root",
+            "relay.epochly.com",
+            "--asset-base-url",
+            "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.1.0",
+            "--out",
+            str(manifest_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert assemble.returncode == 0, (
+        f"assemble exited {assemble.returncode}: stdout={assemble.stdout!r} "
+        f"stderr={assemble.stderr!r}"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "relay.sidecar_bundle_manifest.v1"
+    cells = {(b["os"], b["arch"]) for b in manifest["bundles"]}
+    assert ("darwin", "x64") not in cells, (
+        "assembled manifest advertises a darwin/x64 bundle the release never "
+        "builds (Intel-macOS distribution inconsistency, supply half)"
+    )
+    # Exactly the four built cells, in the wrapper vocabulary (regression).
+    assert cells == set(_WRAPPER_CELLS), (
+        f"assembled manifest cells {cells} != expected {set(_WRAPPER_CELLS)}"
+    )
+    # Apple Silicon macOS is present.
+    assert ("darwin", "arm64") in cells

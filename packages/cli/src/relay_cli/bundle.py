@@ -91,11 +91,21 @@ VERIFIER_SIGSTORE_CRYPTO_IMPLEMENTED: Final[bool] = True
 MANIFEST_SCHEMA_VERSION: Final[str] = "relay.cli.sidecar_install_manifest.v1"
 
 # Supported OS/arch tuples (mirrors packages/sdk-typescript/src/bin/types.ts
-# SUPPORTED_OS_ARCH). Same 5 cells.
+# SUPPORTED_OS_ARCH). 4 cells: macos-arm64, linux-x86_64, linux-arm64,
+# windows-x86_64.
+#
+# Intel macOS (darwin/x64) is intentionally absent: the release matrix
+# builds only macos-arm64 (macos-x86_64 dropped 2026-05-28 by board-level
+# decision; see CHANGELOG v0.1.16), and Rosetta 2 translates x86_64 ->
+# arm64 (Intel binaries on Apple Silicon), not arm64 -> x86_64, so the
+# arm64 binary cannot run on an Intel Mac. Advertising darwin/x64 here
+# would let install_bundle pass the matrix check and then fail with the
+# confusing "manifest does not enumerate a bundle for (darwin, x64)" (or,
+# worse, fetch the nonexistent darwin/x64 asset). Omitting it surfaces a
+# clean arch-unsupported error before any network call instead.
 SupportedOs = Literal["darwin", "linux", "win32"]
 SupportedArch = Literal["x64", "arm64"]
 SUPPORTED_OS_ARCH: Final[tuple[tuple[str, str], ...]] = (
-    ("darwin", "x64"),
     ("darwin", "arm64"),
     ("linux", "x64"),
     ("linux", "arm64"),
@@ -172,7 +182,11 @@ class BundleManifestMalformed(BundleInstallError):
 
 
 class BundleArchUnsupported(BundleInstallError):
-    """Raised when the host (os, arch) is not in the 5-cell support matrix."""
+    """Raised when the host (os, arch) is not in the supported matrix.
+
+    The matrix has 4 cells (macos-arm64, linux-x86_64, linux-arm64,
+    windows-x86_64); Intel macOS (darwin/x64) is unsupported.
+    """
 
     def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(

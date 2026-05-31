@@ -15,14 +15,6 @@
       "sigstore_url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-darwin-arm64.tar.gz.sigstore"
     },
     {
-      "os": "darwin",
-      "arch": "x64",
-      "url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-darwin-x64.tar.gz",
-      "expected_digest": "0000000000000000000000000000000000000000000000000000000000000000",
-      "size_bytes": 1,
-      "sigstore_url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-darwin-x64.tar.gz.sigstore"
-    },
-    {
       "os": "linux",
       "arch": "x64",
       "url": "https://relay.epochly.com/.well-known/relay-sidecar-bundle/v0.0.0/relay-sidecar-linux-x64.tar.gz",

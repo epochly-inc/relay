@@ -8,8 +8,9 @@
  *
  * Flow (per VAL-W4-004 through VAL-W4-011b):
  *
- *   1. Resolve (process.platform, process.arch) into a 5-cell matrix
- *      entry. (Unsupported tuple -> RELAY-SIDECAR-023.)
+ *   1. Resolve (process.platform, process.arch) into a supported-host
+ *      matrix entry (SUPPORTED_OS_ARCH; 4 cells -- Intel macOS / darwin-x64
+ *      is unsupported). (Unsupported tuple -> RELAY-SIDECAR-023.)
  *   2. If the cache has a ``.verified`` marker within TTL, launch from
  *      cache. Emit ``{action: "launched_from_cache", ...}`` and skip
  *      network. (VAL-W4-011b cache hit.)

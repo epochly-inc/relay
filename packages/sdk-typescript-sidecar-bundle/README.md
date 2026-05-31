@@ -16,8 +16,12 @@ revised 2026-05-28 to drop `macos-x86_64` per CHANGELOG v0.1.16):
   3. `linux-arm64`
   4. `windows-x86_64`
 
-Intel-Mac users get the `macos-arm64` binary via Rosetta, which Apple
-ships on every macOS since Big Sur (11.0, 2020).
+Intel macOS (`darwin`/`x64`) is **not supported**. The matrix builds only
+`macos-arm64`, and Rosetta 2 translates `x86_64` -> `arm64` (it runs Intel
+binaries on Apple Silicon), not `arm64` -> `x86_64` -- so there is no way to
+run the `macos-arm64` binary on an Intel Mac. The launcher refuses
+`darwin`/`x64` with a clear unsupported-platform error rather than fetching
+a binary that cannot execute.
 
 The package's `relay-sidecar-bundle` bin entry (the launcher) detects
 the host OS/arch, downloads the matching binary from the published

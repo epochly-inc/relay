@@ -10,10 +10,11 @@
  * and writes the verified binary to the bundle cache). The launcher's
  * additional responsibilities -- exercised here -- are:
  *
- *   1. Host OS/arch detection -> the matching CANONICAL_MATRIX cell,
- *      including the Intel-mac (darwin/x64) -> macos-arm64-via-Rosetta
- *      mapping documented in the package README, and a fail-closed error
- *      on an unknown/unsupported arch.
+ *   1. Host OS/arch detection -> the matching CANONICAL_MATRIX cell, and a
+ *      fail-closed error on an unsupported arch. Intel macOS (darwin/x64)
+ *      is unsupported: the matrix builds only macos-arm64 and Rosetta 2
+ *      cannot run an arm64 binary on an Intel host, so darwin/x64 fails
+ *      closed rather than mapping to the arm64 binary.
  *   2. Translating the wrapper's wire codes into the package's documented
  *      diagnostic codes: STEP A digest mismatch -> RELAY-RELEASE-025-DIGEST
  *      (and Sigstore MUST NOT have been called), STEP B Sigstore/Rekor
@@ -76,24 +77,35 @@ function fakeDecision(overrides: Partial<LaunchDecision> = {}): LaunchDecision {
 // (a) Arch detection.
 // ---------------------------------------------------------------------------
 describe("resolveLaunchCell (host OS/arch detection)", () => {
-  it("maps native Apple-Silicon mac to macos-arm64", () => {
+  it("maps native Apple-Silicon mac to macos-arm64 (unchanged)", () => {
     const cell = resolveLaunchCell("darwin", "arm64");
     expect(cell.canonical).toEqual({ os: "macos", arch: "arm64" });
     // The wrapper resolves the manifest entry by Node (platform, arch);
-    // a native arm64 mac needs no override.
+    // a native arm64 mac resolves to its own (os, arch), no override.
     expect(cell.wrapperHostOs).toBe("darwin");
     expect(cell.wrapperHostArch).toBe("arm64");
-    expect(cell.viaRosetta).toBe(false);
   });
 
-  it("maps Intel mac (darwin/x64) to macos-arm64 via Rosetta", () => {
-    const cell = resolveLaunchCell("darwin", "x64");
-    expect(cell.canonical).toEqual({ os: "macos", arch: "arm64" });
-    // The manifest has no darwin/x64 entry; the launcher must ask the
-    // wrapper to resolve the arm64 entry so Rosetta runs it.
-    expect(cell.wrapperHostOs).toBe("darwin");
-    expect(cell.wrapperHostArch).toBe("arm64");
-    expect(cell.viaRosetta).toBe(true);
+  it("fails closed on Intel mac (darwin/x64): no arm64 mapping, no Rosetta claim", () => {
+    // Rosetta 2 translates x86_64 -> arm64 (runs Intel binaries on Apple
+    // Silicon). It does NOT run arm64 binaries on Intel Macs. The release
+    // matrix builds only macos-arm64, so there is no compatible binary for
+    // an Intel mac: resolveLaunchCell MUST refuse rather than silently map
+    // darwin/x64 to the arm64 binary (which spawn() would fail to exec).
+    expect(() => resolveLaunchCell("darwin", "x64")).toThrow();
+    let captured: unknown;
+    try {
+      resolveLaunchCell("darwin", "x64");
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured).toBeInstanceOf(Error);
+    const message = (captured as Error).message.toLowerCase();
+    // The error must clearly name Intel macOS / darwin-x64 as unsupported
+    // and must NOT claim arm64-via-Rosetta support.
+    expect(message).toContain("darwin");
+    expect(message).toContain("x64");
+    expect(message).not.toContain("rosetta");
   });
 
   it("maps linux x64 / arm64 and windows x64 to their canonical cells", () => {
@@ -247,26 +259,33 @@ describe("happy path: verified binary is exec'd and its exit code propagated", (
     expect(code).toBe(0);
   });
 
-  it("requests the arm64 entry when launching on an Intel mac (Rosetta)", async () => {
+  it("refuses to launch on an Intel mac: no verify, no spawn, usage exit", async () => {
+    // darwin/x64 is not in the build matrix and Rosetta cannot run an arm64
+    // binary on an Intel host, so the launcher must fail closed at arch
+    // detection -- never asking the wrapper to resolve the arm64 entry and
+    // never spawning a wrong-arch binary.
     const launchSidecarImpl =
       vi.fn<NonNullable<RunLauncherOptions["launchSidecarImpl"]>>(async () =>
         fakeDecision(),
       );
     const spawnImpl = vi.fn<NonNullable<RunLauncherOptions["spawnImpl"]>>(async () => 0);
+    const lines: string[] = [];
     const options: RunLauncherOptions = {
       hostOs: "darwin",
       hostArch: "x64",
       argv: [],
       launchSidecarImpl,
       spawnImpl,
-      stderr: () => {},
+      stderr: (s: string) => lines.push(s),
     };
-    await runLauncher(options);
-    // The wrapper is asked to resolve the arm64 entry, not the (nonexistent)
-    // darwin/x64 entry, so Rosetta runs the arm64 binary.
-    const passedOpts = launchSidecarImpl.mock.calls[0]![0];
-    expect(passedOpts.hostOs).toBe("darwin");
-    expect(passedOpts.hostArch).toBe("arm64");
+    const code = await runLauncher(options);
+    expect(code).toBe(EXIT_USAGE);
+    expect(launchSidecarImpl).not.toHaveBeenCalled();
+    expect(spawnImpl).not.toHaveBeenCalled();
+    const joined = lines.join("").toLowerCase();
+    // A clear unsupported-platform diagnostic, not a Rosetta claim.
+    expect(joined).toContain("darwin");
+    expect(joined).not.toContain("rosetta");
   });
 });
 

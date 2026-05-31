@@ -864,6 +864,116 @@ def test_install_source_does_not_call_open_for_bundle_writes() -> None:
 
 
 # =============================================================================
+# Intel macOS (darwin/x64) is genuinely unsupported.
+#
+# These are bug-fix regression guards (no contract assertion binds them):
+# the release matrix builds only macos-arm64 (macos-x86_64 dropped
+# 2026-05-28; see CHANGELOG v0.1.16). Rosetta 2 translates x86_64 -> arm64
+# (Intel binaries on Apple Silicon), NOT arm64 -> x86_64, so the arm64
+# binary cannot run on an Intel Mac. The CLI install path must therefore
+# (a) not advertise darwin/x64 in SUPPORTED_OS_ARCH, (b) not ship a
+# darwin/x64 entry in the pinned bundle_manifest.json pointing at an asset
+# the release never builds, and (c) refuse an Intel-Mac host with a clean
+# arch-unsupported error BEFORE any network fetch -- never the confusing
+# "manifest does not enumerate" symptom that arises from a matrix/manifest
+# mismatch.
+# =============================================================================
+
+
+@pytest.mark.plumbing
+def test_supported_os_arch_excludes_intel_macos() -> None:
+    """SUPPORTED_OS_ARCH must not list darwin/x64; darwin/arm64 stays."""
+    from relay_cli.bundle import SUPPORTED_OS_ARCH
+
+    assert ("darwin", "x64") not in SUPPORTED_OS_ARCH, (
+        "Intel macOS (darwin/x64) is advertised as supported but the release "
+        "matrix builds only macos-arm64 and Rosetta cannot run arm64 on Intel"
+    )
+    # Apple Silicon macOS remains supported (regression guard).
+    assert ("darwin", "arm64") in SUPPORTED_OS_ARCH
+    # The other three built cells remain supported.
+    for cell in (("linux", "x64"), ("linux", "arm64"), ("win32", "x64")):
+        assert cell in SUPPORTED_OS_ARCH, f"missing supported cell {cell}"
+
+
+@pytest.mark.plumbing
+def test_shipped_bundle_manifest_has_no_intel_macos_entry() -> None:
+    """The pinned bundle_manifest.json must not enumerate a darwin/x64 cell."""
+    from relay_cli.bundle import default_manifest_path
+
+    manifest_path = default_manifest_path()
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cells = {(b["os"], b["arch"]) for b in data["bundles"]}
+    assert ("darwin", "x64") not in cells, (
+        "shipped bundle_manifest.json advertises a darwin/x64 entry pointing "
+        "at relay-sidecar-darwin-x64 which the release never builds"
+    )
+    # Apple Silicon macOS entry is present (regression guard).
+    assert ("darwin", "arm64") in cells
+
+
+@pytest.mark.plumbing
+def test_install_refuses_intel_macos_before_any_fetch(tmp_path: Path) -> None:
+    """install_bundle on an Intel Mac raises BundleArchUnsupported, no fetch.
+
+    The host is rejected at the SUPPORTED_OS_ARCH matrix check (host not in
+    matrix), BEFORE the manifest entry is resolved or any byte is fetched --
+    so the error is the clean arch-unsupported code, not a download failure
+    or the confusing "manifest does not enumerate" message.
+    """
+    from relay_cli.bundle import (
+        RELAY_CLI_SIDECAR_ARCH_UNSUPPORTED,
+        BundleArchUnsupported,
+        install_bundle,
+    )
+
+    # A manifest with a valid arm64 macOS entry only -- mirrors the shipped
+    # manifest after the fix. Even if it had a darwin/x64 entry, the matrix
+    # check must fire first.
+    manifest_path = tmp_path / "bundle_manifest.json"
+    _write_bundle_manifest(
+        manifest_path,
+        bundles=[
+            {
+                "os": "darwin",
+                "arch": "arm64",
+                "url": "https://relay.epochly.com/test/m.tar.gz",
+                "expected_digest": "0" * 64,
+                "size_bytes": 1,
+                "sigstore_url": "https://relay.epochly.com/test/m.tar.gz.sigstore",
+            }
+        ],
+    )
+
+    fetched: list[str] = []
+
+    def tripwire_fetch_bytes(url: str) -> bytes:
+        fetched.append(url)
+        raise AssertionError("fetch must not run for an unsupported host")
+
+    def tripwire_fetch_text(url: str) -> str:
+        fetched.append(url)
+        raise AssertionError("fetch must not run for an unsupported host")
+
+    home = tmp_path / "relay_home_intel"
+    home.mkdir()
+    with pytest.raises(BundleArchUnsupported) as excinfo:
+        install_bundle(
+            home=home,
+            manifest_path=manifest_path,
+            host_os="darwin",
+            host_arch="x64",
+            fetch_bytes=tripwire_fetch_bytes,
+            fetch_text=tripwire_fetch_text,
+        )
+    assert excinfo.value.code == RELAY_CLI_SIDECAR_ARCH_UNSUPPORTED
+    # The error is the matrix check, not a manifest-resolution failure.
+    assert "supported sidecar matrix" in str(excinfo.value)
+    # No network call happened.
+    assert fetched == [], f"unexpected fetches for unsupported host: {fetched}"
+
+
+# =============================================================================
 # VAL-W5-008b: Cross-shell sidecar lifecycle snapshot tests (bash+zsh slice)
 # =============================================================================
 #
