@@ -1,21 +1,21 @@
 // VAL-PARITY-001: cel-js rejects integral evaluation results whose
-// magnitude exceeds 2**53 at the result boundary, mirroring the
-// cel-python bound in
+// magnitude exceeds Number.MAX_SAFE_INTEGER (2**53 - 1) at the result
+// boundary, mirroring the cel-python bound in
 // packages/contracts/src/relay_contracts/evaluator.py _check_finite.
 //
-// cel-python keeps such an integer exact (arbitrary precision) while a JS
-// double rounds it, so the same logical result would canonicalise to
-// DIFFERENT RFC 8785 JCS bytes in each runtime -- a cross-runtime digest
-// break (CLAUDE.md keystone invariant #11). Both runtimes apply the SAME
-// numeric threshold (abs > 2**53) so they fail-closed identically.
-//
-// cel-js produces a JS double, so the bound is enforced only on overflows
-// whose ROUNDED magnitude still exceeds 2**53 (e.g. 2**53 * 2 = 2**54). A
-// true value of exactly 2**53 + 1 rounds down to 2**53 in cel-js and is
-// indistinguishable from the accepted boundary there; that asymmetry is
-// precisely the hazard VAL-PARITY-001 fixes by failing closed on the
-// Python side, where the value is still exact (covered by
-// packages/contracts/tests/test_w6_1_evaluator.py).
+// Rationale for the >= 2**53 (i.e. > MAX_SAFE_INTEGER) threshold:
+// 2**53 is NOT a safe integer -- it is indistinguishable from 2**53 + 1
+// after IEEE-754 double rounding (both round to the same float64). cel-python
+// keeps an integer exact (arbitrary precision) while a JS double rounds it.
+// For ANY integer V: float64(V) > MAX_SAFE_INTEGER  <=>  V >= 2**53. So
+// rejecting magnitude >= 2**53 makes a float-rounded integer overflow that
+// lands exactly on 2**53 (e.g. 9007199254740992 + 1 -> 9007199254740993,
+// rounded by cel-js to 9007199254740992) REJECT in cel-js, matching
+// cel-python's exact-integer rejection. The previous bound (abs > 2**53,
+// EXCLUSIVE) accepted 2**53 itself, which let cel-js silently pass a
+// rounded integer overflow -- a cross-runtime digest break and a fail-open
+// relative to cel-python (CLAUDE.md keystone invariant #11). Found by
+// `codex review` (CEL +-2^53 Py<->TS parity P1), CONFIRMED empirically.
 //
 // Tool: vitest. Evidence: vitest exit code, captured error code/subtype.
 //
@@ -35,13 +35,14 @@ import {
 import { SAFE_INTEGER_BOUND } from "../src/evaluator.js";
 
 describe("VAL-PARITY-001: cel-js rejects out-of-safe-range integer results", () => {
-  test("SAFE_INTEGER_BOUND is 2**53", () => {
-    expect(SAFE_INTEGER_BOUND).toBe(9007199254740992);
-    expect(SAFE_INTEGER_BOUND).toBe(2 ** 53);
+  test("SAFE_INTEGER_BOUND is Number.MAX_SAFE_INTEGER (2**53 - 1)", () => {
+    expect(SAFE_INTEGER_BOUND).toBe(9007199254740991);
+    expect(SAFE_INTEGER_BOUND).toBe(2 ** 53 - 1);
+    expect(SAFE_INTEGER_BOUND).toBe(Number.MAX_SAFE_INTEGER);
   });
 
   test("an integral product overflowing past 2**53 is rejected", () => {
-    // 1e9 * 1e9 = 1e18; abs > 2**53 in both runtimes.
+    // 1e9 * 1e9 = 1e18; abs > MAX_SAFE_INTEGER in both runtimes.
     const ev = new RelayCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
     let caught: unknown = null;
     try {
@@ -58,7 +59,7 @@ describe("VAL-PARITY-001: cel-js rejects out-of-safe-range integer results", () 
   });
 
   test("a negative integral overflow past -(2**53) is rejected", () => {
-    // -(2**53) * 2 = -2**54; abs > 2**53 in both runtimes.
+    // -(2**53) * 2 = -2**54; abs > MAX_SAFE_INTEGER in both runtimes.
     const ev = new RelayCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
     let caught: unknown = null;
     try {
@@ -74,15 +75,66 @@ describe("VAL-PARITY-001: cel-js rejects out-of-safe-range integer results", () 
     );
   });
 
-  test("the boundary value 2**53 is accepted (exactly representable)", () => {
+  test("the boundary value 2**53 is now REJECTED (unsafe integer)", () => {
+    // CHANGED: the prior bound accepted exactly 2**53. 2**53 is NOT a safe
+    // integer (it is indistinguishable from 2**53 + 1 after double rounding),
+    // so a cel-js result of exactly 2**53 may be a rounded integer overflow.
+    // cel-python rejects the exact integer 9007199254740993 (which it keeps
+    // exact); rejecting 2**53 on the cel-js side makes the rounded value
+    // (9007199254740992) reject identically. Fail-closed in both runtimes.
     const ev = new RelayCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
-    let out: unknown;
+    let caught: unknown = null;
     try {
-      out = ev.evaluate("9007199254740992");
+      ev.evaluate("9007199254740992");
+    } catch (e) {
+      caught = e;
     } finally {
       ev.dispose();
     }
-    expect(Number(out)).toBe(SAFE_INTEGER_BOUND);
+    expect(caught).toBeInstanceOf(RelayCelNumericOutOfBoundsError);
+    expect((caught as RelayCelNumericOutOfBoundsError).subtype).toBe(
+      SUBTYPE_NUMERIC_OOB,
+    );
+  });
+
+  test("an integer literal just past MAX_SAFE_INTEGER (2**53 + 1) is rejected", () => {
+    // 9007199254740993 == 2**53 + 1. cel-python keeps it exact and rejects;
+    // cel-js rounds it to 9007199254740992 == 2**53 and -- with the corrected
+    // bound -- ALSO rejects (>= 2**53). Previously cel-js ACCEPTED this
+    // rounded value (fail-open). This is the exact divergence codex flagged.
+    const ev = new RelayCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
+    let caught: unknown = null;
+    try {
+      ev.evaluate("9007199254740993");
+    } catch (e) {
+      caught = e;
+    } finally {
+      ev.dispose();
+    }
+    expect(caught).toBeInstanceOf(RelayCelNumericOutOfBoundsError);
+    expect((caught as RelayCelNumericOutOfBoundsError).subtype).toBe(
+      SUBTYPE_NUMERIC_OOB,
+    );
+  });
+
+  test("an integer overflow by addition (2**53 + 1) is rejected", () => {
+    // 9007199254740992 + 1: cel-python computes the exact int 9007199254740993
+    // and rejects; cel-js does float64 arithmetic, rounding to 9007199254740992
+    // == 2**53, which the corrected bound ALSO rejects. Previously ACCEPTED
+    // (fail-open) -- the codex-flagged integer-overflow pass-through.
+    const ev = new RelayCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
+    let caught: unknown = null;
+    try {
+      ev.evaluate("9007199254740992 + 1");
+    } catch (e) {
+      caught = e;
+    } finally {
+      ev.dispose();
+    }
+    expect(caught).toBeInstanceOf(RelayCelNumericOutOfBoundsError);
+    expect((caught as RelayCelNumericOutOfBoundsError).subtype).toBe(
+      SUBTYPE_NUMERIC_OOB,
+    );
   });
 
   test("Number.MAX_SAFE_INTEGER (2**53 - 1) is accepted", () => {
@@ -93,7 +145,7 @@ describe("VAL-PARITY-001: cel-js rejects out-of-safe-range integer results", () 
     } finally {
       ev.dispose();
     }
-    expect(Number(out)).toBe(SAFE_INTEGER_BOUND - 1);
+    expect(Number(out)).toBe(SAFE_INTEGER_BOUND);
     expect(Number(out)).toBe(Number.MAX_SAFE_INTEGER);
   });
 

@@ -47,20 +47,28 @@ import type { PureUdf } from "./udf.js";
 export const DEFAULT_TIMEOUT_MS = 50;
 export const MAX_TIMEOUT_MS = 250;
 
-// VAL-PARITY-001: integral evaluation results whose absolute value exceeds
-// 2**53 are rejected at the result boundary, mirroring
-// packages/contracts/src/relay_contracts/evaluator.py SAFE_INTEGER_BOUND.
-// cel-python keeps such an integer exact (arbitrary precision) while a JS
-// double silently rounds it, so the same logical result would canonicalise
-// to DIFFERENT JCS bytes in each runtime -- a cross-runtime digest break
-// (CLAUDE.md keystone invariant #11). Both runtimes apply the SAME numeric
-// threshold (abs > 2**53) so they fail-closed identically. The boundary
-// value 2**53 is itself a power of two -- exactly representable as a double
-// and byte-identical across runtimes -- so it is accepted; only abs > 2**53
-// is rejected. (Note: 2**53 === Number.MAX_SAFE_INTEGER + 1; the bound is
-// expressed as the numeric threshold rather than Number.isSafeInteger,
-// which would also reject the byte-safe boundary value 2**53.)
-export const SAFE_INTEGER_BOUND = 2 ** 53; // 9007199254740992
+// VAL-PARITY-001: integral evaluation results whose absolute value EXCEEDS
+// Number.MAX_SAFE_INTEGER (2**53 - 1) are rejected at the result boundary,
+// mirroring packages/contracts/src/relay_contracts/evaluator.py
+// SAFE_INTEGER_BOUND. cel-python keeps such an integer exact (arbitrary
+// precision) while a JS double silently rounds it, so the same logical
+// result would canonicalise to DIFFERENT JCS bytes in each runtime -- a
+// cross-runtime digest break (CLAUDE.md keystone invariant #11). Both
+// runtimes apply the SAME numeric threshold (abs > MAX_SAFE_INTEGER,
+// equivalently magnitude >= 2**53) so they fail-closed identically.
+//
+// The threshold is MAX_SAFE_INTEGER (2**53 - 1), NOT 2**53: 2**53 is itself
+// NOT a safe integer -- it is indistinguishable from 2**53 + 1 after IEEE-754
+// double rounding (both round to the same float64), so a cel-js result of
+// exactly 2**53 may be a ROUNDED integer overflow (e.g. 9007199254740992 + 1
+// -> exact int 9007199254740993 in cel-python, rounded to 9007199254740992
+// in cel-js). Accepting exactly 2**53 is precisely what let cel-js pass a
+// rounded integer overflow (fail-open vs cel-python). Key identity: for any
+// integer V, float64(V) > MAX_SAFE_INTEGER  <=>  V >= 2**53, so this bound
+// gives the SAME verdict in cel-python (exact int) and cel-js (float64) for
+// every integer including arithmetic overflow. (Found by `codex review`:
+// CEL +-2^53 Py<->TS parity P1; CONFIRMED empirically.)
+export const SAFE_INTEGER_BOUND = 2 ** 53 - 1; // 9007199254740991 === Number.MAX_SAFE_INTEGER
 
 // Disabled native CEL identifiers when used as function calls
 // (`dyn(x)`, `timestamp("...")`, `duration("...")`). Detection runs
@@ -194,18 +202,33 @@ function checkFinite(value: unknown): unknown {
         `Relay CEL evaluator rejects non-finite number: ${String(value)}`,
       );
     }
-    // VAL-PARITY-001: an integral result whose magnitude exceeds 2**53 is
-    // an out-of-band signal -- cel-python preserves it exactly while a JS
-    // double rounds it, diverging the cross-runtime digest. Fail-closed
-    // here so cel-js refuses the same result cel-python refuses. The
-    // boundary value 2**53 is exactly representable and accepted; only
-    // abs > 2**53 is rejected. Non-integral numbers (e.g. 1.5) are not
-    // subject to this bound.
+    // VAL-PARITY-001: an integral result whose magnitude exceeds
+    // MAX_SAFE_INTEGER (2**53 - 1) is an out-of-band signal -- cel-python
+    // preserves it exactly while a JS double rounds it, diverging the
+    // cross-runtime digest. Fail-closed here so cel-js refuses the same
+    // result cel-python refuses. 2**53 itself is NOT safe (it cannot be
+    // distinguished from 2**53 + 1 after rounding) so it is rejected; only
+    // magnitude <= MAX_SAFE_INTEGER is accepted. Non-integral numbers (e.g.
+    // 1.5) are not subject to this bound.
+    //
+    // NOTE on int-vs-double (VAL-PARITY-001 part B): cel-js erases the CEL
+    // int/double distinction at the result boundary -- both literals parse
+    // to a bare JS `number` (parser parseInt/parseFloat; see
+    // node_modules/cel-js getCelType which re-derives type from the value
+    // and classifies any whole-valued number as int). So a whole-valued CEL
+    // DOUBLE >= 2**53 (e.g. 9007199254740994.0) is INDISTINGUISHABLE here
+    // from the CEL int 9007199254740994 and is rejected by this bound,
+    // whereas cel-python exempts the double (DoubleType is not an int). That
+    // residual divergence is a known cel-js limitation -- it cannot be
+    // resolved on bare numbers because both expressions yield byte-identical
+    // float64. The integer-overflow hazard (the codex-flagged P1) is fully
+    // closed by this bound; the double-exemption gap is documented and
+    // tracked separately.
     if (Number.isInteger(value) && Math.abs(value) > SAFE_INTEGER_BOUND) {
       throw new RelayCelNumericOutOfBoundsError(
         "Relay CEL evaluator rejects integer outside the IEEE-754 safe " +
-          "range [-2**53, 2**53]: a cel-js double would lose precision " +
-          `and diverge the cross-runtime digest: ${String(value)}`,
+          "range [-(2**53 - 1), 2**53 - 1]: a cel-js double would lose " +
+          `precision and diverge the cross-runtime digest: ${String(value)}`,
       );
     }
     return value;

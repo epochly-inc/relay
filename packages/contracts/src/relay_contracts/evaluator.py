@@ -56,21 +56,30 @@ MAX_TIMEOUT_MS: int = 250
 # threads.
 MAX_ORPHAN_THREADS: int = 64
 
-# VAL-PARITY-001: integral evaluation results whose absolute value exceeds
-# 2**53 are rejected at the result boundary. cel-python uses
-# arbitrary-precision Python ints, so such a value canonicalises EXACTLY
-# (str(n)); a cel-js double silently rounds it (9007199254740993 ->
-# 9007199254740992), producing DIVERGENT JCS bytes for the same logical
-# result and a cross-runtime digest break (CLAUDE.md keystone invariant #11:
-# cross-runtime byte equality). The cel-js mirror applies the SAME numeric
-# threshold (abs > 2**53; see contracts-typescript evaluator.ts checkFinite)
-# so BOTH runtimes fail-closed identically. The boundary value 2**53 itself
-# is a power of two -- exactly representable as an IEEE-754 double,
-# byte-identical in both runtimes -- so it is accepted; only abs > 2**53 is
-# rejected. (The threshold is abs > 2**53, NOT Number.isSafeInteger, which
-# would also reject the byte-safe boundary value 2**53.) This complements
-# the NaN/Inf check below (RFC 8785 cannot canonicalise either class).
-SAFE_INTEGER_BOUND: int = 2**53  # 9007199254740992
+# VAL-PARITY-001: integral evaluation results whose absolute value EXCEEDS
+# Number.MAX_SAFE_INTEGER (2**53 - 1) are rejected at the result boundary.
+# cel-python uses arbitrary-precision Python ints, so such a value
+# canonicalises EXACTLY (str(n)); a cel-js double silently rounds it
+# (9007199254740993 -> 9007199254740992), producing DIVERGENT JCS bytes for
+# the same logical result and a cross-runtime digest break (CLAUDE.md
+# keystone invariant #11: cross-runtime byte equality). The cel-js mirror
+# applies the SAME numeric threshold (abs > MAX_SAFE_INTEGER; see
+# contracts-typescript evaluator.ts checkFinite) so BOTH runtimes fail-closed
+# identically.
+#
+# The threshold is MAX_SAFE_INTEGER (2**53 - 1), NOT 2**53: 2**53 is itself
+# NOT a safe integer -- it cannot be distinguished from 2**53 + 1 after
+# IEEE-754 double rounding. cel-js rounds an integer overflow that lands on
+# 2**53 + 1 down to 2**53; accepting exactly 2**53 (the prior, EXCLUSIVE
+# bound) let cel-js silently pass that rounded integer overflow (fail-open
+# relative to cel-python, which keeps the value exact and rejects it).
+# Rejecting magnitude >= 2**53 closes that gap. Key identity: for any integer
+# V, float64(V) > MAX_SAFE_INTEGER  <=>  V >= 2**53, so cel-python (exact int)
+# and cel-js (float64) give the SAME verdict for every integer, including
+# arithmetic overflow. (Found by `codex review`: CEL +-2^53 Py<->TS parity
+# P1; CONFIRMED empirically.) This complements the NaN/Inf check below
+# (RFC 8785 cannot canonicalise either class).
+SAFE_INTEGER_BOUND: int = 2**53 - 1  # 9007199254740991 == Number.MAX_SAFE_INTEGER
 
 # Disabled native CEL identifiers when used as function calls
 # (`dyn(x)`, `timestamp("...")`, `duration("...")`). Detection runs at
@@ -254,11 +263,12 @@ def _check_finite(value: Any) -> Any:
 
       - NaN / +Inf / -Inf: RFC 8785 JCS cannot canonicalise them
         (VAL-W6-006).
-      - Integers with abs value > 2**53: cel-python keeps them exact but
-        a cel-js double rounds them, so the same logical result would
-        canonicalise to DIFFERENT bytes in each runtime (VAL-PARITY-001).
-        The boundary value 2**53 is exactly representable as a double and
-        is accepted.
+      - Integers with abs value > MAX_SAFE_INTEGER (2**53 - 1): cel-python
+        keeps them exact but a cel-js double rounds them, so the same logical
+        result would canonicalise to DIFFERENT bytes in each runtime
+        (VAL-PARITY-001). 2**53 itself is NOT a safe integer (a rounded
+        overflow may land on it) so it is rejected; only magnitude
+        <= MAX_SAFE_INTEGER is accepted.
     """
 
     if isinstance(value, bool):
@@ -269,20 +279,26 @@ def _check_finite(value: Any) -> Any:
             raise RelayCelNumericOutOfBoundsError(
                 f"Relay CEL evaluator rejects non-finite number: {value!r}"
             )
-        # VAL-PARITY-001: an integral result outside [-2**53, 2**53] is an
-        # out-of-band signal -- cel-python preserves it exactly while cel-js
-        # loses precision, diverging the cross-runtime digest. Fail-closed
-        # in both runtimes. ``int`` covers cel-python's IntType (a subclass);
-        # bool was already routed out above. Whole-valued floats are not
-        # treated as ints here (they live on the float code path and are
-        # already finite-checked); the JS mirror screens them via
-        # Number.isSafeInteger on the numeric leaf, but a Python float that
-        # large is itself imprecise and is out of scope for this signal.
+        # VAL-PARITY-001: an integral result outside
+        # [-(2**53 - 1), 2**53 - 1] is an out-of-band signal -- cel-python
+        # preserves it exactly while cel-js loses precision, diverging the
+        # cross-runtime digest. Fail-closed in both runtimes. ``int`` covers
+        # cel-python's IntType (a subclass); bool was already routed out
+        # above. Whole-valued floats are NOT treated as ints here -- they are
+        # cel-python DoubleType (float subclass) and live on the float code
+        # path. A CEL double is float64 in BOTH runtimes, so it canonicalises
+        # byte-identically and is exempt from this integer bound; only CEL
+        # ints (exact in cel-python, rounded in cel-js) carry the
+        # exact-vs-rounded divergence hazard this bound guards against. (The
+        # cel-js mirror cannot make this distinction because cel-js erases the
+        # int/double type at the result boundary -- see evaluator.ts
+        # checkFinite NOTE -- so a whole-valued double >= 2**53 is the one
+        # value where the two runtimes still diverge; documented there.)
         if isinstance(value, int) and abs(value) > SAFE_INTEGER_BOUND:
             raise RelayCelNumericOutOfBoundsError(
                 "Relay CEL evaluator rejects integer outside the IEEE-754 "
-                "safe range [-2**53, 2**53]: a cel-js double would lose "
-                f"precision and diverge the cross-runtime digest: {value!r}"
+                "safe range [-(2**53 - 1), 2**53 - 1]: a cel-js double would "
+                f"lose precision and diverge the cross-runtime digest: {value!r}"
             )
         return value
     if isinstance(value, list | tuple):

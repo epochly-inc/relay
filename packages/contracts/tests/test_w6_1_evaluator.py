@@ -407,16 +407,19 @@ def test_finite_result_passes() -> None:
 # evaluation-result boundary (cross-runtime digest parity).
 #
 # cel-python returns arbitrary-precision Python ints, so an integral result
-# with abs value > 2**53 (e.g. 2**53 + 1) canonicalises EXACTLY in Python
-# while a JS double silently rounds it (9007199254740993 -> 9007199254740992),
-# producing divergent JCS bytes and a cross-runtime digest break. The
-# evaluation-result boundary (_check_finite) MUST fail-closed on such ints in
-# BOTH runtimes. The boundary value 2**53 (9007199254740992) is itself a power
-# of two -- exactly representable as an IEEE-754 double -- so it stays
-# accepted; the bound rejects only abs > 2**53.
+# with abs value > MAX_SAFE_INTEGER (2**53 - 1) -- e.g. 2**53 + 1 -- canonicalises
+# EXACTLY in Python while a JS double silently rounds it
+# (9007199254740993 -> 9007199254740992), producing divergent JCS bytes and a
+# cross-runtime digest break. The evaluation-result boundary (_check_finite)
+# MUST fail-closed on such ints in BOTH runtimes. The bound rejects magnitude
+# >= 2**53 (i.e. > MAX_SAFE_INTEGER): 2**53 itself is NOT a safe integer (a
+# cel-js double rounds an integer overflow that lands on 2**53 + 1 down to
+# 2**53), so accepting it would let cel-js pass a rounded integer overflow --
+# the fail-open bug found by `codex review` (CEL +-2^53 Py<->TS parity P1).
+# The largest accepted integer is MAX_SAFE_INTEGER (2**53 - 1).
 # ---------------------------------------------------------------------------
 
-_SAFE_INT_BOUND = 9007199254740992  # 2**53
+_MAX_SAFE_INTEGER = 9007199254740991  # 2**53 - 1 == Number.MAX_SAFE_INTEGER
 
 
 @pytest.mark.plumbing
@@ -450,19 +453,41 @@ def test_negative_int_below_safe_range_in_result_rejected() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-PARITY-001")
-def test_safe_range_boundary_int_in_result_accepted() -> None:
-    """The boundary value 2**53 itself (and its negation) is exactly
-    representable in IEEE-754 and emits byte-identically in both runtimes,
-    so it MUST remain accepted -- the bound rejects only abs > 2**53."""
+def test_two_pow_53_in_result_rejected() -> None:
+    """2**53 (9007199254740992, and its negation) is NOT a safe integer --
+    it is indistinguishable from 2**53 + 1 after IEEE-754 double rounding, so
+    a cel-js result of exactly 2**53 may be a ROUNDED integer overflow.
+    cel-python keeps the exact int and MUST reject it (the corrected bound
+    rejects magnitude >= 2**53), matching the cel-js mirror so a rounded
+    integer overflow fails closed in both runtimes.
+
+    CHANGED from test_safe_range_boundary_int_in_result_accepted: the prior
+    EXCLUSIVE bound (abs > 2**53) accepted 2**53; that let cel-js pass a
+    rounded integer overflow (the codex-flagged P1 divergence)."""
 
     evaluator = RelayCelEvaluator()
-    pos = evaluator.evaluate("9007199254740992")
-    assert int(pos) == _SAFE_INT_BOUND
-    neg = evaluator.evaluate("-9007199254740992")
-    assert int(neg) == -_SAFE_INT_BOUND
-    # Just below the boundary (Number.MAX_SAFE_INTEGER) also accepted.
-    mx = evaluator.evaluate("9007199254740991")
-    assert int(mx) == _SAFE_INT_BOUND - 1
+    with pytest.raises(RelayCelNumericOutOfBoundsError) as ctx_pos:
+        evaluator.evaluate("9007199254740992")
+    assert ctx_pos.value.subtype == SUBTYPE_NUMERIC_OOB
+    with pytest.raises(RelayCelNumericOutOfBoundsError) as ctx_neg:
+        evaluator.evaluate("-9007199254740992")
+    assert ctx_neg.value.subtype == SUBTYPE_NUMERIC_OOB
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-PARITY-001")
+def test_max_safe_integer_in_result_accepted() -> None:
+    """MAX_SAFE_INTEGER (2**53 - 1) is the LARGEST integer accepted: it is
+    exact in cel-python and exactly representable as a float64 in cel-js, so
+    it emits byte-identically in both runtimes. Its negation is likewise
+    accepted. The very next integer (2**53) is rejected -- see
+    test_two_pow_53_in_result_rejected."""
+
+    evaluator = RelayCelEvaluator()
+    pos = evaluator.evaluate("9007199254740991")
+    assert int(pos) == _MAX_SAFE_INTEGER
+    neg = evaluator.evaluate("-9007199254740991")
+    assert int(neg) == -_MAX_SAFE_INTEGER
 
 
 @pytest.mark.plumbing

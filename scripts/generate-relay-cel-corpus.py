@@ -96,6 +96,19 @@ def arith_cases() -> list[tuple[str, str, dict[str, Any], str, str | None]]:
             ("arith_int_with_var", "a + 1", {"a": 5}, "arithmetic", None),
             ("arith_int_var_var", "a + b", {"a": 7, "b": 13}, "arithmetic", None),
             ("arith_int_var_unary_neg", "-x", {"x": 7}, "unary", None),
+            # VAL-PARITY-001 accepted boundary: MAX_SAFE_INTEGER (2**53 - 1)
+            # is the LARGEST integer accepted by both runtimes. It is exact in
+            # cel-python and exactly representable as a float64 in cel-js, so
+            # it canonicalises byte-identically. The very next integer
+            # (2**53) is rejected -- see the err_int_two_pow_53_* eval_error
+            # cases.
+            (
+                "arith_int_max_safe_integer_accepted",
+                "9007199254740991",
+                {},
+                "arithmetic",
+                None,
+            ),
         ]
     )
     # Double arithmetic (whole-valued doubles canonicalise to integer
@@ -543,36 +556,33 @@ def numeric_out_of_bounds_eval_error_cases() -> (
     list[tuple[str, str, dict[str, Any], str]]
 ):
     """Return ``(id, expression, bindings, idiom)`` for integral results
-    whose absolute MAGNITUDE exceeds 2**53 in BOTH runtimes.
+    whose absolute MAGNITUDE exceeds MAX_SAFE_INTEGER (2**53 - 1) in BOTH
+    runtimes.
 
-    VAL-PARITY-001: an integral evaluation result outside [-2**53, 2**53]
-    is an out-of-band signal -- cel-python keeps it exact while a cel-js
-    double rounds it, so the same logical result would canonicalise to
-    DIFFERENT JCS bytes in each runtime and silently break cross-runtime
-    digest parity. BOTH runtimes therefore fail-closed at the
+    VAL-PARITY-001: an integral evaluation result outside
+    [-(2**53 - 1), 2**53 - 1] is an out-of-band signal -- cel-python keeps it
+    exact while a cel-js double rounds it, so the same logical result would
+    canonicalise to DIFFERENT JCS bytes in each runtime and silently break
+    cross-runtime digest parity. BOTH runtimes therefore fail-closed at the
     evaluation-result boundary (``RelayCelNumericOutOfBoundsError`` /
     RELAY-CEL-006 / RELAY-CEL-NUMERIC-OOB).
 
-    These cross-runtime ``eval_error`` cases overflow to a magnitude that
-    is STRICTLY greater than 2**53 in BOTH runtimes (e.g. 1e9 * 1e9 = 1e18,
-    or 2**53 * 2 = 2**54). cel-js can detect these because the rounded
-    double still has magnitude > 2**53.
-
-    Note: a result of EXACTLY 2**53 + 1 cannot be a cross-runtime
-    ``eval_error`` case -- cel-js rounds it down to 2**53 (the accepted
-    boundary) and has no signal that the true value was out of range. That
-    asymmetry is the very hazard VAL-PARITY-001 fixes by failing closed on
-    the Python side, where the value is still exact; it is covered by the
-    Python-only unit tests in
-    ``packages/contracts/tests/test_w6_1_evaluator.py``
-    (``test_int_above_safe_range_in_result_rejected`` etc.). The boundary
-    value 2**53 itself is exactly representable in both runtimes and is
-    accepted (covered by the eval_value arithmetic cases).
+    The bound rejects magnitude >= 2**53 (i.e. > MAX_SAFE_INTEGER). 2**53 is
+    NOT a safe integer: it cannot be distinguished from 2**53 + 1 after
+    IEEE-754 double rounding. Key identity: for any integer V,
+    float64(V) > MAX_SAFE_INTEGER  <=>  V >= 2**53, so cel-python (exact int)
+    and cel-js (float64) give the SAME verdict for every integer. This is why
+    a result of EXACTLY 2**53 + 1 IS a cross-runtime ``eval_error`` case: cel-js
+    rounds it to 2**53, which the corrected bound rejects -- matching
+    cel-python's exact-integer rejection (the ``err_int_two_pow_53_*`` cases).
+    Under the prior EXCLUSIVE bound (abs > 2**53) cel-js ACCEPTED 2**53 and
+    silently passed a rounded integer overflow (the fail-open bug found by
+    `codex review`: CEL +-2^53 Py<->TS parity P1).
     """
 
     return [
         # 1e9 * 1e9 = 1e18; exact in cel-python, rounded-but-still-huge in
-        # cel-js. abs > 2**53 in both runtimes.
+        # cel-js. abs > MAX_SAFE_INTEGER in both runtimes.
         (
             "err_int_product_above_safe_range",
             "1000000000 * 1000000000",
@@ -580,24 +590,65 @@ def numeric_out_of_bounds_eval_error_cases() -> (
             "numeric-out-of-bounds",
         ),
         # 2**53 * 2 = 2**54: exactly representable as a double but still
-        # outside the safe range; abs > 2**53 in both runtimes.
+        # outside the safe range; abs > MAX_SAFE_INTEGER in both runtimes.
         (
             "err_int_double_boundary_above_safe_range",
             "9007199254740992 * 2",
             {},
             "numeric-out-of-bounds",
         ),
-        # Negative overflow: -(2**53) * 2 = -2**54; abs > 2**53 in both.
+        # Negative overflow: -(2**53) * 2 = -2**54; abs > MAX_SAFE_INTEGER in
+        # both.
         (
             "err_int_negative_product_below_safe_range",
             "-9007199254740992 * 2",
             {},
             "numeric-out-of-bounds",
         ),
-        # Sum overflow: 2**53 + 2**53 = 2**54; abs > 2**53 in both.
+        # Sum overflow: 2**53 + 2**53 = 2**54; abs > MAX_SAFE_INTEGER in both.
         (
             "err_int_sum_above_safe_range",
             "9007199254740992 + 9007199254740992",
+            {},
+            "numeric-out-of-bounds",
+        ),
+        # VAL-PARITY-001 boundary cases (found by `codex review`: CEL +-2^53
+        # Py<->TS parity P1). The corrected bound rejects magnitude >= 2**53
+        # (i.e. > MAX_SAFE_INTEGER). 2**53 itself is NOT a safe integer -- a
+        # cel-js double rounds an integer overflow that lands on 2**53 + 1
+        # down to 2**53, so accepting exactly 2**53 (the prior EXCLUSIVE
+        # bound) let cel-js silently pass a rounded integer overflow
+        # (fail-open). These cases reproduce that hazard and assert BOTH
+        # runtimes now fail-closed (cel-python keeps the exact int and
+        # rejects; cel-js rounds to >= 2**53 and rejects). Before the fix
+        # these ACCEPTED in cel-js -- a cross-runtime divergence and a
+        # cross-runtime digest break (CLAUDE.md keystone invariant #11).
+
+        # 2**53 exactly: literal boundary value, formerly accepted in BOTH
+        # runtimes; now rejected in BOTH because 2**53 is unsafe.
+        (
+            "err_int_two_pow_53_boundary",
+            "9007199254740992",
+            {},
+            "numeric-out-of-bounds",
+        ),
+        # 2**53 + 1 (== 9007199254740993) as an integer literal. cel-python
+        # keeps it exact; cel-js rounds it to 9007199254740992 == 2**53. Both
+        # reject (>= 2**53). Formerly cel-js ACCEPTED (fail-open).
+        (
+            "err_int_two_pow_53_plus_one_literal",
+            "9007199254740993",
+            {},
+            "numeric-out-of-bounds",
+        ),
+        # 2**53 + 1 via addition: cel-python computes the exact int
+        # 9007199254740993 and rejects; cel-js does float64 arithmetic and
+        # rounds the sum to 9007199254740992 == 2**53, also rejecting.
+        # Formerly cel-js ACCEPTED (fail-open) -- the exact divergence codex
+        # flagged.
+        (
+            "err_int_two_pow_53_plus_one_add",
+            "9007199254740992 + 1",
             {},
             "numeric-out-of-bounds",
         ),

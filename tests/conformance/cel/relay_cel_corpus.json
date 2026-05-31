@@ -172,6 +172,14 @@
     },
     {
       "bindings": {},
+      "expression": "9007199254740991",
+      "id": "arith_int_max_safe_integer_accepted",
+      "idiom": "arithmetic",
+      "kind": "eval_value",
+      "py_jcs_b64": "OTAwNzE5OTI1NDc0MDk5MQ=="
+    },
+    {
+      "bindings": {},
       "expression": "1.0 + 2.0",
       "id": "arith_dbl_add_whole",
       "idiom": "arithmetic",
@@ -1764,6 +1772,27 @@
       "bindings": {},
       "expression": "9007199254740992 + 9007199254740992",
       "id": "err_int_sum_above_safe_range",
+      "idiom": "numeric-out-of-bounds",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
+      "expression": "9007199254740992",
+      "id": "err_int_two_pow_53_boundary",
+      "idiom": "numeric-out-of-bounds",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
+      "expression": "9007199254740993",
+      "id": "err_int_two_pow_53_plus_one_literal",
+      "idiom": "numeric-out-of-bounds",
+      "kind": "eval_error"
+    },
+    {
+      "bindings": {},
+      "expression": "9007199254740992 + 1",
+      "id": "err_int_two_pow_53_plus_one_add",
       "idiom": "numeric-out-of-bounds",
       "kind": "eval_error"
     },
