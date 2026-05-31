@@ -280,47 +280,121 @@ def test_manifest_loader_handles_billion_laughs_anchor_pattern() -> None:
 @pytest.mark.fulfills("VAL-ISO-016")
 def test_manifest_loader_rejects_alias_bomb_with_shallow_authored_depth() -> None:
     """VAL-ISO-016 regression: a billion-laughs alias bomb whose AUTHORED
-    depth is shallow (3) but whose expansion factor is exponential MUST be
-    rejected.
+    nesting depth is shallow but whose expansion factor is exponential MUST
+    be rejected by the node-budget cap.
 
     The depth walk over the pre-expansion event stream sees the aliases as
     AliasEvent nodes (NOT expanded), so its observed max depth stays under
-    16 -- yet ``yaml.safe_load`` expands the structure to 2^N nodes. The
-    loader must count aliases / nodes during the walk and reject.
-    """
-    from relay_schemas.manifest import safe_load_yaml
+    16 -- yet the structure expands to fanout^levels nodes. The loader
+    charges each ``AliasEvent`` the full node-cost of the anchor it
+    references, so the running expanded-node count crosses
+    ``MAX_YAML_EXPANDED_NODES`` and the document is rejected *before*
+    materialisation.
 
-    # Exact trigger from the finding: authored depth 3, expansion 2^N.
-    bomb = (
-        "a: &a [1]\n"
-        "b: &b [*a,*a]\n"
-        "c: &c [*b,*b]\n"
-        "d: [*c,*c]\n"
+    This is the classic billion-laughs shape (fanout 9, 5 chained levels);
+    authored nesting depth is only 2 (each ``&lN [...]`` is one flat
+    sequence) yet the expansion is ~672k nodes, far above the 100k budget.
+    """
+    from relay_schemas.manifest import (
+        MAX_YAML_EXPANDED_NODES,
+        YamlAliasBombError,
+        safe_load_yaml,
     )
-    with pytest.raises(Exception) as excinfo:  # noqa: PT011 -- typed below
+
+    fanout = 9
+    lines = ["l0: &l0 [" + ",".join(["1"] * fanout) + "]"]
+    for i in range(1, 5):
+        refs = ",".join([f"*l{i - 1}"] * fanout)
+        lines.append(f"l{i}: &l{i} [{refs}]")
+    lines.append("top: [" + ",".join(["*l4"] * fanout) + "]")
+    bomb = "\n".join(lines) + "\n"
+
+    with pytest.raises(YamlAliasBombError) as excinfo:
         safe_load_yaml(bomb)
-    # Must be the structural-defense rejection, NOT an unrelated parse error.
-    assert "alias" in str(excinfo.value).lower() or "bomb" in str(
-        excinfo.value
-    ).lower() or "size" in str(excinfo.value).lower(), (
-        "VAL-ISO-016: alias bomb must be rejected by the anchor/alias "
-        f"budget, got: {excinfo.value!r}"
-    )
+    # The node-budget cap is the layer that catches it (not a structural
+    # heuristic): reason is expanded_nodes and observed is the REAL count.
+    assert excinfo.value.reason == "expanded_nodes"
+    assert excinfo.value.observed > MAX_YAML_EXPANDED_NODES
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-ISO-016")
 def test_manifest_loader_rejects_large_alias_bomb_amplification() -> None:
-    """A deeper alias chain (higher amplification) is also rejected."""
+    """A deeper alias chain (higher amplification) is also rejected by the
+    node-budget cap. This is the ``&lN [*lN-1, ...]`` chain shape; with a
+    fanout of 3 over 9 levels it expands to ~133k nodes, above the 100k
+    budget, so it trips ``expanded_nodes`` -- proving the budget catches a
+    genuine billion-laughs even when authored depth is shallow.
+    """
+    from relay_schemas.manifest import (
+        MAX_YAML_EXPANDED_NODES,
+        YamlAliasBombError,
+        safe_load_yaml,
+    )
+
+    fanout = 3
+    lines = ["l0: &l0 [" + ",".join(["1"] * fanout) + "]"]
+    for i in range(1, 9):
+        refs = ",".join([f"*l{i - 1}"] * fanout)
+        lines.append(f"l{i}: &l{i} [{refs}]")
+    lines.append("top: [" + ",".join(["*l8"] * fanout) + "]")
+    bomb = "\n".join(lines) + "\n"
+
+    with pytest.raises(YamlAliasBombError) as excinfo:
+        safe_load_yaml(bomb)
+    assert excinfo.value.reason == "expanded_nodes"
+    # The observed count is a REAL amplified count, never the constant 1.
+    assert excinfo.value.observed > MAX_YAML_EXPANDED_NODES
+    assert excinfo.value.observed > 1
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-016")
+def test_manifest_loader_accepts_bounded_nested_anchor_composition() -> None:
+    """VAL-ISO-016 over-rejection regression: legitimate bounded YAML
+    composition where an anchored container's own subtree references ANOTHER
+    anchor MUST load successfully.
+
+    The old ``alias_chain`` heuristic rejected any anchored container whose
+    subtree referenced another anchor, conflating "reuses a nested anchor"
+    (legitimate, bounded) with "amplifies exponentially" (the attack). The
+    node-budget cap is the principled defense: this document expands to ~6
+    nodes, far below the 100k budget, so it must be accepted.
+    """
     from relay_schemas.manifest import safe_load_yaml
 
-    lines = ["l0: &l0 [1,1]"]
-    for i in range(1, 12):
-        lines.append(f"l{i}: &l{i} [*l{i - 1},*l{i - 1}]")
-    lines.append("top: [*l11,*l11]")
-    bomb = "\n".join(lines) + "\n"
-    with pytest.raises(Exception):  # noqa: B017,PT011 -- any rejection is fine
-        safe_load_yaml(bomb)
+    # Exact trigger from the structural-review finding: &b's subtree
+    # references &a, and &b is itself reused via *b. Expands to ~6 nodes.
+    doc = "a: &a {x: 1}\nb: &b {y: *a}\nc: *b\n"
+    out = safe_load_yaml(doc)
+    assert out is not None
+    assert out["a"] == {"x": 1}
+    assert out["b"] == {"y": {"x": 1}}
+    assert out["c"] == {"y": {"x": 1}}
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-016")
+def test_manifest_loader_accepts_merge_key_composition() -> None:
+    """VAL-ISO-016 over-rejection regression: YAML merge-key (``<<``)
+    composition where a derived mapping merges a base anchor and is itself
+    anchored MUST load. This is a common, bounded configuration pattern and
+    must not be conflated with an alias bomb.
+    """
+    from relay_schemas.manifest import safe_load_yaml
+
+    # An anchored derived mapping (&derived) whose subtree references the
+    # base anchor (*base) via a merge key -- the old heuristic rejected this.
+    doc = (
+        "base: &base {a: 1}\n"
+        "derived: &derived {<<: *base, b: 2}\n"
+        "use: *derived\n"
+    )
+    out = safe_load_yaml(doc)
+    assert out is not None
+    assert out["base"] == {"a": 1}
+    assert out["derived"] == {"a": 1, "b": 2}
+    assert out["use"] == {"a": 1, "b": 2}
 
 
 @pytest.mark.plumbing

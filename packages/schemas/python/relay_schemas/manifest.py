@@ -51,9 +51,12 @@ from jsonschema import Draft202012Validator
 # Python object first because (a) the event stream surfaces nesting
 # entirely before any alias expansion executes, and (b) it lets us refuse
 # pathological documents before pyyaml materialises them. Aliases are
-# permitted (yaml.SafeLoader resolves them) but the *expanded* mapping /
-# sequence start events still count toward the depth budget, so an
-# alias-bomb that nests 17+ levels at expansion time is rejected.
+# permitted (yaml.SafeLoader resolves them); the loader charges each alias
+# the full expanded node-cost of the anchor it references and rejects any
+# document whose total expansion exceeds the node budget, so a billion-laughs
+# bomb is caught before materialisation. Legitimate bounded anchor reuse
+# (including merge keys and nested anchor references) expands to a small
+# node count and is accepted.
 
 MAX_YAML_DEPTH: int = 16
 """Maximum YAML nesting depth permitted for manifest + DSL loaders.
@@ -104,20 +107,20 @@ class YamlDepthExceededError(ValueError):
 class YamlAliasBombError(ValueError):
     """Raised when a YAML document is an anchor/alias (billion-laughs) bomb.
 
-    Two structural signatures trip this guard:
-
-    * A nested alias-in-anchor chain: an anchor whose own defining subtree
-      contains an alias to another anchor. This is the defining feature of
-      an exponential amplification bomb; legitimate anchor reuse references
-      anchors only outside their own definitions.
-    * A post-expansion node count exceeding
-      :data:`MAX_YAML_EXPANDED_NODES`.
+    The defense is a resource budget, not a structural heuristic: the loader
+    computes the fully-expanded node count from the parse event stream
+    (charging each ``AliasEvent`` the full node-cost of the anchor it
+    references) and rejects any document whose expansion exceeds
+    :data:`MAX_YAML_EXPANDED_NODES` -- before the object is materialised. A
+    genuine billion-laughs amplifies exponentially (fanout^levels) and
+    crosses the budget; legitimate bounded composition (anchor reuse, merge
+    keys) expands to a small node count and is accepted, even when an
+    anchored container's own subtree references another anchor.
 
     Attributes:
-        reason: Machine-readable cause (``"alias_chain"`` /
-            ``"expanded_nodes"``).
-        observed: The observed metric value (expanded node count, or the
-            count of nested-alias anchors).
+        reason: Machine-readable cause. Currently always ``"expanded_nodes"``.
+        observed: The observed (real) expanded node count at the point of
+            rejection. Always the actual accumulated count, never a constant.
     """
 
     def __init__(self, reason: str, observed: int) -> None:
@@ -155,24 +158,30 @@ def _scan_yaml_event_stream(
     Enforces, before any alias expansion materialises the object:
 
     * Nesting depth <= ``max_depth`` (raises :class:`YamlDepthExceededError`).
-    * No nested alias-in-anchor amplification chain and a bounded
-      post-expansion node count (raises :class:`YamlAliasBombError`).
+    * A bounded post-expansion node count (raises :class:`YamlAliasBombError`
+      with ``reason="expanded_nodes"`` and the REAL observed count).
 
     The walk is single-pass. For each container we track (a) its running
-    nesting depth for the depth cap, (b) its fully-expanded node cost
-    (charging each ``AliasEvent`` the cost of the anchor it references) for
-    the node-budget cap, and (c) whether its subtree contains any alias --
-    if a *named* (anchored) container's subtree contains an alias, the
-    document has an amplification chain and is rejected.
+    nesting depth for the depth cap and (b) its fully-expanded node cost --
+    charging each ``AliasEvent`` the full node-cost of the anchor it
+    references -- for the node-budget cap. The node-budget cap is the
+    principled defense against alias amplification: a billion-laughs bomb
+    multiplies nodes exponentially (fanout^levels) and crosses
+    :data:`MAX_YAML_EXPANDED_NODES` here, before the object is materialised,
+    while legitimate bounded composition (anchor reuse, merge keys, nested
+    anchor references) expands to a small node count and is accepted.
+
+    Note: the mere presence of a nested anchor reference inside an anchored
+    container is NOT amplification and is not rejected on its own -- only the
+    accumulated expanded-node count gates acceptance.
     """
     container_depth = 0
     max_observed = 0
     saw_scalar = False
     # anchor name -> fully-expanded node cost of the anchored subtree.
     anchor_cost: dict[str, int] = {}
-    # Stack of frames for open containers: [expanded_cost, anchor_name,
-    # subtree_contains_alias].
-    frames: list[list[Any]] = [[0, None, False]]
+    # Stack of frames for open containers: [expanded_cost, anchor_name].
+    frames: list[list[Any]] = [[0, None]]
     for event in yaml.parse(stream, Loader=yaml.SafeLoader):
         if isinstance(event, yaml.MappingStartEvent | yaml.SequenceStartEvent):
             container_depth += 1
@@ -180,20 +189,14 @@ def _scan_yaml_event_stream(
                 max_observed = container_depth + 1
             if max_observed > max_depth:
                 raise YamlDepthExceededError(max_observed, limit=max_depth)
-            frames.append([1, getattr(event, "anchor", None), False])
+            frames.append([1, getattr(event, "anchor", None)])
         elif isinstance(event, yaml.MappingEndEvent | yaml.SequenceEndEvent):
             container_depth -= 1
-            cost, anchor, has_alias = frames.pop()
+            cost, anchor = frames.pop()
             if anchor is not None:
                 anchor_cost[anchor] = cost
-                if has_alias:
-                    # An anchored subtree that itself references another
-                    # anchor is the amplification primitive of a
-                    # billion-laughs bomb. Reject before materialising.
-                    raise YamlAliasBombError("alias_chain", observed=1)
             parent = frames[-1]
             parent[0] += cost
-            parent[2] = parent[2] or has_alias
             if parent[0] > MAX_YAML_EXPANDED_NODES:
                 raise YamlAliasBombError("expanded_nodes", observed=parent[0])
         elif isinstance(event, yaml.ScalarEvent):
@@ -209,7 +212,6 @@ def _scan_yaml_event_stream(
             frames[-1][0] += 1
         elif isinstance(event, yaml.AliasEvent):
             frames[-1][0] += anchor_cost.get(event.anchor, 1)
-            frames[-1][2] = True
             if frames[-1][0] > MAX_YAML_EXPANDED_NODES:
                 raise YamlAliasBombError("expanded_nodes", observed=frames[-1][0])
     if not saw_scalar and max_observed == 0 and frames[0][0] == 0:
@@ -227,9 +229,8 @@ def safe_load_yaml(stream: str | bytes, *, max_depth: int = MAX_YAML_DEPTH) -> A
     budgets:
 
     * nesting depth <= ``max_depth`` (:class:`YamlDepthExceededError`);
-    * no anchor/alias (billion-laughs) bomb -- a nested alias-in-anchor
-      amplification chain or an expanded node count above
-      :data:`MAX_YAML_EXPANDED_NODES` (:class:`YamlAliasBombError`).
+    * no anchor/alias (billion-laughs) bomb -- a fully-expanded node count
+      above :data:`MAX_YAML_EXPANDED_NODES` (:class:`YamlAliasBombError`).
 
     The event-stream alias accounting is required because aliases are
     represented as ``AliasEvent`` nodes that are NOT expanded in the parse
