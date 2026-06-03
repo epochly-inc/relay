@@ -19,10 +19,12 @@ default = ["chrono"]
 chrono = ["cel/chrono"]
 
 [dependencies]
-# WS2 wraps cel 0.13 directly. A vendored FORK (cel-rust-relay) lands in a
-# later increment for the HARD semantic gaps (see HARDENING.md): cross-numeric
-# equality (G6), macros2 two-var comprehensions (G4), the type-value model (G3).
-cel = { version = "0.13", default-features = true }
+# Fork increment 1: cel is now the VENDORED cel-rust-relay fork
+# (packages/cel-wasm/vendor/cel/, forked from cel-rust/cel-rust @ d23d0a77, MIT).
+# The fork owns the HARD semantic gaps the wrapper cannot reach (see HARDENING.md):
+# G6 cross-numeric equality/ordering (this increment), then G3 type-values, G4
+# macros2, G5/G7/G8 lexer. Relay-opinionated CEL-profile fixes live in the fork.
+cel = { path = "../vendor/cel", default-features = true }
 serde_json = "1"
 # default-features=false drops chrono's "wasmbind" feature. wasmbind injects
 # js-sys / wasm-bindgen JS imports (Date.now etc.) that BREAK the no-WASI
