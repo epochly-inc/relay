@@ -71,9 +71,29 @@ impl Val for DefaultMap {
     }
 
     fn equals(&self, other: &dyn Val) -> bool {
-        other
-            .downcast_ref::<Self>()
-            .is_some_and(|other| self.0 == other.0)
+        // Relay fork (G6/comparisons): cel-go map equality is CROSS-NUMERIC on
+        // both keys and values. `{1: 1.0, 2u: 3u} == {1u: 1, 2: 3.0}` is true:
+        // the int key 1 matches the uint key 1u, and the double value 1.0
+        // matches the int value 1. The derived `HashMap == HashMap` compares
+        // `Key` (which separates Int/UInt) and `Box<dyn Val>` by exact type, so
+        // it wrongly returns false. We instead match each self entry against an
+        // other entry by cross-numeric key (Val::equals, which delegates to the
+        // numeric comparer for int/uint/double) AND cross-numeric value.
+        let Some(other) = other.downcast_ref::<Self>() else {
+            return false;
+        };
+        if self.0.len() != other.0.len() {
+            return false;
+        }
+        // For every key/value in self, require a cross-numeric key match in
+        // other whose value also matches cross-numerically. Map keys are unique
+        // (and numerically distinct: 1, 1u, 1.0 collapse to one CEL key value),
+        // so a single matching counterpart per self entry suffices.
+        self.0.iter().all(|(k, v)| {
+            other.0.iter().any(|(k2, v2)| {
+                k.inner().equals(k2.inner()) && v.as_ref().equals(v2.as_ref())
+            })
+        })
     }
 
     fn clone_as_boxed(&self) -> Box<dyn Val> {
