@@ -243,6 +243,25 @@ fn relay_context<'a>() -> Context<'a> {
     // type that implements IntoResolveResult (magic.rs).
     ctx.add_function("dyn", |arg: Value| -> Result<Value, ExecutionError> { Ok(arg) });
 
+    // G13 (wrapper): bool() conversion. cel 0.13 has no `bool` builtin, so
+    // `bool('1')` / `bool(true)` were UndeclaredReference. cel-go's bool()
+    // overloads (common/types/string.go ConvertToType / bool identity):
+    //   bool(bool)   -> identity
+    //   bool(string) -> "1","t","true","TRUE","True" => true;
+    //                   "0","f","false","FALSE","False" => false;
+    //                   anything else => "Type conversion error".
+    // (cel-go uses strconv.ParseBool, whose accepted set is exactly those.)
+    ctx.add_function("bool", relay_bool);
+
+    // G13 (wrapper): string() over bytes must ERROR on invalid UTF-8 rather
+    // than lossily substituting U+FFFD (cel 0.13 builtin uses
+    // String::from_utf8_lossy). cel-go errors: "invalid UTF-8 in bytes,
+    // cannot convert to string". All other string() arms (number/bool/
+    // duration/timestamp/string identity) delegate to the cel-go-canonical
+    // serializer so they stay byte-parity-correct (G14 'Z' timestamps, the
+    // Go-style duration string, the G9 double format).
+    ctx.add_function("string", relay_string);
+
     // G11: size() over a string must count Unicode code points, not UTF-8
     // bytes. cel 0.13's builtin uses s.len() (byte length). Override for the
     // string case; list/map/bytes keep element/byte counts (those ARE the CEL
@@ -476,18 +495,89 @@ fn relay_duration(arg: Value) -> Result<Value, cel::ExecutionError> {
     }
 }
 
-/// G12 timestamp(): accept an already-`timestamp` value idempotently; otherwise
-/// parse from an RFC3339 string.
+/// G12 + G13 timestamp(): accept an already-`timestamp` value idempotently
+/// (G12); accept an INT as Unix epoch SECONDS (G13, cel-go's
+/// timestamp(int)->Timestamp overload); otherwise parse from an RFC3339 string.
 #[cfg(feature = "chrono")]
 fn relay_timestamp(arg: Value) -> Result<Value, cel::ExecutionError> {
     match arg {
         Value::Timestamp(t) => Ok(Value::Timestamp(t)),
+        // G13: timestamp(int) -> the Unix epoch SECONDS as a UTC timestamp,
+        // the inverse of int(timestamp). cel-go uses
+        // time.Unix(seconds, 0).UTC(); out-of-range seconds error.
+        Value::Int(secs) => chrono::DateTime::from_timestamp(secs, 0)
+            .map(|dt| Value::Timestamp(dt.fixed_offset()))
+            .ok_or_else(|| {
+                cel::ExecutionError::function_error(
+                    "timestamp",
+                    format!("epoch seconds {secs} out of timestamp range"),
+                )
+            }),
         Value::String(s) => parse_timestamp_string(&s),
         other => Err(cel::ExecutionError::function_error(
             "timestamp",
             format!("cannot convert {other:?} to timestamp"),
         )),
     }
+}
+
+/// G13 (wrapper) bool(): cel-go's bool() conversion overloads.
+///   bool(bool)   -> identity
+///   bool(string) -> strconv.ParseBool semantics:
+///                   "1","t","T","TRUE","true","True" => true
+///                   "0","f","F","FALSE","false","False" => false
+///                   anything else => Type conversion error.
+fn relay_bool(arg: Value) -> Result<Value, ExecutionError> {
+    match arg {
+        Value::Bool(b) => Ok(Value::Bool(b)),
+        Value::String(s) => match s.as_str() {
+            "1" | "t" | "T" | "TRUE" | "true" | "True" => Ok(Value::Bool(true)),
+            "0" | "f" | "F" | "FALSE" | "false" | "False" => Ok(Value::Bool(false)),
+            other => Err(ExecutionError::function_error(
+                "bool",
+                format!("Type conversion error: cannot convert '{other}' to bool"),
+            )),
+        },
+        other => Err(ExecutionError::function_error(
+            "bool",
+            format!("cannot convert {other:?} to bool"),
+        )),
+    }
+}
+
+/// G13 (wrapper) string(): cel-go's string() conversion. The load-bearing fix
+/// is the BYTES arm: invalid UTF-8 must ERROR ("invalid UTF-8 in bytes,
+/// cannot convert to string"), not lossily substitute U+FFFD the way cel
+/// 0.13's builtin does (String::from_utf8_lossy). All other arms reproduce
+/// cel-go's canonical string forms (and reuse the serializer's G9/G14
+/// double/timestamp formatting so round-tripping stays byte-parity-correct).
+fn relay_string(arg: Value) -> Result<Value, ExecutionError> {
+    let s = match arg {
+        Value::String(s) => return Ok(Value::String(s)),
+        Value::Bytes(b) => String::from_utf8(b.as_ref().clone()).map_err(|_| {
+            ExecutionError::function_error(
+                "string",
+                "invalid UTF-8 in bytes, cannot convert to string",
+            )
+        })?,
+        Value::Bool(b) => b.to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::UInt(u) => u.to_string(),
+        // Reuse the serializer's Go 'g' canonical double format so
+        // string(1.5e12) matches cel-go and the cross-host byte contract.
+        Value::Float(f) => canonical_double(f),
+        #[cfg(feature = "chrono")]
+        Value::Duration(d) => format_duration_go(&d),
+        #[cfg(feature = "chrono")]
+        Value::Timestamp(t) => rfc3339_utc_z(&t),
+        other => {
+            return Err(ExecutionError::function_error(
+                "string",
+                format!("cannot convert {other:?} to string"),
+            ))
+        }
+    };
+    Ok(Value::String(Arc::new(s)))
 }
 
 /// Parse a CEL duration string (e.g. "60s", "1h30m") into Value::Duration,
@@ -767,6 +857,37 @@ fn rfc3339_utc_z(t: &chrono::DateTime<chrono::FixedOffset>) -> String {
     let utc = t.with_timezone(&Utc);
     // AutoSi: print sub-second only if nonzero, no trailing zeros; UTC -> 'Z'.
     utc.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+}
+
+/// G13 (wrapper): cel-go's duration -> string form, used by string(duration).
+/// cel-go (common/types/duration.go ConvertToType STRING) emits
+/// `strconv.FormatFloat(d.Seconds(), 'f', -1, 64) + "s"`: the total seconds as
+/// a shortest fixed-point decimal, then a trailing 's'. A whole-second duration
+/// has NO decimal point (`1000000s`, not `1000000.0s`); a sub-second duration
+/// keeps only the significant fractional digits (`1.5s`, `0.000000001s`).
+/// We build it from total nanoseconds (exact) rather than f64 seconds to avoid
+/// precision loss on large durations.
+#[cfg(feature = "chrono")]
+fn format_duration_go(d: &chrono::Duration) -> String {
+    let total_nanos = d.num_nanoseconds().unwrap_or_else(|| {
+        // Saturating fallback for durations beyond i64 nanos (~292 years).
+        // The cel-spec corpus stays well inside this range; this only guards
+        // against a panic on a pathological binding.
+        d.num_seconds().saturating_mul(1_000_000_000)
+    });
+    let neg = total_nanos < 0;
+    let abs = total_nanos.unsigned_abs();
+    let secs = abs / 1_000_000_000;
+    let nanos = abs % 1_000_000_000;
+    let sign = if neg { "-" } else { "" };
+    if nanos == 0 {
+        format!("{sign}{secs}s")
+    } else {
+        // Trim trailing zeros from the 9-digit fractional part.
+        let frac = format!("{nanos:09}");
+        let frac = frac.trim_end_matches('0');
+        format!("{sign}{secs}.{frac}s")
+    }
 }
 
 // ---------------------------------------------------------------------------
