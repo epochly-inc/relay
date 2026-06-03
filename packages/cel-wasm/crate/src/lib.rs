@@ -139,6 +139,14 @@ fn eval_impl(input: &[u8]) -> Vec<u8> {
 
         let mut context = relay_context();
 
+        // G16: the optional resolution container (CEL namespace). cel-go
+        // resolves a bare/qualified name most-qualified to least within the
+        // container; the fork's Context carries it (set_container) and applies
+        // the candidate order in Expr::Ident / Expr::Select resolution.
+        if let Some(container) = req.get("container").and_then(|v| v.as_str()) {
+            context.set_container(container);
+        }
+
         if let Some(bindings) = req.get("bindings").and_then(|v| v.as_object()) {
             for (name, typed) in bindings {
                 let v = typed_to_value(typed).map_err(|e| {

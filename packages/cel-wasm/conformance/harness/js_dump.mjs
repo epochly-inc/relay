@@ -34,8 +34,10 @@ async function reinit() {
   ({ memory, alloc, eval: evalFn, dealloc } = instance.exports);
 }
 
-async function evalHex(expr, bindings) {
-  const req = bindings ? { expr, bindings } : { expr };
+async function evalHex(expr, bindings, container) {
+  const req = { expr };
+  if (bindings) req.bindings = bindings;
+  if (container) req.container = container;
   const inp = enc.encode(JSON.stringify(req));
   const n = inp.length;
   try {
@@ -61,7 +63,7 @@ const records = readFileSync(ORACLE, "utf-8")
 
 const out = [];
 for (const r of records) {
-  const hex = await evalHex(r.expr, r.bindings);
+  const hex = await evalHex(r.expr, r.bindings, r.container);
   out.push(hex);
 }
 writeFileSync(OUT, out.join("\n") + "\n");

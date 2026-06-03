@@ -169,7 +169,8 @@ def main():
 
         # Drive relay-cel-wasm.
         bindings = r.get("bindings")
-        rust = engine.evaluate(r["expr"], bindings)
+        container = r.get("container") or None
+        rust = engine.evaluate(r["expr"], bindings, container)
         r["rust"] = rust
 
         summary["measured"] += 1

@@ -50,10 +50,12 @@ class WasmCel:
         self.eval_fn = ex["eval"]
         self.dealloc = ex["dealloc"]
 
-    def _evaluate_raw(self, expr, bindings=None):
+    def _evaluate_raw(self, expr, bindings=None, container=None):
         req = {"expr": expr}
         if bindings:
             req["bindings"] = bindings
+        if container:
+            req["container"] = container
         inp = json.dumps(req).encode("utf-8")
         n = len(inp)
         ptr = self.alloc(self.store, n)
@@ -67,9 +69,9 @@ class WasmCel:
         self.dealloc(self.store, ptr, n)
         return json.loads(data.decode("utf-8"))
 
-    def evaluate(self, expr, bindings=None):
+    def evaluate(self, expr, bindings=None, container=None):
         try:
-            return self._evaluate_raw(expr, bindings)
+            return self._evaluate_raw(expr, bindings, container)
         except Trap as t:
             self._reinit()
             return {

@@ -37,6 +37,11 @@ pub enum Context<'a> {
         functions: FunctionRegistry,
         variables: BTreeMap<String, Box<dyn Val>>,
         resolver: Option<&'a dyn VariableResolver>,
+        // Relay fork (G16): the resolution container (CEL namespace), e.g.
+        // "com.example". When set, a name `n` is resolved most-qualified to
+        // least: `<container>.n`, then progressively shorter prefixes, then the
+        // bare `n` -- matching cel-go's container resolution order.
+        container: Option<String>,
     },
     Child {
         parent: &'a Context<'a>,
@@ -152,6 +157,88 @@ impl<'a> Context<'a> {
         }
     }
 
+    /// Relay fork (G16): resolve a variable at the ROOT scope only, skipping any
+    /// intervening Child (comprehension/local) scopes. Used for absolute,
+    /// leading-dot references (`.y`), which escape comprehension variables and
+    /// the container. Walks straight up the parent chain to the Root and looks
+    /// up there (also honoring the root's host resolver, if any).
+    pub fn get_root_variable<S>(&'a self, name: S) -> Option<Cow<'a, dyn Val>>
+    where
+        S: AsRef<str>,
+    {
+        let name = name.as_ref();
+        match self {
+            Context::Child { parent, .. } => parent.get_root_variable(name),
+            Context::Root {
+                variables,
+                resolver,
+                ..
+            } => resolver
+                .and_then(|r| {
+                    r.resolve(name)
+                        .map(|v| Cow::<dyn Val>::Owned(v.try_into().unwrap()))
+                })
+                .or_else(|| {
+                    variables
+                        .get(name)
+                        .map(|v| Cow::<dyn Val>::Borrowed(v.as_ref()))
+                }),
+        }
+    }
+
+    /// Relay fork (G16): resolve a name in the LOCAL (Child) scopes only --
+    /// i.e. comprehension/lambda iteration variables -- WITHOUT consulting the
+    /// Root bindings or the container. Comprehension variables shadow the
+    /// namespace, so the resolver checks these first. Returns None at the Root
+    /// (a Root binding is namespace-level, not a local shadow).
+    pub fn get_local_variable<S>(&'a self, name: S) -> Option<Cow<'a, dyn Val>>
+    where
+        S: AsRef<str>,
+    {
+        let name = name.as_ref();
+        match self {
+            Context::Child {
+                variables, parent, ..
+            } => variables
+                .get(name)
+                .map(|b| Cow::<dyn Val>::Borrowed(b.as_ref()))
+                .or_else(|| parent.get_local_variable(name)),
+            // Root bindings are namespace-level, not local shadows.
+            Context::Root { .. } => None,
+        }
+    }
+
+    /// Relay fork (G16): resolve a (non-leading-dot) name honoring the container.
+    /// cel-go tries candidates most-qualified to least: for container `a.b.c`
+    /// and name `n`, it tries `a.b.c.n`, `a.b.n`, `a.n`, then `n`. The first
+    /// that resolves to a declared variable wins (so a container-qualified
+    /// binding takes precedence over the bare name). Comprehension/local scopes
+    /// are still honored via get_variable for each candidate, but a candidate is
+    /// only meaningful at the namespace level, so we resolve each candidate the
+    /// normal way. Returns None if no candidate resolves.
+    pub fn get_variable_with_container<S>(&'a self, name: S) -> Option<Cow<'a, dyn Val>>
+    where
+        S: AsRef<str>,
+    {
+        let name = name.as_ref();
+        if let Some(container) = self.container() {
+            // Build the qualified prefixes from longest to shortest.
+            let mut prefix = container;
+            loop {
+                let candidate = format!("{prefix}.{name}");
+                if let Some(v) = self.get_variable(&candidate) {
+                    return Some(v);
+                }
+                match prefix.rfind('.') {
+                    Some(idx) => prefix = &prefix[..idx],
+                    None => break,
+                }
+            }
+        }
+        // Fall back to the bare name (also covers the no-container case).
+        self.get_variable(name)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn get_function(&self, name: &str) -> Option<&Function> {
         match self {
@@ -201,6 +288,24 @@ impl<'a> Context<'a> {
             variables: Default::default(),
             functions: Default::default(),
             resolver: None,
+            container: None,
+        }
+    }
+
+    /// Relay fork (G16): set the resolution container (CEL namespace) on a Root
+    /// context. No-op on a Child context (the container lives at the root).
+    pub fn set_container<S: Into<String>>(&mut self, container: S) {
+        if let Context::Root { container: c, .. } = self {
+            let s = container.into();
+            *c = if s.is_empty() { None } else { Some(s) };
+        }
+    }
+
+    /// Relay fork (G16): the resolution container, if any (walks to the Root).
+    pub fn container(&self) -> Option<&str> {
+        match self {
+            Context::Root { container, .. } => container.as_deref(),
+            Context::Child { parent, .. } => parent.container(),
         }
     }
 }
@@ -211,6 +316,7 @@ impl Default for Context<'_> {
             variables: Default::default(),
             functions: Default::default(),
             resolver: None,
+            container: None,
         };
 
         ctx.add_function("contains", functions::contains);

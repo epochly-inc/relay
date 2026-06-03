@@ -834,8 +834,17 @@ impl gen::CELVisitorCompat<'_> for Parser {
             }
             Some(id) => {
                 let ident = id.clone().text;
-                self.helper
-                    .next_expr(id.deref(), Expr::Ident(ident.to_string()))
+                // Relay fork (G16): a leading-dot identifier (`.y`) is an
+                // ABSOLUTE (root-scoped) reference -- it escapes the container
+                // AND any comprehension/local scope. cel-go marks this on the
+                // ident; we encode it by prefixing the name with '.' so the
+                // resolver (objects.rs Expr::Ident) can route it to the root.
+                let name = if ctx.leadingDot.is_some() {
+                    format!(".{ident}")
+                } else {
+                    ident.to_string()
+                };
+                self.helper.next_expr(id.deref(), Expr::Ident(name))
             }
         }
     }

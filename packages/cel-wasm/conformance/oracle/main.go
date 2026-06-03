@@ -58,6 +58,7 @@ type record struct {
 	Section       string                 `json:"section"`
 	Name          string                 `json:"name"`
 	Expr          string                 `json:"expr"`
+	Container     string                 `json:"container"`
 	DisableCheck  bool                   `json:"disable_check"`
 	DisableMacros bool                   `json:"disable_macros"`
 	Bindings      map[string]interface{} `json:"bindings"`
@@ -268,6 +269,7 @@ func main() {
 					Section:       sec.GetName(),
 					Name:          t.GetName(),
 					Expr:          t.GetExpr(),
+					Container:     t.GetContainer(),
 					DisableCheck:  t.GetDisableCheck(),
 					DisableMacros: t.GetDisableMacros(),
 				}

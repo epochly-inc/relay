@@ -67,14 +67,20 @@ class RelayCel:
         self._dealloc = ex["dealloc"]
 
     def eval(
-        self, expr: str, bindings: Optional[Dict[str, Any]] = None
+        self,
+        expr: str,
+        bindings: Optional[Dict[str, Any]] = None,
+        container: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Evaluate `expr` with optional typed `bindings`. Always returns a dict
-        (never raises for evaluation errors): success carries `value`, failure
-        carries `error` + `code`."""
+        """Evaluate `expr` with optional typed `bindings` and an optional CEL
+        resolution `container` (namespace, e.g. "com.example"). Always returns a
+        dict (never raises for evaluation errors): success carries `value`,
+        failure carries `error` + `code`."""
         req: Dict[str, Any] = {"expr": expr}
         if bindings:
             req["bindings"] = bindings
+        if container:
+            req["container"] = container
         inp = json.dumps(req).encode("utf-8")
         n = len(inp)
         try:

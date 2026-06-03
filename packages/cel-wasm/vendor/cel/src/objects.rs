@@ -1000,6 +1000,20 @@ fn flatten_select_to_name(expr: &Expression) -> Option<String> {
     }
 }
 
+// Relay fork (G16): the leftmost identifier of a pure `Ident`/`Select` chain
+// (e.g. `y` in `y.z.w`). Used to decide whether qualified-name BINDING
+// resolution should fire: if the base identifier is itself a bound variable
+// in scope (notably a COMPREHENSION iteration variable), it SHADOWS the
+// namespace, so `y.z` must be field selection on the local `y`, not a lookup
+// of a `y.z` binding. Returns None if the chain is not a pure name chain.
+fn base_ident_of(expr: &Expression) -> Option<&str> {
+    match &expr.expr {
+        Expr::Ident(name) => Some(name),
+        Expr::Select(select) if !select.test => base_ident_of(&select.operand),
+        _ => None,
+    }
+}
+
 impl Value {
     pub fn resolve_all(expr: &[Expression], ctx: &Context) -> ResolveResult {
         let mut res = Vec::with_capacity(expr.len());
@@ -1395,9 +1409,28 @@ impl Value {
                     }
                 }
             }
-            Expr::Ident(name) => Ok(ctx
-                .get_variable(name)
-                .ok_or_else(|| ExecutionError::UndeclaredReference(Arc::new(name.to_string())))?),
+            Expr::Ident(name) => {
+                // Relay fork (G16): a leading-dot identifier (`.y`) is an
+                // ABSOLUTE reference -- resolve it at the ROOT scope only,
+                // bypassing comprehension/local variables AND the container.
+                // The parser encodes this as a '.'-prefixed ident name
+                // (parser.rs visit_Ident).
+                if let Some(root_name) = name.strip_prefix('.') {
+                    return Ok(ctx.get_root_variable(root_name).ok_or_else(|| {
+                        ExecutionError::UndeclaredReference(Arc::new(root_name.to_string()))
+                    })?);
+                }
+                // Comprehension/lambda iteration variables (LOCAL scope) shadow
+                // the container namespace, so they are resolved first.
+                if let Some(v) = ctx.get_local_variable(name) {
+                    return Ok(v);
+                }
+                // Otherwise resolve at the namespace level honoring the
+                // container (most-qualified to least, then the bare name).
+                Ok(ctx.get_variable_with_container(name).ok_or_else(|| {
+                    ExecutionError::UndeclaredReference(Arc::new(name.to_string()))
+                })?)
+            }
             Expr::Select(select) => {
                 // Relay fork (G3): qualified-name resolution. cel-go resolves a
                 // dotted reference `a.b.C` by first trying the fully-qualified
@@ -1407,8 +1440,37 @@ impl Value {
                 // when the whole chain is `Ident`/`Select` (no calls/indexing).
                 if !select.test {
                     if let Some(qualified) = flatten_select_to_name(expr) {
-                        if let Some(v) = ctx.get_variable(&qualified) {
-                            return Ok(v);
+                        // Relay fork (G16): a leading-dot chain (`.y.z`) is an
+                        // ABSOLUTE reference -- resolve the dotted name at the
+                        // ROOT only, escaping the container AND comprehension
+                        // scope. The parser marks the base ident with a leading
+                        // '.' (parser.rs visit_Ident), so the flattened name is
+                        // ".y.z"; strip it and look up "y.z" at the root.
+                        if let Some(abs_name) = qualified.strip_prefix('.') {
+                            if let Some(v) = ctx.get_root_variable(abs_name) {
+                                return Ok(v);
+                            }
+                        } else {
+                            // A comprehension/local iteration variable SHADOWS
+                            // the namespace. If the base identifier is a LOCAL
+                            // (comprehension) variable (e.g. `y` inside
+                            // `exists(y, y.z == 0)`), do NOT treat `y.z` as a
+                            // fully-qualified binding name -- it is field
+                            // selection on the local `y`. Only attempt the
+                            // qualified BINDING lookup when the base identifier
+                            // is not locally bound (so
+                            // `google.protobuf.Timestamp` and `x.y` with only
+                            // `x.y` bound still resolve). The qualified lookup is
+                            // container-aware: `a.b` with container `C` tries
+                            // `C.a.b` ... `a.b`.
+                            let base_is_local = base_ident_of(expr)
+                                .map(|b| ctx.get_local_variable(b).is_some())
+                                .unwrap_or(false);
+                            if !base_is_local {
+                                if let Some(v) = ctx.get_variable_with_container(&qualified) {
+                                    return Ok(v);
+                                }
+                            }
                         }
                     }
                 }

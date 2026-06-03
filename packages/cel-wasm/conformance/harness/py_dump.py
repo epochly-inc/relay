@@ -26,6 +26,9 @@ def main():
         req = {"expr": r["expr"]}
         if bindings:
             req["bindings"] = bindings
+        container = r.get("container")
+        if container:
+            req["container"] = container
         inp = json.dumps(req).encode("utf-8")
         n = len(inp)
         try:
