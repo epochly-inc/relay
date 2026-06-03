@@ -689,8 +689,14 @@ impl gen::CELVisitorCompat<'_> for Parser {
                 IdedExpr::default()
             }
             Some(member) => {
+                // Relay fork (G5): mirror cel-go VisitLogicalNot -- an even
+                // count of `!` cancels out and the member is returned directly
+                // (visited ONCE, no LOGICAL_NOT wrap, no op id consumed). The
+                // previous code visited the member then ALWAYS wrapped in one
+                // LOGICAL_NOT regardless of parity, so e.g. `!!x` folded to
+                // `!x`. cel-go: `if len(ops)%2==0 { return Visit(member) }`.
                 if ctx.ops.len() % 2 == 0 {
-                    self.visit(member.as_ref());
+                    return self.visit(member.as_ref());
                 }
                 let op_id = self.helper.next_id(&ctx.ops[0]);
                 let target = self.visit(member.as_ref());
@@ -705,8 +711,15 @@ impl gen::CELVisitorCompat<'_> for Parser {
                 self.report_error::<ParseError, _>(&ctx.start(), None, "No `MemberContextAll`!")
             }
             Some(member) => {
+                // Relay fork (G5): mirror cel-go VisitNegate -- an even count of
+                // unary `-` cancels out and the member is returned directly
+                // (visited ONCE, no NEGATE wrap, no op id consumed). The
+                // previous code visited the member then ALWAYS wrapped in one
+                // NEGATE regardless of parity, so e.g. `--------19` folded to
+                // `-19` instead of `19`. cel-go: `if len(ops)%2==0 { return
+                // Visit(member) }`.
                 if ctx.ops.len() % 2 == 0 {
-                    self.visit(member.as_ref());
+                    return self.visit(member.as_ref());
                 }
                 let op_id = self.helper.next_id(&ctx.ops[0]);
                 let target = self.visit(member.as_ref());
@@ -925,13 +938,25 @@ impl gen::CELVisitorCompat<'_> for Parser {
     }
 
     fn visit_Int(&mut self, ctx: &IntContext<'_>) -> Self::Return {
-        let string = ctx.get_text();
         if let Some(token) = ctx.tok.as_ref() {
-            let val = match if let Some(string) = string.strip_prefix("0x") {
-                i64::from_str_radix(string, 16)
-            } else {
-                string.parse::<i64>()
-            } {
+            // Relay fork (G5): mirror cel-go VisitInt -- take the NUM_INT token
+            // text ONLY (not ctx.get_text(), which prepends the MINUS sign),
+            // strip the `0x` radix prefix to select base 16, THEN prepend the
+            // sign, and parse signed. The previous code ran
+            // `ctx.get_text().strip_prefix("0x")` on `-0x...`, which failed the
+            // strip (text starts with `-`) and then `"-0x...".parse::<i64>()`
+            // errored -> `invalid int literal`. cel-go parses `-0x55555555` as
+            // -1431655765.
+            let mut text = token.get_text().to_string();
+            let mut base = 10u32;
+            if let Some(rest) = text.strip_prefix("0x") {
+                base = 16;
+                text = rest.to_string();
+            }
+            if ctx.sign.is_some() {
+                text.insert(0, '-');
+            }
+            let val = match i64::from_str_radix(&text, base) {
                 Ok(v) => v,
                 Err(e) => return self.report_error(token, Some(e), "invalid int literal"),
             };
@@ -943,14 +968,20 @@ impl gen::CELVisitorCompat<'_> for Parser {
     }
 
     fn visit_Uint(&mut self, ctx: &UintContext<'_>) -> Self::Return {
-        let mut string = ctx.get_text();
-        string.truncate(string.len() - 1);
         if let Some(token) = ctx.tok.as_ref() {
-            let val = match if let Some(string) = string.strip_prefix("0x") {
-                u64::from_str_radix(string, 16)
-            } else {
-                string.parse::<u64>()
-            } {
+            // Relay fork (G5): mirror cel-go VisitUint -- take the NUM_UINT
+            // token text, trim the trailing `u`/`U` designator, strip `0x` for
+            // base 16, then parse. NUM_UINT carries no sign (the grammar has no
+            // `sign=MINUS?` on the Uint alternative), so there is no sign to
+            // fold; using the token text keeps this consistent with visit_Int.
+            let mut text = token.get_text().to_string();
+            text.truncate(text.len() - 1);
+            let mut base = 10u32;
+            if let Some(rest) = text.strip_prefix("0x") {
+                base = 16;
+                text = rest.to_string();
+            }
+            let val = match u64::from_str_radix(&text, base) {
                 Ok(v) => v,
                 Err(e) => return self.report_error(token, Some(e), "invalid uint literal"),
             };
@@ -1003,8 +1034,16 @@ impl gen::CELVisitorCompat<'_> for Parser {
 
     fn visit_Bytes(&mut self, ctx: &BytesContext<'_>) -> Self::Return {
         if let Some(token) = ctx.tok.as_deref() {
+            // Relay fork (G7/G8): strip ONLY the leading bytes designator
+            // (`b`/`B`), mirroring cel-go VisitBytes `GetText()[1:]`. The
+            // remaining text (any `r`/`R` raw prefix + single/triple quotes)
+            // is decoded by parse_bytes -> unescape, which strips the quote
+            // delimiters and decodes the body per CEL. The previous
+            // `string[2..len-1]` pre-strip embedded the inner triple-quote
+            // delimiters and dropped the raw prefix.
             let string = ctx.get_text();
-            match parse::parse_bytes(&string[2..string.len() - 1]) {
+            let body = string.get(1..).unwrap_or("");
+            match parse::parse_bytes(body) {
                 Ok(bytes) => self
                     .helper
                     .next_expr(token, Expr::Literal(LiteralValue::Bytes(bytes.into()))),
