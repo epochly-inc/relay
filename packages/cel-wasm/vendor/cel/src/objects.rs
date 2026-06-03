@@ -984,6 +984,122 @@ impl TryFrom<Value> for Box<dyn Val> {
     }
 }
 
+/// Relay fork (G15): the dominant value of a commutative short-circuit logical
+/// operator -- the operand value that, when present, makes the operator return
+/// it regardless of the other operand (and thus ABSORBS an error in the other
+/// operand). `&&` is dominated by `false`; `||` is dominated by `true`.
+#[derive(Clone, Copy)]
+enum AbsorbOp {
+    And, // dominant value: false
+    Or,  // dominant value: true
+}
+
+/// Relay fork (G15): if this comprehension loop_step is a commutative
+/// short-circuit `@result <op> predicate` (the `all`/`exists` macro shapes),
+/// return the operator and a reference to the PREDICATE sub-expression.
+///
+/// Only `&&`/`||` loop_steps absorb a predicate error as a value (cel-go
+/// error-as-value: `error && false == false`, `error || true == true`).
+/// `map`/`filter` (list concat) and `existsOne` (a ternary over an int count)
+/// do NOT absorb errors -- a predicate error there must propagate. The
+/// accumulator is always call.args[0] (`@result`) and the predicate is
+/// call.args[1] for these macro-generated forms.
+fn loop_step_absorb_op(loop_step: &Expression) -> Option<(AbsorbOp, &Expression)> {
+    if let Expr::Call(call) = &loop_step.expr {
+        if call.target.is_none() && call.args.len() == 2 {
+            let op = if call.func_name == operators::LOGICAL_AND {
+                AbsorbOp::And
+            } else if call.func_name == operators::LOGICAL_OR {
+                AbsorbOp::Or
+            } else {
+                return None;
+            };
+            return Some((op, &call.args[1]));
+        }
+    }
+    None
+}
+
+/// Relay fork (G15): run one comprehension accumulation step with error-as-value
+/// semantics. The iteration variable(s) must already be bound in `ctx`.
+///   - If no error is currently held (`*pending == None`): evaluate the full
+///     `@result <op> predicate` loop_step. On Ok, update the accumulator. On Err,
+///     hold it in `*pending` when the loop_step absorbs errors (`absorb` is
+///     Some), else propagate the error.
+///   - If an error is held: evaluate only the predicate and apply the dominance
+///     rule (absorb_predicate). On absorption the accumulator becomes the
+///     dominant value and `*pending` is cleared; otherwise the error persists.
+/// Returns Ok(()) (the held/propagated error is carried in `*pending` or via
+/// the early `?`); a hard error (propagated) is returned via Err.
+fn comprehension_step(
+    comprehension: &crate::common::ast::ComprehensionExpr,
+    absorb: Option<(AbsorbOp, &Expression)>,
+    ctx: &mut Context,
+    pending: &mut Option<ExecutionError>,
+) -> Result<(), ExecutionError> {
+    if pending.is_some() {
+        if let Some((op, predicate)) = absorb {
+            if absorb_predicate(op, predicate, ctx, &comprehension.accu_var)?.is_some() {
+                *pending = None;
+            }
+        }
+        return Ok(());
+    }
+    match Value::resolve_val(&comprehension.loop_step, ctx) {
+        Ok(accu) => {
+            ctx.add_variable_as_val(&comprehension.accu_var, accu.clone_as_boxed());
+            Ok(())
+        }
+        Err(e) if absorb.is_some() => {
+            *pending = Some(e);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Relay fork (G15): with an error currently held in the comprehension
+/// accumulator, evaluate ONLY the `predicate` and apply the commutative
+/// short-circuit dominance rule of `op`:
+///   - `&&`: a `false` predicate ABSORBS the error -> accumulator becomes
+///           `false`; otherwise the error persists.
+///   - `||`: a `true` predicate ABSORBS the error -> accumulator becomes
+///           `true`; otherwise the error persists.
+/// Returns `Ok(Some(()))` when the error was absorbed (and the accumulator was
+/// updated to the dominant value), `Ok(None)` when the error persists (a
+/// non-dominant predicate value OR a predicate that itself errors -- an error
+/// combined with a non-dominant or error operand is still an error). A
+/// predicate that is non-bool / non-error surfaces as an error.
+fn absorb_predicate(
+    op: AbsorbOp,
+    predicate: &Expression,
+    ctx: &mut Context,
+    accu_var: &str,
+) -> Result<Option<()>, ExecutionError> {
+    let dominant = match op {
+        AbsorbOp::And => false,
+        AbsorbOp::Or => true,
+    };
+    match Value::resolve_val(predicate, ctx) {
+        Ok(v) => {
+            let b = v
+                .downcast_ref::<CelBool>()
+                .map(|b| *b.inner())
+                .ok_or(ExecutionError::NoSuchOverload)?;
+            if b == dominant {
+                ctx.add_variable_as_val(accu_var, Box::new(CelBool::from(dominant)));
+                Ok(Some(()))
+            } else {
+                // Non-dominant operand: error + non-dominant == error (persists).
+                Ok(None)
+            }
+        }
+        // error + error == error (persists). Keep the originally-held error
+        // (the caller leaves `pending_error` unchanged when we return None).
+        Err(_) => Ok(None),
+    }
+}
+
 // Relay fork (G3): flatten a pure `Ident`/`Select` chain into its dotted name
 // (e.g. `google.protobuf.Timestamp`). Returns None if the chain contains any
 // non-name node (a call, index, presence test, list, etc.), so qualified-name
@@ -1565,6 +1681,10 @@ impl Value {
                 // switching on the range type. The one-variable form (the
                 // `else` branch) is left byte-for-byte unchanged.
                 if let Some(iter_var2) = comprehension.iter_var2.as_ref() {
+                    // Relay fork (G15): same error-as-value short-circuit as the
+                    // one-var path, for the two-var `all`/`exists` forms.
+                    let absorb = loop_step_absorb_op(&comprehension.loop_step);
+                    let mut pending_error: Option<ExecutionError> = None;
                     match iter.get_type() {
                         LIST_TYPE => {
                             let mut idx: i64 = 0;
@@ -1573,7 +1693,12 @@ impl Value {
                                 .ok_or(ExecutionError::NoSuchOverload)?
                                 .iter();
                             while let Some(item) = items.next() {
-                                if !try_bool(Value::resolve_val(&comprehension.loop_cond, &ctx))? {
+                                if pending_error.is_none()
+                                    && !try_bool(Value::resolve_val(
+                                        &comprehension.loop_cond,
+                                        &ctx,
+                                    ))?
+                                {
                                     break;
                                 }
                                 ctx.add_variable_as_val(
@@ -1581,12 +1706,12 @@ impl Value {
                                     Box::new(CelInt::from(idx)),
                                 );
                                 ctx.add_variable_as_val(iter_var2, item.clone_as_boxed());
-                                let accu =
-                                    Value::resolve_val(&comprehension.loop_step, &ctx)?;
-                                ctx.add_variable_as_val(
-                                    &comprehension.accu_var,
-                                    accu.clone_as_boxed(),
-                                );
+                                comprehension_step(
+                                    comprehension,
+                                    absorb,
+                                    &mut ctx,
+                                    &mut pending_error,
+                                )?;
                                 idx += 1;
                             }
                         }
@@ -1609,7 +1734,12 @@ impl Value {
                             let indexer =
                                 iter.as_indexer().ok_or(ExecutionError::NoSuchOverload)?;
                             for key in keys {
-                                if !try_bool(Value::resolve_val(&comprehension.loop_cond, &ctx))? {
+                                if pending_error.is_none()
+                                    && !try_bool(Value::resolve_val(
+                                        &comprehension.loop_cond,
+                                        &ctx,
+                                    ))?
+                                {
                                     break;
                                 }
                                 let value =
@@ -1619,32 +1749,51 @@ impl Value {
                                     key.clone_as_boxed(),
                                 );
                                 ctx.add_variable_as_val(iter_var2, value);
-                                let accu =
-                                    Value::resolve_val(&comprehension.loop_step, &ctx)?;
-                                ctx.add_variable_as_val(
-                                    &comprehension.accu_var,
-                                    accu.clone_as_boxed(),
-                                );
+                                comprehension_step(
+                                    comprehension,
+                                    absorb,
+                                    &mut ctx,
+                                    &mut pending_error,
+                                )?;
                             }
                         }
                         _ => return Err(ExecutionError::NoSuchOverload),
+                    }
+                    if let Some(e) = pending_error {
+                        return Err(e);
                     }
                     return Ok(Cow::<dyn Val>::Owned(
                         Value::resolve_val(&comprehension.result, &ctx)?.into_owned(),
                     ));
                 }
 
+                // Relay fork (G15): error-as-value short-circuit for the logical
+                // comprehensions (`all`/`exists`). cel-go holds a predicate error
+                // in the accumulator; `&&` absorbs it with a `false` operand and
+                // `||` with a `true` operand, otherwise the error persists and
+                // surfaces at the end. We model the error accumulator with
+                // `pending_error` while leaving the context's @result at its last
+                // good bool (which keeps loop_cond's not_strictly_false correct).
+                let absorb = loop_step_absorb_op(&comprehension.loop_step);
+                let mut pending_error: Option<ExecutionError> = None;
                 let mut items = iter
                     .as_iterable()
                     .ok_or(ExecutionError::NoSuchOverload)?
                     .iter();
                 while let Some(item) = items.next() {
-                    if !try_bool(Value::resolve_val(&comprehension.loop_cond, &ctx))? {
+                    // not_strictly_false(error) is true, so while an error is
+                    // pending we keep iterating (a later dominant operand may
+                    // absorb it) regardless of the stale @result.
+                    if pending_error.is_none()
+                        && !try_bool(Value::resolve_val(&comprehension.loop_cond, &ctx))?
+                    {
                         break;
                     }
                     ctx.add_variable_as_val(&comprehension.iter_var, item.clone_as_boxed());
-                    let accu = Value::resolve_val(&comprehension.loop_step, &ctx)?;
-                    ctx.add_variable_as_val(&comprehension.accu_var, accu.clone_as_boxed());
+                    comprehension_step(comprehension, absorb, &mut ctx, &mut pending_error)?;
+                }
+                if let Some(e) = pending_error {
+                    return Err(e);
                 }
                 Ok(Cow::<dyn Val>::Owned(
                     Value::resolve_val(&comprehension.result, &ctx)?.into_owned(),
