@@ -20,7 +20,7 @@ shim made the cross-numeric forms visible).
 | **G1** | proto/message construction PANICS (wasm trap) | HARD (P0 safety) | **DONE (fenced)** | `find_profile_rejection` walks the AST and rejects `Expr::Struct`, map `StructField`, and `Unspecified` with a clean `RELAY-CEL-002` BEFORE `execute()` reaches `objects.rs` `todo!()`/`panic!`. 185 cases now error cleanly; **0 engine panics**. The Relay profile excludes proto messages, so producing a value is NOT the goal -- the goal is no-panic, which is met. |
 | **G2** | missing `dyn()` builtin | EASY | **DONE** | `dyn(x) = x` registered as a custom identity function. Unblocked the dyn-gated comparisons. The cross-numeric equality these forms exercise underneath is G6. |
 | **G3** | missing `type()` + type denotations | EASY-MED / HARD | **DONE (fork increment 2)** | cel 0.13 `Value` had no `Type` variant; `type(1)` was `UndeclaredReference`. FIXED in the vendored fork: added `Value::Type(Arc<str>)` (`vendor/cel/src/objects.rs`) carrying the canonical cel-go runtime type NAME, a `dyn Val` type-value (`vendor/cel/src/common/types/type_value.rs` `CelTypeValue`, `get_type()==TYPE_TYPE`, name-based `equals`), both `Value`<->`dyn Val` conversion legs, name-based `PartialEq`, and qualified-name resolution in `Expr::Select` (so `google.protobuf.Timestamp` resolves). The wrapper (`crate/src/lib.rs`) registers `type(x)` (returns the type value of x's runtime type) and binds the ten type identifiers + `google.protobuf.{Timestamp,Duration}` as type values; `value_to_typed`/`typed_to_value` emit/accept `{"t":"type","v":"<name>"}`. All `Relay fork (G3)`. Verified vs the cel-go oracle: the 33 failing `type(...)`/denotation cases (30 `conversions`, 4 `timestamps`, incl. `type(type(1))==type`, `type(7)==type(7u)`->false, monomorphic list/map, dotted proto names) all pass with ZERO non-G3 regressions; `conversions` 67->96, `timestamps` 58->62. Conformance 71.9/83.5 -> 74.4/86.3; byte-parity held (1449). `tests/test_g3_type_values.py` (58 cases). |
-| **G4** | macros2 two-variable comprehensions | HARD | **NEEDS-FORK** | `exists(i,v,..)`, `all(i,v,..)`, `existsOne(i,v,..)`, `transformList`, `transformMap`. New macro lowering in the parser/comprehension engine. 38 `macros2` cases. |
+| **G4** | macros2 two-variable comprehensions | HARD | **DONE (fork increment G4)** | `e.all(i,v,p)`, `e.exists(i,v,p)`, `e.existsOne(i,v,p)` / `e.exists_one(...)`, `e.transformList(i,v[,f],t)`, `e.transformMap(i,v[,f],t)`. FIXED in the vendored fork (faithful port of cel-go v0.28 `ext/comprehensions.go`, all marked `Relay fork (G4)`). Three pieces: (1) parser lowering (`vendor/cel/src/parser/macros.rs`) -- `find_expander` now dispatches the arity-3 receiver forms (and arity-3/4 transforms) to two-variable expanders, distinguished from the one-var forms by arity at expansion time (one-var = 2 args, two-var = 3, filtered transform = 4); each emits a `ComprehensionExpr` with `iter_var` (index/key) AND `iter_var2: Some(value)`; `extract_iter_vars` enforces cel-go's duplicate-name / accumulator-shadow guards. (2) comprehension engine (`vendor/cel/src/objects.rs` `Expr::Comprehension`) -- when `iter_var2` is `Some`, switch on range type: `LIST_TYPE` binds `iter_var` to a 0-based `CelInt` index + `iter_var2` to the element; `MAP_TYPE` binds `iter_var` to the key + `iter_var2` to the indexer-looked-up value. One-var path (`iter_var2` None) left byte-for-byte unchanged. (3) `cel.@mapInsert` (`objects.rs` `Expr::Call` special-case + `DefaultMap::insert_entry` in `vendor/cel/src/common/types/map.rs`) -- the synthetic `transformMap` step; returns a new map = accumulator with `(key, value)` inserted; never in user source (re-exported as `crate::parser::MAP_INSERT`). Verified vs the cel-go oracle: `macros2` 8 -> 45 (+37; the 38th case is G15, see below). Conformance 80.0/93.0 -> 82.79/96.38; byte-parity held (1449). `tests/test_g4_two_var_macros.py` (56 cases) + 101 fork unit tests green; ZERO per-file regressions (basic/conversions/macros/parse/timestamps all delta=+0; total passed 1055 -> 1092 = exactly the macros2 gain). The single `macros2` residual (`all/list_elem_type_exhaustive`, `[0,'foo',3].all(i,v,v%2==i)` -> false) is **G15** (error-as-value short-circuit ordering), the same root cause as the one remaining `macros` file failure, and is out of G4 scope. `transformMapEntry` has no `macros2.textproto` cases and was not implemented. |
 | **G5** | parser gaps (negative hex, repeated unary minus) | MED | **DONE (fork increment 3)** | `-0x55555555` -> now `-1431655765`; `--------19` (even) -> now `19`. FIXED in the vendored fork (`vendor/cel/src/parser/parser.rs`, marked `Relay fork (G5)`). `visit_Int`/`visit_Uint` now mirror cel-go VisitInt/VisitUint: take the NUM_INT/NUM_UINT **token** text (not `ctx.get_text()`, which prepends the MINUS sign), strip the `0x` radix prefix to select base 16, THEN prepend the sign and `from_str_radix`. The previous code ran `strip_prefix("0x")` on `-0x...` (text starts with `-`), the strip failed, and `"-0x...".parse::<i64>()` errored. `visit_Negate`/`visit_LogicalNot` now mirror cel-go: an even op count returns the member directly (no NEGATE/NOT wrap, no op id consumed) -- the previous code visited the member then ALWAYS wrapped once, folding even chains to a single negate. CEL has no `0o`/`0b` prefixes; leading-zero literals (`017`->17) are decimal (handled by base-10 `from_str_radix`). Verified vs the cel-go oracle: `-0x55555555`->-1431655765, `--------19`(32)->19, `---19`->-19, `0xFu`->15u, `017`->17, overflow forms still error. Closed both G5 cases (1 `parse_compile_failure`, 1 `value_mismatch:int`). `tests/test_g5_g7_g8_literals.py`. |
 | **G6** | no cross-numeric equality / mixed-type number comparison | MED-HARD | **DONE (fork increment 1)** | `1.0 == 1` -> now `true`. FIXED in the vendored fork: `Val::equals` for `int`/`uint`/`double` (`vendor/cel/src/common/types/{int,double,uint}.rs`, marked `Relay fork (G6)`) delegated to a same-type-only downcast; now delegates to the already-cross-numeric `Comparer::compare` (equal iff `Ordering::Equal`; non-numeric rhs / NaN -> false). Verified vs cel-go oracle + a 216-cell cross-numeric matrix + `tests/test_g6_cross_numeric.py` (30 cases incl. the int/uint boundary + NaN). Conformance 69.8/81.1 -> 71.9/83.5; byte-parity held. |
 | **G7** | triple-quoted string/bytes keep the quotes | MED | **DONE (fork increment 3)** | `b'''hello'''` -> now `68656c6c6f` (`hello`), not `2727...2727`. FIXED in the vendored fork (`vendor/cel/src/parser/parse.rs` rewritten as a faithful port of cel-go `parser/unescape.go`, marked `Relay fork (G7/G8)`; caller `parser.rs` `visit_Bytes`). The new `unescape(value, is_bytes)` strips the full `'''`/`"""` delimiter span (cel-go `value[3:n-3]`) for strings AND bytes (incl. raw `r'''`/`br'''`), then decodes the body. The byte caller previously did `string[2..len-1]` (strip `b'` + one trailing quote), which embedded the inner `''` delimiters; it now strips only the leading `b`/`B` designator (cel-go `GetText()[1:]`) and lets `unescape` strip the quotes. Closed all 16 `value_mismatch:bytes` cases plus the triple-quote `parse_compile_failure` cases. `tests/test_g5_g7_g8_literals.py`. |
@@ -70,6 +70,18 @@ string formatting), `value_mismatch:int` 8 -> 7 (the G5 `--------19` case
 closed; the 7 residuals are G13/G14 timezone handling). `tests/test_g5_g7_g8_literals.py`
 (50 cases) + `vendor/cel` `parser::parse` unit tests (9 cases).
 
+DONE (fork increment G4): **G4** two-variable comprehension macros
+(`ext.TwoVarComprehensions`: `all`/`exists`/`existsOne`/`exists_one`/
+`transformList`/`transformMap`). New parser lowering
+(`vendor/cel/src/parser/macros.rs`) + two-variable binding in the comprehension
+engine (`vendor/cel/src/objects.rs`) + the synthetic `cel.@mapInsert` step
+(`objects.rs` + `vendor/cel/src/common/types/map.rs`). Moved **80.0% / 93.0%**
+-> **82.79% raw (1092/1319) / 96.38% ex-proto**: `macros2` 8 -> 45 (+37) with
+**zero per-file regressions** (total passed 1055 -> 1092 = exactly the macros2
+gain). The 38th `macros2` case (`[0,'foo',3].all(i,v,v%2==i)`) is G15
+(error-as-value short-circuit), shared with the one-var path and out of scope.
+`tests/test_g4_two_var_macros.py` (56 cases) + 101 fork unit tests.
+
 All passes hold the keystone invariants: **0 engine panics** and byte-parity
 (`diff` exit 0 across Python/Node, 1449 records).
 
@@ -77,15 +89,19 @@ All passes hold the keystone invariants: **0 engine panics** and byte-parity
 
 DONE in the fork: **G6** cross-numeric equality (increment 1), **G3** the
 type-value model (increment 2 -- `Value::Type` + `type()` + type identifiers +
-qualified-name resolution).
+qualified-name resolution), **G5 / G7 / G8** lexer literals (increment 3),
+**G4** two-variable comprehension macros (increment G4 -- `all`/`exists`/
+`existsOne`/`transformList`/`transformMap`, 37 of 38 `macros2` cases; the 38th
+is G15).
 
 Remaining:
 
-1. **G4** macros2 two-variable comprehensions (38 cases).
-2. **G7 / G8 / G5** lexer/parser: triple-quote literals, escape set,
-   negative-hex + repeated-unary-minus folding.
-3. **G15** comprehension error short-circuit ordering.
-4. **G16** container resolution + **G13** timestamp/duration BINARY arithmetic
+1. **G15** comprehension error short-circuit ordering (the error-as-value
+   accumulation that lets `LogicalAnd(error, false) -> false` surface inside a
+   comprehension). Affects 1 `macros` case (`[1,2,3].all(e, 6/(2-e)==6)`) and
+   1 `macros2` case (`[0,'foo',3].all(i,v,v%2==i)`); the one-var and two-var
+   paths share the same root cause.
+2. **G16** container resolution + **G13** timestamp/duration BINARY arithmetic
    (`duration + timestamp`) -- the cel arithmetic core. (The `int(timestamp)`
    half of G13 is DONE in the wrapper. The G3 qualified-name lookup resolves
    dotted TYPE denotations but not general container-relative bindings -- G16

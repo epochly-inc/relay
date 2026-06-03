@@ -23,6 +23,22 @@ impl DefaultMap {
     pub fn inner(&self) -> &HashMap<Key, Box<dyn Val>> {
         &self.0
     }
+
+    /// Relay fork (G4): produce a new map equal to `self` with `(key, value)`
+    /// inserted (replacing any existing entry for `key`). Backs the synthetic
+    /// `cel.@mapInsert` lowering used by `transformMap` (cel-go
+    /// `ext` `types.InsertMapKeyValue`). The receiver is left unmodified so the
+    /// accumulator threading in the comprehension engine stays value-based.
+    pub fn insert_entry(&self, key: Box<dyn Val>, value: Box<dyn Val>) -> Result<Self, ExecutionError> {
+        let key: Key = key.try_into()?;
+        let mut next: HashMap<Key, Box<dyn Val>> =
+            HashMap::with_capacity(self.0.len() + 1);
+        for (k, v) in self.0.iter() {
+            next.insert(k.clone(), v.clone_as_boxed());
+        }
+        next.insert(key, value);
+        Ok(DefaultMap(next))
+    }
 }
 
 impl Deref for DefaultMap {

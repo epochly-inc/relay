@@ -1030,6 +1030,24 @@ impl Value {
                         Value::resolve_val(&call.args[2], ctx)
                     };
                 }
+                // Relay fork (G4): `cel.@mapInsert(map, key, value)` -- the
+                // synthetic step function emitted by the `transformMap` macro
+                // lowering (cel-go `ext`). It returns a new map equal to the
+                // accumulator with `(key, value)` inserted. It is never written
+                // by user source; the macro expander is the only producer.
+                if call.args.len() == 3
+                    && call.target.is_none()
+                    && call.func_name == crate::parser::MAP_INSERT
+                {
+                    let accu = Value::resolve_val(&call.args[0], ctx)?;
+                    let key = Value::resolve_val(&call.args[1], ctx)?.into_owned();
+                    let value = Value::resolve_val(&call.args[2], ctx)?.into_owned();
+                    let map = accu
+                        .downcast_ref::<CelMap>()
+                        .ok_or(ExecutionError::NoSuchOverload)?;
+                    let inserted = map.insert_entry(key, value)?;
+                    return Ok(Cow::<dyn Val>::Owned(Box::new(inserted)));
+                }
                 if call.args.len() == 2 {
                     match call.func_name.as_str() {
                         operators::LOGICAL_OR => {
@@ -1476,6 +1494,83 @@ impl Value {
                 let iter = Value::resolve_val(&comprehension.iter_range, ctx)?;
                 let mut ctx = ctx.new_inner_scope();
                 ctx.add_variable_as_val(&comprehension.accu_var, accu_init.clone_as_boxed());
+
+                // Relay fork (G4): two-variable comprehensions
+                // (cel-go `ext.TwoVarComprehensions`). When `iter_var2` is set,
+                // bind the first iteration variable to the index (list) / key
+                // (map) and the second to the value. cel-go folds lists by
+                // (index, value) and maps by (key, value); we mirror that by
+                // switching on the range type. The one-variable form (the
+                // `else` branch) is left byte-for-byte unchanged.
+                if let Some(iter_var2) = comprehension.iter_var2.as_ref() {
+                    match iter.get_type() {
+                        LIST_TYPE => {
+                            let mut idx: i64 = 0;
+                            let mut items = iter
+                                .as_iterable()
+                                .ok_or(ExecutionError::NoSuchOverload)?
+                                .iter();
+                            while let Some(item) = items.next() {
+                                if !try_bool(Value::resolve_val(&comprehension.loop_cond, &ctx))? {
+                                    break;
+                                }
+                                ctx.add_variable_as_val(
+                                    &comprehension.iter_var,
+                                    Box::new(CelInt::from(idx)),
+                                );
+                                ctx.add_variable_as_val(iter_var2, item.clone_as_boxed());
+                                let accu =
+                                    Value::resolve_val(&comprehension.loop_step, &ctx)?;
+                                ctx.add_variable_as_val(
+                                    &comprehension.accu_var,
+                                    accu.clone_as_boxed(),
+                                );
+                                idx += 1;
+                            }
+                        }
+                        MAP_TYPE => {
+                            // Collect the keys first so the borrow of `iter` for
+                            // iteration does not conflict with the indexer
+                            // lookups for each value. The cel `Iterator` trait
+                            // is not `std::iter::Iterator`, so drive `.next()`
+                            // by hand.
+                            let mut keys: Vec<Box<dyn Val>> = Vec::new();
+                            {
+                                let iterable = iter
+                                    .as_iterable()
+                                    .ok_or(ExecutionError::NoSuchOverload)?;
+                                let mut it = iterable.iter();
+                                while let Some(k) = it.next() {
+                                    keys.push(k.clone_as_boxed());
+                                }
+                            }
+                            let indexer =
+                                iter.as_indexer().ok_or(ExecutionError::NoSuchOverload)?;
+                            for key in keys {
+                                if !try_bool(Value::resolve_val(&comprehension.loop_cond, &ctx))? {
+                                    break;
+                                }
+                                let value =
+                                    indexer.get(key.as_ref() as &dyn Val)?.into_owned();
+                                ctx.add_variable_as_val(
+                                    &comprehension.iter_var,
+                                    key.clone_as_boxed(),
+                                );
+                                ctx.add_variable_as_val(iter_var2, value);
+                                let accu =
+                                    Value::resolve_val(&comprehension.loop_step, &ctx)?;
+                                ctx.add_variable_as_val(
+                                    &comprehension.accu_var,
+                                    accu.clone_as_boxed(),
+                                );
+                            }
+                        }
+                        _ => return Err(ExecutionError::NoSuchOverload),
+                    }
+                    return Ok(Cow::<dyn Val>::Owned(
+                        Value::resolve_val(&comprehension.result, &ctx)?.into_owned(),
+                    ));
+                }
 
                 let mut items = iter
                     .as_iterable()
