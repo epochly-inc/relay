@@ -1,5 +1,12 @@
 # relay-cel-wasm hardening backlog (G1..G16 + WS2 newly-surfaced)
 
+**Current state (after the fork-cleanup increment): 85.82% raw (1132/1319) /
+100.0% ex-proto (1105/1105).** Every G1..G16 gap is DONE. The only RAW failures
+left are proto-message construction/access (fenced to a clean `RELAY-CEL-002`,
+excluded from the Relay CEL profile) and 2 checker-deduced-type assertions a
+runtime evaluator cannot produce -- all out of scope (see "Honest residual
+breakdown" at the bottom). Byte-parity holds (1449 records, Python <-> Node).
+
 Maps every conformance gap from the
 [WS1 report](../../../planning/adr/cel-wasm-single-engine-rearchitecture.md)
 (gap register G1..G16) to its WS2 status:
@@ -29,10 +36,10 @@ shim made the cross-numeric forms visible).
 | **G10** | missing range/overflow checks on conversions | MED | **DONE** | `int()`/`uint()` re-registered as custom functions (`relay_int`/`relay_uint`) that, for a DOUBLE arg, reproduce cel-go's exact-representability rule (common/types/overflow.go): `int` errors when `NaN/Inf or v <= float64(i64::MIN) or v >= float64(i64::MAX)`; `uint` errors when `NaN/Inf or v < 0 or v >= 2**64`. Because `i64::MAX as f64 == 2**63` and `u64::MAX as f64 == 2**64`, the boundary cases error: `int(9223372036854775807.0)` (f64 is 2**63), `int(-9223372036854775808.0)` (f64 is -2**63), `int(1e99)`, `int(18446744073709551615.0)`, `uint(6.022e23)` all now error cleanly (RELAY-CEL-004), while in-range conversions still produce values (`int(double(2**55))`, `int(1.9)->1`, `uint(25.5)->25`). Non-double arms (string parse, int/uint identity + checked cross-cast) preserve stock cel 0.13 behavior. `error_expected_got_value` dropped 8 -> 6; `conversions` file 64 -> 67. |
 | **G11** | `size()` counts UTF-8 bytes, not code points | EASY-MED | **DONE** | `relay_size` uses `chars().count()` for strings (bytes/list/map keep their counts). Works as method and function (`This<Value>`). `size('ÿ')` -> 1. Verified in `tests`. |
 | **G12** | conversion overloads reject already-typed args | EASY | **DONE** | `relay_bytes`/`relay_duration`/`relay_timestamp` accept an already-typed value idempotently. `bytes(b'abc')`, `duration(duration('100s'))`, `timestamp(timestamp(...))` now succeed. (`string`/`int`/`uint`/`double` already accepted multiple types.) Verified in `tests`. |
-| **G13** | timestamp/duration arithmetic + `int(timestamp)` | MED | **PARTIAL: int(timestamp) DONE; arithmetic NEEDS-FORK** | `int(timestamp)` landed as an arm of the re-registered `relay_int` (G10): a `Value::Timestamp(t)` returns `Value::Int(t.timestamp())` (chrono Unix epoch SECONDS). Verified `int(timestamp('1970-01-01T00:00:01Z'))->1`, `int(timestamp('2004-09-16T23:59:59Z'))->1095379199`, pre-epoch `->-1`; `timestamps` file 57 -> 58. The remaining `duration('120s') + timestamp(...)` -> `UnsupportedBinaryOperator` binary-operator dispatch is in cel's arithmetic core and stays NEEDS-FORK. |
+| **G13** | timestamp/duration arithmetic + `int(timestamp)` | MED | **DONE (fork cleanup)** | `int(timestamp)` landed earlier (G10 arm: epoch seconds). The BINARY arithmetic is now complete in the fork (`Relay fork (G13)`, `vendor/cel/src/common/types/{timestamp,duration}.rs`): `timestamp + duration`, `duration + timestamp` (the commutative sibling, delegating to a shared range-checked `Timestamp::checked_add_duration`), `timestamp - duration`, `timestamp - timestamp -> duration` (with an int64-nanos overflow check so a 10000-year span errors), `duration +/- duration`. The wrapper added `timestamp(int)` (epoch seconds), `bool()`, a UTF-8-strict `string(bytes)` + Go-style `string(duration)`, and the cel-spec `[0001..9999]` timestamp range check. The timezone-aware getters (`getFullYear`/.../`getMilliseconds` with an optional IANA name or fixed-offset arg) landed in the fork via chrono-tz; `Duration.getMilliseconds` now returns the ms COMPONENT. `timestamps` file -> 76/76; `conversions` -> 109/109. `tests/test_g13_{conversions_tail,temporal_arith,timestamp_getters}.py`. |
 | **G14** | timestamp->string `+00:00` vs `Z` | EASY | **DONE** | Serializer-side: `rfc3339_utc_z` converts to UTC and emits `Z` with `SecondsFormat::AutoSi`. `timestamp('...Z')` round-trips with `Z`. Verified in `tests`. |
-| **G15** | error short-circuit in macros | MED | **NEEDS-FORK** | `[1,2,3].all(e, 6/(2-e) == 6)` raises `DivisionByZero`; spec short-circuits `all` to `false`. Error-vs-value propagation order in the comprehension engine -> fork. 1 `div_mod_semantics` visible. |
-| **G16** | namespace/container resolution | MED | **WRAPPER-TODO / NEEDS-FORK** | `y` with `container "x"` and `x.y` bound resolves to the wrong binding. 2 `type_mismatch:bool->string` (`y` -> string `"false"` instead of bool from `x.y`) + `namespace` file failures. Container-qualified name resolution is in cel's resolver -> likely fork; the wrapper could pre-resolve container prefixes for the binding path (WRAPPER-TODO, partial). |
+| **G15** | error short-circuit in macros | MED | **DONE (fork cleanup)** | `[1,2,3].all(e, 6/(2-e)==6) -> false` and `[0,'foo',3].all(i,v,v%2==i) -> false`. FIXED in the fork comprehension engine (`Relay fork (G15)`, `objects.rs Expr::Comprehension`, both one-var and two-var paths). cel-go error-as-value: a predicate error is HELD in the accumulator and ABSORBED by a dominant operand (`error && false == false`, `error || true == true`), else it persists and surfaces. `loop_step_absorb_op` detects the `@result && predicate` / `@result || predicate` macro shape (all/exists only; map/filter/existsOne propagate); `comprehension_step` + `absorb_predicate` model the held error and the dominance rule. `tests/test_g15_comprehension_shortcircuit.py`. |
+| **G16** | namespace/container resolution | MED | **DONE (fork cleanup)** | Full CEL name resolution in the fork (`Relay fork (G16)`). (1) Container: `Context::Root` carries a container (`set_container`); `get_variable_with_container` tries candidates most-qualified to least (`a.b.c.n` .. `n`) so a qualified binding beats the bare name. (2) Comprehension variables SHADOW the namespace: `get_local_variable` (Child scopes only) is checked before the container in `Expr::Ident`, and the `Expr::Select` qualified lookup skips when the base ident is a local var (so `y.z` inside `exists(y,...)` is field selection on the local `y`). (3) Leading-dot is ABSOLUTE: the parser marks `.y` with a `.` prefix; the resolver routes it to `get_root_variable` (no container, no local), for both bare `.y` and dotted `.y.z`. The container is now forwarded end-to-end (oracle `main.go` emits it; the harness + both parity dumps forward it; the wasm `eval` request accepts a `container` field). `namespace` file -> 14/14. `tests/test_g16_namespace.py`. |
 
 ## WS2 landed this increment (summary)
 
@@ -85,32 +92,38 @@ gain). The 38th `macros2` case (`[0,'foo',3].all(i,v,v%2==i)`) is G15
 All passes hold the keystone invariants: **0 engine panics** and byte-parity
 (`diff` exit 0 across Python/Node, 1449 records).
 
-## Deferred to the fork (`cel-rust-relay`), in rough priority
+DONE (fork cleanup -- the FIXABLE ex-proto tail): **G13** timestamp/duration
+BINARY arithmetic + timezone-aware getters + the conversion tail (`bool()`,
+`timestamp(int)`, UTF-8-strict `string(bytes)`, Go-style `string(duration)`),
+**G16** container/comprehension-shadow/leading-dot namespace resolution,
+**G15** comprehension error-as-value short-circuit, plus the
+`integer_math`/`lists`/`comparisons` residuals: unary-minus type errors
+(`-false`, `-(i64::MIN)`), integral-double list indices, and cross-numeric MAP
+equality. Moved **82.79% raw / 96.38% ex-proto** -> **85.82% raw (1132/1319) /
+100.0% ex-proto (1105/1105)**: `conversions` -> 109/109, `timestamps` -> 76/76,
+`namespace` -> 14/14, `integer_math` -> 64/64, `lists` -> 39/39, `comparisons`
+ex-proto residual closed, `macros`/`macros2` -> the last 2 closed. Byte-parity
+held (1449); 101 fork unit tests + 361 wrapper tests green.
 
-DONE in the fork: **G6** cross-numeric equality (increment 1), **G3** the
-type-value model (increment 2 -- `Value::Type` + `type()` + type identifiers +
-qualified-name resolution), **G5 / G7 / G8** lexer literals (increment 3),
-**G4** two-variable comprehension macros (increment G4 -- `all`/`exists`/
-`existsOne`/`transformList`/`transformMap`, 37 of 38 `macros2` cases; the 38th
-is G15).
+## Honest residual breakdown (RAW failures that remain -- all OUT OF SCOPE)
 
-Remaining:
+After the fork cleanup, **every ex-proto case passes (100.0%, 1105/1105)**. The
+187 remaining RAW failures are structurally out of scope for a runtime CEL
+evaluator and are NOT bugs:
 
-1. **G15** comprehension error short-circuit ordering (the error-as-value
-   accumulation that lets `LogicalAnd(error, false) -> false` surface inside a
-   comprehension). Affects 1 `macros` case (`[1,2,3].all(e, 6/(2-e)==6)`) and
-   1 `macros2` case (`[0,'foo',3].all(i,v,v%2==i)`); the one-var and two-var
-   paths share the same root cause.
-2. **G16** container resolution + **G13** timestamp/duration BINARY arithmetic
-   (`duration + timestamp`) -- the cel arithmetic core. (The `int(timestamp)`
-   half of G13 is DONE in the wrapper. The G3 qualified-name lookup resolves
-   dotted TYPE denotations but not general container-relative bindings -- G16
-   stays open.)
+1. **Proto-message construction / field access (179 cases:** `comparisons` 72,
+   `dynamic` 98, `parse` 9). `Foo{...}` / `google.protobuf.X{...}` /
+   `TestAllTypes{}.field` are fenced to a clean `RELAY-CEL-002`
+   (PROFILE-STRUCT-DISABLED, the G1 keystone). The Relay CEL profile EXCLUDES
+   proto messages, so producing a value is not the goal -- no-panic is, and that
+   holds (0 engine panics). These are excluded from the ex-proto number by the
+   harness `is_proto` classifier.
+2. **`type_deduction` checker-deduced types (8 cases).** 6 are proto field
+   access (fenced as above). 2 (`null_assignable_to_{duration,timestamp}_parameter_candidate`,
+   `[msg.single_duration, null][0]`) assert a type DEDUCED BY THE CHECKER from
+   an unbound proto-message variable -- a runtime evaluator cannot produce a
+   checker's type judgement, so these are unmeasurable (the `msg` reference is
+   also a proto message, fenced/undeclared at runtime).
 
-## Wrapper-feasible TODO (could land before the fork, without cel internals)
-
-- **G16** partial: pre-resolve container-qualified binding names on the host
-  side of the binding protocol.
-
-DONE this pass (were on this list): **G10** exact-representability range checks
-on `int()`/`uint()`; **G13** `int(timestamp)` epoch-seconds overload.
+The ex-proto figure (100.0%) is the achievable runtime-conformance ceiling for
+the Relay CEL profile. The proto-message gap is a profile decision, not a defect.
