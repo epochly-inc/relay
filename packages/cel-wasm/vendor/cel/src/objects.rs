@@ -535,6 +535,15 @@ pub enum Value {
     #[cfg(feature = "chrono")]
     Timestamp(chrono::DateTime<chrono::FixedOffset>),
     Opaque(Arc<dyn Opaque>),
+    // Relay fork (G3): a first-class CEL TYPE value. `type(1)` evaluates to
+    // `Value::Type("int")`; type identifiers (`int`, `uint`, `double`, `bool`,
+    // `string`, `bytes`, `list`, `map`, `null_type`, `type`, plus the
+    // proto-qualified `google.protobuf.Timestamp` / `google.protobuf.Duration`)
+    // resolve to the corresponding type value. The inner `Arc<str>` is the
+    // canonical cel-go runtime type NAME; equality is by name. The runtime type
+    // of any type value is itself `type` (the meta-type), so `type(type(1))`
+    // is `Value::Type("type")`.
+    Type(Arc<str>),
     Null,
 }
 
@@ -555,6 +564,8 @@ impl Debug for Value {
             #[cfg(feature = "chrono")]
             Value::Timestamp(t) => write!(f, "Timestamp({:?})", t),
             Value::Opaque(o) => write!(f, "Opaque<{}>({:?})", o.runtime_type_name(), o.as_debug()),
+            // Relay fork (G3).
+            Value::Type(name) => write!(f, "Type({:?})", name),
             Value::Null => write!(f, "Null"),
         }
     }
@@ -574,6 +585,8 @@ pub enum ValueType {
     Duration,
     Timestamp,
     Opaque,
+    // Relay fork (G3): the runtime type of a TYPE value is `type`.
+    Type,
     Null,
 }
 
@@ -592,6 +605,8 @@ impl Display for ValueType {
             ValueType::Opaque => write!(f, "opaque"),
             ValueType::Duration => write!(f, "duration"),
             ValueType::Timestamp => write!(f, "timestamp"),
+            // Relay fork (G3).
+            ValueType::Type => write!(f, "type"),
             ValueType::Null => write!(f, "null"),
         }
     }
@@ -614,6 +629,8 @@ impl Value {
             Value::Duration(_) => ValueType::Duration,
             #[cfg(feature = "chrono")]
             Value::Timestamp(_) => ValueType::Timestamp,
+            // Relay fork (G3): the runtime type of a type value is `type`.
+            Value::Type(_) => ValueType::Type,
             Value::Null => ValueType::Null,
         }
     }
@@ -682,6 +699,10 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
             (Value::Float(a), Value::UInt(b)) => *a == (*b as f64),
             (Value::Opaque(a), Value::Opaque(b)) => a.opaque_eq(b.deref()),
+            // Relay fork (G3): two type values are equal iff they name the same
+            // CEL type (`type(7) == type(7u)` is false; `type(type(1)) == type`
+            // is true). A type value never equals a non-type value.
+            (Value::Type(a), Value::Type(b)) => a == b,
             (_, _) => false,
         }
     }
@@ -842,6 +863,15 @@ impl TryFrom<&dyn Val> for Value {
                 v.downcast_ref::<CelString>().unwrap().inner().to_string(),
             ))),
             NULL_TYPE => Ok(Value::Null),
+            // Relay fork (G3): a `dyn Val` type value (get_type() == TYPE_TYPE)
+            // converts back to the runtime `Value::Type`, carrying its canonical
+            // type name. This is the return leg of `type(x)` and the resolution
+            // of a type identifier.
+            TYPE_TYPE => Ok(Value::Type(
+                v.downcast_ref::<CelTypeValue>()
+                    .expect("TYPE_TYPE value is a CelTypeValue")
+                    .name_arc(),
+            )),
             BYTES_TYPE => Ok(Value::Bytes(Arc::new(
                 v.downcast_ref::<CelBytes>().unwrap().inner().to_vec(),
             ))),
@@ -915,6 +945,10 @@ impl TryFrom<Value> for Box<dyn Val> {
             Value::UInt(u) => Ok(Box::new(CelUInt::from(u))),
             Value::Float(f) => Ok(Box::new(CelDouble::from(f))),
             Value::String(s) => Ok(Box::new(CelString::from(s.as_str()))),
+            // Relay fork (G3): a runtime type value crosses into the `dyn Val`
+            // world as a `CelTypeValue` (get_type() == TYPE_TYPE). This is the
+            // call leg of `type(x)` and binding a type identifier.
+            Value::Type(name) => Ok(Box::new(CelTypeValue::new(name))),
             Value::Null => Ok(Box::new(CelNull)),
             Value::Bytes(b) => Ok(Box::new(CelBytes::from(b.as_slice().to_vec()))),
             #[cfg(feature = "chrono")]
@@ -947,6 +981,22 @@ impl TryFrom<Value> for Box<dyn Val> {
             }
             _ => Err(ExecutionError::UnsupportedTargetType { target: value }),
         }
+    }
+}
+
+// Relay fork (G3): flatten a pure `Ident`/`Select` chain into its dotted name
+// (e.g. `google.protobuf.Timestamp`). Returns None if the chain contains any
+// non-name node (a call, index, presence test, list, etc.), so qualified-name
+// resolution only fires for genuine dotted references. Used by the `Expr::Select`
+// arm to attempt a fully-qualified BINDING lookup before field selection.
+fn flatten_select_to_name(expr: &Expression) -> Option<String> {
+    match &expr.expr {
+        Expr::Ident(name) => Some(name.clone()),
+        Expr::Select(select) if !select.test => {
+            let base = flatten_select_to_name(&select.operand)?;
+            Some(format!("{base}.{}", select.field))
+        }
+        _ => None,
     }
 }
 
@@ -1331,6 +1381,19 @@ impl Value {
                 .get_variable(name)
                 .ok_or_else(|| ExecutionError::UndeclaredReference(Arc::new(name.to_string())))?),
             Expr::Select(select) => {
+                // Relay fork (G3): qualified-name resolution. cel-go resolves a
+                // dotted reference `a.b.C` by first trying the fully-qualified
+                // BINDING `a.b.C` before treating it as field selection on `a.b`.
+                // This is what lets `google.protobuf.Timestamp` resolve to a
+                // type value. Only for the non-test (`.field`) form, and only
+                // when the whole chain is `Ident`/`Select` (no calls/indexing).
+                if !select.test {
+                    if let Some(qualified) = flatten_select_to_name(expr) {
+                        if let Some(v) = ctx.get_variable(&qualified) {
+                            return Ok(v);
+                        }
+                    }
+                }
                 let left = Value::resolve_val(select.operand.deref(), ctx)?;
                 match left.get_type() {
                     MAP_TYPE => {

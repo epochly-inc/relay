@@ -34,9 +34,12 @@
 // Relay-specific behavior authored ONCE here (so it is byte-identical by
 // construction across hosts): the proto/struct profile fence (G1), the
 // conformance shims (G2 dyn, G9/G14 double/timestamp formatting, G11 code-point
-// size, G12 idempotent conversions), and the structured error envelope. The
-// HARD semantic gaps (G3 type-value model, G4 macros2, G6 cross-numeric
-// equality) are deferred to the vendored fork -- see HARDENING.md.
+// size, G12 idempotent conversions, G3 type()/type identifiers on top of the
+// fork's Value::Type), and the structured error envelope. The engine-internal
+// halves of the HARD semantic gaps live in the vendored fork (G6 cross-numeric
+// equality, G3 the Value::Type model + qualified-name resolution); the
+// remaining HARD gaps (G4 macros2, G5/G7/G8 lexer) are still fork work -- see
+// HARDENING.md.
 
 use std::alloc::{alloc as sys_alloc, dealloc as sys_dealloc, Layout};
 use std::collections::HashMap;
@@ -265,7 +268,77 @@ fn relay_context<'a>() -> Context<'a> {
     ctx.add_function("int", relay_int);
     ctx.add_function("uint", relay_uint);
 
+    // G3: the CEL type-value model. cel 0.13 has no `type()` builtin and leaves
+    // the type identifiers (`int`, `uint`, ...) unbound, so `type(1)` was an
+    // UndeclaredReference. The fork added a first-class `Value::Type` (see
+    // vendor/cel objects.rs / common/types/type_value.rs `Relay fork (G3)`);
+    // here we register `type(x)` and bind the type identifiers as type values.
+    //
+    // `type(x)` returns the runtime type of x as a type value (e.g.
+    // `Value::Type("int")`). The type of a type value is the meta-type `type`,
+    // so `type(type(1))` is `Value::Type("type")`. The names are the cel-go
+    // canonical runtime type names (the oracle uses `ref.Val.TypeName()`).
+    ctx.add_function("type", relay_type);
+
+    // Bind the ten simple type identifiers + the two proto-qualified
+    // duration/timestamp type names so that a bare type denotation (`int`,
+    // `null_type`, ..., `google.protobuf.Timestamp`) resolves to its type value.
+    // The dotted names resolve via the fork's qualified-name lookup in
+    // Expr::Select (`Relay fork (G3)`).
+    for name in [
+        "int",
+        "uint",
+        "double",
+        "bool",
+        "string",
+        "bytes",
+        "list",
+        "map",
+        "null_type",
+        "type",
+        "google.protobuf.Timestamp",
+        "google.protobuf.Duration",
+    ] {
+        ctx.add_variable_from_value(name.to_string(), Value::Type(Arc::from(name)));
+    }
+
     ctx
+}
+
+/// G3: the canonical cel-go runtime type NAME of a CEL value, used by `type(x)`.
+/// These match the oracle's `ref.Val.TypeName()`: the scalar names plus the
+/// proto-qualified `google.protobuf.{Timestamp,Duration}`, and `type` for the
+/// runtime type of a type value (the meta-type).
+fn type_name_of(v: &Value) -> &'static str {
+    match v {
+        Value::Int(_) => "int",
+        Value::UInt(_) => "uint",
+        Value::Float(_) => "double",
+        Value::Bool(_) => "bool",
+        Value::String(_) => "string",
+        Value::Bytes(_) => "bytes",
+        Value::List(_) => "list",
+        Value::Map(_) => "map",
+        Value::Null => "null_type",
+        #[cfg(feature = "chrono")]
+        Value::Duration(_) => "google.protobuf.Duration",
+        #[cfg(feature = "chrono")]
+        Value::Timestamp(_) => "google.protobuf.Timestamp",
+        // The runtime type of a type value is the meta-type `type`.
+        Value::Type(_) => "type",
+        // A function reference / opaque value has no CEL type in the Relay
+        // profile surface; report its structural kind for diagnostics. These
+        // are not reachable from the conformance corpus.
+        Value::Function(_, _) => "function",
+        Value::Opaque(_) => "opaque",
+    }
+}
+
+/// G3: `type(x)` -> the type value of x's runtime type. Uses `This<Value>` so it
+/// works as a function (`type(1)`); CEL's `type` is function-only (not a method),
+/// but This covers both dispatch forms uniformly with the other shims.
+fn relay_type(This(this): This<Value>) -> Result<Value, ExecutionError> {
+    Ok(Value::Type(Arc::from(type_name_of(&this))))
 }
 
 /// G10 + G13: int() conversion with the cel-spec range/exactness rule for the
@@ -677,6 +750,10 @@ fn value_to_typed(v: &Value) -> J {
             // Z-suffixed UTC form to match cel-go's Format("...Z07:00").
             json!({"t":"timestamp","v": rfc3339_utc_z(t)})
         }
+        // G3: a type value. The "v" is the canonical cel-go runtime type name
+        // (`int`, `google.protobuf.Timestamp`, `type`, ...). This is the
+        // ground-truth form the oracle emits for `*types.Type` (TypeName()).
+        Value::Type(name) => json!({"t":"type","v": (**name).to_string()}),
         other => json!({"t":"unknown","v": format!("{other:?}")}),
     }
 }
@@ -750,6 +827,14 @@ fn typed_to_value(j: &J) -> Result<Value, String> {
             Ok(Value::Bool(b))
         }
         "null" => Ok(Value::Null),
+        // G3: a type value binding. The "v" is the canonical type name.
+        "type" => {
+            let s = obj
+                .get("v")
+                .and_then(|v| v.as_str())
+                .ok_or("type needs string v")?;
+            Ok(Value::Type(Arc::from(s)))
+        }
         "bytes" => {
             let s = obj
                 .get("v")

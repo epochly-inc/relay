@@ -19,7 +19,7 @@ shim made the cross-numeric forms visible).
 |-----|------|--------------|-----------|-------|
 | **G1** | proto/message construction PANICS (wasm trap) | HARD (P0 safety) | **DONE (fenced)** | `find_profile_rejection` walks the AST and rejects `Expr::Struct`, map `StructField`, and `Unspecified` with a clean `RELAY-CEL-002` BEFORE `execute()` reaches `objects.rs` `todo!()`/`panic!`. 185 cases now error cleanly; **0 engine panics**. The Relay profile excludes proto messages, so producing a value is NOT the goal -- the goal is no-panic, which is met. |
 | **G2** | missing `dyn()` builtin | EASY | **DONE** | `dyn(x) = x` registered as a custom identity function. Unblocked the dyn-gated comparisons. The cross-numeric equality these forms exercise underneath is G6. |
-| **G3** | missing `type()` + type denotations | EASY-MED / HARD | **NEEDS-FORK** | cel 0.13 `Value` has no `Type` variant; `type(1)` must return a first-class type value (`{"t":"type","v":"int"}`). A custom function cannot synthesize a type value the engine + serializer agree on. 85 `missing_builtin_or_function` failures are mostly `type(...)`. Needs the fork's type-value model. |
+| **G3** | missing `type()` + type denotations | EASY-MED / HARD | **DONE (fork increment 2)** | cel 0.13 `Value` had no `Type` variant; `type(1)` was `UndeclaredReference`. FIXED in the vendored fork: added `Value::Type(Arc<str>)` (`vendor/cel/src/objects.rs`) carrying the canonical cel-go runtime type NAME, a `dyn Val` type-value (`vendor/cel/src/common/types/type_value.rs` `CelTypeValue`, `get_type()==TYPE_TYPE`, name-based `equals`), both `Value`<->`dyn Val` conversion legs, name-based `PartialEq`, and qualified-name resolution in `Expr::Select` (so `google.protobuf.Timestamp` resolves). The wrapper (`crate/src/lib.rs`) registers `type(x)` (returns the type value of x's runtime type) and binds the ten type identifiers + `google.protobuf.{Timestamp,Duration}` as type values; `value_to_typed`/`typed_to_value` emit/accept `{"t":"type","v":"<name>"}`. All `Relay fork (G3)`. Verified vs the cel-go oracle: the 33 failing `type(...)`/denotation cases (30 `conversions`, 4 `timestamps`, incl. `type(type(1))==type`, `type(7)==type(7u)`->false, monomorphic list/map, dotted proto names) all pass with ZERO non-G3 regressions; `conversions` 67->96, `timestamps` 58->62. Conformance 71.9/83.5 -> 74.4/86.3; byte-parity held (1449). `tests/test_g3_type_values.py` (58 cases). |
 | **G4** | macros2 two-variable comprehensions | HARD | **NEEDS-FORK** | `exists(i,v,..)`, `all(i,v,..)`, `existsOne(i,v,..)`, `transformList`, `transformMap`. New macro lowering in the parser/comprehension engine. 38 `macros2` cases. |
 | **G5** | parser gaps (negative hex, etc.) | MED | **WRAPPER-TODO / NEEDS-FORK** | e.g. `-0x55555555` -> `invalid int literal`. The unary-minus-over-hex fold is a lexer/parser fix (NEEDS-FORK if it lives in cel's antlr grammar). A pre-normalization pass in the wrapper could handle some forms but is fragile -- prefer the fork. 47 `parse_compile_failure`. Also surfaced: `--------------------------------19` folds to `-19` instead of `19` (repeated-unary-minus parity bug) -- fork. |
 | **G6** | no cross-numeric equality / mixed-type number comparison | MED-HARD | **DONE (fork increment 1)** | `1.0 == 1` -> now `true`. FIXED in the vendored fork: `Val::equals` for `int`/`uint`/`double` (`vendor/cel/src/common/types/{int,double,uint}.rs`, marked `Relay fork (G6)`) delegated to a same-type-only downcast; now delegates to the already-cross-numeric `Comparer::compare` (equal iff `Ordering::Equal`; non-numeric rhs / NaN -> false). Verified vs cel-go oracle + a 216-cell cross-numeric matrix + `tests/test_g6_cross_numeric.py` (30 cases incl. the int/uint boundary + NaN). Conformance 69.8/81.1 -> 71.9/83.5; byte-parity held. |
@@ -46,20 +46,35 @@ DONE (WS2 wrapper conformance pass 2): **G10** (int/uint exact-range errors),
 (896/1105)**: `conversions` 64 -> 67 (+3), `timestamps` 57 -> 58 (+1), net +4
 with **zero per-file regressions**.
 
-Both passes hold the keystone invariants: **0 engine panics** and byte-parity
+DONE (fork increment 1): **G6** cross-numeric equality (the equality core).
+Moved **69.8% / 81.1%** -> **71.9% raw (948/1319) / 83.5% ex-proto (923/1105)**.
+
+DONE (fork increment 2): **G3** the CEL type-value model (`Value::Type` +
+`type()` + type identifiers + qualified-name resolution). Moved
+**71.9% / 83.5%** -> **74.4% raw (981/1319) / 86.3% ex-proto (954/1105)**:
+`conversions` 67 -> 96 (+29), `timestamps` 58 -> 62 (+4), net +33 with **zero
+non-G3 regressions** (verified: non-G3 passing count unchanged at 947).
+
+All passes hold the keystone invariants: **0 engine panics** and byte-parity
 (`diff` exit 0 across Python/Node, 1449 records).
 
 ## Deferred to the fork (`cel-rust-relay`), in rough priority
 
-1. **G6** cross-numeric equality (load-bearing for Relay; the equality core).
-2. **G3** the type-value model (unblocks the `type()` mass, ~85 cases).
-3. **G4** macros2 two-variable comprehensions (38 cases).
-4. **G7 / G8 / G5** lexer/parser: triple-quote literals, escape set,
+DONE in the fork: **G6** cross-numeric equality (increment 1), **G3** the
+type-value model (increment 2 -- `Value::Type` + `type()` + type identifiers +
+qualified-name resolution).
+
+Remaining:
+
+1. **G4** macros2 two-variable comprehensions (38 cases).
+2. **G7 / G8 / G5** lexer/parser: triple-quote literals, escape set,
    negative-hex + repeated-unary-minus folding.
-5. **G15** comprehension error short-circuit ordering.
-6. **G16** container resolution + **G13** timestamp/duration BINARY arithmetic
+3. **G15** comprehension error short-circuit ordering.
+4. **G16** container resolution + **G13** timestamp/duration BINARY arithmetic
    (`duration + timestamp`) -- the cel arithmetic core. (The `int(timestamp)`
-   half of G13 is DONE in the wrapper.)
+   half of G13 is DONE in the wrapper. The G3 qualified-name lookup resolves
+   dotted TYPE denotations but not general container-relative bindings -- G16
+   stays open.)
 
 ## Wrapper-feasible TODO (could land before the fork, without cel internals)
 

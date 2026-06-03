@@ -37,5 +37,22 @@ the WS2 shims were built against.
   cel-go's comparison semantics; verified against the cel-spec corpus + cel-go
   oracle. Search the files for `Relay fork (G6)`.
 
+- **G3 type-value model** (`src/objects.rs`, `src/common/types/type_value.rs`,
+  `src/common/types/mod.rs`): cel 0.13's runtime `Value` enum had no value that
+  *is* a CEL type, so `type(1)` was an `UndeclaredReference` and the type
+  identifiers (`int`, `uint`, ...) were unbound. Added:
+  (1) `Value::Type(Arc<str>)` carrying the canonical cel-go runtime type NAME;
+  (2) `CelTypeValue` -- the `dyn Val` type-value (`get_type()` is `TYPE_TYPE`,
+  so the runtime type of a type value is the meta-type `type`; `equals` compares
+  by name); (3) both `Value`<->`Box<dyn Val>` conversion legs for `TYPE_TYPE`;
+  (4) a name-based `PartialEq` arm for `Value::Type`; (5) `Value::Type` arms in
+  `type_of`/`Debug`/`ValueType`; (6) qualified-name resolution in `Expr::Select`
+  (`flatten_select_to_name`) so a dotted reference like
+  `google.protobuf.Timestamp` resolves to a bound type-value before field
+  selection. The `type()` builtin + type-identifier bindings live in the wrapper
+  (`crate/src/lib.rs`). Verified against the cel-spec corpus + cel-go oracle
+  (33 type/denotation cases, zero non-G3 regressions, byte-parity held). Search
+  the files for `Relay fork (G3)`.
+
 Policy: keep Relay modifications minimal, clearly marked (`Relay fork (Gn)`
 comments), and upstreamed where the fix is not Relay-opinionated.

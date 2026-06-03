@@ -14,6 +14,8 @@ mod optional;
 mod string;
 #[cfg(feature = "chrono")]
 mod timestamp;
+// Relay fork (G3): first-class CEL type values in the `dyn Val` world.
+mod type_value;
 mod uint;
 
 use crate::common::value::Val;
@@ -31,6 +33,8 @@ pub use optional::Optional as CelOptional;
 pub use string::String as CelString;
 #[cfg(feature = "chrono")]
 pub use timestamp::Timestamp as CelTimestamp;
+// Relay fork (G3): the runtime type-value `Val` implementor.
+pub use type_value::TypeValue as CelTypeValue;
 pub use uint::UInt as CelUInt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
