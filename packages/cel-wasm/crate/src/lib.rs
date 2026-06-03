@@ -257,7 +257,102 @@ fn relay_context<'a>() -> Context<'a> {
         ctx.add_function("timestamp", relay_timestamp);
     }
 
+    // G10 + G13: re-register int()/uint() so a DOUBLE argument is range-checked
+    // with the cel-spec's exact-representability rule (cel 0.13 only bounds-
+    // checks against i64/u64 MIN/MAX, which clamps 2**63 / 2**64 instead of
+    // erroring), and so int() also accepts a timestamp argument (epoch seconds).
+    // All non-double / non-timestamp arms preserve the stock cel 0.13 behavior.
+    ctx.add_function("int", relay_int);
+    ctx.add_function("uint", relay_uint);
+
     ctx
+}
+
+/// G10 + G13: int() conversion with the cel-spec range/exactness rule for the
+/// double case and the G13 timestamp -> epoch-seconds overload.
+///
+/// cel-spec / cel-go (common/types/overflow.go doubleToInt64Checked) errors when
+/// the double is NaN/Inf or `v <= float64(i64::MIN)` or `v >= float64(i64::MAX)`.
+/// `i64::MAX as f64` rounds UP to 2**63 and `i64::MIN as f64` is exactly -2**63,
+/// so this single comparison reproduces the not-exactly-representable boundary:
+/// `int(9223372036854775807.0)` (the f64 is 2**63) and `int(-9223372036854775808.0)`
+/// (the f64 is -2**63) both error, while `int(double(2**55))` stays in range.
+///
+/// All other argument types fall through to the stock cel 0.13 semantics:
+///   - string  -> parse as i64 (string parse error on failure)
+///   - int     -> identity
+///   - uint    -> checked into i64 (integer overflow on out-of-range)
+fn relay_int(This(this): This<Value>) -> Result<Value, ExecutionError> {
+    match this {
+        Value::Float(v) => {
+            // cel-go: v <= float64(MinInt64) || v >= float64(MaxInt64) || NaN/Inf.
+            if v.is_nan()
+                || v.is_infinite()
+                || v <= i64::MIN as f64
+                || v >= i64::MAX as f64
+            {
+                return Err(ExecutionError::function_error(
+                    "int",
+                    format!("range: double {v} is outside the int64 range"),
+                ));
+            }
+            // Truncate toward zero (the C-style `as i64` cast on a finite,
+            // in-range f64 truncates toward zero, matching int(v) semantics).
+            Ok(Value::Int(v as i64))
+        }
+        #[cfg(feature = "chrono")]
+        Value::Timestamp(t) => {
+            // G13: int(timestamp) -> Unix epoch SECONDS as an int.
+            Ok(Value::Int(t.timestamp()))
+        }
+        Value::String(s) => s
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|e| ExecutionError::function_error("int", format!("string parse error: {e}"))),
+        Value::Int(v) => Ok(Value::Int(v)),
+        Value::UInt(v) => i64::try_from(v)
+            .map(Value::Int)
+            .map_err(|_| ExecutionError::function_error("int", "integer overflow")),
+        other => Err(ExecutionError::function_error(
+            "int",
+            format!("cannot convert {other:?} to int"),
+        )),
+    }
+}
+
+/// G10: uint() conversion with the cel-spec range/exactness rule for the double
+/// case. cel-spec / cel-go (doubleToUint64Checked) errors when the double is
+/// NaN/Inf or `v < 0` or `v >= 2**64`. `u64::MAX as f64` rounds UP to 2**64, so
+/// the comparison `v >= u64::MAX as f64` reproduces the `>= 2**64` boundary
+/// (`int(18446744073709551615.0)` / a uint of 2**64 errors). All other argument
+/// types fall through to the stock cel 0.13 semantics.
+fn relay_uint(This(this): This<Value>) -> Result<Value, ExecutionError> {
+    match this {
+        Value::Float(v) => {
+            // cel-go: v < 0 || v >= 2**64 || NaN/Inf. (u64::MAX as f64 == 2**64.)
+            if v.is_nan() || v.is_infinite() || v < 0.0 || v >= u64::MAX as f64 {
+                return Err(ExecutionError::function_error(
+                    "uint",
+                    format!("range: double {v} is outside the uint64 range"),
+                ));
+            }
+            Ok(Value::UInt(v as u64))
+        }
+        Value::String(s) => s
+            .parse::<u64>()
+            .map(Value::UInt)
+            .map_err(|e| {
+                ExecutionError::function_error("uint", format!("string parse error: {e}"))
+            }),
+        Value::Int(v) => u64::try_from(v)
+            .map(Value::UInt)
+            .map_err(|_| ExecutionError::function_error("uint", "unsigned integer overflow")),
+        Value::UInt(v) => Ok(Value::UInt(v)),
+        other => Err(ExecutionError::function_error(
+            "uint",
+            format!("cannot convert {other:?} to uint"),
+        )),
+    }
 }
 
 /// G11 size(): code points for strings, element/byte counts otherwise.
