@@ -1,11 +1,23 @@
 use crate::common::traits::{Adder, Container, Indexer, Iterable};
-use crate::common::types::{CelInt, CelUInt, Type};
+use crate::common::types::{CelDouble, CelInt, CelUInt, Type};
 use crate::common::value::Val;
 use crate::common::{traits, types};
 use crate::ExecutionError;
 use std::any::Any;
 use std::borrow::Cow;
 use std::ops::Deref;
+
+// Relay fork (lists): cel-go list indexing accepts a DOUBLE index when it is a
+// whole number (e.g. `[7,8,9][dyn(0.0)]` -> 7). A non-integral double (0.5) is
+// an error. This helper converts a double index to i64 or returns None if it is
+// NaN/Inf/non-integral.
+fn double_index_to_i64(d: f64) -> Option<i64> {
+    if d.is_finite() && d.fract() == 0.0 {
+        Some(d as i64)
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct DefaultList(Vec<Box<dyn Val>>);
@@ -124,6 +136,24 @@ impl Indexer for DefaultList {
                         .as_ref(),
                 ))
             }
+            // Relay fork (lists): an integral DOUBLE index is valid in cel-go
+            // (`[7,8,9][dyn(0.0)]` -> 7). A non-integral double errors.
+            types::DOUBLE_TYPE => {
+                let d: f64 = *idx
+                    .downcast_ref::<CelDouble>()
+                    .ok_or(ExecutionError::NoSuchOverload)?
+                    .inner();
+                let idx = double_index_to_i64(d).ok_or(ExecutionError::UnexpectedType {
+                    got: "double".to_string(),
+                    want: "int|uint".to_string(),
+                })?;
+                Ok(Cow::Borrowed(
+                    self.0
+                        .get(idx as usize)
+                        .ok_or_else(|| ExecutionError::IndexOutOfBounds(idx.into()))?
+                        .as_ref(),
+                ))
+            }
             _ => Err(ExecutionError::UnexpectedType {
                 got: idx.get_type().runtime_type_name.to_string(),
                 want: format!(
@@ -154,6 +184,22 @@ impl Indexer for DefaultList {
                     .ok_or(ExecutionError::NoSuchOverload)?
                     .inner();
                 if idx as usize >= list.0.len() {
+                    return Err(ExecutionError::IndexOutOfBounds(idx.into()));
+                }
+                Ok(list.0.remove(idx as usize))
+            }
+            // Relay fork (lists): an integral DOUBLE index is valid (the
+            // owned/literal-list path, e.g. `[7,8,9][dyn(0.0)]`).
+            types::DOUBLE_TYPE => {
+                let d: f64 = *idx
+                    .downcast_ref::<CelDouble>()
+                    .ok_or(ExecutionError::NoSuchOverload)?
+                    .inner();
+                let idx = double_index_to_i64(d).ok_or(ExecutionError::UnexpectedType {
+                    got: "double".to_string(),
+                    want: "int|uint".to_string(),
+                })?;
+                if idx < 0 || idx as usize >= list.0.len() {
                     return Err(ExecutionError::IndexOutOfBounds(idx.into()));
                 }
                 Ok(list.0.remove(idx as usize))

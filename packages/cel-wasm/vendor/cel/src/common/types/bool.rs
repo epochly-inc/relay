@@ -1,4 +1,4 @@
-use crate::common::traits::{Comparer, Negator};
+use crate::common::traits::Comparer;
 use crate::common::types::Type;
 use crate::common::value::Val;
 use crate::ExecutionError;
@@ -38,9 +38,12 @@ impl Val for Bool {
         Some(self)
     }
 
-    fn as_negator(&self) -> Option<&dyn Negator> {
-        Some(self)
-    }
+    // Relay fork (G16/integer_math): cel-go has NO unary-minus overload on
+    // bool. `-false` is a type error (NoSuchOverload), not logical negation.
+    // We therefore do NOT expose a Negator here (the inherent Bool::negate used
+    // by the LOGICAL_NOT `!` operator is unaffected). The previous as_negator
+    // made `-false` evaluate to `true`, diverging from the cel-spec
+    // (integer_math.textproto unary_minus_not_bool expects an error).
 
     fn equals(&self, other: &dyn Val) -> bool {
         other.downcast_ref::<Self>().is_some_and(|a| self.0 == a.0)
@@ -58,12 +61,6 @@ impl Comparer for Bool {
         } else {
             Err(ExecutionError::NoSuchOverload)
         }
-    }
-}
-
-impl Negator for Bool {
-    fn negate(&self) -> Result<Box<dyn Val>, ExecutionError> {
-        Ok(Box::new(self.negate()))
     }
 }
 

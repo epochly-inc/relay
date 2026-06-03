@@ -5,7 +5,7 @@ use crate::common::value::Val;
 use crate::ExecutionError;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::ops::{Deref, Neg};
+use std::ops::Deref;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub struct Int(i64);
@@ -166,7 +166,15 @@ impl traits::Multiplier for Int {
 
 impl Negator for Int {
     fn negate(&self) -> Result<Box<dyn Val>, ExecutionError> {
-        Ok(Box::new(Self::from(self.0.neg())))
+        // Relay fork (integer_math): negating i64::MIN overflows i64 (there is
+        // no +2**63). cel-go errors on this (integer_math.textproto
+        // int64_min_negate, `-(-9223372036854775808)` -> error). Use
+        // checked_neg so the overflow surfaces instead of wrapping back to MIN.
+        let negated = self
+            .0
+            .checked_neg()
+            .ok_or_else(|| ExecutionError::Overflow("negate", self.0.into(), 0i64.into()))?;
+        Ok(Box::new(Self::from(negated)))
     }
 }
 
