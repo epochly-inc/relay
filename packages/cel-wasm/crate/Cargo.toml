@@ -1,0 +1,46 @@
+[package]
+name = "relay-cel-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Relay single-engine CEL evaluator compiled to wasm32-unknown-unknown (reactor). Byte-identical across Python (wasmtime) and the TS/edge runtime by construction."
+license = "Apache-2.0"
+publish = false
+
+[lib]
+# A reactor module: no main, no WASI. We export a thin alloc/eval/dealloc
+# linear-memory marshaling surface and let each host hand-write the glue.
+crate-type = ["cdylib"]
+
+[features]
+default = ["chrono"]
+# Forward our chrono feature to cel so Value::Duration / Value::Timestamp
+# match arms (which are themselves cfg(feature="chrono") in cel) are reachable
+# and we emit typed duration/timestamp output instead of "unknown".
+chrono = ["cel/chrono"]
+
+[dependencies]
+# WS2 wraps cel 0.13 directly. A vendored FORK (cel-rust-relay) lands in a
+# later increment for the HARD semantic gaps (see HARDENING.md): cross-numeric
+# equality (G6), macros2 two-var comprehensions (G4), the type-value model (G3).
+cel = { version = "0.13", default-features = true }
+serde_json = "1"
+# default-features=false drops chrono's "wasmbind" feature. wasmbind injects
+# js-sys / wasm-bindgen JS imports (Date.now etc.) that BREAK the no-WASI
+# reactor: the host environments instantiate with NO imports, so any injected
+# import is an unresolved-import instantiation failure. This is load-bearing --
+# do not re-enable default features on chrono. We only need Duration arithmetic.
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+
+# Reproducible-build release profile (ADR WS3 direction; carried from WS1 spike).
+# A signed, transparency-logged wasm is an evidence dependency, so the build must
+# be deterministic. codegen-units=1 + lto removes parallel-codegen nondeterminism;
+# panic="abort" keeps the reactor small and turns Rust panics into clean wasm
+# traps (which the host catches and re-instantiates); strip drops symbol-table
+# nondeterminism. WS3 adds trim-paths/SOURCE_DATE_EPOCH/pinned container + a
+# cmp-rebuild CI gate on top of this.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

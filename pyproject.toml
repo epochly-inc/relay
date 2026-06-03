@@ -123,6 +123,7 @@ testpaths = [
   "packages/verifier/tests",
   "packages/acef/tests",
   "packages/replay-sandbox-protocol/tests",
+  "packages/cel-wasm/tests",
   "apps/local-sidecar/tests",
   "apps/replay-proxy/tests",
 ]

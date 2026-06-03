@@ -1,0 +1,64 @@
+# relay-cel-wasm convenience targets. The real pipeline lives in
+# conformance/build.sh; this is a thin wrapper for common flows.
+#
+# Usage (from packages/cel-wasm/):
+#   make build         # cargo build the wasm (release, wasm32-unknown-unknown)
+#   make conformance   # build + oracle + run -> summary.json
+#   make parity        # cross-host byte-parity (Python vs Node), diff exit 0
+#   make test          # tier-1 pytest over the wasm
+#   make all           # build + conformance + parity + test
+#   make ascii-lint    # check source/CLI-output paths are ASCII-only
+#   make clean         # remove build + harness artifacts
+
+SHELL := /bin/bash
+PKG   := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+CRATE := $(PKG)/crate
+CONF  := $(PKG)/conformance
+WASM  := $(CRATE)/target/wasm32-unknown-unknown/release/relay_cel_wasm.wasm
+
+REPO_ROOT := $(abspath $(PKG)/../..)
+PYTHON    ?= $(if $(wildcard $(REPO_ROOT)/.venv/bin/python),$(REPO_ROOT)/.venv/bin/python,python3)
+
+.PHONY: build conformance parity test all ascii-lint clean
+
+build:
+	cd $(CRATE) && cargo build --release --target wasm32-unknown-unknown
+	@ls -la $(WASM)
+
+conformance: build
+	bash $(CONF)/build.sh oracle
+	bash $(CONF)/build.sh run
+
+parity: build
+	bash $(CONF)/build.sh parity
+
+test: build
+	$(PYTHON) -m pytest $(PKG)/tests -v
+
+all: build conformance parity test
+
+# ASCII-only guard for source + CLI-output paths (CLAUDE.md directive 3).
+# Markdown docs may use unicode; the crate src, harness, loaders, and shell
+# scripts may not (their output is consumed by CI/auditors/verifiers).
+ascii-lint:
+	@bad=$$(LC_ALL=C grep -rlP '[^\x00-\x7F]' \
+		$(CRATE)/src \
+		$(CONF)/oracle/main.go \
+		$(CONF)/build.sh \
+		2>/dev/null || true); \
+	if [ -n "$$bad" ]; then \
+		echo "[ascii-lint] FAIL: non-ASCII bytes in source/CLI-output files:"; \
+		echo "$$bad"; \
+		exit 1; \
+	else \
+		echo "[ascii-lint] PASS: source + CLI-output paths are ASCII-only"; \
+	fi
+
+clean:
+	cd $(CRATE) && cargo clean
+	rm -f $(CONF)/harness/oracle_records.jsonl \
+	      $(CONF)/harness/results.jsonl \
+	      $(CONF)/harness/summary.json \
+	      $(CONF)/harness/py_dump.txt \
+	      $(CONF)/harness/js_dump.txt \
+	      $(CONF)/oracle/celoracle
