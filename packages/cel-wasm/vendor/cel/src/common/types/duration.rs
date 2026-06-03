@@ -1,5 +1,5 @@
 use crate::common::traits::{Adder, Comparer, Subtractor};
-use crate::common::types::Type;
+use crate::common::types::{CelTimestamp, Type};
 use crate::common::value::Val;
 use crate::{ExecutionError, Value};
 use std::borrow::Cow;
@@ -63,6 +63,14 @@ impl Adder for Duration {
                     .checked_add(&rhs.0)
                     .ok_or_else(|| ExecutionError::Overflow("add", Value::Null, Value::Null))?,
             ))))
+        } else if let Some(rhs) = rhs.downcast_ref::<CelTimestamp>() {
+            // Relay fork (G13): duration + timestamp -> timestamp, the
+            // commutative sibling of timestamp + duration. Delegates to the
+            // timestamp's shared range-checked add so both directions produce
+            // identical results AND the same cel-spec overflow behavior.
+            let lhs_for_err = (self as &dyn Val).try_into().unwrap_or(Value::Null);
+            let result = rhs.checked_add_duration(self.0, lhs_for_err)?;
+            Ok(Cow::<dyn Val>::Owned(Box::new(result)))
         } else {
             Err(crate::ExecutionError::UnsupportedBinaryOperator(
                 "add",

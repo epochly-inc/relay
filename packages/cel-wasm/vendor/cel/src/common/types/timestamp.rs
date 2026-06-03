@@ -19,6 +19,28 @@ impl Timestamp {
     pub fn inner(&self) -> &chrono::DateTime<chrono::FixedOffset> {
         &self.0
     }
+
+    /// Relay fork (G13): add a chrono::Duration to this timestamp with the
+    /// cel-spec timestamp-range overflow check (result must stay within
+    /// `[0001-01-01T00:00:00Z, 9999-12-31T23:59:59.999999999Z]`). Shared by
+    /// `timestamp + duration` (Timestamp::add) and the commutative
+    /// `duration + timestamp` (Duration::add). Returns the checked timestamp or
+    /// an `Overflow` error carrying the two operand values.
+    pub(crate) fn checked_add_duration(
+        &self,
+        rhs: chrono::Duration,
+        rhs_for_err: Value,
+    ) -> Result<Self, ExecutionError> {
+        let result = self.0.add(rhs);
+        if result > *MAX_TIMESTAMP || result < *MIN_TIMESTAMP {
+            return Err(ExecutionError::Overflow(
+                "add",
+                (self as &dyn Val).try_into().unwrap_or(Value::Null),
+                rhs_for_err,
+            ));
+        }
+        Ok(Self(result))
+    }
 }
 
 impl Val for Timestamp {
@@ -78,15 +100,11 @@ static MIN_TIMESTAMP: LazyLock<chrono::DateTime<chrono::FixedOffset>> = LazyLock
 impl Adder for Timestamp {
     fn add<'a>(&'a self, rhs: &dyn Val) -> Result<Cow<'a, dyn Val>, ExecutionError> {
         if let Some(rhs) = rhs.downcast_ref::<CelDuration>() {
-            let result = self.0.add(*rhs.inner());
-            if result > *MAX_TIMESTAMP || result < *MIN_TIMESTAMP {
-                return Err(ExecutionError::Overflow(
-                    "add",
-                    (self as &dyn Val).try_into().unwrap_or(Value::Null),
-                    (rhs as &dyn Val).try_into().unwrap_or(Value::Null),
-                ));
-            }
-            Ok(Cow::<dyn Val>::Owned(Box::new(Self(result))))
+            // Relay fork (G13): delegate to the shared range-checked add so the
+            // `timestamp + duration` and `duration + timestamp` directions agree.
+            let rhs_for_err = (rhs as &dyn Val).try_into().unwrap_or(Value::Null);
+            let result = self.checked_add_duration(*rhs.inner(), rhs_for_err)?;
+            Ok(Cow::<dyn Val>::Owned(Box::new(result)))
         } else {
             Err(ExecutionError::UnsupportedBinaryOperator(
                 "add",
@@ -120,9 +138,21 @@ impl Subtractor for Timestamp {
             }
             Ok(Cow::<dyn Val>::Owned(Box::new(Self(result))))
         } else if let Some(rhs) = rhs.downcast_ref::<Self>() {
-            Ok(Cow::<dyn Val>::Owned(Box::new(CelDuration::from(
-                self.0.signed_duration_since(rhs.inner()),
-            ))))
+            // Relay fork (G13): timestamp - timestamp -> duration, but the
+            // resulting duration must fit in the cel-spec duration range
+            // (int64 nanoseconds, ~292 years). chrono::Duration can HOLD a
+            // wider second-count, so we explicitly reject any span whose total
+            // nanoseconds overflow i64 (num_nanoseconds() == None), matching
+            // cel-go's checked subtraction. A 10000-year span overflows.
+            let diff = self.0.signed_duration_since(rhs.inner());
+            if diff.num_nanoseconds().is_none() {
+                return Err(ExecutionError::Overflow(
+                    "sub",
+                    (self as &dyn Val).try_into().unwrap_or(Value::Null),
+                    (rhs as &dyn Val).try_into().unwrap_or(Value::Null),
+                ));
+            }
+            Ok(Cow::<dyn Val>::Owned(Box::new(CelDuration::from(diff))))
         } else {
             Err(ExecutionError::UnsupportedBinaryOperator(
                 "sub",

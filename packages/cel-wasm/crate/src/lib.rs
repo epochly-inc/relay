@@ -643,14 +643,37 @@ fn parse_duration_nanos(s: &str) -> Option<i64> {
     Some(signed as i64)
 }
 
-/// Parse an RFC3339 timestamp string into Value::Timestamp.
+/// Parse an RFC3339 timestamp string into Value::Timestamp, enforcing the
+/// cel-spec timestamp range `[0001-01-01T00:00:00Z,
+/// 9999-12-31T23:59:59.999999999Z]`. A year-0 (or otherwise out-of-range)
+/// timestamp string parses fine in chrono but is NOT a valid CEL timestamp;
+/// cel-go errors on it (timestamps.textproto from_string_under). We reject it
+/// here so `timestamp('0000-01-01T00:00:00Z')` is an error, not a value.
 #[cfg(feature = "chrono")]
 fn parse_timestamp_string(s: &str) -> Result<Value, cel::ExecutionError> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .map(Value::Timestamp)
-        .map_err(|e| {
-            cel::ExecutionError::function_error("timestamp", format!("invalid timestamp '{s}': {e}"))
-        })
+    let dt = chrono::DateTime::parse_from_rfc3339(s).map_err(|e| {
+        cel::ExecutionError::function_error("timestamp", format!("invalid timestamp '{s}': {e}"))
+    })?;
+    check_timestamp_range(dt, s)
+}
+
+/// cel-spec timestamp bounds: year 1 .. year 9999 inclusive (UTC). Returns the
+/// timestamp value or a range error.
+#[cfg(feature = "chrono")]
+fn check_timestamp_range(
+    dt: chrono::DateTime<chrono::FixedOffset>,
+    s: &str,
+) -> Result<Value, cel::ExecutionError> {
+    use chrono::Datelike;
+    let utc = dt.with_timezone(&chrono::Utc);
+    let year = utc.year();
+    if !(1..=9999).contains(&year) {
+        return Err(cel::ExecutionError::function_error(
+            "timestamp",
+            format!("timestamp '{s}' is outside the valid CEL range [0001..9999]"),
+        ));
+    }
+    Ok(Value::Timestamp(dt))
 }
 
 // ---------------------------------------------------------------------------

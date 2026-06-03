@@ -32,7 +32,14 @@ repository = "https://github.com/cel-rust/cel-rust"
 
 [features]
 bytes = ["dep:bytes"]
-chrono = ["dep:chrono"]
+# Relay fork (G13): the chrono feature now also pulls chrono-tz so the
+# timezone-aware timestamp getters (getDate('Australia/Sydney') etc.) can
+# resolve IANA zone names. chrono-tz is a pure-data crate (compiled IANA
+# tables); it adds no JS/wasmbind imports, so the no-WASI reactor stays clean.
+chrono = [
+    "dep:chrono",
+    "dep:chrono-tz",
+]
 default = [
     "regex",
     "chrono",
@@ -73,6 +80,10 @@ features = [
 ]
 optional = true
 default-features = false
+
+[dependencies.chrono-tz]
+version = "0.10"
+optional = true
 
 [dependencies.lazy_static]
 version = "1.5.0"

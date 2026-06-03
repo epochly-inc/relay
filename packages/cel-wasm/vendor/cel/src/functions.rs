@@ -323,10 +323,82 @@ pub use time::timestamp;
 #[cfg(feature = "chrono")]
 pub mod time {
     use super::Result;
-    use crate::magic::This;
+    use crate::magic::{Arguments, This};
     use crate::{ExecutionError, Value};
     use chrono::{Datelike, Days, Months, Timelike};
     use std::sync::Arc;
+
+    /// Relay fork (G13): resolve the optional timezone argument of a timestamp
+    /// getter and shift the (UTC-anchored) instant into that zone, returning a
+    /// `DateTime<FixedOffset>` whose civil fields (year/month/day/hour/...) are
+    /// the local fields in that zone. With no argument the original instant is
+    /// returned unchanged (UTC fields).
+    ///
+    /// cel-go (common/types/timestamp.go) accepts the timezone as either:
+    ///   - an IANA zone name ("Australia/Sydney", "America/St_Johns"), or
+    ///   - a fixed UTC offset ("+11:00", "-02:30", "02:00", "07:00").
+    /// An unrecognized zone is a runtime error.
+    fn shift_to_zone(
+        dt: chrono::DateTime<chrono::FixedOffset>,
+        args: &[Value],
+        fname: &'static str,
+    ) -> Result<chrono::DateTime<chrono::FixedOffset>> {
+        let tz = match args.first() {
+            None => return Ok(dt),
+            Some(Value::String(s)) => s.clone(),
+            Some(_) => {
+                return Err(ExecutionError::function_error(
+                    fname,
+                    "timezone argument must be a string",
+                ))
+            }
+        };
+        let tz = tz.as_str();
+        // Fixed-offset form first: "+HH:MM", "-HH:MM", or "HH:MM" (== "+HH:MM").
+        if let Some(offset) = parse_fixed_offset(tz) {
+            return Ok(dt.with_timezone(&offset));
+        }
+        // IANA zone name via chrono-tz.
+        match tz.parse::<chrono_tz::Tz>() {
+            Ok(zone) => {
+                let zoned = dt.with_timezone(&zone);
+                // Re-fix the offset so the returned type stays FixedOffset and
+                // the civil fields read out in the target zone.
+                Ok(zoned.fixed_offset())
+            }
+            Err(_) => Err(ExecutionError::function_error(
+                fname,
+                format!("unknown timezone '{tz}'"),
+            )),
+        }
+    }
+
+    /// Parse a fixed UTC offset string ("+11:00", "-02:30", "02:00", "+0700",
+    /// "-08") into a chrono::FixedOffset. Returns None if `s` is not a fixed
+    /// offset (so the caller can fall back to IANA name resolution).
+    fn parse_fixed_offset(s: &str) -> Option<chrono::FixedOffset> {
+        let (sign, rest) = match s.as_bytes().first() {
+            Some(b'+') => (1i32, &s[1..]),
+            Some(b'-') => (-1i32, &s[1..]),
+            // A bare "HH:MM" (no sign) is a positive offset per cel-go.
+            Some(b'0'..=b'9') => (1i32, s),
+            _ => return None,
+        };
+        // Accept "HH:MM", "HH", or "HHMM".
+        let (h_str, m_str) = if let Some((h, m)) = rest.split_once(':') {
+            (h, m)
+        } else if rest.len() == 4 {
+            (&rest[..2], &rest[2..])
+        } else {
+            (rest, "0")
+        };
+        let hours: i32 = h_str.parse().ok()?;
+        let mins: i32 = m_str.parse().ok()?;
+        if !(0..=23).contains(&hours) || !(0..=59).contains(&mins) {
+            return None;
+        }
+        chrono::FixedOffset::east_opt(sign * (hours * 3600 + mins * 60))
+    }
 
     /// Duration parses the provided argument into a [`Value::Duration`] value.
     ///
@@ -369,50 +441,83 @@ pub mod time {
             .map_err(|e| ExecutionError::function_error("timestamp", e.to_string()))
     }
 
+    // Relay fork (G13): all timestamp getters now accept an OPTIONAL timezone
+    // string argument (via Arguments) and shift the instant into that zone
+    // before reading the civil field. With no argument the UTC fields are read
+    // (unchanged behavior). The This receiver is Value so the dual-purpose
+    // getters (getHours/getMinutes/getSeconds/getMilliseconds) can dispatch on
+    // timestamp-vs-duration; the timestamp-only getters require a Timestamp.
+
+    /// Extract the timestamp `DateTime<FixedOffset>` from a `This<Value>`
+    /// receiver, or error if the receiver is not a timestamp.
+    fn this_timestamp(
+        this: &Value,
+        fname: &'static str,
+    ) -> Result<chrono::DateTime<chrono::FixedOffset>> {
+        match this {
+            Value::Timestamp(ts) => Ok(*ts),
+            _ => Err(ExecutionError::function_error(fname, "expected timestamp")),
+        }
+    }
+
     pub fn timestamp_year(
-        This(this): This<chrono::DateTime<chrono::FixedOffset>>,
+        This(this): This<Value>,
+        Arguments(args): Arguments,
     ) -> Result<Value> {
-        Ok(this.year().into())
+        let dt = shift_to_zone(this_timestamp(&this, "getFullYear")?, &args, "getFullYear")?;
+        Ok(dt.year().into())
     }
 
     pub fn timestamp_month(
-        This(this): This<chrono::DateTime<chrono::FixedOffset>>,
+        This(this): This<Value>,
+        Arguments(args): Arguments,
     ) -> Result<Value> {
-        Ok((this.month0() as i32).into())
+        let dt = shift_to_zone(this_timestamp(&this, "getMonth")?, &args, "getMonth")?;
+        Ok((dt.month0() as i32).into())
     }
 
     pub fn timestamp_year_day(
-        This(this): This<chrono::DateTime<chrono::FixedOffset>>,
+        This(this): This<Value>,
+        Arguments(args): Arguments,
     ) -> Result<Value> {
-        let year = this
-            .checked_sub_days(Days::new(this.day0() as u64))
+        let dt = shift_to_zone(this_timestamp(&this, "getDayOfYear")?, &args, "getDayOfYear")?;
+        let year = dt
+            .checked_sub_days(Days::new(dt.day0() as u64))
             .unwrap()
-            .checked_sub_months(Months::new(this.month0()))
+            .checked_sub_months(Months::new(dt.month0()))
             .unwrap();
-        Ok(this.signed_duration_since(year).num_days().into())
+        Ok(dt.signed_duration_since(year).num_days().into())
     }
 
     pub fn timestamp_month_day(
-        This(this): This<chrono::DateTime<chrono::FixedOffset>>,
+        This(this): This<Value>,
+        Arguments(args): Arguments,
     ) -> Result<Value> {
-        Ok((this.day0() as i32).into())
+        let dt = shift_to_zone(this_timestamp(&this, "getDayOfMonth")?, &args, "getDayOfMonth")?;
+        Ok((dt.day0() as i32).into())
     }
 
     pub fn timestamp_date(
-        This(this): This<chrono::DateTime<chrono::FixedOffset>>,
+        This(this): This<Value>,
+        Arguments(args): Arguments,
     ) -> Result<Value> {
-        Ok((this.day() as i32).into())
+        let dt = shift_to_zone(this_timestamp(&this, "getDate")?, &args, "getDate")?;
+        Ok((dt.day() as i32).into())
     }
 
     pub fn timestamp_weekday(
-        This(this): This<chrono::DateTime<chrono::FixedOffset>>,
+        This(this): This<Value>,
+        Arguments(args): Arguments,
     ) -> Result<Value> {
-        Ok((this.weekday().num_days_from_sunday() as i32).into())
+        let dt = shift_to_zone(this_timestamp(&this, "getDayOfWeek")?, &args, "getDayOfWeek")?;
+        Ok((dt.weekday().num_days_from_sunday() as i32).into())
     }
 
-    pub fn get_hours(This(this): This<Value>) -> Result<Value> {
+    pub fn get_hours(This(this): This<Value>, Arguments(args): Arguments) -> Result<Value> {
         Ok(match this {
-            Value::Timestamp(ts) => (ts.hour() as i32).into(),
+            Value::Timestamp(ts) => {
+                (shift_to_zone(ts, &args, "getHours")?.hour() as i32).into()
+            }
             Value::Duration(d) => (d.num_hours() as i32).into(),
             _ => {
                 return Err(ExecutionError::function_error(
@@ -423,9 +528,11 @@ pub mod time {
         })
     }
 
-    pub fn get_minutes(This(this): This<Value>) -> Result<Value> {
+    pub fn get_minutes(This(this): This<Value>, Arguments(args): Arguments) -> Result<Value> {
         Ok(match this {
-            Value::Timestamp(ts) => (ts.minute() as i32).into(),
+            Value::Timestamp(ts) => {
+                (shift_to_zone(ts, &args, "getMinutes")?.minute() as i32).into()
+            }
             Value::Duration(d) => (d.num_minutes() as i32).into(),
             _ => {
                 return Err(ExecutionError::function_error(
@@ -436,9 +543,11 @@ pub mod time {
         })
     }
 
-    pub fn get_seconds(This(this): This<Value>) -> Result<Value> {
+    pub fn get_seconds(This(this): This<Value>, Arguments(args): Arguments) -> Result<Value> {
         Ok(match this {
-            Value::Timestamp(ts) => (ts.second() as i32).into(),
+            Value::Timestamp(ts) => {
+                (shift_to_zone(ts, &args, "getSeconds")?.second() as i32).into()
+            }
             Value::Duration(d) => (d.num_seconds() as i32).into(),
             _ => {
                 return Err(ExecutionError::function_error(
@@ -449,10 +558,26 @@ pub mod time {
         })
     }
 
-    pub fn get_milliseconds(This(this): This<Value>) -> Result<Value> {
+    pub fn get_milliseconds(
+        This(this): This<Value>,
+        Arguments(args): Arguments,
+    ) -> Result<Value> {
         Ok(match this {
-            Value::Timestamp(ts) => (ts.timestamp_subsec_millis() as i32).into(),
-            Value::Duration(d) => (d.num_milliseconds() as i32).into(),
+            Value::Timestamp(ts) => {
+                // The timezone never changes the sub-second field, but accept
+                // and validate it for signature parity with the other getters.
+                let _ = shift_to_zone(ts, &args, "getMilliseconds")?;
+                (ts.timestamp_subsec_millis() as i32).into()
+            }
+            // Relay fork (G13): cel-go's Duration.getMilliseconds returns the
+            // MILLISECONDS COMPONENT of the sub-second part, not the total
+            // milliseconds. duration('123.321456789s') -> 321, not 123321.
+            Value::Duration(d) => {
+                let subsec_nanos = (d.num_nanoseconds().unwrap_or(0)
+                    % 1_000_000_000)
+                    .abs();
+                ((subsec_nanos / 1_000_000) as i32).into()
+            }
             _ => {
                 return Err(ExecutionError::function_error(
                     "getMilliseconds",
@@ -803,8 +928,13 @@ mod tests {
                 "duration('2h30m45s').getSeconds() == 9045",
             ),
             (
+                // Relay fork (G13): cel-go's Duration.getMilliseconds returns
+                // the milliseconds COMPONENT of the sub-second part, not the
+                // total milliseconds. 1.5s -> 500, not 1500. (The cel-spec
+                // timestamps.textproto get_milliseconds case agrees: a
+                // 123.321456789s duration yields 321.)
                 "duration getMilliseconds",
-                "duration('1s500ms').getMilliseconds() == 1500",
+                "duration('1s500ms').getMilliseconds() == 500",
             ),
             (
                 "duration getHours overflow",
