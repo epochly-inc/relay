@@ -161,3 +161,41 @@ artifact) lives in `relay-platform`/KMS -- trust-anchor key material is banned
 from the public repo (CLAUDE.md #14). Deferred to that work-stream. The
 production cutover (embed into `packages/contracts`, replace cel-python +
 @bufbuild/cel) is WS4/WS5 and needs explicit go-ahead (keystone invariant #16).
+
+## WS4 cutover step 1: Relay UDFs in the wasm (DONE + VERIFIED)
+
+The 3 contract-DSL UDFs are ported from
+`packages/contracts/src/relay_contracts/udfs/{coverage,tool_arg,schema_match}.py`
+into `crate/src/lib.rs` as native Rust, registered under the dotted CEL name
+(`relay.coverage` / `relay.tool_arg` / `relay.schema_match`) and reached via the
+fork's qualified-name function resolution (`objects.rs` `Expr::Call` `Some(target)`
+arm: `relay.<fn>(...)` -> `ctx.get_function("relay.<fn>")`). They are pure,
+deterministic, and TOTAL (a shape mismatch yields false/null, never an error), so
+the single wasm implementation is byte-identical across the Python and TS hosts BY
+CONSTRUCTION -- retiring the per-runtime UDF parity grind.
+
+- Authored against the DOCUMENTED, intended contract + VAL-PARITY-002 (an integral
+  CEL double is an "integer"; booleans are NOT integers/numbers). The wasm is the
+  single source of truth.
+- **Discovered pre-existing bug:** cel-python driven THROUGH CEL violates that
+  contract -- `celpy.MapType.get` RAISES `KeyError` on a missing key (so
+  `relay.schema_match(x, {"required":[...]})` raises), and `celpy.BoolType`/
+  `DoubleType` break the `isinstance` type screens (so `schema_match(true,
+  {"type":"integer"})` wrongly returns True and `schema_match(1.0,
+  {"type":"integer"})` raises TypeError). The wasm, operating on typed `cel::Value`,
+  is CORRECT. The cutover REPLACES the broken behavior; the parity golden for the
+  new CEL-eval UDF cases must come from the intended contract / direct-callable
+  path, NOT cel-python-through-CEL.
+- Verified: 55 new UDF tests (`tests/test_relay_udfs.py`), 416 wasm tests total;
+  ex-proto conformance still 100.0%; cel-spec byte-parity diff exit 0; an
+  adversarial cross-host UDF byte-parity sweep (17 exprs incl. every `tool_arg`
+  typed-return path) diff exit 0 Py-wasmtime vs Node; `make repro` ->
+  `7436ec8a300879ce84c080760ec65283e066e2be77a15867bc7b3ef56aaba111`; ascii-lint
+  PASS.
+
+Remaining cutover steps (not started): step 2 add the dyn/timestamp/duration CALL
+fence + `subtype` envelope field + per-eval `udf_trace` into the wasm; step 3 add
+UDF-via-CEL corpus cases (golden from the intended contract); steps 4-5 wire the
+Python + TS hosts behind `RELAY_CEL_ENGINE` (default celpy); step 6 flip default;
+step 7 drop cel-python/cel-js. Steps 4+ touch production + a public-API decision
+(caller-supplied extra UDFs) -- they need the open-question answers first.

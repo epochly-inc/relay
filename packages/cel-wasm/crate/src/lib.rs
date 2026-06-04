@@ -329,6 +329,24 @@ fn relay_context<'a>() -> Context<'a> {
         ctx.add_variable_from_value(name.to_string(), Value::Type(Arc::from(name)));
     }
 
+    // WS4 cutover (step 1): the 3 Relay contract-DSL UDFs, ported from
+    // packages/contracts/src/relay_contracts/udfs/{coverage,tool_arg,schema_match}.py
+    // as native Rust so the Python and TS hosts call the SAME bytes by
+    // construction (retiring the per-runtime UDF parity grind). They are pure,
+    // deterministic, and TOTAL -- a shape mismatch yields false/null, never an
+    // error. Authored against the DOCUMENTED contract (the intended
+    // shape-tolerant semantics + VAL-PARITY-002), which is what the
+    // direct-callable Python path produces with plain dicts; the wasm is the
+    // single source of truth. (cel-python driven THROUGH CEL violates that
+    // contract -- celpy MapType.get raises on a missing key and celpy
+    // BoolType/DoubleType break the isinstance screens -- so the wasm is the
+    // CORRECT implementation the cutover standardizes on.) Registered under the
+    // dotted CEL name; `relay.<fn>(...)` routes here via the fork's
+    // qualified-name function resolution (objects.rs Expr::Call `Some(target)`).
+    ctx.add_function("relay.coverage", relay_coverage);
+    ctx.add_function("relay.tool_arg", relay_tool_arg);
+    ctx.add_function("relay.schema_match", relay_schema_match);
+
     ctx
 }
 
@@ -682,6 +700,204 @@ fn check_timestamp_range(
         ));
     }
     Ok(Value::Timestamp(dt))
+}
+
+// ---------------------------------------------------------------------------
+// Relay contract-DSL UDFs (WS4 cutover step 1)
+//
+// relay.coverage / relay.tool_arg / relay.schema_match, ported from
+// packages/contracts/src/relay_contracts/udfs/{coverage,tool_arg,schema_match}.py.
+// Pure, deterministic, and TOTAL (never Err -- a shape mismatch yields
+// false/null), so a single shared wasm implementation is byte-identical across
+// the Python and TS hosts BY CONSTRUCTION. Each output is a pure reduction
+// (coverage = OR over steps, schema_match = AND over constraints) or a single
+// lookup (tool_arg), so the result is independent of HashMap iteration order.
+// ---------------------------------------------------------------------------
+
+/// Look up a STRING key in a CEL map's backing HashMap.
+fn map_get_str<'a>(m: &'a Map, key: &str) -> Option<&'a Value> {
+    m.map.get(&Key::String(Arc::new(key.to_string())))
+}
+
+/// Schema-FIELD access with the intended `.get()`-style semantics: a missing
+/// key OR a present `null` value both mean "field not specified" -> None. The
+/// Python source reads schema fields with `.get()`, which returns Python None
+/// for a present CEL null (cel-python maps CEL null to None) AND is INTENDED to
+/// skip an absent field (the documented "shape-tolerant, never raises"
+/// contract). (cel-python's MapType.get actually RAISES on an absent key -- a
+/// latent bug this wasm, the single source of truth, does NOT reproduce.)
+fn schema_field<'a>(m: &'a Map, key: &str) -> Option<&'a Value> {
+    match map_get_str(m, key) {
+        None | Some(Value::Null) => None,
+        some => some,
+    }
+}
+
+/// relay.coverage(trace, step_name) -> bool. True iff `trace` is a map whose
+/// "steps" is a list containing an entry map whose "name" string equals
+/// `step_name` (exact codepoint `==`, no case/locale fold). Total: any shape
+/// mismatch -> false. (coverage.py relay_coverage)
+fn relay_coverage(trace: Value, step_name: Value) -> Result<Value, ExecutionError> {
+    Ok(Value::Bool(coverage_match(&trace, &step_name)))
+}
+
+fn coverage_match(trace: &Value, step_name: &Value) -> bool {
+    let Value::Map(m) = trace else { return false };
+    let Value::String(step) = step_name else { return false };
+    // Reject a non-list "steps" (incl. absent -> None, or a bare string): a
+    // shape error yields false rather than iterating characters.
+    let Some(Value::List(steps)) = map_get_str(m, "steps") else {
+        return false;
+    };
+    for entry in steps.iter() {
+        let Value::Map(em) = entry else { continue };
+        if let Some(Value::String(name)) = map_get_str(em, "name") {
+            if name == step {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// relay.tool_arg(call, key) -> any. `call["args"][key]` when present, else
+/// null. A key whose value is null is indistinguishable from a missing key
+/// (both yield null) -- the v0.1 contract. Total: any shape mismatch / missing
+/// -> null. The returned value is passed back unchanged through the typed-
+/// canonical serializer. (tool_arg.py relay_tool_arg)
+fn relay_tool_arg(call: Value, key: Value) -> Result<Value, ExecutionError> {
+    let Value::Map(m) = &call else { return Ok(Value::Null) };
+    let Value::String(k) = &key else { return Ok(Value::Null) };
+    let Some(Value::Map(args)) = map_get_str(m, "args") else {
+        return Ok(Value::Null);
+    };
+    match args.map.get(&Key::String(k.clone())) {
+        Some(v) => Ok(v.clone()),
+        None => Ok(Value::Null),
+    }
+}
+
+/// Defense-in-depth bound on recursive descent into nested schemas (the host's
+/// wall-clock timeout is the primary guard). Mirrors schema_match.py MAX_DEPTH.
+const SCHEMA_MATCH_MAX_DEPTH: u32 = 64;
+
+/// The frozen JSON-Schema type-name set (schema_match.py _VALID_TYPES).
+const SCHEMA_VALID_TYPES: [&str; 7] = [
+    "string", "number", "integer", "boolean", "object", "array", "null",
+];
+
+/// relay.schema_match(payload, schema) -> bool. True iff `payload` conforms to
+/// the minimal JSON-Schema subset declared by `schema` (type/required/
+/// properties/items). Total: a malformed schema yields false. (schema_match.py)
+fn relay_schema_match(payload: Value, schema: Value) -> Result<Value, ExecutionError> {
+    Ok(Value::Bool(schema_validate(&payload, &schema, 0)))
+}
+
+/// JSON-Schema "number": a FINITE int/uint/double. Booleans are NOT numbers;
+/// NaN/Inf are NOT finite. (schema_match.py _is_finite_number; the bool exclusion
+/// is load-bearing -- celpy BoolType breaks this in cel-python, the wasm does not.)
+fn schema_is_finite_number(v: &Value) -> bool {
+    match v {
+        Value::Bool(_) => false,
+        Value::Int(_) | Value::UInt(_) => true,
+        Value::Float(f) => f.is_finite(),
+        _ => false,
+    }
+}
+
+/// JSON-Schema "integer" (VAL-PARITY-002): a finite number with an integral
+/// value. An integral CEL double (e.g. 1.0) IS an integer, matching cel-js
+/// Number.isInteger; booleans and NaN/Inf are excluded by the finiteness screen.
+/// (schema_match.py _is_integer)
+fn schema_is_integer(v: &Value) -> bool {
+    if !schema_is_finite_number(v) {
+        return false;
+    }
+    match v {
+        Value::Float(f) => *f == f.trunc(),
+        // Remaining finite-number case is a non-bool Int/UInt -> integral.
+        _ => true,
+    }
+}
+
+/// schema_match.py _matches_type, with the same boolean-first ordering.
+fn schema_matches_type(payload: &Value, type_name: &str) -> bool {
+    match type_name {
+        "boolean" => matches!(payload, Value::Bool(_)),
+        "null" => matches!(payload, Value::Null),
+        "string" => matches!(payload, Value::String(_)),
+        "integer" => schema_is_integer(payload),
+        "number" => schema_is_finite_number(payload),
+        "object" => matches!(payload, Value::Map(_)),
+        "array" => matches!(payload, Value::List(_)),
+        // Unknown type names are screened by the caller (SCHEMA_VALID_TYPES).
+        _ => false,
+    }
+}
+
+/// schema_match.py _validate, ported over cel::Value with an explicit depth.
+fn schema_validate(payload: &Value, schema: &Value, depth: u32) -> bool {
+    if depth > SCHEMA_MATCH_MAX_DEPTH {
+        return false;
+    }
+    let Value::Map(schema_map) = schema else { return false };
+    // Empty schema validates anything (JSON Schema {} / true semantics). Uses
+    // raw key count, NOT the null-aware field count.
+    if schema_map.map.is_empty() {
+        return true;
+    }
+    if let Some(type_value) = schema_field(schema_map, "type") {
+        let Value::String(type_name) = type_value else { return false };
+        if !SCHEMA_VALID_TYPES.contains(&type_name.as_str()) {
+            return false;
+        }
+        if !schema_matches_type(payload, type_name) {
+            return false;
+        }
+    }
+    // Object-shape constraints (consulted only when payload is a map; if
+    // "type":"object" is set the type check above already gated this).
+    if let Value::Map(payload_map) = payload {
+        if let Some(required) = schema_field(schema_map, "required") {
+            let Value::List(required_list) = required else { return false };
+            for name in required_list.iter() {
+                let Value::String(name_str) = name else { return false };
+                if !payload_map.map.contains_key(&Key::String(name_str.clone())) {
+                    return false;
+                }
+            }
+        }
+        if let Some(properties) = schema_field(schema_map, "properties") {
+            let Value::Map(properties_map) = properties else { return false };
+            for (prop_key, prop_schema) in properties_map.map.iter() {
+                let Key::String(prop_name) = prop_key else { return false };
+                // Only present properties are validated (missing ones are
+                // covered by "required"). The payload value -- including a CEL
+                // null -- is validated as-is (a null child fails a typed schema).
+                if let Some(child) = payload_map.map.get(&Key::String(prop_name.clone())) {
+                    if !schema_validate(child, prop_schema, depth + 1) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    // Array-shape constraints (consulted only when payload is a list).
+    if let Value::List(payload_list) = payload {
+        if let Some(items) = schema_field(schema_map, "items") {
+            // v0.1 supports only a single Map item-schema (tuple validation is
+            // unsupported); a non-map "items" -> false.
+            if !matches!(items, Value::Map(_)) {
+                return false;
+            }
+            for element in payload_list.iter() {
+                if !schema_validate(element, items, depth + 1) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
