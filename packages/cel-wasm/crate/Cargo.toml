@@ -19,11 +19,14 @@ default = ["chrono"]
 chrono = ["cel/chrono"]
 
 [dependencies]
-# Fork increment 1: cel is now the VENDORED cel-rust-relay fork
-# (packages/cel-wasm/vendor/cel/, forked from cel-rust/cel-rust @ d23d0a77, MIT).
-# The fork owns the HARD semantic gaps the wrapper cannot reach (see HARDENING.md):
-# G6 cross-numeric equality/ordering (this increment), then G3 type-values, G4
-# macros2, G5/G7/G8 lexer. Relay-opinionated CEL-profile fixes live in the fork.
+# cel is the VENDORED cel-rust-relay fork (packages/cel-wasm/vendor/cel/), forked
+# from the PUBLISHED crates.io release `cel` 0.13.0 (cel-rust/cel-rust, MIT) -- NOT
+# upstream HEAD. We pin 0.13.0 deliberately: HEAD (~d23d0a77) is mid Type-system
+# rework that changes custom-function override semantics and breaks the wrapper
+# shims; see vendor/README.md. The fork owns the HARD semantic gaps the wrapper
+# cannot reach (see HARDENING.md): G6 cross-numeric equality/ordering, G3
+# type-values, G4 macros2, G5/G7/G8 lexer, G13/G15/G16 -- all DONE (100% ex-proto).
+# Relay-opinionated CEL-profile fixes live in the fork, marked `Relay fork (Gn)`.
 cel = { path = "../vendor/cel", default-features = true }
 serde_json = "1"
 # default-features=false drops chrono's "wasmbind" feature. wasmbind injects
@@ -33,13 +36,27 @@ serde_json = "1"
 # do not re-enable default features on chrono. We only need Duration arithmetic.
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 
-# Reproducible-build release profile (ADR WS3 direction; carried from WS1 spike).
-# A signed, transparency-logged wasm is an evidence dependency, so the build must
-# be deterministic. codegen-units=1 + lto removes parallel-codegen nondeterminism;
-# panic="abort" keeps the reactor small and turns Rust panics into clean wasm
-# traps (which the host catches and re-instantiates); strip drops symbol-table
-# nondeterminism. WS3 adds trim-paths/SOURCE_DATE_EPOCH/pinned container + a
-# cmp-rebuild CI gate on top of this.
+# Reproducible-build release profile (ADR WS3). A signed, transparency-logged wasm
+# is an evidence dependency, so the build must be byte-deterministic. Verified:
+# two clean builds on one machine -> identical sha256 (build.sh repro gate).
+#   - codegen-units=1 + lto : remove parallel-codegen nondeterminism
+#   - panic="abort"         : small reactor; Rust panics -> clean wasm traps
+#                             (host catches + re-instantiates)
+#   - strip="symbols"       : drop symbol-table nondeterminism
+#
+# CROSS-machine path determinism is handled by --remap-path-prefix in the BUILD
+# RECIPE (conformance/build.sh det_rustflags + Makefile), NOT here. `trim-paths`
+# would be the in-manifest way to do this, but it is NOT stabilized in cargo
+# 1.93.1 -- declaring it in [profile.release] is a hard manifest PARSE ERROR
+# ("feature `trim-paths` is required ... not stabilized in this version of
+# Cargo"), so it must stay out of this file until the toolchain ships it stable.
+# Without remapping the wasm embeds ~123 absolute $HOME/.cargo dependency
+# panic-location paths, so a different machine/checkout would produce a different
+# hash. The recipe remaps CARGO_HOME -> /cargo, repo root -> /build, sysroot ->
+# /rust, which the probe confirmed strips the embedded paths on stable rustc.
+# Full hermeticity also needs a pinned toolchain (rust-toolchain.toml) + pinned
+# container image at the CI layer. build.sh repro enforces same-box determinism;
+# build.sh gate enforces 100% ex-proto + byte-parity.
 [profile.release]
 opt-level = "z"
 lto = true

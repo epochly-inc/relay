@@ -127,3 +127,37 @@ evaluator and are NOT bugs:
 
 The ex-proto figure (100.0%) is the achievable runtime-conformance ceiling for
 the Relay CEL profile. The proto-message gap is a profile decision, not a defect.
+
+## WS3 reproducible build + CI gate (DONE + VERIFIED)
+
+A wasm that produces audit-grade Relay evidence must be byte-reproducible (a
+signature could not be reproduced offline from a non-deterministic build).
+
+- **Byte-deterministic.** Two clean builds via the recipe -> identical sha256
+  `ba1cb86851e88aeb9d2970b07fcea399134043fa329e7f3ab32cb69ed9fcdedd`
+  (`make repro`). Profile: `opt-level="z"`, `lto`, `codegen-units=1`,
+  `panic="abort"`, `strip="symbols"` (crate/Cargo.toml).
+- **Cross-machine path-independent.** The raw build embeds ~123 absolute
+  `$HOME/.cargo` dependency panic-location paths, so a different machine would
+  hash differently. Fixed by `--remap-path-prefix` in the build RECIPE
+  (`conformance/build.sh` `det_rustflags`: CARGO_HOME->/cargo, repo-root->/build,
+  sysroot->/rust) -- verified 123 -> 0 embedded paths. NOTE: the in-manifest
+  `trim-paths` is NOT usable here -- it is a hard PARSE ERROR on cargo 1.93.1
+  ("feature `trim-paths` is required ... not stabilized"), so it must stay out of
+  Cargo.toml until the toolchain ships it stable.
+- **Pinned toolchain.** `crate/rust-toolchain.toml` pins rustc 1.93.1 + wasm32
+  (codegen determinism across machines). Deps pinned via the vendored Cargo.lock.
+  Remaining for full hermeticity: a pinned CI container image.
+- **Size.** raw 2.55M, gzip 660KB (63% of the Cloudflare Workers 1MB compressed
+  budget), brotli 428KB -- UNDER budget, so the chrono-tz growth did not break
+  the edge deploy. `make dist` (wasm-opt -Oz) is an OPTIONAL headroom widener.
+- **CI gate.** `.github/workflows/cel-wasm-conformance.yml` -- a `conformance-gate`
+  job (build + cel-go v0.28.1 oracle over cel-spec@f91dffca + ex-proto-100% floor
+  + byte-parity) and a `reproducible-build` job (cmp-rebuild), aggregated into one
+  required check. `make gate` is the local equivalent.
+
+NOT in WS3: the **signed** half (sign + transparency-log the reproducible
+artifact) lives in `relay-platform`/KMS -- trust-anchor key material is banned
+from the public repo (CLAUDE.md #14). Deferred to that work-stream. The
+production cutover (embed into `packages/contracts`, replace cel-python +
+@bufbuild/cel) is WS4/WS5 and needs explicit go-ahead (keystone invariant #16).

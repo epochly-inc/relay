@@ -1,0 +1,141 @@
+# Relay v0.1 OSS -- cel-wasm single-engine conformance + reproducible-build gate.
+#
+# Purpose: gate the cel-wasm CEL engine (packages/cel-wasm) on two invariants
+# that the single-engine-WASM re-architecture depends on (ADR
+# planning/adr/cel-wasm-single-engine-rearchitecture.md, keystone invariant #16):
+#
+#   1. CONFORMANCE  -- the engine matches google/cel-spec on every runtime-
+#      evaluable, non-proto case: ex-proto conformance == 100.0%. Measured
+#      against the cel-go v0.28.1 oracle (conformance/oracle) over the pinned
+#      cel-spec corpus.
+#   2. BYTE-PARITY  -- the SAME .wasm produces byte-identical typed-canonical
+#      output under Python (wasmtime) and Node. This is byte-parity BY
+#      CONSTRUCTION (one engine, two hosts); a divergence is a P0.
+#   3. REPRODUCIBLE -- two clean builds via the deterministic recipe
+#      (conformance/build.sh: pinned toolchain + --remap-path-prefix) produce a
+#      byte-identical wasm with no machine-specific paths embedded. A signed,
+#      transparency-logged wasm is an evidence dependency, so a non-deterministic
+#      build is a P0 (the signature could not be reproduced offline).
+#
+# Until the WS4/WS5 cutover embeds this engine into packages/contracts (replacing
+# cel-python + @bufbuild/cel), this gate runs standalone on packages/cel-wasm
+# changes. It is the cel-wasm sibling of conformance-release-block.yml.
+#
+# Pinned inputs (bump deliberately -- a toolchain/corpus bump changes the
+# reproducible hash and the conformance baseline):
+#   - rustc          : crate/rust-toolchain.toml (1.93.1)
+#   - cel-go oracle  : conformance/oracle/go.mod (cel-go v0.28.1)
+#   - cel-spec corpus: google/cel-spec @ f91dffca5a862d017d923dc277528e0b88fefac7
+
+name: "cel-wasm-conformance"
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "packages/cel-wasm/**"
+      - ".github/workflows/cel-wasm-conformance.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/cel-wasm/**"
+      - ".github/workflows/cel-wasm-conformance.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  CEL_SPEC_REF: "f91dffca5a862d017d923dc277528e0b88fefac7"
+
+jobs:
+  conformance-gate:
+    # build + oracle + run + ex-proto 100% floor + cross-host byte-parity.
+    name: "cel-wasm: conformance + byte-parity"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: "checkout relay"
+        uses: actions/checkout@v4
+
+      - name: "checkout cel-spec corpus (pinned)"
+        uses: actions/checkout@v4
+        with:
+          repository: "google/cel-spec"
+          ref: "${{ env.CEL_SPEC_REF }}"
+          path: "cel-spec"
+
+      - name: "install rust (pinned via crate/rust-toolchain.toml) + wasm32"
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal --target wasm32-unknown-unknown
+          rustc --version
+
+      - name: "setup go 1.25 (cel-go oracle)"
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: "setup node 22 (byte-parity host)"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: "setup python 3.12 + wasmtime (byte-parity host + harness)"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "create harness venv with wasmtime"
+        run: |
+          python3 -m venv .venv
+          ./.venv/bin/pip install --upgrade pip
+          ./.venv/bin/pip install wasmtime
+
+      - name: "run cel-wasm conformance gate (ex-proto 100% + byte-parity)"
+        env:
+          CEL_SPEC_CORPUS: "${{ github.workspace }}/cel-spec/tests/simple/testdata"
+        run: make -C packages/cel-wasm gate
+
+  reproducible-build:
+    # cmp-rebuild: two clean builds via the deterministic recipe must produce an
+    # identical sha256 with no machine-specific paths embedded. Lighter than the
+    # conformance job (rust only -- no Go/Node/Python/corpus needed).
+    name: "cel-wasm: reproducible build"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: "checkout relay"
+        uses: actions/checkout@v4
+
+      - name: "install rust (pinned) + wasm32"
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal --target wasm32-unknown-unknown
+          rustc --version
+
+      - name: "cmp-rebuild (two clean builds -> identical wasm)"
+        run: make -C packages/cel-wasm repro
+
+  cel-wasm-aggregate:
+    # Single required-check job for branch protection (mirrors the
+    # conformance-release-block aggregate pattern -- GitHub's required-check
+    # surface does not gate on matrix/job-name expansion natively).
+    name: "cel-wasm-aggregate"
+    runs-on: ubuntu-latest
+    needs:
+      - conformance-gate
+      - reproducible-build
+    if: always()
+    steps:
+      - name: "aggregate"
+        run: |
+          if [ "${{ needs.conformance-gate.result }}" != "success" ]; then
+            echo "cel-wasm: conformance + byte-parity gate failed (got ${{ needs.conformance-gate.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.reproducible-build.result }}" != "success" ]; then
+            echo "cel-wasm: reproducible-build gate failed (got ${{ needs.reproducible-build.result }})"
+            exit 1
+          fi
+          echo "cel-wasm: conformance + byte-parity + reproducible build all passed"

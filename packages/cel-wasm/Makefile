@@ -2,9 +2,12 @@
 # conformance/build.sh; this is a thin wrapper for common flows.
 #
 # Usage (from packages/cel-wasm/):
-#   make build         # cargo build the wasm (release, wasm32-unknown-unknown)
+#   make build         # build the wasm (release) via the reproducible recipe
 #   make conformance   # build + oracle + run -> summary.json
 #   make parity        # cross-host byte-parity (Python vs Node), diff exit 0
+#   make repro         # WS3 cmp-rebuild: two clean builds -> identical sha256
+#   make gate          # WS6 release-block: ex-proto 100% AND byte-parity
+#   make dist          # WS3 size pass: wasm-opt -Oz -> dist/ vs CF 1MB budget
 #   make test          # tier-1 pytest over the wasm
 #   make all           # build + conformance + parity + test
 #   make ascii-lint    # check source/CLI-output paths are ASCII-only
@@ -19,11 +22,13 @@ WASM  := $(CRATE)/target/wasm32-unknown-unknown/release/relay_cel_wasm.wasm
 REPO_ROOT := $(abspath $(PKG)/../..)
 PYTHON    ?= $(if $(wildcard $(REPO_ROOT)/.venv/bin/python),$(REPO_ROOT)/.venv/bin/python,python3)
 
-.PHONY: build conformance parity test all ascii-lint clean
+.PHONY: build conformance parity repro gate dist test all ascii-lint clean
 
+# build goes through build.sh so every artifact the loaders/tests consume is the
+# reproducible recipe output (deterministic --remap-path-prefix RUSTFLAGS), not a
+# bare `cargo build` whose embedded paths leak the build machine.
 build:
-	cd $(CRATE) && cargo build --release --target wasm32-unknown-unknown
-	@ls -la $(WASM)
+	bash $(CONF)/build.sh build
 
 conformance: build
 	bash $(CONF)/build.sh oracle
@@ -31,6 +36,15 @@ conformance: build
 
 parity: build
 	bash $(CONF)/build.sh parity
+
+repro:
+	bash $(CONF)/build.sh repro
+
+gate:
+	bash $(CONF)/build.sh gate
+
+dist:
+	bash $(CONF)/build.sh dist
 
 test: build
 	$(PYTHON) -m pytest $(PKG)/tests -v
