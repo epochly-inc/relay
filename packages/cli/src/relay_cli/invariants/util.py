@@ -133,6 +133,14 @@ _BASE_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = (
     "packages/verifier/tests",
     "packages/acef/tests",
     "packages/acef/upstream",
+    # cel-wasm conformance harness: the wasm driver, conformance
+    # comparator, and byte-parity dumps (per packages/cel-wasm/README.md).
+    # These are dev/test infrastructure that write conformance-result
+    # scratch output (RESULTS, SUMMARY, py_dump.txt), NOT control-plane
+    # business-logic persistence governed by spec section H. The
+    # atomic-primitives invariant governs business logic, not test
+    # harnesses -- the same reason packages/acef/upstream is excluded.
+    "packages/cel-wasm/conformance/harness",
     "apps/local-sidecar/tests",
     "apps/replay-proxy/tests",
     # Generated codegen
