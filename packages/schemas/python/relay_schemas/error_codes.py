@@ -43,6 +43,7 @@ class RelayErrorCode:
     RELAY_CEL_006: Final[str] = "RELAY-CEL-006"
     RELAY_CEL_007: Final[str] = "RELAY-CEL-007"
     RELAY_CEL_008: Final[str] = "RELAY-CEL-008"
+    RELAY_CEL_009: Final[str] = "RELAY-CEL-009"
     RELAY_CLI_070: Final[str] = "RELAY-CLI-070"
     RELAY_CLI_130: Final[str] = "RELAY-CLI-130"
     RELAY_CONTRACT_001: Final[str] = "RELAY-CONTRACT-001"
@@ -213,6 +214,7 @@ _ALL_CODES: Final[frozenset[str]] = frozenset({
     "RELAY-CEL-006",
     "RELAY-CEL-007",
     "RELAY-CEL-008",
+    "RELAY-CEL-009",
     "RELAY-CLI-070",
     "RELAY-CLI-130",
     "RELAY-CONTRACT-001",

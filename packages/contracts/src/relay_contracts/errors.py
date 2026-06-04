@@ -13,9 +13,14 @@ Code-to-subtype map (W6.1 scope; mirror in cel-js TS module on W6.2):
     RELAY-CEL-002  RELAY-CEL-PROFILE-DUR-DISABLED
     RELAY-CEL-003  RELAY-CEL-TIMEOUT-001
     RELAY-CEL-004  RELAY-CEL-UDF-IMPURE
+    RELAY-CEL-004  RELAY-CEL-UDF-UNREGISTERED
     RELAY-CEL-006  RELAY-CEL-NUMERIC-OOB
     RELAY-CEL-007  RELAY-CEL-PROFILE-REGEX-BACKREF
     RELAY-CEL-008  RELAY-CEL-RESOURCE-EXHAUSTED
+    RELAY-CEL-009  RELAY-CEL-ENGINE-COMPILE   (wasm engine compile failure)
+    RELAY-CEL-009  RELAY-CEL-ENGINE-EXEC      (wasm engine runtime failure)
+    RELAY-CEL-009  RELAY-CEL-ENGINE-REQUEST   (wasm engine request/marshaling bug)
+    RELAY-CEL-009  RELAY-CEL-ENGINE-PANIC     (wasm reactor trap, re-instantiated)
 
 Spec anchors: D, B.4 (closed error envelope).
 Eng plan anchors: CQ1 lines 145-157, X4 line 216.
@@ -41,6 +46,19 @@ SUBTYPE_TIMEOUT: Final[str] = "RELAY-CEL-TIMEOUT-001"
 SUBTYPE_UDF_IMPURE: Final[str] = "RELAY-CEL-UDF-IMPURE"
 SUBTYPE_NUMERIC_OOB: Final[str] = "RELAY-CEL-NUMERIC-OOB"
 SUBTYPE_RESOURCE_EXHAUSTED: Final[str] = "RELAY-CEL-RESOURCE-EXHAUSTED"
+# A caller passed an extra UDF the wasm engine has no registration slot for
+# (the engine exposes only the 3 hardcoded relay.* UDFs). Shares the UDF code
+# (004) with the purity error -- both are UDF-registration failures.
+SUBTYPE_UDF_UNREGISTERED: Final[str] = "RELAY-CEL-UDF-UNREGISTERED"
+# Engine-error subtypes (RELAY-CEL-009): the wasm engine reported a failure
+# that is NOT one of the classified host conditions. Distinct from 004/006 so a
+# wasm exec/request failure is never confused with a host UDF-impurity (004) /
+# numeric-out-of-bounds (006) classification (which would poison the gate's
+# signed per-condition error_code).
+SUBTYPE_ENGINE_COMPILE: Final[str] = "RELAY-CEL-ENGINE-COMPILE"
+SUBTYPE_ENGINE_EXEC: Final[str] = "RELAY-CEL-ENGINE-EXEC"
+SUBTYPE_ENGINE_REQUEST: Final[str] = "RELAY-CEL-ENGINE-REQUEST"
+SUBTYPE_ENGINE_PANIC: Final[str] = "RELAY-CEL-ENGINE-PANIC"
 
 
 @dataclass(frozen=True)
@@ -148,3 +166,60 @@ class RelayCelResourceExhaustedError(RelayCelError):
 
     code = RelayErrorCode.RELAY_CEL_008
     subtype = SUBTYPE_RESOURCE_EXHAUSTED
+
+
+class RelayCelUnsupportedUdfError(RelayCelError):
+    """A caller passed an extra UDF the wasm engine cannot host.
+
+    The single-engine (wasm) evaluator exposes only the 3 hardcoded Relay UDFs
+    (relay.coverage / relay.tool_arg / relay.schema_match) and has no
+    registration mechanism, so any caller-supplied extra UDF is rejected
+    fail-closed BEFORE evaluation. Shares the UDF code (004) with the purity
+    error; the subtype distinguishes "unregistered" from "impure".
+    """
+
+    code = RelayErrorCode.RELAY_CEL_004
+    subtype = SUBTYPE_UDF_UNREGISTERED
+
+
+# Map a wasm engine envelope code -> the RELAY-CEL-009 engine subtype. The wasm
+# emits its OWN RELAY-CEL-NNN namespace (packages/cel-wasm crate `codes`):
+# 001 = compile, 004 = exec, 006 = request; plus the host loader's
+# RELAY-CEL-PANIC trap marker. Their NUMBERS overlap the host's classified
+# codes (004 = UDF-impure, 006 = numeric-OOB) but their MEANINGS differ, so the
+# wasm-backed adapter translates them into the distinct 009 code with a
+# per-cause subtype. (The wasm's 002 profile envelope is handled separately ->
+# RelayCelProfileError, carrying the wasm's own subtype.)
+_WASM_CODE_TO_ENGINE_SUBTYPE: Final[dict[str, str]] = {
+    "RELAY-CEL-001": SUBTYPE_ENGINE_COMPILE,
+    "RELAY-CEL-004": SUBTYPE_ENGINE_EXEC,
+    "RELAY-CEL-006": SUBTYPE_ENGINE_REQUEST,
+    "RELAY-CEL-PANIC": SUBTYPE_ENGINE_PANIC,
+}
+
+
+class RelayCelEngineError(RelayCelError):
+    """The CEL engine reported a non-classified internal failure (RELAY-CEL-009).
+
+    Distinct from the host's classified codes so a wasm compile/exec/request/
+    panic failure is never confused with a host UDF-impurity (004) or
+    numeric-out-of-bounds (006) classification -- a confusion that would poison
+    the gate's signed per-condition ``error_code`` (cross-runtime byte equality).
+    """
+
+    code = RelayErrorCode.RELAY_CEL_009
+
+    def __init__(self, message: str, *, subtype: str = SUBTYPE_ENGINE_EXEC) -> None:
+        super().__init__(message)
+        self.subtype = subtype
+
+    @classmethod
+    def from_wasm_envelope(cls, wasm_code: str, message: str) -> RelayCelEngineError:
+        """Translate a wasm engine ``{"ok": false}`` envelope into a 009 error.
+
+        ``wasm_code`` is the engine's OWN ``RELAY-CEL-NNN`` code (or
+        ``RELAY-CEL-PANIC``); unknown codes default to ENGINE-EXEC. The original
+        wasm code is preserved in the message for diagnosis.
+        """
+        subtype = _WASM_CODE_TO_ENGINE_SUBTYPE.get(wasm_code, SUBTYPE_ENGINE_EXEC)
+        return cls(f"[{wasm_code}] {message}", subtype=subtype)
