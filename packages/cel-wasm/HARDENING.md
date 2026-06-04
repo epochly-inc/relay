@@ -193,9 +193,35 @@ CONSTRUCTION -- retiring the per-runtime UDF parity grind.
   `7436ec8a300879ce84c080760ec65283e066e2be77a15867bc7b3ef56aaba111`; ascii-lint
   PASS.
 
-Remaining cutover steps (not started): step 2 add the dyn/timestamp/duration CALL
-fence + `subtype` envelope field + per-eval `udf_trace` into the wasm; step 3 add
-UDF-via-CEL corpus cases (golden from the intended contract); steps 4-5 wire the
-Python + TS hosts behind `RELAY_CEL_ENGINE` (default celpy); step 6 flip default;
-step 7 drop cel-python/cel-js. Steps 4+ touch production + a public-API decision
-(caller-supplied extra UDFs) -- they need the open-question answers first.
+## WS4 cutover step 2: profile call-fence + structured subtype (DONE + VERIFIED)
+
+The wasm registers `dyn()`/`timestamp()`/`duration()` as working builtins for the
+cel-spec conformance corpus, but the Relay PROFILE forbids those CALL forms (the
+host rejects them at compile). Moved that fence INTO the wasm
+(`find_profile_rejection`), FLAG-GATED on a `relay_profile` request field:
+
+- **Flag off (default, conformance mode):** dyn/ts/dur calls evaluate -> ex-proto
+  stays 100%. The cel-spec harness omits the flag.
+- **Flag on (Relay host):** the GLOBAL call forms are rejected with `RELAY-CEL-002`
+  + the matching subtype (`RELAY-CEL-PROFILE-{DYN,TS,DUR}-DISABLED`), mirroring the
+  host's bare-call `_check_profile`. Py and TS reject the IDENTICAL set by
+  construction (the loaders thread the same flag). Only the global call form is
+  fenced -- timestamp/duration VALUE bindings stay valid under the profile.
+- The **struct/Unspecified safety fence is ALWAYS on** (cel 0.13 panics on those),
+  now carrying the `RELAY-CEL-PROFILE-STRUCT-DISABLED` subtype.
+- The error envelope gained a structured **`subtype`** field (emitted only for
+  profile rejections) so the host maps `(code, subtype)` -> the typed
+  RelayCelError without parsing the message string.
+
+Verified: 10 new fence tests + 426 wasm tests; ex-proto still 100.0% (flag off);
+cel-spec byte-parity exit 0; an adversarial cross-host fence+subtype byte-parity
+sweep (flag on) diff exit 0 Py vs Node; `make repro` ->
+`1abfe06a027546f3a61365e104531d39a2a4086640e4307022ccea5322c10502`; ascii-lint PASS.
+
+Remaining cutover steps: the per-eval `udf_trace` forensic-capture field (deferred
+into step 4 where the host consumes it); step 3 add UDF-via-CEL corpus cases
+(golden from the INTENDED contract, NOT cel-python-through-CEL which is broken);
+steps 4-5 wire the Python + TS hosts behind `RELAY_CEL_ENGINE` (default celpy);
+step 6 flip default; step 7 drop cel-python/cel-js. Steps 4+ touch production + a
+public-API decision (caller-supplied extra UDFs) -- they need the open-question
+answers first.

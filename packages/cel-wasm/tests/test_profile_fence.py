@@ -74,7 +74,9 @@ def test_struct_construction_is_fenced_not_panicked(cel, expr):
     assert (
         out.get("error") != "ENGINE_PANIC"
     ), f"{expr!r} TRAPPED the engine (G1 regression): {out!r}"
-    assert "STRUCT-DISABLED" in out.get("error", ""), out
+    # The STRUCT-DISABLED identifier now lives in the structured `subtype` field
+    # (WS4 step 2: the (code, subtype) cross-runtime contract), not the message.
+    assert out.get("subtype") == "RELAY-CEL-PROFILE-STRUCT-DISABLED", out
 
 
 def test_no_panic_marker_anywhere_in_fence(cel):

@@ -71,16 +71,24 @@ class RelayCel:
         expr: str,
         bindings: Optional[Dict[str, Any]] = None,
         container: Optional[str] = None,
+        relay_profile: bool = False,
     ) -> Dict[str, Any]:
         """Evaluate `expr` with optional typed `bindings` and an optional CEL
         resolution `container` (namespace, e.g. "com.example"). Always returns a
         dict (never raises for evaluation errors): success carries `value`,
-        failure carries `error` + `code`."""
+        failure carries `error` + `code` (+ `subtype` for profile rejections).
+
+        `relay_profile=True` turns on the Relay CEL profile's call-level
+        restrictions: dyn()/timestamp()/duration() global calls are rejected
+        with RELAY-CEL-002 and the matching subtype. The Relay host wrapper sets
+        this; the cel-spec conformance harness leaves it off."""
         req: Dict[str, Any] = {"expr": expr}
         if bindings:
             req["bindings"] = bindings
         if container:
             req["container"] = container
+        if relay_profile:
+            req["relay_profile"] = True
         inp = json.dumps(req).encode("utf-8")
         n = len(inp)
         try:

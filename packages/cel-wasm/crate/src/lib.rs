@@ -97,9 +97,21 @@ mod codes {
     pub const REQUEST: &str = "RELAY-CEL-006";
 }
 
+/// Profile-rejection subtypes (the `(code, subtype)` cross-runtime contract;
+/// aligned with packages/contracts errors.py SUBTYPE_PROFILE_*). Emitting a
+/// structured `subtype` lets the host map a RELAY-CEL-002 to the right
+/// RelayCelProfileError without parsing the message string.
+mod subtypes {
+    pub const STRUCT: &str = "RELAY-CEL-PROFILE-STRUCT-DISABLED";
+    pub const DYN: &str = "RELAY-CEL-PROFILE-DYN-DISABLED";
+    pub const TS: &str = "RELAY-CEL-PROFILE-TS-DISABLED";
+    pub const DUR: &str = "RELAY-CEL-PROFILE-DUR-DISABLED";
+}
+
 struct CelError {
     code: &'static str,
     message: String,
+    subtype: Option<&'static str>,
 }
 
 impl CelError {
@@ -107,6 +119,16 @@ impl CelError {
         CelError {
             code,
             message: message.into(),
+            subtype: None,
+        }
+    }
+
+    /// A profile rejection (RELAY-CEL-002) carrying a structured subtype.
+    fn profile(message: impl Into<String>, subtype: &'static str) -> Self {
+        CelError {
+            code: codes::PROFILE,
+            message: message.into(),
+            subtype: Some(subtype),
         }
     }
 }
@@ -127,14 +149,27 @@ fn eval_impl(input: &[u8]) -> Vec<u8> {
         let program = Program::compile(expr)
             .map_err(|e| CelError::new(codes::COMPILE, format!("compile: {e:?}")))?;
 
-        // G1 FENCE: cel 0.13 PANICS (wasm trap) on struct/message construction
-        // (objects.rs resolve: `Expr::Struct(_) => todo!()`, map StructField
-        // `panic!("WAT?")`, `Expr::Unspecified => panic!()`). A panic in an
-        // evidence-grade evaluator is a P0 DoS surface. Relay's profile excludes
-        // proto/message construction entirely, so we reject it with a CLEAN
-        // error BEFORE execute() can reach the panic.
-        if let Some(reason) = find_profile_rejection(program.expression()) {
-            return Err(CelError::new(codes::PROFILE, reason));
+        // `relay_profile` (default false) turns ON the Relay CEL profile's
+        // call-level restrictions: dyn()/timestamp()/duration() global CALLS are
+        // rejected (the host's _check_profile does this at compile). It is
+        // FLAG-GATED because the cel-spec conformance harness drives those as
+        // legitimate spec builtins -- it omits the flag (so conformance stays
+        // 100%), and the Relay host wrapper SETS it (so Py and TS reject the
+        // identical set by construction). The struct/Unspecified fence below is
+        // ALWAYS on (cel 0.13 PANICS on those -- a P0 DoS surface -- regardless
+        // of profile).
+        let relay_profile = req
+            .get("relay_profile")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // FENCE: reject struct/message construction (always) + the
+        // profile-disabled dyn/ts/dur calls (when relay_profile) with a clean
+        // error BEFORE execute() can reach a panic.
+        if let Some((reason, subtype)) =
+            find_profile_rejection(program.expression(), relay_profile)
+        {
+            return Err(CelError::profile(reason, subtype));
         }
 
         let mut context = relay_context();
@@ -164,7 +199,16 @@ fn eval_impl(input: &[u8]) -> Vec<u8> {
 
     let out = match result {
         Ok(v) => json!({"ok": true, "value": v}),
-        Err(e) => json!({"ok": false, "error": e.message, "code": e.code}),
+        Err(e) => {
+            let mut obj = json!({"ok": false, "error": e.message, "code": e.code});
+            // Emit `subtype` only for the profile rejections that carry one, so
+            // the host maps (code, subtype) -> the typed RelayCelError without
+            // parsing the message string. Non-profile errors omit it.
+            if let Some(st) = e.subtype {
+                obj["subtype"] = json!(st);
+            }
+            obj
+        }
     };
     serde_json::to_vec(&out).unwrap_or_else(|_| {
         format!(
@@ -179,56 +223,101 @@ fn eval_impl(input: &[u8]) -> Vec<u8> {
 // G1: profile fence -- reject struct/message construction before it can panic
 // ---------------------------------------------------------------------------
 
-/// Walk the parsed AST. Return Some(reason) if it contains any node that the
-/// Relay CEL profile rejects AND that cel 0.13 would panic on at execution
-/// time. Currently: struct/message construction (`Foo{...}`,
-/// `google.protobuf.BoolValue{...}`), struct-field entries embedded in
-/// map/list literals, and Unspecified nodes.
-fn find_profile_rejection(expr: &IdedExpr) -> Option<String> {
+/// Walk the parsed AST. Return Some((reason, subtype)) if it contains any node
+/// the Relay CEL profile rejects. Two classes:
+///   - ALWAYS (a safety fence): struct/message construction (`Foo{...}`,
+///     `google.protobuf.BoolValue{...}`), struct-field entries embedded in
+///     map/list literals, and Unspecified nodes -- cel 0.13 PANICS on these
+///     (objects.rs `todo!()` / `panic!("WAT?")`), a P0 DoS surface.
+///   - When `relay_profile`: the global CALL forms `dyn(...)`, `timestamp(...)`,
+///     `duration(...)`. These EVALUATE fine (the wrapper registers them for the
+///     conformance corpus), but the Relay profile disallows them as calls
+///     (use schema-typed inputs / cross-numeric equality instead). This mirrors
+///     the host's _check_profile bare-call (`ident_arg`) detection.
+fn find_profile_rejection(expr: &IdedExpr, relay_profile: bool) -> Option<(String, &'static str)> {
     match &expr.expr {
-        Expr::Struct(s) => Some(format!(
-            "Relay CEL profile disables message/struct construction '{}{{...}}': \
-             proto/message values are not part of the Relay contract surface \
-             (RELAY-CEL-PROFILE-STRUCT-DISABLED)",
-            s.type_name
+        Expr::Struct(s) => Some((
+            format!(
+                "Relay CEL profile disables message/struct construction '{}{{...}}': \
+                 proto/message values are not part of the Relay contract surface",
+                s.type_name
+            ),
+            subtypes::STRUCT,
         )),
-        Expr::Unspecified => Some(
-            "Relay CEL profile: unspecified expression node \
-             (RELAY-CEL-PROFILE-STRUCT-DISABLED)"
-                .to_string(),
-        ),
+        Expr::Unspecified => Some((
+            "Relay CEL profile: unspecified expression node".to_string(),
+            subtypes::STRUCT,
+        )),
         Expr::Call(call) => {
+            // Relay-profile call fence: only the GLOBAL call form (no receiver),
+            // matching the host's bare-call `ident_arg` detection.
+            if relay_profile && call.target.is_none() {
+                if let Some(hit) = disabled_call_rejection(call.func_name.as_str()) {
+                    return Some(hit);
+                }
+            }
             if let Some(target) = &call.target {
-                if let Some(r) = find_profile_rejection(target) {
+                if let Some(r) = find_profile_rejection(target, relay_profile) {
                     return Some(r);
                 }
             }
-            call.args.iter().find_map(find_profile_rejection)
+            call.args
+                .iter()
+                .find_map(|a| find_profile_rejection(a, relay_profile))
         }
-        Expr::Comprehension(c) => find_profile_rejection(&c.iter_range)
-            .or_else(|| find_profile_rejection(&c.accu_init))
-            .or_else(|| find_profile_rejection(&c.loop_cond))
-            .or_else(|| find_profile_rejection(&c.loop_step))
-            .or_else(|| find_profile_rejection(&c.result)),
-        Expr::List(l) => l.elements.iter().find_map(find_profile_rejection),
-        Expr::Map(m) => m.entries.iter().find_map(|e| entry_rejection(&e.expr)),
-        Expr::Select(s) => find_profile_rejection(&s.operand),
+        Expr::Comprehension(c) => find_profile_rejection(&c.iter_range, relay_profile)
+            .or_else(|| find_profile_rejection(&c.accu_init, relay_profile))
+            .or_else(|| find_profile_rejection(&c.loop_cond, relay_profile))
+            .or_else(|| find_profile_rejection(&c.loop_step, relay_profile))
+            .or_else(|| find_profile_rejection(&c.result, relay_profile)),
+        Expr::List(l) => l
+            .elements
+            .iter()
+            .find_map(|e| find_profile_rejection(e, relay_profile)),
+        Expr::Map(m) => m
+            .entries
+            .iter()
+            .find_map(|e| entry_rejection(&e.expr, relay_profile)),
+        Expr::Select(s) => find_profile_rejection(&s.operand, relay_profile),
         Expr::Ident(_) | Expr::Literal(_) => None,
     }
 }
 
-fn entry_rejection(entry: &EntryExpr) -> Option<String> {
+/// The Relay-profile-disabled global builtins (the call form). Mirrors the
+/// host's _DISABLED_BUILTINS (dyn / timestamp / duration), each with its
+/// (code, subtype) cross-runtime pair.
+fn disabled_call_rejection(name: &str) -> Option<(String, &'static str)> {
+    let (msg, subtype): (&str, &'static str) = match name {
+        "dyn" => (
+            "Relay CEL profile disables 'dyn(...)': dynamic typing is not part of \
+             the Relay contract surface",
+            subtypes::DYN,
+        ),
+        "timestamp" => (
+            "Relay CEL profile disables native 'timestamp(...)': use schema-typed \
+             timestamp inputs instead",
+            subtypes::TS,
+        ),
+        "duration" => (
+            "Relay CEL profile disables native 'duration(...)': use schema-typed \
+             duration inputs instead",
+            subtypes::DUR,
+        ),
+        _ => return None,
+    };
+    Some((msg.to_string(), subtype))
+}
+
+fn entry_rejection(entry: &EntryExpr, relay_profile: bool) -> Option<(String, &'static str)> {
     match entry {
         // A StructField entry inside a Map literal is exactly the construct that
         // makes cel 0.13 `panic!("WAT?")` (objects.rs Expr::Map). Fence it.
-        EntryExpr::StructField(_) => Some(
-            "Relay CEL profile disables struct-field construction \
-             (RELAY-CEL-PROFILE-STRUCT-DISABLED)"
-                .to_string(),
-        ),
-        EntryExpr::MapEntry(e) => {
-            find_profile_rejection(&e.key).or_else(|| find_profile_rejection(&e.value))
-        }
+        EntryExpr::StructField(_) => Some((
+            "Relay CEL profile disables struct-field construction".to_string(),
+            subtypes::STRUCT,
+        )),
+        EntryExpr::MapEntry(e) => find_profile_rejection(&e.key, relay_profile)
+            .or_else(|| find_profile_rejection(&e.value, relay_profile)),
     }
 }
 
