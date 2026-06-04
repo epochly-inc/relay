@@ -33,6 +33,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ._compat import field
+
 # Canonical CEL identifier the contract author writes:
 # ``relay.coverage(trace, "step")``. Registered as a single dotted name
 # string in the evaluator's UDF map; the CEL parser treats the dotted
@@ -63,7 +65,9 @@ def relay_coverage(trace: Any, step_name: Any) -> bool:
         return False
     if not isinstance(step_name, str):
         return False
-    steps = trace.get("steps")
+    # Total field access: cel-python MapType.get raises on a missing key, so use
+    # the membership-guarded `field` helper (a missing "steps" -> None -> False).
+    steps = field(trace, "steps")
     # Reject str / bytes which are iterable but not "lists of step
     # entries". A bare string in ``steps`` is a shape error; return
     # False rather than iterating its characters.
@@ -72,7 +76,7 @@ def relay_coverage(trace: Any, step_name: Any) -> bool:
     for entry in steps:
         if not isinstance(entry, Mapping):
             continue
-        name = entry.get("name")
+        name = field(entry, "name")
         # Strict ``==`` on Python ``str`` values is byte-wise (not
         # locale-aware). cel-python ``StringType`` is ``str`` subclass
         # so this comparison is identical across runtimes.
