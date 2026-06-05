@@ -60,9 +60,7 @@ def is_proto_case(record):
     # A struct/message literal anywhere: Name{...} with a dotted or capitalized
     # type. The wasm reports these as RELAY-CEL-002 PROFILE-STRUCT-DISABLED.
     rust = record.get("rust") or {}
-    if rust.get("code") == "RELAY-CEL-002":
-        return True
-    return False
+    return rust.get("code") == "RELAY-CEL-002"
 
 
 def is_dyn_case(record):
@@ -121,9 +119,13 @@ def categorize(record, rust):
 
 def main():
     engine = WasmCel()
-    records = [json.loads(l) for l in open(ORACLE)]
+    with open(ORACLE) as oracle_fh:
+        records = [json.loads(line) for line in oracle_fh]
 
-    out = open(RESULTS, "w")
+    # Accumulate per-record result lines and flush them to RESULTS once at the
+    # end (single context-managed write). Order is preserved, so the RESULTS
+    # file is byte-identical to the prior incremental writes.
+    result_lines: list[str] = []
     summary = {"total": 0, "measured": 0, "passed": 0, "failed": 0, "skipped": 0}
     # ex-proto view: measured/passed excluding proto-message cases.
     exproto = {"measured": 0, "passed": 0}
@@ -147,7 +149,7 @@ def main():
             pf["skipped"] += 1
             r["verdict"] = "skip"
             r["skip_why"] = r.get("skip_reason") or exp_kind
-            out.write(canon(r) + "\n")
+            result_lines.append(canon(r) + "\n")
             continue
 
         # Oracle faithfulness.
@@ -186,9 +188,8 @@ def main():
                 r["expected_typed"]
             ):
                 ok = True
-        elif exp_kind in ("error", "any_errors"):
-            if rust.get("ok") is False:
-                ok = True
+        elif exp_kind in ("error", "any_errors") and rust.get("ok") is False:
+            ok = True
 
         if ok:
             summary["passed"] += 1
@@ -223,9 +224,10 @@ def main():
                     if r["celgo_kind"] == "value"
                     else f"<error:{r.get('celgo_error','')[:40]}>",
                 }
-        out.write(canon(r) + "\n")
+        result_lines.append(canon(r) + "\n")
 
-    out.close()
+    with open(RESULTS, "w") as out:
+        out.writelines(result_lines)
 
     # ---- Print summary ----
     print("=" * 72)

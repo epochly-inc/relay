@@ -40,9 +40,9 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, cast
 
-from wasmtime import Engine, Instance, Module, Store, Trap
+from wasmtime import Engine, Func, Instance, Memory, Module, Store, Trap
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_WASM = os.path.normpath(
@@ -73,10 +73,14 @@ class RelayCel:
         self._store = Store(self._engine)
         self._instance = Instance(self._store, self._module, [])
         ex = self._instance.exports(self._store)
-        self._memory = ex["memory"]
-        self._alloc = ex["alloc"]
-        self._eval = ex["eval"]
-        self._dealloc = ex["dealloc"]
+        # cast is a runtime no-op: it returns its argument unchanged and only
+        # narrows the wasmtime export union (Func|Global|Memory|Table|Tag|...)
+        # for the type checker. The objects bound here are byte-identical to
+        # what `ex[...]` returns, so the loader's runtime behavior is unchanged.
+        self._memory = cast(Memory, ex["memory"])
+        self._alloc = cast(Func, ex["alloc"])
+        self._eval = cast(Func, ex["eval"])
+        self._dealloc = cast(Func, ex["dealloc"])
 
     def eval(
         self,

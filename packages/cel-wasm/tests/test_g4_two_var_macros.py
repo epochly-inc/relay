@@ -136,7 +136,10 @@ def test_all2_no_such_overload():
     ("[5, 7, 8].existsOne(i, v, v % 5 == i)", True),         # list_one
     ("[0, 1, 2, 3, 4].existsOne(i, v, v % 2 == i)", False),  # list_many
     ("['foal', 'foo', 'four'].existsOne(i, v, i > -1 && v.startsWith('fo'))", False),  # list_all
-    ("{6: 'six', 7: 'seven', 8: 'eight'}.existsOne(k, v, k % 5 == 2 && v == 'seven')", True),  # map_one
+    (
+        "{6: 'six', 7: 'seven', 8: 'eight'}.existsOne(k, v, k % 5 == 2 && v == 'seven')",
+        True,
+    ),  # map_one
 ])
 def test_exists_one2(expr, expected):
     assert b(expr) is expected

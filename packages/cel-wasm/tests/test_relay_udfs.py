@@ -152,10 +152,12 @@ def test_tool_arg_null(expr):
     ('relay.schema_match({"a": null}, {"required": ["a"]})', True),
     # required with no type, present (TOTAL; celpy raises)
     ('relay.schema_match({"a": 1}, {"required": ["a"]})', True),
-    # object properties: only present props validated
-    ('relay.schema_match({"a": 1}, {"type": "object", "properties": {"a": {"type": "integer"}}})', True),
-    ('relay.schema_match({"a": "x"}, {"type": "object", "properties": {"a": {"type": "integer"}}})', False),
-    ('relay.schema_match({"b": 1}, {"type": "object", "properties": {"a": {"type": "integer"}}})', True),  # 'a' absent -> not validated
+    # object properties: only present props validated.
+    # noqa E501 below: the first tuple element is a CEL test-vector string that
+    # exceeds 100 cols on its own; wrapping it would split/alter the literal.
+    ('relay.schema_match({"a": 1}, {"type": "object", "properties": {"a": {"type": "integer"}}})', True),  # noqa: E501
+    ('relay.schema_match({"a": "x"}, {"type": "object", "properties": {"a": {"type": "integer"}}})', False),  # noqa: E501
+    ('relay.schema_match({"b": 1}, {"type": "object", "properties": {"a": {"type": "integer"}}})', True),  # noqa: E501  # 'a' absent -> not validated
     # unknown type name -> false
     ('relay.schema_match("s", {"type": "frobnicate"})', False),
     # non-string type field -> false

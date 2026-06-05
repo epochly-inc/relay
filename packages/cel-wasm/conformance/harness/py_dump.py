@@ -19,7 +19,8 @@ OUT = os.environ.get("PY_DUMP", os.path.join(_HERE, "py_dump.txt"))
 
 def main():
     engine = WasmCel()
-    records = [json.loads(l) for l in open(ORACLE)]
+    with open(ORACLE) as oracle_fh:
+        records = [json.loads(line) for line in oracle_fh]
     lines = []
     for r in records:
         bindings = r.get("bindings")

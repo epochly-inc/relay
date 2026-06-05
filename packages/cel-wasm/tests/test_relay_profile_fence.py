@@ -73,7 +73,9 @@ def test_profile_does_not_disable_normal_constructs():
     # Arithmetic, comparison, UDFs, and timestamp/duration VALUE bindings (not
     # calls) stay valid under the profile -- only the global CALL form is fenced.
     assert C.eval("1 + 2", relay_profile=True) == {"ok": True, "value": {"t": "int", "v": "3"}}
-    assert C.eval('relay.coverage({"steps": [{"name": "a"}]}, "a")', relay_profile=True)["value"] == {
+    assert C.eval(
+        'relay.coverage({"steps": [{"name": "a"}]}, "a")', relay_profile=True
+    )["value"] == {
         "t": "bool", "v": True,
     }
     ts = {"t": "timestamp", "v": "2009-02-13T23:31:30Z"}
