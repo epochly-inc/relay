@@ -42,6 +42,7 @@
 // HARDENING.md.
 
 use std::alloc::{alloc as sys_alloc, dealloc as sys_dealloc, Layout};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -134,10 +135,87 @@ impl CelError {
 }
 
 // ---------------------------------------------------------------------------
+// WS-B: UDF execution trace (the udf_trace response field)
+//
+// Each EXECUTED relay.* UDF records its typed-canonical return value here, in
+// CALL ORDER. eval_impl CLEARS this first (so a prior eval on the same thread
+// never leaks), runs the program, then DRAINS this into a `udf_trace` response
+// field keyed per UDF name. The host (M1 pipeline) reconstructs `udf_outputs_jcs`
+// + `udfs_invoked` from it.
+//
+// DETERMINISM (or `make repro`/byte-parity break): the trace is an ORDER-
+// PRESERVING Vec<(name, typed_value)> drained in insertion (call) order, never a
+// HashMap iterated for the field. A short-circuited (`&&`/`||`/ternary) UDF
+// branch is never CALLED, so recording in the function body's return path
+// naturally records nothing for it. `udf_trace` is ADDITIVE metadata: it never
+// changes the eval RESULT value and (both hosts load the SAME .wasm) is byte-
+// identical across hosts by construction.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Per-thread, order-preserving record of (udf_name, typed-canonical value)
+    /// for every relay.* UDF that EXECUTED during the current eval. Cleared at
+    /// the start of eval_impl; drained at the end into the response.
+    static UDF_TRACE: RefCell<Vec<(&'static str, J)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Clear the per-thread UDF trace. Called first in eval_impl so a prior eval on
+/// the same thread (or a host wall-clock timeout that orphaned a worker thread)
+/// never leaks entries into the next eval.
+fn udf_trace_clear() {
+    UDF_TRACE.with(|t| t.borrow_mut().clear());
+}
+
+/// Record one executed relay.* UDF's return value (typed-canonical) in call
+/// order. `name` is the static dotted CEL name; `value` is the UDF's result,
+/// serialized through the SAME value_to_typed serializer the response uses.
+fn udf_trace_record(name: &'static str, value: &Value) {
+    let typed = value_to_typed(value);
+    UDF_TRACE.with(|t| t.borrow_mut().push((name, typed)));
+}
+
+/// Drain the per-thread trace into the `udf_trace` response object: a per-name
+/// list of typed-canonical entries in CALL ORDER. Built by appending to an
+/// order-preserving Vec keyed by first-seen name, so iteration order is
+/// deterministic (call order), never HashMap iteration order. Returns None when
+/// no relay.* UDF executed (so a non-UDF eval omits the field entirely).
+fn udf_trace_drain() -> Option<J> {
+    UDF_TRACE.with(|t| {
+        let entries = t.borrow_mut().drain(..).collect::<Vec<(&'static str, J)>>();
+        if entries.is_empty() {
+            return None;
+        }
+        // Group by UDF name into per-name lists, each in CALL ORDER (the Vec was
+        // already in call order; pushing in iteration order preserves it). The
+        // per-name call-order list is the load-bearing contract: the host (M1
+        // pipeline) reconstructs udf_outputs_jcs per-name in call order from it.
+        //
+        // serde_json::Map here is a BTreeMap (preserve_order is NOT enabled, and
+        // is deliberately left off so the rest of the crate's response/value byte
+        // layout is unchanged), so the OBJECT KEYS emit in a fixed alphabetical
+        // order. That is fully DETERMINISTIC run-to-run -- repro and cross-host
+        // byte-parity hold -- and does not perturb the per-name call-order lists.
+        let mut obj = serde_json::Map::new();
+        for (name, value) in entries {
+            match obj.get_mut(name) {
+                Some(J::Array(list)) => list.push(value),
+                _ => {
+                    obj.insert(name.to_string(), J::Array(vec![value]));
+                }
+            }
+        }
+        Some(J::Object(obj))
+    })
+}
+
+// ---------------------------------------------------------------------------
 // eval pipeline
 // ---------------------------------------------------------------------------
 
 fn eval_impl(input: &[u8]) -> Vec<u8> {
+    // Clear the per-thread UDF trace FIRST, before any UDF can run, so a prior
+    // eval (or an orphaned worker thread) never leaks entries into this one.
+    udf_trace_clear();
     let result = (|| -> Result<J, CelError> {
         let req: J = serde_json::from_slice(input)
             .map_err(|e| CelError::new(codes::REQUEST, e.to_string()))?;
@@ -197,8 +275,21 @@ fn eval_impl(input: &[u8]) -> Vec<u8> {
         Ok(value_to_typed(&value))
     })();
 
+    // Drain the per-thread UDF trace exactly once, regardless of success/error,
+    // so the buffer never carries stale entries into a later eval on this thread.
+    let udf_trace = udf_trace_drain();
+
     let out = match result {
-        Ok(v) => json!({"ok": true, "value": v}),
+        Ok(v) => {
+            let mut obj = json!({"ok": true, "value": v});
+            // ADDITIVE metadata: attach the executed-UDF trace (per-name list in
+            // call order) only when a relay.* UDF actually ran. A non-UDF eval
+            // omits the field entirely. This never changes the `value` above.
+            if let Some(trace) = udf_trace {
+                obj["udf_trace"] = trace;
+            }
+            obj
+        }
         Err(e) => {
             let mut obj = json!({"ok": false, "error": e.message, "code": e.code});
             // Emit `subtype` only for the profile rejections that carry one, so
@@ -827,7 +918,12 @@ fn schema_field<'a>(m: &'a Map, key: &str) -> Option<&'a Value> {
 /// `step_name` (exact codepoint `==`, no case/locale fold). Total: any shape
 /// mismatch -> false. (coverage.py relay_coverage)
 fn relay_coverage(trace: Value, step_name: Value) -> Result<Value, ExecutionError> {
-    Ok(Value::Bool(coverage_match(&trace, &step_name)))
+    let out = Value::Bool(coverage_match(&trace, &step_name));
+    // WS-B: record the executed UDF's return value (typed-canonical) in call
+    // order. Only reached when this UDF actually runs (a short-circuited branch
+    // never calls it), so the trace contains exactly the evaluated UDF calls.
+    udf_trace_record("relay.coverage", &out);
+    Ok(out)
 }
 
 fn coverage_match(trace: &Value, step_name: &Value) -> bool {
@@ -855,14 +951,27 @@ fn coverage_match(trace: &Value, step_name: &Value) -> bool {
 /// -> null. The returned value is passed back unchanged through the typed-
 /// canonical serializer. (tool_arg.py relay_tool_arg)
 fn relay_tool_arg(call: Value, key: Value) -> Result<Value, ExecutionError> {
-    let Value::Map(m) = &call else { return Ok(Value::Null) };
-    let Value::String(k) = &key else { return Ok(Value::Null) };
+    let out = tool_arg_lookup(&call, &key);
+    // WS-B: record the executed UDF's return value (typed-canonical) in call
+    // order. Computed once (tool_arg_lookup) so EVERY shape -- a found value, a
+    // present-null, a missing key, a non-map call/args, a non-string key -- is
+    // recorded identically to what the response value would serialize.
+    udf_trace_record("relay.tool_arg", &out);
+    Ok(out)
+}
+
+/// The total `call["args"][key]` lookup: a found value (cloned), else null. A
+/// present-null and a missing key both yield null (the v0.1 contract); any shape
+/// mismatch (non-map call/args, non-string key) also yields null.
+fn tool_arg_lookup(call: &Value, key: &Value) -> Value {
+    let Value::Map(m) = call else { return Value::Null };
+    let Value::String(k) = key else { return Value::Null };
     let Some(Value::Map(args)) = map_get_str(m, "args") else {
-        return Ok(Value::Null);
+        return Value::Null;
     };
     match args.map.get(&Key::String(k.clone())) {
-        Some(v) => Ok(v.clone()),
-        None => Ok(Value::Null),
+        Some(v) => v.clone(),
+        None => Value::Null,
     }
 }
 
@@ -879,7 +988,11 @@ const SCHEMA_VALID_TYPES: [&str; 7] = [
 /// the minimal JSON-Schema subset declared by `schema` (type/required/
 /// properties/items). Total: a malformed schema yields false. (schema_match.py)
 fn relay_schema_match(payload: Value, schema: Value) -> Result<Value, ExecutionError> {
-    Ok(Value::Bool(schema_validate(&payload, &schema, 0)))
+    let out = Value::Bool(schema_validate(&payload, &schema, 0));
+    // WS-B: record the executed UDF's return value (typed-canonical) in call
+    // order. Only reached when this UDF actually runs.
+    udf_trace_record("relay.schema_match", &out);
+    Ok(out)
 }
 
 /// JSON-Schema "number": a FINITE int/uint/double. Booleans are NOT numbers;

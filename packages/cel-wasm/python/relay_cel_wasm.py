@@ -23,12 +23,24 @@ crate/src/lib.rs):
 Errors surface as {"ok": False, "error": "<msg>", "code": "RELAY-CEL-NNN"}.
 A wasm trap (which should not happen for in-profile inputs after the G1 fence)
 is caught, the instance re-instantiated, and reported as ENGINE_PANIC.
+
+A successful response that executed one or more relay.* UDFs also carries a
+top-level `udf_trace` field (WS-B): an object mapping each executed UDF name
+(relay.coverage / relay.tool_arg / relay.schema_match) to a LIST of its typed-
+canonical return values in CALL ORDER, e.g.
+    {"ok": True, "value": {"t":"bool","v":True},
+     "udf_trace": {"relay.coverage": [{"t":"bool","v":True}]}}
+A short-circuited (never-evaluated) UDF branch is NOT recorded, and the field is
+ABSENT when no relay.* UDF executed. The M1 pipeline reconstructs
+udf_outputs_jcs / udfs_invoked from this field on the wasm path. The field is
+additive metadata: it never changes the eval `value`, and because both hosts
+load the SAME .wasm it is byte-identical across hosts by construction.
 """
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 from wasmtime import Engine, Instance, Module, Store, Trap
 
@@ -51,7 +63,7 @@ class RelayCel:
     create one instance per thread, or pool them. A later embedding work-stream
     adds the per-thread Store pool + signature verification."""
 
-    def __init__(self, wasm_path: Optional[str] = None):
+    def __init__(self, wasm_path: str | None = None):
         path = wasm_path or os.environ.get("CEL_WASM", _DEFAULT_WASM)
         self._engine = Engine()
         self._module = Module.from_file(self._engine, path)
@@ -69,10 +81,10 @@ class RelayCel:
     def eval(
         self,
         expr: str,
-        bindings: Optional[Dict[str, Any]] = None,
-        container: Optional[str] = None,
+        bindings: dict[str, Any] | None = None,
+        container: str | None = None,
         relay_profile: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Evaluate `expr` with optional typed `bindings` and an optional CEL
         resolution `container` (namespace, e.g. "com.example"). Always returns a
         dict (never raises for evaluation errors): success carries `value`,
@@ -82,7 +94,7 @@ class RelayCel:
         restrictions: dyn()/timestamp()/duration() global calls are rejected
         with RELAY-CEL-002 and the matching subtype. The Relay host wrapper sets
         this; the cel-spec conformance harness leaves it off."""
-        req: Dict[str, Any] = {"expr": expr}
+        req: dict[str, Any] = {"expr": expr}
         if bindings:
             req["bindings"] = bindings
         if container:
