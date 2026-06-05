@@ -41,8 +41,8 @@ export const SUBTYPE_NUMERIC_OOB = "RELAY-CEL-NUMERIC-OOB" as const;
 // (the engine exposes only the 3 hardcoded relay.* UDFs). Shares the UDF code
 // (004) with the purity error -- both are UDF-registration failures. Mirrors
 // the Python SUBTYPE_UDF_UNREGISTERED (errors.py:52). The class that raises it
-// (the WasmCelBackend reject path) lands in the next feature (P2TSGATE-003);
-// this constant + union widening is the error-envelope surface only.
+// is RelayCelUnsupportedUdfError (below), thrown by the WasmCelBackend reject
+// path (wasm-evaluator.ts, VAL-CWC-P2TSGATE-003).
 export const SUBTYPE_UDF_UNREGISTERED = "RELAY-CEL-UDF-UNREGISTERED" as const;
 // Engine-error subtypes (RELAY-CEL-009): the wasm engine reported a failure
 // that is NOT one of the classified host conditions. Distinct from 004/006 so
@@ -142,6 +142,20 @@ export class RelayUdfPurityError extends RelayCelError {
   constructor(message: string) {
     super(message, CODE_RELAY_CEL_004, SUBTYPE_UDF_IMPURE);
     this.name = "RelayUdfPurityError";
+  }
+}
+
+// A caller passed an extra UDF the wasm engine cannot host. The single-engine
+// (wasm) backend exposes only the 3 hardcoded Relay UDFs (relay.coverage /
+// relay.tool_arg / relay.schema_match) and has NO registration mechanism, so any
+// caller-supplied extra UDF is rejected fail-closed BEFORE evaluation. Shares
+// the UDF code (004) with the purity error; the subtype distinguishes
+// "unregistered" from "impure". Mirrors the Python RelayCelUnsupportedUdfError
+// (errors.py:171-182) EXACTLY (code 004, subtype RELAY-CEL-UDF-UNREGISTERED).
+export class RelayCelUnsupportedUdfError extends RelayCelError {
+  constructor(message: string) {
+    super(message, CODE_RELAY_CEL_004, SUBTYPE_UDF_UNREGISTERED);
+    this.name = "RelayCelUnsupportedUdfError";
   }
 }
 

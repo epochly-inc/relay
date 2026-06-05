@@ -175,7 +175,12 @@ function checkProfileCst(cst: unknown): void {
 // regex backreferences. Mirrors packages/contracts/src/relay_contracts/
 // evaluator.py:151-167. Only the first string-literal hit matters --
 // any backref triggers the same envelope.
-function checkRegexBackref(expression: string): void {
+//
+// Exported so the wasm-backed evaluator (wasm-evaluator.ts WasmCelBackend)
+// reuses the IDENTICAL host-side guard rather than reimplementing it -- the
+// host guards stay host-side and stay single-sourced (locked decision:
+// regex-backref pre-screen runs in the TS host on every engine path).
+export function checkRegexBackref(expression: string): void {
   let match: RegExpExecArray | null;
   // Reset lastIndex by reconstructing via fresh regex execution loop.
   const re = new RegExp(STRING_LITERAL_PATTERN.source, STRING_LITERAL_PATTERN.flags);
@@ -195,7 +200,12 @@ function checkRegexBackref(expression: string): void {
 // objects recurse; numeric leaves throw on non-finite OR on an integral
 // value outside the IEEE-754 safe range. Mirrors
 // packages/contracts/src/relay_contracts/evaluator.py _check_finite.
-function checkFinite(value: unknown): unknown {
+//
+// Exported so the wasm-backed evaluator (wasm-evaluator.ts WasmCelBackend)
+// runs the IDENTICAL host-side finiteness/safe-range guard on the
+// typedToNative-converted wasm result (the host guard stays host-side, not
+// delegated to the wasm).
+export function checkFinite(value: unknown): unknown {
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
       throw new RelayCelNumericOutOfBoundsError(

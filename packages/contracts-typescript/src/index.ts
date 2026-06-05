@@ -23,10 +23,16 @@ export type {
 // truth). `nativeToTyped` is re-exported from pipeline.js for back-compat but
 // is owned here; `typedToNative` is the round-trip inverse.
 export {
+  decodeWasmEnvelope,
   nativeToTyped,
   typedToNative,
+  WasmCelBackend,
 } from "./wasm-evaluator.js";
-export type { TypedValue } from "./wasm-evaluator.js";
+export type {
+  TypedValue,
+  WasmCelBackendOptions,
+  WasmResponseEnvelope,
+} from "./wasm-evaluator.js";
 export type { PureUdf, RegisterUdfOptions } from "./udf.js";
 export { registerUdf } from "./udf.js";
 
@@ -61,6 +67,7 @@ export {
   RelayCelProfileError,
   RelayCelRegexBackreferenceError,
   RelayCelTimeoutError,
+  RelayCelUnsupportedUdfError,
   RelayUdfPurityError,
   SUBTYPE_ENGINE_COMPILE,
   SUBTYPE_ENGINE_EXEC,
