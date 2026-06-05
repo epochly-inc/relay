@@ -27,7 +27,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
-from relay_contracts import RELAY_UDFS, RelayCelError, RelayCelEvaluator
+from relay_contracts import (
+    RELAY_UDFS,
+    CelEvaluatorProtocol,
+    RelayCelError,
+    make_cel_evaluator,
+)
 
 from .errors import (
     AntiBypassRejectedError,
@@ -509,9 +514,10 @@ class AntiBypassGuard:
 class GateEvaluator:
     """Evaluate a single gate against a submitted draft (VAL-W8-001..007, 041).
 
-    Construction is cheap: a W6 :class:`RelayCelEvaluator` is created
-    once (with the canonical Relay UDF set) and reused across calls so
-    expression compilation caches persist.
+    Construction is cheap: a W6 CEL evaluator is created once via the
+    contracts factory (:func:`relay_contracts.make_cel_evaluator`, typed as
+    :class:`relay_contracts.CelEvaluatorProtocol`) with the canonical Relay
+    UDF set, and reused across calls so expression compilation caches persist.
     """
 
     def __init__(
@@ -521,7 +527,7 @@ class GateEvaluator:
         manifest_resolver: ManifestCommandResolver,
         assertion_loader: AssertionLoader | None = None,
         anti_bypass: AntiBypassGuard | None = None,
-        cel_evaluator: RelayCelEvaluator | None = None,
+        cel_evaluator: CelEvaluatorProtocol | None = None,
     ) -> None:
         self._evidence = evidence_provider
         self._manifest = manifest_resolver
@@ -529,8 +535,15 @@ class GateEvaluator:
         self._anti_bypass = anti_bypass or AntiBypassGuard()
         # Single shared CEL evaluator with the canonical Relay UDF set.
         # VAL-W8-002: gate policy conditions MUST be evaluated by the W6
-        # contract engine, never inlined.
-        self._cel = cel_evaluator or RelayCelEvaluator(udfs=RELAY_UDFS)
+        # contract engine, never inlined. The engine backend (celpy default;
+        # wasm only when the contracts factory's selector says so) is chosen by
+        # the contracts factory -- the single engine-selection read site -- so
+        # gate src stays env-free and deterministic (VAL-W8-005 /
+        # VAL-CWC-P2TSGATE-010). The hint is the CelEvaluatorProtocol facade so
+        # the gate is engine-agnostic.
+        self._cel: CelEvaluatorProtocol = cel_evaluator or make_cel_evaluator(
+            udfs=RELAY_UDFS
+        )
 
     # --- Public API ---------------------------------------------------
 
