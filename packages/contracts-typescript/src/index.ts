@@ -14,12 +14,19 @@ export {
 } from "./evaluator.js";
 // VAL-CWC-P1HOST-019: the wasm-path udf_outputs_jcs reconstruction (TS mirror
 // of the Python pipeline's wasm hot path), byte-identical to the Python host.
-export { evaluateUdfOutputs, nativeToTyped } from "./pipeline.js";
+export { evaluateUdfOutputs } from "./pipeline.js";
 export type {
   EvaluateUdfOutputsOptions,
-  TypedValue,
   UdfOutputsResult,
 } from "./pipeline.js";
+// VAL-CWC-P2TSGATE-005: the canonical native<->typed codec (single source of
+// truth). `nativeToTyped` is re-exported from pipeline.js for back-compat but
+// is owned here; `typedToNative` is the round-trip inverse.
+export {
+  nativeToTyped,
+  typedToNative,
+} from "./wasm-evaluator.js";
+export type { TypedValue } from "./wasm-evaluator.js";
 export type { PureUdf, RegisterUdfOptions } from "./udf.js";
 export { registerUdf } from "./udf.js";
 

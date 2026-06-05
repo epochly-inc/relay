@@ -30,28 +30,18 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 import { jcsCanonicalize } from "./canonical.js";
-import { RelayCelNumericOutOfBoundsError } from "./errors.js";
+// Single source of truth for the native<->typed codec lives in wasm-evaluator.ts
+// (VAL-CWC-P2TSGATE-005). This pipeline imports `nativeToTyped` / `TypedValue`
+// from there rather than keeping a second copy that could drift -- a P0
+// byte-parity risk. The codec's int/double classification + BigInt overflow
+// boundary is the keystone-invariant-#16 contract with cel-python.
+import { nativeToTyped, type TypedValue } from "./wasm-evaluator.js";
 
-// VAL-PARITY-001 / VAL-CWC-P1HOST-005: integral values whose magnitude exceeds
-// Number.MAX_SAFE_INTEGER (2**53 - 1) cannot be represented exactly as a JS
-// double, so binding them as a CEL int would diverge the cross-host digest.
-// We reject them at the boundary (the host guard stays host-side).
-const SAFE_INTEGER_BOUND = 2 ** 53 - 1;
-
-// The wasm typed-canonical value form (the {"t","v"} wire form the crate
-// emits and consumes; see crate/src/lib.rs value_to_typed / typed_to_value and
-// the Python codec packages/contracts/src/relay_contracts/wasm_codec.py).
-// `null` carries no "v" key.
-export type TypedValue =
-  | { t: "int"; v: string }
-  | { t: "uint"; v: string }
-  | { t: "double"; v: string }
-  | { t: "string"; v: string }
-  | { t: "bool"; v: boolean }
-  | { t: "bytes"; v: string }
-  | { t: "list"; v: TypedValue[] }
-  | { t: "map"; v: [TypedValue, TypedValue][] }
-  | { t: "null" };
+// Re-export so the package public surface (index.ts) is unchanged: callers
+// importing `nativeToTyped` / `TypedValue` from "./pipeline.js" keep working,
+// now backed by the single canonical implementation.
+export { nativeToTyped };
+export type { TypedValue };
 
 // The wasm response envelope shape (a subset; we only read what this path
 // needs). Success carries `value` and optionally `udf_trace`; failure carries
@@ -80,120 +70,11 @@ interface RelayCelModule {
   };
 }
 
-// ---------------------------------------------------------------------------
-// nativeToTyped: JS native value -> wasm typed-canonical {"t","v"}.
-//
-// Faithful mirror of py_to_typed (wasm_codec.py:208-261). Classification order
-// is load-bearing: bool BEFORE number (a JS boolean must serialize as
-// {"t":"bool"}, never {"t":"int"}). JS has no separate uint/bytes primitive in
-// the binding inputs we accept, so:
-//   - boolean        -> {"t":"bool","v":<bool>}      (lib.rs:1141, JSON boolean)
-//   - null/undefined -> {"t":"null"}                  (lib.rs:1142, no "v")
-//   - bigint         -> {"t":"int","v":<decimal str>} (arbitrary-precision int)
-//   - number, integral & |v| <= MAX_SAFE_INTEGER -> {"t":"int","v":str}
-//   - number, otherwise                          -> {"t":"double","v":canonical}
-//   - string         -> {"t":"string","v":<utf8>}
-//   - array          -> {"t":"list","v":[...]}        (order preserved)
-//   - object         -> {"t":"map","v":[[k,v],...]}   (sorted by key_sort_string)
-//
-// Binding values are the INPUTS to the wasm; the udf_trace OUTPUT bytes (the
-// byte-parity target) are produced INSIDE the wasm regardless of how we encode
-// the inputs, as long as the encoded inputs are semantically the SAME values
-// the Python host binds. Python binds via py_to_typed (the same classification),
-// so encoding here the same way guarantees the wasm sees identical inputs and
-// emits identical udf_trace.
-// ---------------------------------------------------------------------------
-export function nativeToTyped(value: unknown): TypedValue {
-  // bool FIRST -- a JS boolean must not fall through to the number branch.
-  if (typeof value === "boolean") {
-    return { t: "bool", v: value };
-  }
-  if (value === null || value === undefined) {
-    return { t: "null" };
-  }
-  if (typeof value === "bigint") {
-    // Arbitrary-precision integer -> decimal string (CEL int).
-    return { t: "int", v: (value as bigint).toString(10) };
-  }
-  if (typeof value === "number") {
-    const n = value;
-    if (!Number.isFinite(n)) {
-      throw new RelayCelNumericOutOfBoundsError(
-        `binding value is non-finite: ${String(n)}`,
-      );
-    }
-    if (Number.isInteger(n)) {
-      if (Math.abs(n) > SAFE_INTEGER_BOUND) {
-        throw new RelayCelNumericOutOfBoundsError(
-          "binding integer outside the IEEE-754 safe range " +
-            `[-(2**53 - 1), 2**53 - 1]: ${String(n)}`,
-        );
-      }
-      // A whole-valued JS number is bound as a CEL int (matches cel-python
-      // json_to_cel, which classifies a whole-valued number as int).
-      return { t: "int", v: encodeIntString(n) };
-    }
-    // Non-integral -> double, canonical-g form (matches the Python codec's
-    // _canonical_double via String(n) for the finite non-zero case, which is
-    // ECMA-262 ToString -- the same shortest-round-trip form).
-    return { t: "double", v: canonicalDouble(n) };
-  }
-  if (typeof value === "string") {
-    return { t: "string", v: value };
-  }
-  if (Array.isArray(value)) {
-    return { t: "list", v: value.map(nativeToTyped) };
-  }
-  if (typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    // Map entries are sorted by the wasm key_sort_string total order
-    // (lib.rs:1126-1133). Our binding keys are always JS strings (object
-    // literals), so the key sort reduces to the "3:string:<s>" bucket; sorting
-    // by the string value reproduces that order. The wasm re-sorts internally
-    // on typed_to_value anyway, so map-entry order here is not part of the
-    // udf_trace byte contract -- but we sort for determinism and to mirror
-    // py_to_typed exactly.
-    const entries: [TypedValue, TypedValue][] = [];
-    const sortKeys: Array<{ key: string; sort: string }> = [];
-    for (const k of Object.keys(obj)) {
-      sortKeys.push({ key: k, sort: `3:string:${k}` });
-    }
-    sortKeys.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
-    for (const { key } of sortKeys) {
-      entries.push([
-        { t: "string", v: key },
-        nativeToTyped(obj[key]),
-      ]);
-    }
-    return { t: "map", v: entries };
-  }
-  throw new TypeError(
-    `nativeToTyped: unsupported binding value type ${typeof value}`,
-  );
-}
-
-// Decimal string for a safe-range integral JS number. String(n) for an integer
-// within the safe range is exact and matches the Python str(int(value)) form
-// (no scientific notation for |n| <= 2**53 - 1).
-function encodeIntString(n: number): string {
-  // For a whole-valued number in the safe range, toFixed(0) avoids any
-  // exponent form (e.g. 1e21 would never reach here -- it exceeds the bound).
-  return n.toFixed(0);
-}
-
-// Canonical-g double string. Mirrors the Python codec's _canonical_double for
-// the finite branch: ECMA-262 ToString (String(n)) is the shortest round-trip
-// decimal, which the JCS encoder also uses. inf/-inf/nan are rejected upstream
-// (non-finite binding values throw), so only finite non-integral numbers reach
-// here.
-function canonicalDouble(n: number): string {
-  if (n === 0) {
-    // Both +0 and -0 -- the codec emits "0.0" / "-0.0"; a literal 0 binding is
-    // integral and never reaches this branch, so this is defensive only.
-    return Object.is(n, -0) ? "-0.0" : "0.0";
-  }
-  return String(n);
-}
+// nativeToTyped (the JS-native -> typed-canonical encoder) is the single
+// canonical codec in wasm-evaluator.ts, imported and re-exported above. The
+// binding-encode path below uses that SAME function, so the inputs the wasm
+// sees on the TS host are byte-identical to the Python host's py_to_typed
+// binding.
 
 // ---------------------------------------------------------------------------
 // Lazy, cached loader resolution. The .mjs loader is a sibling package
