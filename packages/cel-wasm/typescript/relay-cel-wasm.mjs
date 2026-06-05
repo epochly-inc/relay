@@ -67,14 +67,33 @@ export class RelayCel {
   }
 
   /**
-   * Evaluate `expr` with optional typed `bindings`. Returns the typed result
+   * Evaluate `expr` with optional typed `bindings` and an optional
+   * `{relayProfile, container}` options object. Returns the typed result
    * object: success carries `value`, failure carries `error` + `code`. A wasm
    * trap (should not happen for in-profile inputs after the G1 fence) is caught,
    * the instance re-instantiated, and reported as ENGINE_PANIC.
+   *
+   * `relayProfile: true` turns on the Relay CEL profile's call-level
+   * restrictions: dyn()/timestamp()/duration() global calls are rejected with
+   * RELAY-CEL-002 and the matching subtype. The Relay host wrapper sets this;
+   * the cel-spec conformance harness leaves it off (so the request JSON is
+   * byte-identical to the no-options form -- the field is ADDED only when
+   * truthy). `container` is the optional CEL resolution namespace (e.g.
+   * "com.example"). The wasm-request field names (`relay_profile`, `container`)
+   * MUST match the Python loader (relay_cel_wasm.py) and the crate
+   * (crate/src/lib.rs:239-240, 259) exactly -- both hosts hit the same reactor.
    */
-  async eval(expr, bindings) {
+  async eval(expr, bindings, options) {
     const { memory, alloc, eval: evalFn, dealloc } = this.#exports;
     const req = bindings ? { expr, bindings } : { expr };
+    if (options) {
+      if (options.container) {
+        req.container = options.container;
+      }
+      if (options.relayProfile) {
+        req.relay_profile = true;
+      }
+    }
     const inp = this.#enc.encode(JSON.stringify(req));
     const n = inp.length;
     try {
