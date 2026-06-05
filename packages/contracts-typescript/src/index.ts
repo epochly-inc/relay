@@ -12,6 +12,14 @@ export {
   MAX_TIMEOUT_MS,
   RelayCelEvaluator,
 } from "./evaluator.js";
+// VAL-CWC-P1HOST-019: the wasm-path udf_outputs_jcs reconstruction (TS mirror
+// of the Python pipeline's wasm hot path), byte-identical to the Python host.
+export { evaluateUdfOutputs, nativeToTyped } from "./pipeline.js";
+export type {
+  EvaluateUdfOutputsOptions,
+  TypedValue,
+  UdfOutputsResult,
+} from "./pipeline.js";
 export type { PureUdf, RegisterUdfOptions } from "./udf.js";
 export { registerUdf } from "./udf.js";
 
