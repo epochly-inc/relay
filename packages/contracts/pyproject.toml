@@ -41,6 +41,11 @@ dependencies = [
   # uv resolves from the workspace tree, never from a published index
   # (CLAUDE.md import-boundary rule).
   "epochly-relay-schemas",
+  # WS-A cel-wasm host cutover: the wasm-backed evaluator
+  # (relay_contracts.wasm_backed_evaluator.WasmCelEvaluator) loads the single
+  # CEL engine via the relay-cel-wasm Python loader, which imports wasmtime.
+  # Pinned to a tested major; bumped via the W6 / cutover release process only.
+  "wasmtime>=45,<46",
 ]
 
 [project.optional-dependencies]
