@@ -38,9 +38,10 @@ from relay_schemas.error_codes import RelayErrorCode
 
 from .canonical import jcs_canonicalize
 from .dsl_parser import ContractParseError, ParsedContract
+from .engine import make_cel_evaluator
 from .errors import RelayCelError
-from .evaluator import RelayCelEvaluator
 from .udf import PureUdf
+from .wasm_codec import py_to_typed
 
 # Required outcome envelope keys per VAL-W6-045.
 _REQUIRED_OUTCOME_KEYS = (
@@ -155,7 +156,13 @@ def publish_contract(
         return  # structured op/args tree -- no CEL compilation
 
     udfs = tuple(extra_udfs)
-    evaluator = RelayCelEvaluator(udfs=udfs)
+    # Construct via the engine factory (the ONLY RELAY_CEL_ENGINE read site is
+    # engine.py; pipeline.py never reads the env). On the wasm engine a
+    # caller-supplied non-allowlist UDF is rejected fail-closed at construction
+    # (RelayCelUnsupportedUdfError / RELAY-CEL-004-UDF-UNREGISTERED), which is
+    # the correct publish-time rejection on that path (VAL-CWC-P1HOST-016): the
+    # wasm hosts only the 3 native relay.* UDFs and has no registration slot.
+    evaluator = make_cel_evaluator(udfs=udfs)
     try:
         compiled = evaluator.compile(expression)
     except RelayCelError as exc:
@@ -217,6 +224,114 @@ def _classify_outcome(value: Any) -> str:
     return "error"
 
 
+def _evaluate_celpy_path(
+    expression: str,
+    extra_udfs: tuple[PureUdf, ...],
+    bindings: Mapping[str, Any] | None,
+) -> tuple[dict[str, list[Any]], list[str], str, float]:
+    """Evaluate via the cel-python engine; capture UDF outputs typed-canonical.
+
+    Wraps each UDF callable to capture its return value PER INVOCATION in
+    CEL-evaluation order (Round-3 P1 fix #3: a UDF may be called multiple
+    times in one expression; every call is recorded, not just the last). The
+    captured raw cel-python results are converted to the wasm typed-canonical
+    ``{"t":...,"v":...}`` form via ``py_to_typed`` so the celpy and wasm
+    ``udf_outputs_jcs`` bytes are IDENTICAL (VAL-CWC-P1HOST-015: typed-canonical
+    is the single contract).
+
+    ``udfs_invoked`` is derived from the UDF names that ACTUALLY fired (the
+    wrapper-capture keys), matching the wasm path's "derive from udf_trace
+    keys" semantics -- not from an AST walk. This also fixes dotted-name UDFs
+    (``relay.coverage``) that the bare-IDENT AST walk could not detect as
+    callees. The list is sorted (the existing contract semantics and the wasm
+    BTreeMap key order agree on alphabetical order).
+
+    The capture closure is scoped to THIS call (no process global); concurrent
+    evaluations on different threads each get their own ``captured_outputs``.
+    """
+    from .udf import register_udf
+
+    captured_outputs: dict[str, list[Any]] = {}
+    wrapped_udfs: list[PureUdf] = []
+
+    for udf in extra_udfs:
+        original = udf.fn
+
+        def _make_wrapper(name: str, fn: Any) -> Any:
+            def _wrapper(*args: Any, **kwargs: Any) -> Any:
+                result = fn(*args, **kwargs)
+                # Convert eagerly to typed-canonical so the per-name list is
+                # the SAME shape the wasm udf_trace carries (byte-parity).
+                captured_outputs.setdefault(name, []).append(py_to_typed(result))
+                return result
+            return _wrapper
+
+        wrapped = register_udf(
+            udf.name, _make_wrapper(udf.name, original), pure=True, arity=udf.arity
+        )
+        wrapped_udfs.append(wrapped)
+
+    evaluator = make_cel_evaluator(udfs=wrapped_udfs)
+
+    t0 = time.perf_counter()
+    try:
+        value = evaluator.evaluate(expression, dict(bindings or {}))
+        outcome = _classify_outcome(value)
+    except RelayCelError:
+        outcome = "error"
+    wall_time_ms = (time.perf_counter() - t0) * 1000.0
+
+    # udfs_invoked / udf_outputs from the UDFs that actually fired, in sorted
+    # name order. A short-circuited UDF branch never fires the wrapper, so it
+    # is not recorded -- consistent with the wasm udf_trace (never records a
+    # short-circuited call).
+    udfs_invoked = sorted(captured_outputs.keys())
+    udf_outputs = {name: captured_outputs[name] for name in udfs_invoked}
+    return udf_outputs, udfs_invoked, outcome, wall_time_ms
+
+
+def _evaluate_wasm_path(
+    expression: str,
+    extra_udfs: tuple[PureUdf, ...],
+    bindings: Mapping[str, Any] | None,
+) -> tuple[dict[str, list[Any]], list[str], str, float]:
+    """Evaluate via the wasm engine; reconstruct outputs from ``udf_trace``.
+
+    The wasm evaluator surfaces ``udf_trace`` (a per-UDF-name list of
+    typed-canonical values in CALL ORDER) directly from the wasm response, so
+    there is NO cel-python ``_env`` AST walk on the wasm hot path
+    (VAL-CWC-P1HOST-014). ``udfs_invoked`` is derived from the ``udf_trace``
+    keys (sorted -- matching the wasm BTreeMap key order and the celpy path's
+    sorted semantics); ``udf_outputs`` is the trace itself (already
+    typed-canonical), so the JCS bytes match the celpy path byte-for-byte.
+
+    A caller-supplied non-allowlist UDF was already rejected at construction
+    (the factory builds a ``WasmCelEvaluator`` which raises
+    ``RelayCelUnsupportedUdfError`` -- the wasm has no registration slot). The
+    3 native relay.* UDFs are baked into the wasm.
+    """
+    evaluator = make_cel_evaluator(udfs=extra_udfs)
+    # Detected via capability in the caller; assert the method exists so a
+    # mis-detection is a loud failure rather than a silent wrong-path eval.
+    evaluate_with_trace = evaluator.evaluate_with_trace  # type: ignore[attr-defined]
+
+    t0 = time.perf_counter()
+    udf_trace: dict[str, list[Any]] = {}
+    try:
+        value, udf_trace = evaluate_with_trace(expression, dict(bindings or {}))
+        outcome = _classify_outcome(value)
+    except RelayCelError:
+        outcome = "error"
+        udf_trace = {}
+    wall_time_ms = (time.perf_counter() - t0) * 1000.0
+
+    # udfs_invoked from the udf_trace keys (sorted); udf_outputs is the trace
+    # (already a per-name list of typed-canonical values in call order).
+    udfs_invoked = sorted(udf_trace.keys())
+    udf_outputs = {name: udf_trace[name] for name in udfs_invoked}
+    return udf_outputs, udfs_invoked, outcome, wall_time_ms
+
+
 def evaluate_assertion(
     parsed: ParsedContract,
     *,
@@ -254,65 +369,36 @@ def evaluate_assertion(
         )
 
     extra_udfs_tuple = tuple(extra_udfs)
-    # Wrap each UDF callable so we can capture its return value for the
-    # envelope without mutating the underlying PureUdf object.
-    #
-    # Round-3 P1 fix #3: capture is a LIST per UDF name, not a scalar.
-    # A CEL expression may call the same UDF multiple times with
-    # different arguments (e.g., ``my_check("a") && my_check("b")``);
-    # an overwrite-on-store would erase all but the LAST return value,
-    # breaking keystone invariant 2 (the forensic envelope must record
-    # every invocation that contributed to the outcome). The wrapper
-    # appends to ``captured_outputs[name]`` so every invocation is
-    # preserved in CEL-evaluation order.
-    #
-    # The wrapper is scoped per evaluate_assertion call (the closure
-    # ``captured_outputs`` lives only for this stack frame); it is NOT
-    # a process global. Concurrent evaluations on different threads /
-    # tasks each get their own ``captured_outputs`` dict, so there is
-    # no cross-evaluation contamination.
-    captured_outputs: dict[str, list[Any]] = {}
-    wrapped_udfs: list[PureUdf] = []
-    from .udf import register_udf
-
-    for udf in extra_udfs_tuple:
-        original = udf.fn
-
-        def _make_wrapper(name: str, fn: Any) -> Any:
-            def _wrapper(*args: Any, **kwargs: Any) -> Any:
-                result = fn(*args, **kwargs)
-                captured_outputs.setdefault(name, []).append(result)
-                return result
-            return _wrapper
-
-        wrapped = register_udf(
-            udf.name, _make_wrapper(udf.name, original), pure=True, arity=udf.arity
-        )
-        wrapped_udfs.append(wrapped)
-
-    evaluator = RelayCelEvaluator(udfs=wrapped_udfs)
     expression: str = parsed.expression  # type: ignore[assignment]
 
-    # Discover which UDF callees actually appear in the AST (not just
-    # what the caller registered). udfs_invoked = registered ∩ AST.
-    ast = evaluator._env.compile(expression)  # noqa: SLF001 -- internal AST access
-    ast_callees = set(_walk_function_call_idents(ast))
-    registered_names = {u.name for u in wrapped_udfs}
-    udfs_invoked = sorted(ast_callees & registered_names)
+    # Engine selection lives in the factory (engine.py -- the ONLY
+    # RELAY_CEL_ENGINE read site). pipeline.py NEVER reads the env var; it
+    # detects the active path by the evaluator's CAPABILITY, not by ambient
+    # process state (preserving the VAL-W8-005 / VAL-CWC-P4DUALRUN-008
+    # determinism grep). The wasm evaluator exposes ``evaluate_with_trace``
+    # (it can surface the wasm ``udf_trace`` response field); the celpy
+    # evaluator does not, so ``hasattr`` discriminates the two paths without
+    # importing either concrete class here.
+    #
+    # On the wasm engine, a caller-supplied non-allowlist UDF is rejected
+    # fail-closed at construction (RelayCelUnsupportedUdfError /
+    # RELAY-CEL-004-UDF-UNREGISTERED) -- the wasm hosts only the 3 native
+    # relay.* UDFs (VAL-CWC-P1HOST-016). The 3 native relay.* UDFs are
+    # accepted on both engines.
+    if hasattr(make_cel_evaluator(udfs=()), "evaluate_with_trace"):
+        udf_outputs, udfs_invoked, outcome, wall_time_ms = (
+            _evaluate_wasm_path(expression, extra_udfs_tuple, bindings)
+        )
+    else:
+        udf_outputs, udfs_invoked, outcome, wall_time_ms = (
+            _evaluate_celpy_path(expression, extra_udfs_tuple, bindings)
+        )
 
-    t0 = time.perf_counter()
-    try:
-        value = evaluator.evaluate(expression, dict(bindings or {}))
-        outcome = _classify_outcome(value)
-    except RelayCelError:
-        outcome = "error"
-        value = None
-    wall_time_ms = (time.perf_counter() - t0) * 1000.0
-
-    # Build a JCS-canonical JSON string of the captured UDF outputs.
-    # Only includes the UDFs actually invoked during this evaluation.
-    invoked_outputs = {name: captured_outputs.get(name) for name in udfs_invoked}
-    udf_outputs_jcs_bytes = jcs_canonicalize(invoked_outputs)
+    # Single typed-canonical contract for udf_outputs_jcs across BOTH engines
+    # (VAL-CWC-P1HOST-015): ``udf_outputs`` is already a per-UDF-name list of
+    # typed-canonical ``{"t":...,"v":...}`` entries in call order on either
+    # path, so the JCS bytes are byte-identical for the same logical outputs.
+    udf_outputs_jcs_bytes = jcs_canonicalize(udf_outputs)
     udf_outputs_jcs_str = udf_outputs_jcs_bytes.decode("utf-8")
 
     envelope: dict[str, Any] = {

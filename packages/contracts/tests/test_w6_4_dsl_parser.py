@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -420,6 +421,11 @@ def test_runtime_outcome_envelope_pass_fail_error() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W6-045")
+@pytest.mark.skipif(
+    os.environ.get("RELAY_CEL_ENGINE", "").strip() == "wasm",
+    reason="bare-name custom UDF; the wasm engine has no registration slot and "
+    "rejects it (RELAY-CEL-004 / UDF-UNREGISTERED). This is a celpy-path test.",
+)
 def test_runtime_invokes_application_udf_and_records_in_envelope() -> None:
     """A CEL expression that calls a registered UDF MUST surface the UDF
     name in udfs_invoked and the JCS-canonical output bytes.
@@ -458,8 +464,16 @@ def test_runtime_invokes_application_udf_and_records_in_envelope() -> None:
     # expression preserves every invocation's return value (keystone
     # invariant 2). A single-call invocation is therefore a one-element
     # list, not a bare scalar.
+    #
+    # VAL-CWC-P1HOST-015: udf_outputs_jcs is now the SINGLE typed-canonical
+    # contract shared by both CEL engines, so each captured value is the
+    # ``{"t":...,"v":...}`` form. Decode to assert the logical value [True].
+    from relay_contracts.wasm_codec import typed_to_py
+
     udf_outputs = json.loads(envelope["udf_outputs_jcs"])
-    assert udf_outputs.get("my_check") == [True]
+    captured = udf_outputs.get("my_check")
+    assert isinstance(captured, list), captured
+    assert [typed_to_py(entry) for entry in captured] == [True]
 
 
 @pytest.mark.plumbing

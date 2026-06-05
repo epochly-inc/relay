@@ -327,6 +327,56 @@ class WasmCelEvaluator:
 
         return self._decode_envelope(envelope)
 
+    def evaluate_with_trace(
+        self,
+        expression: str,
+        bindings: Mapping[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, list[Any]]]:
+        """Evaluate ``expression`` and return ``(value, udf_trace)``.
+
+        Identical evaluation path to :meth:`evaluate` (same host guards, same
+        wall-clock timeout + Store quarantine, same ``{"ok": false}`` error
+        mapping), but ALSO surfaces the wasm ``udf_trace`` response field so the
+        M1 pipeline can reconstruct ``udf_outputs_jcs`` / ``udfs_invoked`` from
+        it on the wasm hot path WITHOUT a cel-python ``_env`` AST walk
+        (VAL-CWC-P1HOST-014).
+
+        ``udf_trace`` is the per-UDF-name list of typed-canonical
+        ``{"t":...,"v":...}`` return values in CALL ORDER, exactly as the wasm
+        emitted them (``packages/cel-wasm/crate/src/lib.rs`` ``udf_trace_drain``).
+        It is the empty dict when no relay.* UDF executed (the wasm omits the
+        field; a short-circuited branch is never recorded). The presence of this
+        method is the capability the pipeline uses to DETECT the wasm path (it
+        never reads ``RELAY_CEL_ENGINE``).
+        """
+        self.compile(expression)
+        typed_bindings = self._encode_bindings(bindings)
+        handle = self._thread_handle()
+
+        def _run() -> dict[str, Any]:
+            return handle.eval(
+                expression, typed_bindings or None, relay_profile=True
+            )
+
+        try:
+            envelope = self._timeout_host._run_with_timeout(
+                _run, self.timeout_ms / 1000.0
+            )
+        except RelayCelError as err:
+            from .errors import RelayCelTimeoutError
+
+            if isinstance(err, RelayCelTimeoutError):
+                self._quarantine_thread_handle()
+            raise
+
+        # Capture the udf_trace BEFORE decoding (decode may raise a structured
+        # error; the trace is only meaningful on the success envelope, and the
+        # crate only attaches it on {"ok": true}). _decode_envelope enforces the
+        # host finiteness guard and error mapping on the value itself.
+        value = self._decode_envelope(envelope)
+        udf_trace = self._extract_udf_trace(envelope)
+        return value, udf_trace
+
     # --- helpers -----------------------------------------------------
 
     def _encode_bindings(
@@ -342,6 +392,43 @@ class WasmCelEvaluator:
         from .wasm_codec import py_to_typed
 
         return {name: py_to_typed(value) for name, value in bindings.items()}
+
+    def _extract_udf_trace(self, envelope: Any) -> dict[str, list[Any]]:
+        """Return the wasm ``udf_trace`` field as a per-name list-of-typed map.
+
+        The crate attaches ``udf_trace`` (an object mapping each executed UDF
+        name to a list of typed-canonical values in call order) only on a
+        success envelope where at least one relay.* UDF ran; it is ABSENT
+        otherwise (``lib.rs`` ``udf_trace_drain`` returns ``None`` -> field
+        omitted). This helper normalizes that absence to an empty dict and
+        validates the shape fail-closed so a malformed trace cannot silently
+        corrupt the reconstructed ``udf_outputs_jcs`` (which feeds a digest).
+        """
+        if not isinstance(envelope, dict):
+            return {}
+        trace = envelope.get("udf_trace")
+        if trace is None:
+            return {}
+        if not isinstance(trace, dict):
+            raise RelayCelEngineError(
+                f"wasm udf_trace must be an object; got {type(trace).__name__}",
+                subtype="RELAY-CEL-ENGINE-REQUEST",
+            )
+        normalized: dict[str, list[Any]] = {}
+        for name, values in trace.items():
+            if not isinstance(name, str):
+                raise RelayCelEngineError(
+                    f"wasm udf_trace key must be a string; got {type(name).__name__}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                )
+            if not isinstance(values, list):
+                raise RelayCelEngineError(
+                    f"wasm udf_trace[{name!r}] must be a list; "
+                    f"got {type(values).__name__}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                )
+            normalized[name] = list(values)
+        return normalized
 
     def _decode_envelope(self, envelope: Any) -> Any:
         """Translate a wasm response envelope into a value or a structured error.
