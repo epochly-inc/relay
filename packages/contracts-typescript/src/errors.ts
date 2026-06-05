@@ -12,8 +12,13 @@
 //   RELAY-CEL-002  RELAY-CEL-PROFILE-DUR-DISABLED
 //   RELAY-CEL-003  RELAY-CEL-TIMEOUT-001
 //   RELAY-CEL-004  RELAY-CEL-UDF-IMPURE
+//   RELAY-CEL-004  RELAY-CEL-UDF-UNREGISTERED
 //   RELAY-CEL-006  RELAY-CEL-NUMERIC-OOB
 //   RELAY-CEL-007  RELAY-CEL-PROFILE-REGEX-BACKREF
+//   RELAY-CEL-009  RELAY-CEL-ENGINE-COMPILE   (wasm engine compile failure)
+//   RELAY-CEL-009  RELAY-CEL-ENGINE-EXEC      (wasm engine runtime failure)
+//   RELAY-CEL-009  RELAY-CEL-ENGINE-REQUEST   (wasm engine request/marshaling bug)
+//   RELAY-CEL-009  RELAY-CEL-ENGINE-PANIC     (wasm reactor trap, re-instantiated)
 //
 // Spec anchors: D, B.4 (closed error envelope).
 // Eng plan anchors: CQ1 lines 145-157, X4 line 216.
@@ -32,6 +37,22 @@ export const SUBTYPE_PROFILE_REGEX_BACKREF =
 export const SUBTYPE_TIMEOUT = "RELAY-CEL-TIMEOUT-001" as const;
 export const SUBTYPE_UDF_IMPURE = "RELAY-CEL-UDF-IMPURE" as const;
 export const SUBTYPE_NUMERIC_OOB = "RELAY-CEL-NUMERIC-OOB" as const;
+// A caller passed an extra UDF the wasm engine has no registration slot for
+// (the engine exposes only the 3 hardcoded relay.* UDFs). Shares the UDF code
+// (004) with the purity error -- both are UDF-registration failures. Mirrors
+// the Python SUBTYPE_UDF_UNREGISTERED (errors.py:52). The class that raises it
+// (the WasmCelBackend reject path) lands in the next feature (P2TSGATE-003);
+// this constant + union widening is the error-envelope surface only.
+export const SUBTYPE_UDF_UNREGISTERED = "RELAY-CEL-UDF-UNREGISTERED" as const;
+// Engine-error subtypes (RELAY-CEL-009): the wasm engine reported a failure
+// that is NOT one of the classified host conditions. Distinct from 004/006 so
+// a wasm exec/request failure is never confused with a host UDF-impurity (004)
+// / numeric-out-of-bounds (006) classification (which would poison the gate's
+// signed per-condition error_code). Mirrors errors.py:58-61.
+export const SUBTYPE_ENGINE_COMPILE = "RELAY-CEL-ENGINE-COMPILE" as const;
+export const SUBTYPE_ENGINE_EXEC = "RELAY-CEL-ENGINE-EXEC" as const;
+export const SUBTYPE_ENGINE_REQUEST = "RELAY-CEL-ENGINE-REQUEST" as const;
+export const SUBTYPE_ENGINE_PANIC = "RELAY-CEL-ENGINE-PANIC" as const;
 
 // Canonical RELAY-CEL-NNN codes. The Python side imports these from the
 // generated RelayErrorCode registry (packages/schemas/python/relay_schemas/
@@ -45,13 +66,19 @@ export const CODE_RELAY_CEL_003 = "RELAY-CEL-003" as const;
 export const CODE_RELAY_CEL_004 = "RELAY-CEL-004" as const;
 export const CODE_RELAY_CEL_006 = "RELAY-CEL-006" as const;
 export const CODE_RELAY_CEL_007 = "RELAY-CEL-007" as const;
+// RELAY-CEL-009: the wasm CEL engine reported a non-classified internal
+// failure (compile / exec / request / panic). DISTINCT from the host's
+// classified 004 (UDF) / 006 (numeric) codes so a wasm exec/request failure is
+// never confused with a host classification. Mirrors errors.py:210.
+export const CODE_RELAY_CEL_009 = "RELAY-CEL-009" as const;
 
 export type RelayCelCode =
   | typeof CODE_RELAY_CEL_002
   | typeof CODE_RELAY_CEL_003
   | typeof CODE_RELAY_CEL_004
   | typeof CODE_RELAY_CEL_006
-  | typeof CODE_RELAY_CEL_007;
+  | typeof CODE_RELAY_CEL_007
+  | typeof CODE_RELAY_CEL_009;
 
 export type RelayCelSubtype =
   | typeof SUBTYPE_PROFILE_DYN_DISABLED
@@ -60,7 +87,12 @@ export type RelayCelSubtype =
   | typeof SUBTYPE_PROFILE_REGEX_BACKREF
   | typeof SUBTYPE_TIMEOUT
   | typeof SUBTYPE_UDF_IMPURE
-  | typeof SUBTYPE_NUMERIC_OOB;
+  | typeof SUBTYPE_UDF_UNREGISTERED
+  | typeof SUBTYPE_NUMERIC_OOB
+  | typeof SUBTYPE_ENGINE_COMPILE
+  | typeof SUBTYPE_ENGINE_EXEC
+  | typeof SUBTYPE_ENGINE_REQUEST
+  | typeof SUBTYPE_ENGINE_PANIC;
 
 // Stable JSON-serialisable envelope. Key set (`code`, `subtype`,
 // `message`) matches the cel-python Python envelope -- tests compare
@@ -133,5 +165,48 @@ export class RelayCelRegexBackreferenceError extends RelayCelProfileError {
       configurable: false,
     });
     this.name = "RelayCelRegexBackreferenceError";
+  }
+}
+
+// Map a wasm engine envelope code -> the RELAY-CEL-009 engine subtype. The wasm
+// emits its OWN RELAY-CEL-NNN namespace (packages/cel-wasm crate `codes`):
+// 001 = compile, 004 = exec, 006 = request; plus the host loader's
+// RELAY-CEL-PANIC trap marker. Their NUMBERS overlap the host's classified
+// codes (004 = UDF-impure, 006 = numeric-OOB) but their MEANINGS differ, so the
+// wasm-backed adapter translates them into the distinct 009 code with a
+// per-cause subtype. (The wasm's 002 profile envelope is handled separately ->
+// RelayCelProfileError, carrying the wasm's own subtype.)
+// Mirrors packages/contracts/src/relay_contracts/errors.py:193-198 EXACTLY.
+const WASM_CODE_TO_ENGINE_SUBTYPE: Readonly<Record<string, RelayCelSubtype>> = {
+  "RELAY-CEL-001": SUBTYPE_ENGINE_COMPILE,
+  "RELAY-CEL-004": SUBTYPE_ENGINE_EXEC,
+  "RELAY-CEL-006": SUBTYPE_ENGINE_REQUEST,
+  "RELAY-CEL-PANIC": SUBTYPE_ENGINE_PANIC,
+};
+
+export class RelayCelEngineError extends RelayCelError {
+  // The CEL engine reported a non-classified internal failure (RELAY-CEL-009).
+  //
+  // Distinct from the host's classified codes so a wasm compile/exec/request/
+  // panic failure is never confused with a host UDF-impurity (004) or
+  // numeric-out-of-bounds (006) classification -- a confusion that would poison
+  // the gate's signed per-condition error_code (cross-runtime byte equality).
+  //
+  // A RelayCelError subclass so an `instanceof RelayCelError` catch site
+  // catches it (mirrors the Python subclass relationship). Mirrors
+  // errors.py:201-225.
+  constructor(message: string, subtype: RelayCelSubtype = SUBTYPE_ENGINE_EXEC) {
+    super(message, CODE_RELAY_CEL_009, subtype);
+    this.name = "RelayCelEngineError";
+  }
+
+  // Translate a wasm engine `{ok:false}` envelope into a 009 error. `wasmCode`
+  // is the engine's OWN RELAY-CEL-NNN code (or RELAY-CEL-PANIC); unknown codes
+  // default to ENGINE-EXEC. The original wasm code is preserved in the message
+  // for diagnosis. Mirrors Python RelayCelEngineError.from_wasm_envelope
+  // (errors.py:216-225).
+  static fromWasmEnvelope(wasmCode: string, message: string): RelayCelEngineError {
+    const subtype = WASM_CODE_TO_ENGINE_SUBTYPE[wasmCode] ?? SUBTYPE_ENGINE_EXEC;
+    return new RelayCelEngineError(`[${wasmCode}] ${message}`, subtype);
   }
 }
