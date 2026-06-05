@@ -33,6 +33,28 @@ from relay_contracts.evaluator import (
 from relay_contracts.udf import register_udf
 
 
+@pytest.fixture(autouse=True)
+def _clear_orphan_tracker() -> None:
+    """Isolate the PROCESS-WIDE orphan tracker before each test.
+
+    ``_orphaned_thread_tracker`` is class-level state shared by every
+    ``RelayCelEvaluator`` instance in the process. A sibling suite's
+    timeout test (e.g. ``test_w6_3_timeout`` /
+    ``test_w6_1_evaluator``, whose slow-pure-UDF timeout cases leave a
+    live daemon orphan) would otherwise leave a live orphan in the
+    tracker, so this file's cap-boundary loop would observe ``live ==
+    1`` at the start and fire ``RelayCelResourceExhaustedError`` one
+    call EARLY (at 63 instead of 64). We do not kill threads (they are
+    daemon orphans that terminate on their own); we only drop the
+    tracker's references so the live-count these tests measure starts
+    from a known-empty baseline -- exactly what the cap-at-64 assertion
+    and the docstring already assume.
+    """
+
+    with RelayCelEvaluator._orphan_tracker_lock:  # noqa: SLF001
+        RelayCelEvaluator._orphaned_thread_tracker.clear()  # noqa: SLF001
+
+
 @pytest.mark.plumbing
 def test_evaluator_orphan_thread_cap_raises_resource_exhausted() -> None:
     """Spamming pathological 1 ms timeouts MUST hit the orphan cap.

@@ -458,6 +458,108 @@ class RelayCelEvaluator:
         self._compile_cache[expression] = compiled
         return compiled
 
+    # --- Host-side timeout + orphan-cap guard ------------------------
+
+    def _run_with_timeout(self, run: Any, timeout_seconds: float) -> Any:
+        """Run a 0-arg callable under the host wall-clock budget + orphan cap.
+
+        Engine-agnostic host-side guard shared by ``RelayCelEvaluator`` and
+        the future ``WasmCelEvaluator`` (VAL-CWC-P1HOST-002). The neither
+        engine's eval primitive is cancellable from another thread, so a
+        wall-clock timeout leaves the worker thread alive until the engine
+        finishes; the process-wide orphan cap (``MAX_ORPHAN_THREADS``) bounds
+        unbounded native-thread accumulation under adversarial input loops
+        (a DoS vector).
+
+        ``run`` is invoked on a fresh daemon worker thread; its return value
+        is returned faithfully (falsy / None values included -- the result is
+        carried through a box, not inferred from truthiness). A non-Relay
+        exception raised by ``run`` is re-raised on the calling thread and the
+        worker is deregistered from the orphan tracker (no slot leak on the
+        error path). Numeric / finiteness checks and ``RelayCelError`` mapping
+        stay with the caller (engine-specific) -- this helper only owns the
+        timeout + orphan-cap mechanism.
+
+        Raises:
+            RelayCelResourceExhaustedError: at the orphan-thread cap (the
+                callable is NOT spawned).
+            RelayCelTimeoutError: the worker did not return within
+                ``timeout_seconds`` (the worker stays a tracked daemon orphan,
+                pruned by a later call once it terminates).
+        """
+
+        result_box: dict[str, Any] = {}
+        error_box: dict[str, BaseException] = {}
+
+        # Round-3 P1 fix #4: prune dead orphans, then refuse to spawn if
+        # the live count is at the cap. The engine eval primitive is not
+        # cancellable from another thread; a timeout leaves the worker
+        # alive until it finishes. Without the cap, adversarial input
+        # loops accumulate unbounded native threads -- a DoS vector. The
+        # check + spawn must happen atomically under the tracker lock to
+        # avoid the TOCTOU race where two callers both observe
+        # ``live < cap`` and both spawn.
+        with type(self)._orphan_tracker_lock:
+            # Inline prune to keep the live-count check and the
+            # subsequent thread.start() under the same lock acquisition.
+            terminated = {
+                t for t in type(self)._orphaned_thread_tracker
+                if not t.is_alive()
+            }
+            type(self)._orphaned_thread_tracker.difference_update(terminated)
+            live_count = len(type(self)._orphaned_thread_tracker)
+            if live_count >= MAX_ORPHAN_THREADS:
+                raise RelayCelResourceExhaustedError(
+                    f"Relay CEL evaluator orphan-thread cap reached "
+                    f"({live_count}/{MAX_ORPHAN_THREADS}); refusing to "
+                    f"spawn another worker. Wait for live orphans to "
+                    f"finish or restart the process."
+                )
+
+            def _worker() -> None:
+                try:
+                    result_box["value"] = run()
+                except BaseException as exc:  # noqa: BLE001 -- forward to main thread
+                    error_box["error"] = exc
+
+            thread = threading.Thread(target=_worker, daemon=True)
+            # Register BEFORE start so a concurrent prune sees the
+            # not-yet-alive thread as live (is_alive() is True after
+            # start; False before, but Thread() instances are not in
+            # the running state until start() is called -- we keep the
+            # registration here to preserve the atomic check+spawn
+            # invariant).
+            type(self)._orphaned_thread_tracker.add(thread)
+            thread.start()
+        # Lock released; the worker runs concurrently. join() outside
+        # the lock so concurrent calls are not serialised on the
+        # worker's run time.
+        thread.join(timeout=timeout_seconds)
+        if thread.is_alive():
+            # The engine eval primitive is not interruptible mid-step
+            # from another thread; the daemon thread will be reaped at
+            # interpreter exit OR pruned from the orphan tracker once it
+            # finishes (whichever comes first). We surface the timeout
+            # immediately and do NOT bind a partial result -- VAL-W6-003
+            # explicitly forbids partial-state leakage. The thread
+            # REMAINS in the orphan tracker; the next call will prune it
+            # once is_alive() returns False.
+            raise RelayCelTimeoutError(
+                f"Relay CEL evaluation exceeded {timeout_seconds * 1000.0:g} ms "
+                f"wall-clock budget."
+            )
+        # Thread completed -- remove from the orphan tracker so the
+        # budget is freed for future calls. Held briefly under the
+        # tracker lock.
+        with type(self)._orphan_tracker_lock:
+            type(self)._orphaned_thread_tracker.discard(thread)
+        if "error" in error_box:
+            # A callable exception (Relay or not) is re-raised on the
+            # caller thread. The worker has already been deregistered
+            # above, so there is no orphan-slot leak on this path.
+            raise error_box["error"]
+        return result_box.get("value")
+
     # --- Evaluation --------------------------------------------------
 
     def evaluate(
@@ -475,84 +577,23 @@ class RelayCelEvaluator:
 
         compiled = self.compile(expression)
         bindings = dict(bindings or {})
-        result_box: dict[str, Any] = {}
-        error_box: dict[str, BaseException] = {}
 
-        # Round-3 P1 fix #4: prune dead orphans, then refuse to spawn if
-        # the live count is at the cap. cel-python evaluation is not
-        # cancellable from another thread; a timeout leaves the worker
-        # alive until cel-python finishes. Without the cap, adversarial
-        # input loops accumulate unbounded native threads -- a DoS
-        # vector. The check + spawn must happen atomically under the
-        # tracker lock to avoid the TOCTOU race where two callers both
-        # observe ``live < cap`` and both spawn.
-        with type(self)._orphan_tracker_lock:
-            # Inline prune to keep the live-count check and the
-            # subsequent thread.start() under the same lock acquisition.
-            terminated = {
-                t for t in type(self)._orphaned_thread_tracker
-                if not t.is_alive()
-            }
-            type(self)._orphaned_thread_tracker.difference_update(terminated)
-            live_count = len(type(self)._orphaned_thread_tracker)
-            if live_count >= MAX_ORPHAN_THREADS:
-                raise RelayCelResourceExhaustedError(
-                    f"Relay CEL evaluator orphan-thread cap reached "
-                    f"({live_count}/{MAX_ORPHAN_THREADS}); refusing to "
-                    f"spawn another worker. Wait for live orphans to "
-                    f"finish or restart the process. Expression: "
-                    f"{expression!r}"
-                )
+        def _run() -> Any:
+            return compiled.runner.evaluate(bindings)
 
-            def _run() -> None:
-                try:
-                    result_box["value"] = compiled.runner.evaluate(bindings)
-                except BaseException as exc:  # noqa: BLE001 -- forward to main thread
-                    error_box["error"] = exc
-
-            thread = threading.Thread(target=_run, daemon=True)
-            # Register BEFORE start so a concurrent prune sees the
-            # not-yet-alive thread as live (is_alive() is True after
-            # start; False before, but Thread() instances are not in
-            # the running state until start() is called -- we keep the
-            # registration here to preserve the atomic check+spawn
-            # invariant).
-            type(self)._orphaned_thread_tracker.add(thread)
-            thread.start()
-        # Lock released; the worker runs concurrently. join() outside
-        # the lock so concurrent evaluate() calls are not serialised on
-        # the worker's run time.
-        thread.join(timeout=self.timeout_ms / 1000.0)
-        if thread.is_alive():
-            # cel-python evaluation is not interruptible mid-step from
-            # another thread; the daemon thread will be reaped at
-            # interpreter exit OR pruned from the orphan tracker once
-            # cel-python finishes (whichever comes first). We surface
-            # the timeout immediately and do NOT bind a partial result
-            # -- VAL-W6-003 explicitly forbids partial-state leakage.
-            # The thread REMAINS in the orphan tracker; the next
-            # evaluate() call will prune it once is_alive() returns
-            # False.
-            raise RelayCelTimeoutError(
-                f"Relay CEL evaluation exceeded {self.timeout_ms} ms wall-clock "
-                f"budget for expression: {expression!r}"
-            )
-        # Thread completed -- remove from the orphan tracker so the
-        # budget is freed for future calls. Held briefly under the
-        # tracker lock.
-        with type(self)._orphan_tracker_lock:
-            type(self)._orphaned_thread_tracker.discard(thread)
-        if "error" in error_box:
-            err = error_box["error"]
-            if isinstance(err, RelayCelError):
-                raise err
+        try:
+            value = self._run_with_timeout(_run, self.timeout_ms / 1000.0)
+        except RelayCelError:
+            # Timeout / resource-exhausted (and any Relay error the
+            # callable itself raised) surface unchanged.
+            raise
+        except BaseException as err:  # noqa: BLE001 -- map engine errors
             # cel-python raises celpy.CELEvalError and friends; surface
             # them as profile errors with the original message preserved.
             raise RelayCelProfileError(
                 f"cel-python evaluation failed: {err}",
                 subtype=SUBTYPE_PROFILE_DYN_DISABLED,
             ) from err
-        value = result_box.get("value")
         return _check_finite(value)
 
 
