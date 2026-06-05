@@ -13,8 +13,9 @@ ENGINE_PANIC from a profile-rejected input is now a regression.
 """
 import json
 import os
+from typing import cast
 
-from wasmtime import Engine, Instance, Module, Store, Trap
+from wasmtime import Engine, Func, Instance, Memory, Module, Store, Trap
 
 # Default to the repo's release wasm; override with CEL_WASM for a signed
 # artifact or an alternate build.
@@ -45,10 +46,15 @@ class WasmCel:
         self.store = Store(_engine)
         self.instance = Instance(self.store, _module, [])
         ex = self.instance.exports(self.store)
-        self.memory = ex["memory"]
-        self.alloc = ex["alloc"]
-        self.eval_fn = ex["eval"]
-        self.dealloc = ex["dealloc"]
+        # cast is a runtime no-op: it returns its argument unchanged and only
+        # narrows the wasmtime export union (Func|Global|Memory|Table|Tag|...)
+        # for the type checker. The objects bound here are byte-identical to
+        # what `ex[...]` returns, so the harness' runtime behavior is unchanged.
+        # Mirrors the production loader packages/cel-wasm/python/relay_cel_wasm.py.
+        self.memory = cast(Memory, ex["memory"])
+        self.alloc = cast(Func, ex["alloc"])
+        self.eval_fn = cast(Func, ex["eval"])
+        self.dealloc = cast(Func, ex["dealloc"])
 
     def _evaluate_raw(self, expr, bindings=None, container=None):
         req = {"expr": expr}

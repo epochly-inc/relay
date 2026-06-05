@@ -14,7 +14,6 @@ tier-1 plumbing.
 from __future__ import annotations
 
 import pytest
-
 from relay_contracts.errors import (
     SUBTYPE_ENGINE_COMPILE,
     SUBTYPE_ENGINE_EXEC,

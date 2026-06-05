@@ -109,6 +109,21 @@ exclude = [
 root = "apps/local-sidecar/tests"
 extraPaths = ["apps/local-sidecar/tests"]
 
+# The cel-wasm test suite (packages/cel-wasm/tests) drives the wasm loader
+# through a runtime sys.path insert: each test does
+# `sys.path.insert(0, os.path.join(_HERE, "..", "python"))` then
+# `from relay_cel_wasm import RelayCel  # noqa: E402`, where the loader module
+# lives at packages/cel-wasm/python/relay_cel_wasm.py. pyright does not model
+# that runtime sys.path mutation, so it reports the (runtime-valid) import as
+# unresolved (reportMissingImports). Declaring the test directory as an
+# execution-environment root with the python/ loader dir on extraPaths mirrors
+# the runtime search path WITHOUT changing any test behavior. Scoped to this
+# root only -- it does not affect type checking of any other tree, and it does
+# NOT exclude the tests (they stay fully type-checked).
+[[tool.pyright.executionEnvironments]]
+root = "packages/cel-wasm/tests"
+extraPaths = ["packages/cel-wasm/python"]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = [
