@@ -615,3 +615,246 @@ def test_re2_safe_pattern_compiles_cleanly() -> None:
     evaluator = RelayCelEvaluator()
     compiled = evaluator.compile(r'"hello".matches("h.*o")')
     assert compiled is not None
+
+
+# ===========================================================================
+# VAL-CWC-P1HOST-011: the W6.1 evaluator behavioral suite parametrized over
+# BOTH engines (celpy + wasm) via the make_cel_evaluator factory.
+#
+# Both engines are driven through the SAME factory the production hosts use
+# (RELAY_CEL_ENGINE selection lives ONLY in engine.py), and each engine-neutral
+# profile / timeout / numeric / regex behavior assertion below is exercised
+# under the [celpy] and [wasm] parametrize ids. The [wasm] ids passing proves
+# the WasmCelEvaluator facade is byte/behavior-identical to RelayCelEvaluator
+# for IN-PROFILE inputs at the host level.
+#
+# These assertions are engine-NEUTRAL by construction: each uses a PURE-CEL
+# expression (no custom test UDF), because the wasm hosts only the 3 hardcoded
+# relay.* UDFs and -- by the locked design decision (VAL-CWC-P1HOST-006) --
+# rejects any caller-supplied extra UDF fail-closed at construction. The W6.1
+# tests above that inject behavior via a NON-allowlist test UDF (slow_pure /
+# nan_pure / pinf / ninf / big_in_list) and the cel-python-implementation /
+# JCS-canonicalisation tests stay engine-specific (celpy) -- forcing them onto
+# the wasm would require weakening the wasm's extra-UDF rejection, a boundary
+# violation. The numeric-OOB and timeout BEHAVIORS those celpy-only tests cover
+# are re-proven here through the engine-neutral pure-CEL / host-guard path so
+# the wasm param exercises the same invariant.
+# ===========================================================================
+
+# Engine names match the RELAY_CEL_ENGINE tokens the factory accepts. Both ids
+# are emitted in the pytest node ids: ...[celpy] and ...[wasm].
+_ENGINES = ["celpy", "wasm"]
+
+
+@pytest.fixture(params=_ENGINES, ids=_ENGINES)
+def cel_engine(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Set RELAY_CEL_ENGINE for the parametrized engine and yield its name.
+
+    Selection is read by make_cel_evaluator (engine.py) ONLY; the fixture sets
+    the env var so the factory picks the right backend for this param.
+    """
+    monkeypatch.setenv("RELAY_CEL_ENGINE", request.param)
+    return request.param
+
+
+def _make(engine: str, **kwargs: object) -> object:
+    """Build an evaluator for ``engine`` through the production factory."""
+    from relay_contracts.engine import make_cel_evaluator
+
+    return make_cel_evaluator(**kwargs)  # type: ignore[arg-type]
+
+
+def _arm_slow_eval(engine: str, evaluator: object) -> None:
+    """Make the NEXT engine evaluation sleep past the wall-clock budget.
+
+    Engine-neutral timeout instrument that does NOT register a custom UDF (the
+    wasm forbids extra UDFs). For celpy it wraps the compiled cel-python
+    runner's evaluate; for wasm it wraps the per-thread RelayCel handle's eval.
+    Both paths funnel through the shared host ``_run_with_timeout`` guard, so
+    arming a slow primitive proves the host wall-clock timeout fires for the
+    selected engine.
+    """
+    if engine == "celpy":
+        compiled = evaluator.compile("1 + 1")  # type: ignore[attr-defined]
+        original = compiled.runner.evaluate
+
+        def slow_celpy(bindings: object) -> object:
+            time.sleep(0.4)
+            return original(bindings)
+
+        compiled.runner.evaluate = slow_celpy
+    elif engine == "wasm":
+        handle = evaluator._thread_handle()  # type: ignore[attr-defined]
+        original_eval = handle.eval
+
+        def slow_wasm(
+            expr: str,
+            bindings: object = None,
+            container: object = None,
+            relay_profile: bool = False,
+        ) -> object:
+            time.sleep(0.4)
+            return original_eval(expr, bindings, container, relay_profile)
+
+        handle.eval = slow_wasm
+    else:  # pragma: no cover -- defensive
+        raise AssertionError(f"unknown engine {engine!r}")
+
+
+# --- VAL-W6-002 mirror: Relay profile (dyn/timestamp/duration) both engines ---
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+@pytest.mark.parametrize(
+    "expr,subtype",
+    [
+        ("dyn(1)", SUBTYPE_PROFILE_DYN_DISABLED),
+        ('timestamp("2026-01-01T00:00:00Z")', SUBTYPE_PROFILE_TS_DISABLED),
+        ('duration("3600s")', SUBTYPE_PROFILE_DUR_DISABLED),
+    ],
+)
+def test_profile_disabled_call_rejected_both_engines(
+    cel_engine: str, expr: str, subtype: str
+) -> None:
+    """dyn/timestamp/duration global calls are rejected with RELAY-CEL-002 and
+    the matching structured subtype on BOTH engines.
+
+    celpy rejects at compile (AST walk); the wasm rejects through the profile
+    fence and surfaces the structured subtype at evaluate. Both are observable
+    via evaluate(), which compiles first, so the assertion is engine-neutral.
+    """
+    evaluator = _make(cel_engine)
+    with pytest.raises(RelayCelProfileError) as ctx:
+        evaluator.evaluate(expr)  # type: ignore[attr-defined]
+    assert ctx.value.code == "RELAY-CEL-002"
+    assert ctx.value.subtype == subtype
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+def test_baseline_arithmetic_both_engines(cel_engine: str) -> None:
+    """A profile-clean expression evaluates to the same numeric result on
+    both engines."""
+    evaluator = _make(cel_engine)
+    assert int(evaluator.evaluate("1 + 2 * 3")) == 7  # type: ignore[attr-defined]
+
+
+# --- VAL-W6-003 mirror: wall-clock timeout fires on both engines -------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+def test_wall_clock_timeout_fires_both_engines(cel_engine: str) -> None:
+    """The host wall-clock guard aborts an over-budget evaluation with
+    RELAY-CEL-003 / RELAY-CEL-TIMEOUT-001 on BOTH engines (the timeout is
+    host-side; the engine eval primitive is wrapped to exceed the budget)."""
+    evaluator = _make(cel_engine, timeout_ms=20)
+    _arm_slow_eval(cel_engine, evaluator)
+    start = time.monotonic()
+    with pytest.raises(RelayCelTimeoutError) as ctx:
+        evaluator.evaluate("1 + 1")  # type: ignore[attr-defined]
+    elapsed_ms = (time.monotonic() - start) * 1000.0
+    assert ctx.value.code == "RELAY-CEL-003"
+    assert ctx.value.subtype == SUBTYPE_TIMEOUT
+    # Aborted within a generous multiple of the 20 ms budget allowing for
+    # scheduler jitter; the assertion is that the timeout fires promptly, not
+    # that it waits out the full 400 ms sleep.
+    assert elapsed_ms < 300.0, (
+        f"VAL-CWC-P1HOST-011[{cel_engine}]: timeout fired at {elapsed_ms:.1f} ms; "
+        "budget was 20 ms"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+def test_timeout_constructor_bounds_both_engines(cel_engine: str) -> None:
+    """Constructor timeout bounds are enforced identically on both engines
+    (positive int, <= MAX_TIMEOUT_MS)."""
+    with pytest.raises(ValueError):
+        _make(cel_engine, timeout_ms=0)
+    with pytest.raises(ValueError):
+        _make(cel_engine, timeout_ms=-5)
+    with pytest.raises(ValueError):
+        _make(cel_engine, timeout_ms=10_000)  # exceeds MAX_TIMEOUT_MS
+
+
+# --- VAL-W6-006 / VAL-PARITY-001 mirror: numeric boundary both engines -------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+def test_int_above_safe_range_rejected_both_engines(cel_engine: str) -> None:
+    """An integral CEL result with abs value > MAX_SAFE_INTEGER is rejected at
+    the host result boundary (_check_finite) on BOTH engines -- pure-CEL, no
+    custom UDF needed."""
+    evaluator = _make(cel_engine)
+    with pytest.raises(RelayCelNumericOutOfBoundsError) as ctx:
+        evaluator.evaluate("9007199254740992 + 1")  # type: ignore[attr-defined]
+    assert ctx.value.code == "RELAY-CEL-006"
+    assert ctx.value.subtype == SUBTYPE_NUMERIC_OOB
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+def test_max_safe_integer_accepted_both_engines(cel_engine: str) -> None:
+    """MAX_SAFE_INTEGER (2**53 - 1) is the largest integer accepted on both
+    engines; the very next integer is rejected (see above)."""
+    evaluator = _make(cel_engine)
+    out = evaluator.evaluate("9007199254740990 + 1")  # type: ignore[attr-defined]
+    assert int(out) == _MAX_SAFE_INTEGER
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+def test_whole_double_above_safe_range_rejected_both_engines(cel_engine: str) -> None:
+    """A whole-valued DOUBLE literal beyond MAX_SAFE_INTEGER is rejected at the
+    result boundary on BOTH engines (cross-runtime digest parity)."""
+    evaluator = _make(cel_engine)
+    with pytest.raises(RelayCelNumericOutOfBoundsError) as ctx:
+        evaluator.evaluate("9007199254740994.0")  # type: ignore[attr-defined]
+    assert ctx.value.subtype == SUBTYPE_NUMERIC_OOB
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+def test_finite_double_within_range_accepted_both_engines(cel_engine: str) -> None:
+    """A finite in-range double passes through both engines unchanged."""
+    evaluator = _make(cel_engine)
+    out = evaluator.evaluate("1.5 + 2.5")  # type: ignore[attr-defined]
+    assert math.isfinite(float(out))
+    assert float(out) == 4.0
+
+
+# --- VAL-W6-007 mirror: regex backreference rejected on both engines ---------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+def test_regex_backref_rejected_both_engines(cel_engine: str) -> None:
+    """A regex backreference is rejected host-side (RELAY-CEL-007 /
+    REGEX-BACKREF) BEFORE the engine call on both engines; the host pre-screen
+    is engine-agnostic. (RelayCelRegexBackreferenceError is a RelayCelProfileError
+    subclass, so catching RelayCelProfileError holds for both.)"""
+    evaluator = _make(cel_engine)
+    with pytest.raises(RelayCelProfileError) as ctx:
+        evaluator.compile(r'"abba".matches("a(b)\\1")')  # type: ignore[attr-defined]
+    assert ctx.value.code == "RELAY-CEL-007"
+    assert ctx.value.subtype == SUBTYPE_PROFILE_REGEX_BACKREF
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P1HOST-011")
+def test_re2_safe_pattern_evaluates_both_engines(cel_engine: str) -> None:
+    """A backref-free RE2 pattern compiles AND evaluates on both engines
+    (the host pre-screen does not over-reject a safe pattern).
+
+    Both engines return a celpy ``BoolType`` (an int-subclass truthy value),
+    NOT the Python singleton ``True`` -- so the result is compared by value
+    (``bool(...) is True``) rather than identity (``is True``), matching how
+    cel-python represents a boolean result.
+    """
+    evaluator = _make(cel_engine)
+    assert evaluator.compile(r'"hello".matches("h.*o")') is not None  # type: ignore[attr-defined]
+    result = evaluator.evaluate(r'"hello".matches("h.*o")')  # type: ignore[attr-defined]
+    assert bool(result) is True

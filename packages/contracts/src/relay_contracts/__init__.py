@@ -23,6 +23,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 from .canonical import jcs_canonicalize
+from .engine import CelEvaluatorProtocol, make_cel_evaluator
 from .errors import (
     RelayCelError,
     RelayCelNumericOutOfBoundsError,
@@ -43,6 +44,7 @@ from .udfs import (
 from .udfs.coverage import RELAY_COVERAGE_ARITY
 from .udfs.schema_match import RELAY_SCHEMA_MATCH_ARITY
 from .udfs.tool_arg import RELAY_TOOL_ARG_ARITY
+from .wasm_backed_evaluator import WasmCelEvaluator
 
 # w6.3 production UDF registry: every Relay UDF that ships in v0.1.
 # Constructed at import time via the pure-only register_udf entry
@@ -72,7 +74,6 @@ RELAY_UDFS: tuple[PureUdf, ...] = (
 )
 
 __all__ = [
-    "PureUdf",
     "RELAY_COVERAGE_ARITY",
     "RELAY_COVERAGE_NAME",
     "RELAY_SCHEMA_MATCH_ARITY",
@@ -80,13 +81,17 @@ __all__ = [
     "RELAY_TOOL_ARG_ARITY",
     "RELAY_TOOL_ARG_NAME",
     "RELAY_UDFS",
+    "CelEvaluatorProtocol",
+    "PureUdf",
     "RelayCelError",
     "RelayCelEvaluator",
     "RelayCelNumericOutOfBoundsError",
     "RelayCelProfileError",
     "RelayCelTimeoutError",
     "RelayUdfPurityError",
+    "WasmCelEvaluator",
     "jcs_canonicalize",
+    "make_cel_evaluator",
     "register_udf",
     "relay_coverage",
     "relay_schema_match",
