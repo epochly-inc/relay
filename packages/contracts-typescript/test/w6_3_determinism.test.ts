@@ -256,7 +256,7 @@ describe("VAL-W6-025 (TS): UDFs are locale-independent", () => {
     const c = new Intl.Collator("de");
     void a.compare("a", "b");
     void b.compare("i", "I");
-    void c.compare("ss", "ß");
+    void c.compare("ss", "sz");
     const snap1 = await snapshot();
     const snap2 = await snapshot();
     expect(snap1).toEqual(snap2);
