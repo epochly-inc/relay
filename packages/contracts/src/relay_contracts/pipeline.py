@@ -79,23 +79,6 @@ def _validate_outcome_envelope(envelope: Mapping[str, Any]) -> None:
         )
 
 
-def _walk_idents(node: Any) -> Iterable[str]:
-    """Yield every IDENT token in a lark Tree (used for UDF discovery).
-
-    cel-python returns a lark.Tree from Environment.compile; identifier
-    leaves carry ``type == 'IDENT'``. We collect every IDENT name so the
-    pipeline can pre-flight UDF presence at publish time.
-    """
-    if hasattr(node, "type") and getattr(node, "type", None) == "IDENT":
-        yield str(node)
-        return
-    children = getattr(node, "children", None)
-    if children is None:
-        return
-    for child in children:
-        yield from _walk_idents(child)
-
-
 def _walk_function_call_idents(node: Any) -> Iterable[str]:
     """Yield IDENT names that appear in a function-call position.
 
