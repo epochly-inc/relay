@@ -36,12 +36,28 @@ on:
     paths:
       - "packages/cel-wasm/**"
       - ".github/workflows/cel-wasm-conformance.yml"
+      # The m3-discipline-gate job ascii-lints + baseline-checks files under
+      # these trees, so a change to ONLY one of them must still trigger the
+      # gate (FINDING-3b: the gate previously triggered only on cel-wasm/**).
+      - "scripts/**"
+      - "tests/conformance/cel/**"
+      - "packages/contracts/**"
+      - "packages/contracts-typescript/**"
+      - "packages/schemas/**"
   push:
     branches:
       - main
     paths:
       - "packages/cel-wasm/**"
       - ".github/workflows/cel-wasm-conformance.yml"
+      # The m3-discipline-gate job ascii-lints + baseline-checks files under
+      # these trees, so a change to ONLY one of them must still trigger the
+      # gate (FINDING-3b: the gate previously triggered only on cel-wasm/**).
+      - "scripts/**"
+      - "tests/conformance/cel/**"
+      - "packages/contracts/**"
+      - "packages/contracts-typescript/**"
+      - "packages/schemas/**"
   workflow_dispatch: {}
 
 permissions:
@@ -142,6 +158,23 @@ jobs:
       - name: "install Python workspace dependencies"
         run: uv sync --all-packages
 
+      - name: "install rust (pinned via crate/rust-toolchain.toml) + wasm32"
+        # The WS-E corpus guard tests below instantiate RelayCel(), which loads
+        # the wasm from the gitignored crate/target/.../release artifact (or
+        # $CEL_WASM). A clean runner has no built artifact, so the wasm-loading
+        # plumbing tests would fail without this build. Mirror the
+        # conformance-gate job's pinned toolchain (crate/rust-toolchain.toml).
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal --target wasm32-unknown-unknown
+          rustc --version
+
+      - name: "build cel-wasm (deterministic recipe) for wasm-loading tests"
+        # Produces packages/cel-wasm/crate/target/wasm32-unknown-unknown/release/
+        # relay_cel_wasm.wasm via the reproducible build.sh recipe. Exported as
+        # CEL_WASM for the subsequent steps so the loader resolves the freshly
+        # built artifact (FINDING-3a).
+        run: make -C packages/cel-wasm build
+
       - name: "ascii-lint: M3 source deliverables (LC_ALL=C grep)"
         # Checks that the WS-E and WS-G text files contain no non-ASCII bytes.
         # Binary .wasm files are excluded. Grep exit 1 (no matches) = PASS.
@@ -192,6 +225,11 @@ jobs:
         # Runs the UDF-via-CEL corpus guard tests (tier-1 plumbing only) to
         # confirm no baseline regression from M3. The known-failing test_w17_4_*
         # tests are NOT plumbing-tier and are excluded by -m plumbing.
+        # CEL_WASM points the loader at the artifact built above (FINDING-3a) so
+        # the RelayCel()-instantiating plumbing tests have a loadable wasm on a
+        # clean runner.
+        env:
+          CEL_WASM: "${{ github.workspace }}/packages/cel-wasm/crate/target/wasm32-unknown-unknown/release/relay_cel_wasm.wasm"
         run: |
           uv run pytest \
             tests/conformance/cel/test_udf_via_cel_corpus.py \

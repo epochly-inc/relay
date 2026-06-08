@@ -435,7 +435,7 @@ def test_celpy_evaluates_included_vector(vector: dict[str, Any]) -> None:
             "been populated yet."
         )
     import celpy.celtypes as celtypes
-    from relay_contracts import RELAY_UDFS, RelayCelEvaluator
+    from relay_contracts import RELAY_UDFS, make_cel_evaluator
 
     def _to_celtypes(value: Any) -> Any:
         if value is None:
@@ -475,7 +475,12 @@ def test_celpy_evaluates_included_vector(vector: dict[str, Any]) -> None:
             return value
         raise TypeError(f"unsupported celpy result type: {type(value).__name__}")
 
-    ev = RelayCelEvaluator(udfs=RELAY_UDFS)
+    # Construct via the make_cel_evaluator factory (the ONLY RELAY_CEL_ENGINE
+    # read site, engine.py) so this cel-spec conformance test HONORS the
+    # RELAY_CEL_ENGINE selector: under the CI [celpy, wasm] engine matrix the
+    # wasm row now actually conformance-tests the WasmCelEvaluator (FINDING-2).
+    # RELAY_UDFS (the 3 native relay.* UDFs) is accepted on both engines.
+    ev = make_cel_evaluator(udfs=RELAY_UDFS)
     bindings = {k: _to_celtypes(v) for k, v in (vector.get("bindings") or {}).items()}
     raw = ev.evaluate(vector["expression"], bindings)
     actual = _to_python(raw)
@@ -650,7 +655,7 @@ def test_parity_celpy_vs_celjs_per_vector() -> None:
         )
 
     import celpy.celtypes as celtypes
-    from relay_contracts import RELAY_UDFS, RelayCelEvaluator
+    from relay_contracts import RELAY_UDFS, make_cel_evaluator
 
     def _to_celtypes(value: Any) -> Any:
         if value is None:
@@ -690,7 +695,12 @@ def test_parity_celpy_vs_celjs_per_vector() -> None:
             return value
         raise TypeError(f"unsupported celpy result type: {type(value).__name__}")
 
-    ev = RelayCelEvaluator(udfs=RELAY_UDFS)
+    # Construct via the make_cel_evaluator factory (the ONLY RELAY_CEL_ENGINE
+    # read site, engine.py) so this cel-spec parity test HONORS the
+    # RELAY_CEL_ENGINE selector under the CI [celpy, wasm] engine matrix
+    # (FINDING-2: the wasm row must actually exercise the WasmCelEvaluator,
+    # not silently fall back to celpy). RELAY_UDFS is accepted on both engines.
+    ev = make_cel_evaluator(udfs=RELAY_UDFS)
     py_results: dict[str, Any] = {}
     py_errors: dict[str, str] = {}
     for vec in _INCLUDED_VECTORS_FOR_PARAM:

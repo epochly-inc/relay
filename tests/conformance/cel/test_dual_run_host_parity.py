@@ -193,6 +193,103 @@ print(json.dumps({"records": records}))
 """
 
 
+# Subprocess worker for the VALUE comparison (FINDING-1 strengthening). The
+# pipeline outcome envelope's ``_classify_outcome`` collapses ANY non-boolean
+# evaluation result to ``outcome == "error"`` and an empty ``udf_outputs_jcs``
+# (pipeline.py:191-207), so the ~178 arithmetic / string / list / map
+# ``eval_value`` cases ALL collapse to the SAME envelope on both engines and
+# would compare VACUOUSLY -- a real celpy-vs-wasm VALUE divergence (one engine
+# returns 5, the other 6 for "1 + 2") would pass UNDETECTED. This worker
+# evaluates the EXPRESSION DIRECTLY through each engine's evaluator
+# (``make_cel_evaluator(udfs=()).evaluate(...)`` -- the RelayCelEvaluator on
+# celpy, the WasmCelEvaluator on wasm, selected by RELAY_CEL_ENGINE in the
+# PARENT) and emits the typed-canonical JCS bytes of the RAW result, so the
+# actual computed value is compared byte-for-byte. The single canonical codec
+# ``py_to_typed`` (the SAME codec that makes the two engines' udf_outputs_jcs
+# byte-identical, VAL-CWC-P1HOST-001/015) normalizes celpy ``celtypes`` results
+# and wasm plain-Python results into the identical ``{"t":...,"v":...}`` form,
+# then ``jcs_canonicalize`` produces the comparable bytes. A raised evaluation
+# (the host-guard ``eval_error`` cases) is recorded as ``raised=True`` with the
+# error CLASS name only -- the engine-specific error_code taxonomy difference
+# (host code vs RELAY-CEL-009, documented disposition) is deliberately NOT
+# compared; the meaningful parity is "both raised" + identical value bytes when
+# not raised.
+_VALUE_WORKER = r"""
+import base64
+import json
+import sys
+
+import celpy.celtypes as celtypes
+
+from relay_contracts.canonical import jcs_canonicalize
+from relay_contracts.engine import make_cel_evaluator
+from relay_contracts.wasm_codec import py_to_typed
+
+
+def _to_celtype(value):
+    # bool BEFORE int (bool is an int subclass) -- the canonical host binding
+    # form (W6.5 _convert_bindings / py_to_typed bool-before-int rule,
+    # VAL-CWC-P1HOST-001). Raw dicts/bools cause spurious celpy "no matching
+    # overload" divergences, so bindings are converted to celtypes for both
+    # engines (the wasm path round-trips celtypes via py_to_typed unchanged).
+    if isinstance(value, bool):
+        return celtypes.BoolType(value)
+    if isinstance(value, int):
+        return celtypes.IntType(value)
+    if isinstance(value, float):
+        return celtypes.DoubleType(value)
+    if isinstance(value, str):
+        return celtypes.StringType(value)
+    if isinstance(value, (list, tuple)):
+        return celtypes.ListType([_to_celtype(v) for v in value])
+    if isinstance(value, dict):
+        return celtypes.MapType(
+            {celtypes.StringType(k): _to_celtype(v) for k, v in value.items()}
+        )
+    return value
+
+
+payload = json.loads(sys.stdin.read())
+# One evaluator per process (RELAY_CEL_ENGINE in the env selects the engine via
+# the factory -- the ONLY read site). udfs=() so no relay.* UDF is registered;
+# the reachable subset is plain-CEL only.
+evaluator = make_cel_evaluator(udfs=())
+records = []
+for case in payload["cases"]:
+    bindings = {
+        k: _to_celtype(v) for k, v in (case.get("bindings") or {}).items()
+    }
+    try:
+        raw = evaluator.evaluate(case["expression"], bindings)
+    except Exception as exc:  # noqa: BLE001 -- exhaustive per-case diagnostics
+        records.append(
+            {
+                "id": case["id"],
+                "raised": True,
+                # CLASS name only; the engine-specific error CODE taxonomy
+                # difference (host vs RELAY-CEL-009) is NOT part of the parity
+                # claim (documented disposition).
+                "error_class": type(exc).__name__,
+            }
+        )
+        continue
+    # py_to_typed is the SINGLE canonical Python<->wasm codec: it maps the
+    # celpy celtypes result AND the wasm plain-Python result into the IDENTICAL
+    # typed-canonical {"t","v"} form, so JCS bytes are byte-identical for the
+    # same logical value across engines.
+    typed = py_to_typed(raw)
+    value_jcs_b64 = base64.b64encode(jcs_canonicalize(typed)).decode("ascii")
+    records.append(
+        {
+            "id": case["id"],
+            "raised": False,
+            "value_jcs_b64": value_jcs_b64,
+        }
+    )
+print(json.dumps({"records": records}))
+"""
+
+
 def _load_corpus_cases() -> list[dict[str, Any]]:
     data = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
     cases = data["cases"]
@@ -235,12 +332,12 @@ def _comparable(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _run_host_under_engine(
-    engine: str, cases: list[dict[str, Any]]
+def _run_worker_under_engine(
+    engine: str, cases: list[dict[str, Any]], worker_src: str, what: str
 ) -> dict[str, dict[str, Any]]:
-    """Spawn a Python subprocess with ``RELAY_CEL_ENGINE=<engine>`` that drives
-    every case through the production host path (parse_contract +
-    evaluate_assertion). Returns ``{case_id: record}``."""
+    """Spawn a Python subprocess with ``RELAY_CEL_ENGINE=<engine>`` running
+    ``worker_src`` over ``cases``. ``what`` names the path for diagnostics.
+    Returns ``{case_id: record}``."""
     env = dict(os.environ)
     env["RELAY_CEL_ENGINE"] = engine
     payload = json.dumps(
@@ -256,7 +353,7 @@ def _run_host_under_engine(
         }
     )
     proc = subprocess.run(
-        [sys.executable, "-c", _HOST_WORKER],
+        [sys.executable, "-c", worker_src],
         input=payload,
         capture_output=True,
         text=True,
@@ -266,9 +363,9 @@ def _run_host_under_engine(
     )
     if proc.returncode != 0:
         pytest.fail(
-            f"VAL-CWC-P4DUALRUN-004: host worker under RELAY_CEL_ENGINE={engine!r} "
-            f"exited {proc.returncode} (the engine could not drive the reachable "
-            f"subset through the production pipeline):\n"
+            f"VAL-CWC-P4DUALRUN-004: {what} worker under "
+            f"RELAY_CEL_ENGINE={engine!r} exited {proc.returncode} (the engine "
+            f"could not drive the reachable subset):\n"
             f"  stderr: {proc.stderr[-3000:]}\n"
             f"  stdout: {proc.stdout[-1500:]}"
         )
@@ -276,11 +373,47 @@ def _run_host_under_engine(
         records = json.loads(proc.stdout.strip().splitlines()[-1])["records"]
     except (json.JSONDecodeError, KeyError, IndexError) as exc:
         pytest.fail(
-            f"VAL-CWC-P4DUALRUN-004: host worker under "
+            f"VAL-CWC-P4DUALRUN-004: {what} worker under "
             f"RELAY_CEL_ENGINE={engine!r} produced unparseable output: {exc}\n"
             f"  stdout: {proc.stdout[-2000:]}"
         )
     return {rec["id"]: rec for rec in records}
+
+
+def _run_host_under_engine(
+    engine: str, cases: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Spawn a Python subprocess with ``RELAY_CEL_ENGINE=<engine>`` that drives
+    every case through the production host path (parse_contract +
+    evaluate_assertion). Returns ``{case_id: record}``."""
+    return _run_worker_under_engine(engine, cases, _HOST_WORKER, "host")
+
+
+def _run_value_under_engine(
+    engine: str, cases: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Spawn a Python subprocess with ``RELAY_CEL_ENGINE=<engine>`` that
+    evaluates each EXPRESSION directly through ``make_cel_evaluator().evaluate``
+    and returns the typed-canonical JCS bytes of the RAW result (FINDING-1: the
+    actual VALUE, not the _classify_outcome-collapsed verdict). Returns
+    ``{case_id: record}``."""
+    return _run_worker_under_engine(engine, cases, _VALUE_WORKER, "value")
+
+
+def _value_comparable(record: dict[str, Any]) -> dict[str, Any]:
+    """The engine-agnostic RAW-VALUE parity signature: whether evaluation
+    raised, and the typed-canonical JCS bytes of the result when it did NOT.
+
+    Deliberately EXCLUDES the error CLASS / code -- the runtime-error /
+    host-guard error_code taxonomy differs by design (host code vs
+    RELAY-CEL-009, documented disposition). The meaningful VALUE parity is:
+    both engines either raised OR returned the byte-identical typed-canonical
+    result. Comparing the value bytes is what makes the ~178 non-boolean
+    eval_value cases NON-vacuous (vs the collapsed-to-error verdict)."""
+    return {
+        "raised": record.get("raised"),
+        "value_jcs_b64": record.get("value_jcs_b64"),
+    }
 
 
 @pytest.mark.plumbing
@@ -371,6 +504,134 @@ def test_dual_run_host_parity_celpy_vs_wasm_zero_divergence() -> None:
         "[dual-run-host-parity] PASS: "
         f"{len(subset_ids)} reachable cases, zero celpy-vs-wasm divergences."
     )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P4DUALRUN-004")
+def test_dual_run_value_parity_celpy_vs_wasm_zero_divergence() -> None:
+    """FINDING-1 fix: ACTUALLY compare the computed VALUE celpy-vs-wasm.
+
+    The verdict-level test above compares the pipeline outcome envelope, whose
+    ``_classify_outcome`` (pipeline.py:191-207) collapses ANY non-boolean
+    result to ``outcome == "error"`` + empty ``udf_outputs_jcs``. So the ~178
+    non-boolean ``eval_value`` arithmetic / string / list / map cases ALL
+    collapse to the SAME envelope on both engines and are compared VACUOUSLY --
+    a real value divergence (one engine returns 5, the other 6 for ``1 + 2``)
+    would pass UNDETECTED there.
+
+    This test evaluates the EXPRESSION DIRECTLY through each engine's evaluator
+    (``make_cel_evaluator(udfs=()).evaluate`` -- RelayCelEvaluator on celpy,
+    WasmCelEvaluator on wasm, selected by RELAY_CEL_ENGINE) and compares the
+    typed-canonical (``py_to_typed``) JCS bytes of the RAW result. For the
+    non-boolean cases this is the ONLY non-vacuous parity check. A divergence on
+    a VALID expression is a P0 that BLOCKS the M5 flip; this test must NOT be
+    weakened to pass."""
+    subset = _reachable_subset()
+    assert len(subset) > 0, "reachable subset must be non-empty (see guard test)"
+
+    results: dict[str, dict[str, dict[str, Any]]] = {}
+    for engine in _ENGINES:
+        results[engine] = _run_value_under_engine(engine, subset)
+
+    celpy_results = results["celpy"]
+    wasm_results = results["wasm"]
+
+    subset_ids = [c["id"] for c in subset]
+    missing_celpy = [cid for cid in subset_ids if cid not in celpy_results]
+    missing_wasm = [cid for cid in subset_ids if cid not in wasm_results]
+    assert missing_celpy == [] and missing_wasm == [], (
+        "VAL-CWC-P4DUALRUN-004: value worker dropped reachable cases "
+        f"(celpy missing={missing_celpy}, wasm missing={missing_wasm})."
+    )
+
+    # Count the cases where BOTH engines returned a NON-RAISED value AND that
+    # value is a non-empty-map / actual computed value -- these are the cases
+    # the verdict-level test compares vacuously, and that this test compares for
+    # real. This is the "value-compared" count the contract requires to be > 0.
+    value_compared = 0
+    divergences: list[dict[str, Any]] = []
+    for cid in subset_ids:
+        celpy_cmp = _value_comparable(celpy_results[cid])
+        wasm_cmp = _value_comparable(wasm_results[cid])
+        # A case is "value-compared" (non-vacuous) when both engines returned a
+        # concrete value (raised == False) -- the actual computed bytes are then
+        # compared. The host-guard eval_error cases (raised == True on both) are
+        # status-compared, not value-compared.
+        if celpy_cmp.get("raised") is False and wasm_cmp.get("raised") is False:
+            value_compared += 1
+        if celpy_cmp != wasm_cmp:
+            divergences.append(
+                {
+                    "case_id": cid,
+                    "expression": next(
+                        c["expression"] for c in subset if c["id"] == cid
+                    ),
+                    "celpy": celpy_cmp,
+                    "wasm": wasm_cmp,
+                }
+            )
+
+    if divergences:
+        for diff in divergences:
+            print(
+                "[dual-run-value-parity-diff]",
+                json.dumps(diff, sort_keys=True),
+            )
+        rendered = "\n".join(
+            json.dumps(diff, sort_keys=True, indent=2) for diff in divergences
+        )
+        pytest.fail(
+            f"VAL-CWC-P4DUALRUN-004: {len(divergences)} celpy-vs-wasm VALUE "
+            f"parity divergence(s) on the reachable subset of "
+            f"{len(subset_ids)} cases ({value_compared} value-compared). A VALUE "
+            f"divergence on a VALID expression is a P0 that BLOCKS the M5 flip; "
+            f"do NOT weaken this test. Full diff (no counts elided):\n{rendered}"
+        )
+
+    # The value comparison is only non-vacuous if it actually compared concrete
+    # VALUES for the non-boolean cases. Require the value-compared count > 0 so a
+    # future refactor that accidentally collapses every case to raised/error is
+    # caught (this is the exact failure mode FINDING-1 reported in the verdict
+    # test).
+    assert value_compared > 0, (
+        "VAL-CWC-P4DUALRUN-004: the dual-run VALUE comparison compared ZERO "
+        "concrete values (every reachable case raised on both engines). The "
+        "value parity assertion would be vacuous -- this is the FINDING-1 "
+        f"collapse failure mode. subset size={len(subset_ids)}."
+    )
+
+    print(
+        "[dual-run-value-parity] PASS: "
+        f"{len(subset_ids)} reachable cases, {value_compared} value-compared, "
+        "zero celpy-vs-wasm VALUE divergences."
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P4DUALRUN-004")
+def test_dual_run_value_comparator_detects_value_divergence() -> None:
+    """Negative-control for the VALUE comparator: it MUST flag a difference in
+    the raw-result bytes (so the zero-VALUE-divergence result above is a real
+    assertion, not a vacuous one that would pass if the engines computed
+    different values)."""
+    five = _value_comparable({"raised": False, "value_jcs_b64": "FIVE"})
+    six = _value_comparable({"raised": False, "value_jcs_b64": "SIX"})
+    raised = _value_comparable({"raised": True, "error_class": "RelayCelProfileError"})
+    assert five != six, "value comparator must detect a raw-value byte divergence"
+    assert five != raised, (
+        "value comparator must detect a raised-vs-returned divergence"
+    )
+    # Identical raw-value signatures compare equal (no spurious divergence); the
+    # error CLASS is excluded so the taxonomy difference does not perturb it.
+    raised_other = _value_comparable(
+        {"raised": True, "error_class": "RelayCelEngineError"}
+    )
+    assert raised == raised_other, (
+        "value comparator must EXCLUDE the error class/code (taxonomy "
+        "difference is a documented disposition, not a value divergence)"
+    )
+    five_again = _value_comparable({"raised": False, "value_jcs_b64": "FIVE"})
+    assert five == five_again
 
 
 @pytest.mark.plumbing
