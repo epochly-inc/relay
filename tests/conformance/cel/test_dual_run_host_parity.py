@@ -94,6 +94,36 @@ with an empty ``udf_outputs_jcs``.
 A real divergence on a VALID expression here would be a P0 that BLOCKS the M5
 flip; this test must NOT be weakened to go green.
 
+KNOWN cel-python backslash-escape lexer non-conformance (adjudicated carve-out)
+------------------------------------------------------------------------------
+The strengthened VALUE comparison (``test_dual_run_value_parity_*``) is RED on
+EXACTLY TWO reachable corpus cases -- ``regex_backslash_fullwidth_digit_accepted``
+(the CEL string literal ``"\\<U+FF10>"``) and ``regex_backslash_arabic_digit_accepted``
+(``"\\<U+0660>"``). For both, cel-python's LENIENT lexer returns the literal
+2-character string, while the wasm (cel-rust) engine correctly RAISES a compile
+error (RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE, "token recognition error").
+
+Per the CEL spec (langdef.md:115 and 318-320), a backslash that does NOT begin a
+recognized escape sequence is a LEXICAL ERROR -- so the wasm is SPEC-CORRECT and
+cel-python is NON-CONFORMANT. This was user-adjudicated: wasm is correct, the
+corpus golden recorded cel-python's wrong (lenient) behavior. These two cases are
+carved out of the STRICT value comparison via the module-level
+``KNOWN_CELPY_NONCONFORMANCE`` set, under a STRONG guard -- the carve-out set is
+asserted EXACTLY equal to those two labels, each is asserted to STILL diverge in
+the expected direction (celpy returns / wasm raises), and EVERY OTHER reachable
+case must still compare byte-for-byte. A new value divergence on any other case
+still fails the test; a future cel-python fix or corpus change that makes a
+carved-out case converge fails the stale-carve-out guard.
+
+The M5 default flip IMPROVES these two expressions from cel-python's lenient
+string to the spec-correct compile error -- a CORRECTNESS IMPROVEMENT documented
+for the M5 bake (see the M5 P5FLIP section of ``packages/cel-wasm/README.md``).
+At M6 (cel-python removal) the divergence is eliminated BY CONSTRUCTION; the two
+corpus cases should then be reclassified ``eval_value`` -> ``eval_error`` (see
+the ``TODO(M6)`` note in that README section). The corpus is NOT mutated here:
+the legacy ``test_w17_4_*`` cross-runtime / release-block runners still expect
+cel-python's current lenient behavior, so reclassification is M6 scope.
+
 Tool: pytest (plumbing tier). ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
 
@@ -114,6 +144,48 @@ CORPUS_PATH = REPO_ROOT / "tests" / "conformance" / "cel" / "relay_cel_corpus.js
 # The two engine tokens the contracts factory (engine.py) accepts. The dual-run
 # drives the SAME reachable cases through BOTH, asserting zero divergence.
 _ENGINES: tuple[str, ...] = ("celpy", "wasm")
+
+# ---------------------------------------------------------------------------
+# KNOWN cel-python lexer non-conformance (adjudicated; wasm is SPEC-CORRECT)
+# ---------------------------------------------------------------------------
+# These EXACTLY-TWO corpus cases are a documented, user-adjudicated divergence
+# where cel-python is NON-CONFORMANT and the wasm (cel-rust) engine is
+# SPEC-CORRECT. Each expression is a double-quoted CEL string literal whose only
+# content is a single backslash followed by a non-ASCII digit that is NOT a
+# valid CEL escape sequence:
+#
+#   regex_backslash_fullwidth_digit_accepted -> "\<U+FF10>"  (backslash + FULLWIDTH DIGIT ZERO)
+#   regex_backslash_arabic_digit_accepted    -> "\<U+0660>"  (backslash + ARABIC-INDIC DIGIT ZERO)
+#
+# Per the CEL spec (langdef.md:115 and 318-320), a backslash that does NOT begin
+# a recognized escape sequence is a LEXICAL ERROR. The wasm engine correctly
+# RAISES a compile error (RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE,
+# "token recognition error"); cel-python has a LENIENT lexer that instead
+# returns the literal 2-character string. The wasm behavior is the spec-correct
+# one. The corpus golden recorded cel-python's wrong (lenient) result.
+#
+# DISPOSITION (adjudicated -- do NOT re-litigate, do NOT "fix" the wasm, do NOT
+# patch cel-python here): these two cases are carved out of the STRICT
+# celpy-vs-wasm VALUE comparison below. The carve-out is GUARDED -- the test
+# asserts (a) the carve-out set is EXACTLY these two labels, (b) these two cases
+# STILL diverge celpy-vs-wasm (so a future cel-python fix or corpus change that
+# makes them converge flags this carve-out as stale), and (c) NO OTHER reachable
+# case diverges. So the guard stays strong: any NEW value divergence still fails.
+#
+# At the M5 default flip these two expressions IMPROVE from cel-python's lenient
+# 2-char string to the spec-correct compile error -- a CORRECTNESS IMPROVEMENT
+# documented for the M5 bake (see packages/cel-wasm/README.md M5 P5FLIP section).
+# At M6 (cel-python removal) the divergence is eliminated BY CONSTRUCTION, and
+# these two corpus cases should be reclassified eval_value -> eval_error (see the
+# TODO(M6) note in that README section). The corpus is NOT mutated here: the
+# legacy w17 cross-runtime / release-block runners still expect cel-python's
+# current lenient behavior, so reclassification is deferred to M6 scope.
+KNOWN_CELPY_NONCONFORMANCE: frozenset[str] = frozenset(
+    {
+        "regex_backslash_fullwidth_digit_accepted",
+        "regex_backslash_arabic_digit_accepted",
+    }
+)
 
 # Subprocess worker: reads {"cases":[{id, expression, bindings}, ...]} on stdin,
 # drives EACH case through the production host path
@@ -525,7 +597,16 @@ def test_dual_run_value_parity_celpy_vs_wasm_zero_divergence() -> None:
     typed-canonical (``py_to_typed``) JCS bytes of the RAW result. For the
     non-boolean cases this is the ONLY non-vacuous parity check. A divergence on
     a VALID expression is a P0 that BLOCKS the M5 flip; this test must NOT be
-    weakened to pass."""
+    weakened to pass.
+
+    The ONLY tolerated VALUE divergences are the EXACTLY-TWO adjudicated
+    cel-python lexer non-conformance cases in ``KNOWN_CELPY_NONCONFORMANCE``
+    (module-level; see its comment). They are a documented carve-out where wasm
+    is SPEC-CORRECT (raises a compile error on a backslash that is not a valid
+    escape) and cel-python is lenient. The carve-out is STRONGLY GUARDED below:
+    the set is asserted to be EXACTLY those two labels, each carved-out case is
+    asserted to STILL diverge (so a future convergence flags a stale carve-out),
+    and EVERY OTHER reachable case must still compare byte-for-byte identical."""
     subset = _reachable_subset()
     assert len(subset) > 0, "reachable subset must be non-empty (see guard test)"
 
@@ -544,12 +625,32 @@ def test_dual_run_value_parity_celpy_vs_wasm_zero_divergence() -> None:
         f"(celpy missing={missing_celpy}, wasm missing={missing_wasm})."
     )
 
+    # --- Strong carve-out guard (do NOT loosen) -------------------------------
+    # The carve-out set must be EXACTLY the two adjudicated labels, and each must
+    # actually be in the reachable subset (so a corpus rename/removal that drops
+    # a carved-out case is caught rather than silently tolerated).
+    assert sorted(KNOWN_CELPY_NONCONFORMANCE) == [
+        "regex_backslash_arabic_digit_accepted",
+        "regex_backslash_fullwidth_digit_accepted",
+    ], (
+        "VAL-CWC-P4DUALRUN-004: KNOWN_CELPY_NONCONFORMANCE carve-out drifted; it "
+        "must be EXACTLY the two adjudicated backslash-escape lexer cases. "
+        f"observed={sorted(KNOWN_CELPY_NONCONFORMANCE)}"
+    )
+    carveout_not_reachable = sorted(KNOWN_CELPY_NONCONFORMANCE - set(subset_ids))
+    assert carveout_not_reachable == [], (
+        "VAL-CWC-P4DUALRUN-004: carved-out case(s) not in the reachable subset "
+        f"(corpus rename/removal?): {carveout_not_reachable}. The carve-out is "
+        "stale -- reconcile with relay_cel_corpus.json."
+    )
+
     # Count the cases where BOTH engines returned a NON-RAISED value AND that
     # value is a non-empty-map / actual computed value -- these are the cases
     # the verdict-level test compares vacuously, and that this test compares for
     # real. This is the "value-compared" count the contract requires to be > 0.
     value_compared = 0
     divergences: list[dict[str, Any]] = []
+    carved_out_divergences: dict[str, dict[str, Any]] = {}
     for cid in subset_ids:
         celpy_cmp = _value_comparable(celpy_results[cid])
         wasm_cmp = _value_comparable(wasm_results[cid])
@@ -559,17 +660,46 @@ def test_dual_run_value_parity_celpy_vs_wasm_zero_divergence() -> None:
         # status-compared, not value-compared.
         if celpy_cmp.get("raised") is False and wasm_cmp.get("raised") is False:
             value_compared += 1
-        if celpy_cmp != wasm_cmp:
-            divergences.append(
-                {
-                    "case_id": cid,
-                    "expression": next(
-                        c["expression"] for c in subset if c["id"] == cid
-                    ),
-                    "celpy": celpy_cmp,
-                    "wasm": wasm_cmp,
-                }
-            )
+        if celpy_cmp == wasm_cmp:
+            continue
+        diff = {
+            "case_id": cid,
+            "expression": next(c["expression"] for c in subset if c["id"] == cid),
+            "celpy": celpy_cmp,
+            "wasm": wasm_cmp,
+        }
+        if cid in KNOWN_CELPY_NONCONFORMANCE:
+            # Adjudicated cel-python lexer non-conformance: wasm correctly RAISES
+            # (spec-correct), cel-python leniently returns a value. Recorded for
+            # the stale-carve-out guard below, NOT counted as a failure.
+            carved_out_divergences[cid] = diff
+        else:
+            divergences.append(diff)
+
+    # The carve-out is only legitimate while the carved-out cases ACTUALLY still
+    # diverge in the expected direction (celpy returned a value, wasm raised). If
+    # a future cel-python fix or a corpus reclassification (M6) makes them
+    # converge, this guard fails so the now-stale carve-out is removed.
+    still_diverging = set(carved_out_divergences)
+    converged_carveouts = sorted(KNOWN_CELPY_NONCONFORMANCE - still_diverging)
+    assert converged_carveouts == [], (
+        "VAL-CWC-P4DUALRUN-004: carved-out case(s) no longer diverge "
+        f"celpy-vs-wasm: {converged_carveouts}. The KNOWN_CELPY_NONCONFORMANCE "
+        "carve-out is now STALE -- cel-python converged on (or the corpus was "
+        "reclassified to) the spec-correct behavior. Remove these from the "
+        "carve-out set (likely the M6 cel-python-removal reclassification)."
+    )
+    for cid, diff in carved_out_divergences.items():
+        celpy_raised = diff["celpy"].get("raised")
+        wasm_raised = diff["wasm"].get("raised")
+        assert celpy_raised is False and wasm_raised is True, (
+            "VAL-CWC-P4DUALRUN-004: carved-out case "
+            f"{cid!r} diverges in an UNEXPECTED direction (expected cel-python "
+            "to leniently RETURN a value and wasm to spec-correctly RAISE): "
+            f"celpy.raised={celpy_raised}, wasm.raised={wasm_raised}. This is "
+            "NOT the adjudicated backslash-lexer non-conformance -- investigate."
+        )
+        print("[dual-run-value-parity-carveout]", json.dumps(diff, sort_keys=True))
 
     if divergences:
         for diff in divergences:
@@ -583,9 +713,11 @@ def test_dual_run_value_parity_celpy_vs_wasm_zero_divergence() -> None:
         pytest.fail(
             f"VAL-CWC-P4DUALRUN-004: {len(divergences)} celpy-vs-wasm VALUE "
             f"parity divergence(s) on the reachable subset of "
-            f"{len(subset_ids)} cases ({value_compared} value-compared). A VALUE "
-            f"divergence on a VALID expression is a P0 that BLOCKS the M5 flip; "
-            f"do NOT weaken this test. Full diff (no counts elided):\n{rendered}"
+            f"{len(subset_ids)} cases ({value_compared} value-compared), beyond "
+            f"the {len(KNOWN_CELPY_NONCONFORMANCE)} documented carve-out(s). A "
+            f"VALUE divergence on a VALID expression is a P0 that BLOCKS the M5 "
+            f"flip; do NOT weaken this test. Full diff (no counts elided):\n"
+            f"{rendered}"
         )
 
     # The value comparison is only non-vacuous if it actually compared concrete
@@ -603,7 +735,9 @@ def test_dual_run_value_parity_celpy_vs_wasm_zero_divergence() -> None:
     print(
         "[dual-run-value-parity] PASS: "
         f"{len(subset_ids)} reachable cases, {value_compared} value-compared, "
-        "zero celpy-vs-wasm VALUE divergences."
+        f"{len(carved_out_divergences)} carved-out documented "
+        "celpy-non-conformance (wasm spec-correct), zero OTHER celpy-vs-wasm "
+        "VALUE divergences."
     )
 
 

@@ -309,6 +309,43 @@ different celpy error code, this is the expected M5-bake behavior. It is NOT a
 sign of a broken engine or a tampered artifact. Verify via `rly verify-self --json`
 (the `cel_engine` invariant check covers UDF probing and sha-match).
 
+### Backslash-escape lexer conformance at M5 (correctness IMPROVEMENT, not a regression)
+
+There are EXACTLY TWO Relay-CEL corpus expressions where the M5 flip CHANGES the
+computed result -- and the change is a CORRECTNESS IMPROVEMENT, not a regression.
+Both are double-quoted CEL string literals whose content is a single backslash
+followed by a non-ASCII digit that is NOT a valid CEL escape sequence:
+
+- `regex_backslash_fullwidth_digit_accepted` -- `"\<U+FF10>"` (backslash + FULLWIDTH DIGIT ZERO)
+- `regex_backslash_arabic_digit_accepted` -- `"\<U+0660>"` (backslash + ARABIC-INDIC DIGIT ZERO)
+
+Per the CEL spec (langdef.md:115 and 318-320), a backslash that does not begin a
+recognized escape sequence is a LEXICAL ERROR. The wasm (cel-rust) engine is
+SPEC-CORRECT: it RAISES a compile error (`RELAY-CEL-009` /
+`RELAY-CEL-ENGINE-COMPILE`, "token recognition error"). The legacy cel-python
+host has a LENIENT lexer that instead returns the literal 2-character string --
+NON-CONFORMANT behavior. This was user-adjudicated: wasm is correct; the corpus
+golden recorded cel-python's wrong (lenient) result.
+
+At the M5 default flip, these two expressions therefore change from cel-python's
+lenient 2-character string to the spec-correct compile error. This is EXPECTED
+and is an IMPROVEMENT in conformance, not a regression. If an operator authored a
+contract relying on a bare backslash being silently accepted inside a string
+literal, that contract was depending on non-conformant cel-python behavior and
+must be corrected to use a valid CEL escape. The dual-run value-parity gate
+(`tests/conformance/cel/test_dual_run_host_parity.py`) documents and carves out
+exactly these two cases under a strong guard (`KNOWN_CELPY_NONCONFORMANCE`);
+EVERY OTHER valid expression remains byte-for-byte identical across engines.
+
+TODO(M6): once cel-python is removed and the wasm engine is the only evaluator,
+reclassify these two corpus cases in
+`tests/conformance/cel/relay_cel_corpus.json` from `eval_value` to `eval_error`
+(the spec-correct compile-error form), and remove them from
+`KNOWN_CELPY_NONCONFORMANCE` in the dual-run test. The corpus is NOT mutated
+before M6: the legacy `test_w17_4_*` cross-runtime / release-block runners still
+expect cel-python's current lenient `eval_value` behavior, so the
+reclassification is M6 scope (cel-python-removal) by construction.
+
 ## Notes on the build config (load-bearing)
 
 - `chrono` is depended on with `default-features = false` -- this drops the
