@@ -240,6 +240,75 @@ from the canonical loader source.
 Manifest command (declared in `.ops/manifest.yaml`):
 - `check-wasm-pinned-sha` -- verify vendored wasm sha256 == pinned constant
 
+## M4 P4DUALRUN: dual-run de-risk gate (WS-F)
+
+M4 added the CI engine-axis matrix and the host-integration parity test
+(`tests/conformance/cel/test_dual_run_host_parity.py`, VAL-CWC-P4DUALRUN-004)
+that asserts ZERO celpy-vs-wasm divergence on the cel-js-reachable flat-schema
+corpus subset (195 reachable cases, 0 divergences when landed).
+
+### Runtime-error error_code taxonomy (M4 disposition, NOT a defect)
+
+During the M4 dual-run period the two engines classify RUNTIME ERRORS under
+different error codes. For a CEL expression that errors at runtime (e.g. `1/0`):
+
+- The cel-python host raises under its own host error code.
+- The wasm engine maps the same failure to `RELAY-CEL-009`
+  (`RelayCelEngineError`, WS-A engine-error taxonomy, VAL-CWC-P1HOST-007).
+
+Both engines produce `outcome == "error"` (the same verdict). Only the
+engine-specific error code inside the host exception differs. The pipeline
+outcome envelope carries no engine-specific error_code field, so the
+host-parity test (VAL-CWC-P4DUALRUN-004) is structurally unaffected: its
+`_comparable` signature covers `outcome`, `udfs_invoked`, and
+`udf_outputs_jcs` -- no engine error_code field is present or compared.
+
+This is NOT a verdict-parity defect and does NOT gate the M5 flip.
+It is ELIMINATED BY CONSTRUCTION at M6 when cel-python is removed and the
+wasm engine (`RELAY-CEL-009`) is the only evaluator. Do NOT patch cel-python
+to align its error code to wasm; the divergence goes away at M6.
+
+## M5 P5FLIP: default flip to wasm + one-release bake (WS-H)
+
+At M5 the default CEL engine flips from celpy/cel-js to wasm. The flip is
+controlled by `RELAY_CEL_ENGINE` (Python) and the equivalent TS config. With the
+env var unset the contracts factory returns a `WasmCelEvaluator` (Python) or
+`WasmCelBackend` (TypeScript) instead of the legacy cel-python/cel-js evaluators.
+
+### Rollback escape hatch (one-release bake window)
+
+cel-python and cel-js are NOT removed at M5 (that is M6). To roll back to the
+legacy engine during the bake window, set:
+
+```bash
+RELAY_CEL_ENGINE=celpy   # Python host: revert to cel-python evaluator
+```
+
+For the TypeScript host, set the equivalent engine-selection config to `cel-js`.
+The rollback escape hatch remains available for the full one-release bake window.
+
+### Runtime-error error_code policy at M5 (expected, not a regression)
+
+After the M5 default flip, gate decisions for RUNTIME-ERRORING conditions (e.g.
+a CEL expression that divides by zero or triggers a wasm exec fault) carry
+`RELAY-CEL-009` as the error code -- the wasm engine taxonomy -- rather than the
+cel-python host error code previously produced by the legacy default. This is
+EXPECTED behavior for the bake, not a regression:
+
+- The verdict (`outcome == "error"`) is unchanged.
+- The signed canonical decision payload (VAL-CWC-P2TSGATE-012) is identical
+  between engines for any VALID expression; the runtime-error taxonomy difference
+  does not affect valid-expression signing parity.
+- The error_code shift (from celpy-host-code to RELAY-CEL-009) is the defined
+  M4/M5 disposition documented in `test_dual_run_host_parity.py` and here.
+- The difference is eliminated BY CONSTRUCTION at M6 when cel-python is removed
+  and RELAY-CEL-009 is the only error_code for engine-level faults.
+
+If an operator observes `RELAY-CEL-009` on a condition that previously surfaced a
+different celpy error code, this is the expected M5-bake behavior. It is NOT a
+sign of a broken engine or a tampered artifact. Verify via `rly verify-self --json`
+(the `cel_engine` invariant check covers UDF probing and sha-match).
+
 ## Notes on the build config (load-bearing)
 
 - `chrono` is depended on with `default-features = false` -- this drops the

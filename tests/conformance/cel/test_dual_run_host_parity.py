@@ -59,20 +59,37 @@ instead would error ONLY on the celpy side -- a harness artifact, not an engine
 divergence -- so the canonical celtypes form is used to make the parity claim
 unambiguous.
 
-Verdict + bytes compared, and the re-homed runtime-error taxonomy item
-----------------------------------------------------------------------
+Verdict + bytes compared -- and the runtime-error error_code taxonomy note
+--------------------------------------------------------------------------
 The compared signature is the pipeline outcome envelope's engine-agnostic
 fields: ``outcome`` (the verdict: ``pass`` / ``fail`` / ``error``),
 ``udfs_invoked``, and ``udf_outputs_jcs`` (the canonical bytes). The pipeline
-envelope carries NO engine-specific ``error_code``, so this test is inherently
-unaffected by the separately-tracked, re-homed cross-engine RUNTIME-ERROR
-``error_code`` taxonomy difference (celpy host-code vs wasm RELAY-CEL-009 for an
-expression that ERRORS at runtime, e.g. ``1/0``). That difference is a
-documented engine-taxonomy item owned by a sibling fix feature, NOT a
-verdict-parity defect; it does not gate the M5 flip. The reachable subset here
-contains no division-by-zero / runtime-error case anyway -- its 17 ``eval_error``
-cases are host-guard rejections (profile / regex-backref / numeric-OOB) that
-BOTH engines map to ``outcome == "error"`` with an empty ``udf_outputs_jcs``.
+envelope carries NO engine-specific ``error_code``, so this test is structurally
+immune to the cross-engine RUNTIME-ERROR ``error_code`` taxonomy difference.
+
+RUNTIME-ERROR error_code taxonomy (documented disposition, NOT a defect):
+--------------------------------------------------------------------------
+For a CEL expression that ERRORS AT RUNTIME (e.g. ``1/0``), the two engines in
+the M4 dual-run period classify the failure under DIFFERENT error codes: the
+cel-python host raises under its own host error code, while the wasm engine maps
+the same failure to ``RELAY-CEL-009`` (``RelayCelEngineError``) per the WS-A
+engine-error taxonomy (VAL-CWC-P1HOST-007). This is NOT a verdict-parity defect:
+both engines produce ``outcome == "error"`` (the same verdict); only the
+engine-specific error_code inside the host exception differs. Because the
+pipeline outcome envelope carries no engine-specific error_code field, the
+divergence is invisible to this parity test by construction.
+
+This difference is ELIMINATED BY CONSTRUCTION at M6 when cel-python is removed
+and the wasm engine (RELAY-CEL-009) is the only evaluator. During the M5 bake
+window, gate decision payloads for RUNTIME-ERRORING conditions will carry
+``RELAY-CEL-009`` as the error code (the wasm default). This is expected and
+documented behavior for the bake -- NOT a regression. See the M5 flip section of
+``packages/cel-wasm/README.md`` for the full runtime-error policy note.
+
+The reachable subset in this test contains no division-by-zero / runtime-error
+cases: its 17 ``eval_error`` cases are host-guard rejections (profile /
+regex-backref / numeric-OOB) that BOTH engines map to ``outcome == "error"``
+with an empty ``udf_outputs_jcs``.
 
 A real divergence on a VALID expression here would be a P0 that BLOCKS the M5
 flip; this test must NOT be weakened to go green.
