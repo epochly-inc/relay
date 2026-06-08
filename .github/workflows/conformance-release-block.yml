@@ -39,20 +39,38 @@ permissions:
 
 jobs:
   conformance:
-    name: "conformance: ${{ matrix.suite_name }}"
+    name: "conformance: ${{ matrix.suite_name }} (${{ matrix.engine }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         include:
-          - suite_name: "w17.1-jcs"
+          # engine axis: celpy -- 4 suite rows
+          - engine: celpy
+            suite_name: "w17.1-jcs"
             suite_paths: "tests/conformance/jcs/"
-          - suite_name: "w17.2-jws"
+          - engine: celpy
+            suite_name: "w17.2-jws"
             suite_paths: "tests/conformance/jws/"
-          - suite_name: "w17.3-cel-spec"
+          - engine: celpy
+            suite_name: "w17.3-cel-spec"
             suite_paths: "tests/conformance/cel-spec/"
-          - suite_name: "w17.4-relay-cel"
+          - engine: celpy
+            suite_name: "w17.4-relay-cel"
+            suite_paths: "tests/conformance/cel/test_w17_4_udf_coverage.py tests/conformance/cel/test_w17_4_corpus_size.py tests/conformance/cel/test_w17_4_cross_runtime.py tests/conformance/cel/test_w17_4_purity.py tests/conformance/cel/test_w17_4_idiom_coverage.py tests/conformance/cel/test_w17_4_release_block.py packages/contracts/tests/test_w6_5_corpus.py"
+          # engine axis: wasm -- same 4 suite rows
+          - engine: wasm
+            suite_name: "w17.1-jcs"
+            suite_paths: "tests/conformance/jcs/"
+          - engine: wasm
+            suite_name: "w17.2-jws"
+            suite_paths: "tests/conformance/jws/"
+          - engine: wasm
+            suite_name: "w17.3-cel-spec"
+            suite_paths: "tests/conformance/cel-spec/"
+          - engine: wasm
+            suite_name: "w17.4-relay-cel"
             suite_paths: "tests/conformance/cel/test_w17_4_udf_coverage.py tests/conformance/cel/test_w17_4_corpus_size.py tests/conformance/cel/test_w17_4_cross_runtime.py tests/conformance/cel/test_w17_4_purity.py tests/conformance/cel/test_w17_4_idiom_coverage.py tests/conformance/cel/test_w17_4_release_block.py packages/contracts/tests/test_w6_5_corpus.py"
     env:
       RELAY_TIER3_RUNNER: "ci-tier2-conformance"
@@ -84,7 +102,13 @@ jobs:
       - name: "build typescript contracts package"
         run: npm run build --workspace @epochly/relay-contracts
 
+      - name: "build wasm artifact"
+        if: matrix.engine == 'wasm'
+        run: bash packages/cel-wasm/conformance/build.sh build
+
       - name: "run conformance suite ${{ matrix.suite_name }}"
+        env:
+          RELAY_CEL_ENGINE: ${{ matrix.engine }}
         run: uv run pytest ${{ matrix.suite_paths }} -m plumbing --timeout=600 -q
 
   conformance-aggregate:
