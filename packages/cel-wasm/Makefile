@@ -54,11 +54,16 @@ all: build conformance parity test
 # ASCII-only guard for source + CLI-output paths (CLAUDE.md directive 3).
 # Markdown docs may use unicode; the crate src, harness, loaders, and shell
 # scripts may not (their output is consumed by CI/auditors/verifiers).
+# M3 P3CORPUS additions: also covers the new UDF-via-CEL cross-host driver
+# and the TS test file added in WS-E.
 ascii-lint:
 	@bad=$$(LC_ALL=C grep -rlP '[^\x00-\x7F]' \
 		$(CRATE)/src \
 		$(CONF)/oracle/main.go \
 		$(CONF)/build.sh \
+		$(CONF)/harness/udf_via_cel_cross_host.mjs \
+		$(PKG)/python/relay_cel_wasm.py \
+		$(PKG)/typescript/relay-cel-wasm.mjs \
 		2>/dev/null || true); \
 	if [ -n "$$bad" ]; then \
 		echo "[ascii-lint] FAIL: non-ASCII bytes in source/CLI-output files:"; \

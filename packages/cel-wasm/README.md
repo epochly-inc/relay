@@ -172,6 +172,74 @@ python packages/cel-wasm/python/relay_cel_wasm.py
 node   packages/cel-wasm/typescript/relay-cel-wasm.mjs
 ```
 
+## M3 P3CORPUS: UDF-via-CEL corpus + wasm package data (WS-E + WS-G)
+
+M3 added two work streams that complete the packaging and corpus story for
+the single-engine cutover:
+
+### WS-E: UDF-via-CEL corpus
+
+`tests/conformance/cel/relay_udf_via_cel_corpus.json` is a NEW, SEPARATE
+corpus (it does NOT read or mutate `relay_cel_corpus.json`). It drives all
+three Relay UDFs (`relay.coverage`, `relay.tool_arg`, `relay.schema_match`)
+THROUGH CEL (the dotted `relay.*` call form, e.g.
+`relay.coverage(trace, "step1")`) and records the typed-canonical golden
+the built wasm produces for each case.
+
+Every case carries `"engines": ["wasm"]` (cel-js is structurally excluded;
+only the wasm can evaluate dotted `relay.*` calls through CEL). The
+`cel_js_parseable` flag records whether the case's `input_expression`
+contains a map literal with two or more keys including a `"type"` key
+(the known cel-js parser boundary, legacy task #20).
+
+The cross-anchor that replaces the retired `test_w17_4_*` two-engine
+comparison: for every case, the wasm-through-CEL result (typed-canonical)
+MUST equal the cel-python direct-call result serialized to typed-canonical.
+Any divergence aborts generation with a non-zero exit.
+
+Generator: `scripts/generate-relay-udf-via-cel-corpus.py`
+Guard tests: `tests/conformance/cel/test_udf_via_cel_corpus.py` (VAL-CWC-P3CORPUS-001..004)
+             `tests/conformance/cel/test_udf_via_cel_byte_match_runner.py` (VAL-CWC-P3CORPUS-005)
+
+Node cross-host driver: `conformance/harness/udf_via_cel_cross_host.mjs`
+Proves VAL-CWC-P3CORPUS-006 (Py-wasm == Node-wasm byte-parity for every
+UDF-via-CEL corpus case). Invocation:
+
+```bash
+# Requires CEL_WASM pointing at the built wasm and the @epochly/relay-contracts dist
+CEL_WASM=packages/cel-wasm/crate/target/wasm32-unknown-unknown/release/relay_cel_wasm.wasm \
+  node packages/cel-wasm/conformance/harness/udf_via_cel_cross_host.mjs
+
+# Non-vacuity self-test (forces one case to diverge by one byte; driver must exit 1)
+node packages/cel-wasm/conformance/harness/udf_via_cel_cross_host.mjs --self-test-mutation
+```
+
+Manifest commands (declared in `.ops/manifest.yaml`):
+- `generate-relay-udf-via-cel-corpus` -- regenerate or check the corpus
+- `test-udf-via-cel-corpus` -- run the tier-1 plumbing corpus guard tests
+- `test-node-udf-cross-host` -- run the Node cross-host byte-parity driver
+
+### WS-G: wasm as package data + pinned sha
+
+The `relay_contracts` Python wheel now ships the wasm as package data at
+`relay_contracts/_wasm/relay_cel_wasm.wasm` (resolved via
+`importlib.resources.files('relay_contracts')`). This enables a
+fresh-installed wheel to LOAD the wasm engine without the (gitignored)
+`crate/target/` tree. The loader module is also vendored as package data
+at `relay_contracts/_wasm/relay_cel_wasm.py` (a git-tracked byte-identical
+copy of the canonical `packages/cel-wasm/python/relay_cel_wasm.py`).
+
+`WASM_PINNED_SHA256` in `packages/contracts/src/relay_contracts/wasm_artifact.py`
+records the exact sha256 of the `build.sh repro`-verified artifact
+(`7d92aca8ca605a2b76c36e944648de72aec56d1130294c0f22923d64c7faa4c0`).
+A guard test (`test_wasm_pinned_sha_matches_packaged_artifact_on_disk`)
+fails CI if the vendored artifact drifts from the pinned sha. A separate
+byte-identity drift guard fails CI if the vendored loader copy diverges
+from the canonical loader source.
+
+Manifest command (declared in `.ops/manifest.yaml`):
+- `check-wasm-pinned-sha` -- verify vendored wasm sha256 == pinned constant
+
 ## Notes on the build config (load-bearing)
 
 - `chrono` is depended on with `default-features = false` -- this drops the

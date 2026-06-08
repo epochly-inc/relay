@@ -320,7 +320,19 @@ def _force_wheel_only(
 
     Both the .wasm AND (after the implementation lands) the loader still resolve
     from ``relay_contracts`` package data, so the evaluator must still work.
+
+    Implementation note: this helper patches importlib.import_module (via the
+    wbe module's importlib reference) in addition to builtins.__import__.
+    On Python 3.4+ importlib.import_module is implemented in C (_bootstrap) and
+    does NOT route through builtins.__import__ when the module is absent from
+    sys.modules -- it drives sys.meta_path finders directly.  If another test
+    has added packages/cel-wasm/python to sys.path (e.g. by exec-loading the
+    corpus generator), builtins.__import__ patching is ineffective because the
+    module is still findable via sys.path.  Patching importlib.import_module
+    closes the gap; monkeypatch restores the real function after the test.
     """
+    import sys
+
     from relay_contracts.errors import RelayCelEngineError
 
     def _no_repo_loader() -> object:
@@ -341,7 +353,30 @@ def _force_wheel_only(
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _blocked_import)
-    # importlib.import_module consults sys.modules first; drop any cached entry.
-    import sys
 
+    # On Python 3.4+ importlib.import_module routes through _bootstrap._gcd_import,
+    # NOT builtins.__import__, so the patch above is insufficient when
+    # relay_cel_wasm is findable on sys.path (e.g. packages/cel-wasm/python was
+    # inserted by the corpus-generator loader in an earlier test).  Patch
+    # importlib.import_module on the wbe module's importlib reference directly
+    # so this function is blocked regardless of sys.path state.
+    real_import_module = importlib.import_module
+
+    def _blocked_import_module(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "relay_cel_wasm":
+            raise ModuleNotFoundError("No module named 'relay_cel_wasm'")
+        return real_import_module(name, *args, **kwargs)
+
+    import types
+
+    monkeypatch.setattr(
+        wbe,  # type: ignore[arg-type]
+        "importlib",
+        types.SimpleNamespace(
+            import_module=_blocked_import_module,
+            util=importlib.util,
+        ),
+    )
+
+    # importlib.import_module consults sys.modules first; drop any cached entry.
     monkeypatch.delitem(sys.modules, "relay_cel_wasm", raising=False)

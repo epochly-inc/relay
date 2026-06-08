@@ -117,6 +117,96 @@ jobs:
       - name: "cmp-rebuild (two clean builds -> identical wasm)"
         run: make -C packages/cel-wasm repro
 
+  m3-discipline-gate:
+    # M3 P3CORPUS discipline gate: ASCII-only source + manifest command
+    # declarations + no-baseline-regression for WS-E and WS-G deliverables.
+    #
+    # This job runs on the same path triggers as the conformance jobs so a
+    # new M3 file with non-ASCII bytes or a missing manifest command is caught
+    # at PR time. It does NOT alter the existing cel-spec corpus suites.
+    name: "cel-wasm: M3 discipline (ASCII + manifest + baseline)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: "checkout relay"
+        uses: actions/checkout@v4
+
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "install uv"
+        run: pip install uv
+
+      - name: "install Python workspace dependencies"
+        run: uv sync --all-packages
+
+      - name: "ascii-lint: M3 source deliverables (LC_ALL=C grep)"
+        # Checks that the WS-E and WS-G text files contain no non-ASCII bytes.
+        # Binary .wasm files are excluded. Grep exit 1 (no matches) = PASS.
+        run: |
+          result=0
+          for f in \
+            scripts/generate-relay-udf-via-cel-corpus.py \
+            tests/conformance/cel/test_udf_via_cel_byte_match_runner.py \
+            tests/conformance/cel/test_udf_via_cel_corpus.py \
+            packages/cel-wasm/conformance/harness/udf_via_cel_cross_host.mjs \
+            packages/contracts/src/relay_contracts/wasm_artifact.py \
+            packages/contracts/src/relay_contracts/wasm_backed_evaluator.py \
+            "packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.py" \
+            packages/contracts/tests/test_wasm_loader_package_data.py \
+            packages/contracts/tests/test_wasm_package_data.py \
+            packages/contracts-typescript/src/wasm-artifact.ts \
+            packages/contracts-typescript/test/udf_via_cel_cross_host.test.ts \
+            packages/contracts-typescript/test/wasm_package_data.test.ts
+          do
+            if [ -f "$f" ]; then
+              if LC_ALL=C grep -Pn '[^\x00-\x7F]' "$f"; then
+                echo "[ascii-lint] FAIL: non-ASCII bytes in $f"
+                result=1
+              fi
+            fi
+          done
+          if [ "$result" -eq 0 ]; then
+            echo "[ascii-lint] PASS: all M3 source deliverables are ASCII-only"
+          fi
+          exit $result
+
+      - name: "manifest discipline: M3 commands declared + deny policy"
+        # VAL-CWC-P3CORPUS-013: the four M3 command IDs must be present in
+        # .ops/manifest.yaml with egress_default: deny.
+        # Skips gracefully when .ops/manifest.yaml is absent (public-relay-only
+        # checkout without the workspace parent).
+        run: |
+          if [ ! -f ".ops/manifest.yaml" ]; then
+            echo "[manifest-discipline] SKIP: .ops/manifest.yaml absent (public-only checkout)"
+            exit 0
+          fi
+          uv run pytest \
+            packages/schemas/python/tests/test_v2m03_manifest.py::test_m3_manifest_commands_declared_with_deny_policy \
+            packages/schemas/python/tests/test_v2m03_manifest.py::test_m3_source_files_ascii_only \
+            -m plumbing -p no:cacheprovider -q
+
+      - name: "tier-1 plumbing: WS-E corpus guard tests (no baseline regression)"
+        # Runs the UDF-via-CEL corpus guard tests (tier-1 plumbing only) to
+        # confirm no baseline regression from M3. The known-failing test_w17_4_*
+        # tests are NOT plumbing-tier and are excluded by -m plumbing.
+        run: |
+          uv run pytest \
+            tests/conformance/cel/test_udf_via_cel_corpus.py \
+            tests/conformance/cel/test_udf_via_cel_byte_match_runner.py \
+            -m plumbing -p no:cacheprovider -q
+
+      - name: "tier-1 plumbing: WS-G package-data tests (pinned sha guard)"
+        # VAL-CWC-P3CORPUS-012: verifies the vendored wasm sha256 matches the
+        # pinned constant WASM_PINNED_SHA256 in wasm_artifact.py.
+        run: |
+          uv run pytest \
+            packages/contracts/tests/test_wasm_package_data.py \
+            packages/contracts/tests/test_wasm_loader_package_data.py \
+            -m plumbing -p no:cacheprovider -q
+
   cel-wasm-aggregate:
     # Single required-check job for branch protection (mirrors the
     # conformance-release-block aggregate pattern -- GitHub's required-check
@@ -126,6 +216,7 @@ jobs:
     needs:
       - conformance-gate
       - reproducible-build
+      - m3-discipline-gate
     if: always()
     steps:
       - name: "aggregate"
@@ -138,4 +229,8 @@ jobs:
             echo "cel-wasm: reproducible-build gate failed (got ${{ needs.reproducible-build.result }})"
             exit 1
           fi
-          echo "cel-wasm: conformance + byte-parity + reproducible build all passed"
+          if [ "${{ needs.m3-discipline-gate.result }}" != "success" ]; then
+            echo "cel-wasm: M3 discipline gate failed (got ${{ needs.m3-discipline-gate.result }})"
+            exit 1
+          fi
+          echo "cel-wasm: conformance + byte-parity + reproducible build + M3 discipline all passed"
