@@ -37,6 +37,7 @@
 //
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
+import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -60,6 +61,7 @@ import type { PureUdf } from "./udf.js";
 import { RELAY_COVERAGE_NAME } from "./udfs/coverage.js";
 import { RELAY_SCHEMA_MATCH_NAME } from "./udfs/schema_match.js";
 import { RELAY_TOOL_ARG_NAME } from "./udfs/tool_arg.js";
+import { resolvePackagedWasmPath } from "./wasm-artifact.js";
 
 // VAL-PARITY-001 / VAL-CWC-P1HOST-005: an INTEGRAL value whose magnitude exceeds
 // Number.MAX_SAFE_INTEGER (2**53 - 1) cannot be represented exactly as a JS
@@ -620,7 +622,22 @@ export class WasmCelBackend {
       }
     }
 
-    this.wasmPath = options.wasmPath;
+    // Resolve the wasm artifact path (WS-G, VAL-CWC-P3CORPUS-009/011):
+    //   - an explicit options.wasmPath wins (the override / presence-gate path);
+    //   - otherwise resolve the WS-G PACKAGE-DATA wasm
+    //     (@epochly/relay-contracts/src/_wasm/relay_cel_wasm.wasm) so an
+    //     installed package finds the engine WITHOUT crate/target/. If the
+    //     package-data copy is absent, leave wasmPath undefined so the `.mjs`
+    //     loader applies its OWN default (package-data probe then crate/target)
+    //     / CEL_WASM env resolution -- env access stays in the loader, never in
+    //     this src tree. Mirrors the Python _resolve_wasm_path_or_none
+    //     (wasm_backed_evaluator.py:295-313).
+    if (options.wasmPath !== undefined) {
+      this.wasmPath = options.wasmPath;
+    } else {
+      const packaged = resolvePackagedWasmPath();
+      this.wasmPath = packaged ?? undefined;
+    }
     this.loaderPath = options.loaderPath ?? defaultLoaderPath();
     this.hangSentinel = options.hangSentinel ?? null;
   }
@@ -640,6 +657,40 @@ export class WasmCelBackend {
     return expression;
   }
 
+  /**
+   * Artifact-presence gate (WS-G, VAL-CWC-P3CORPUS-011). When a concrete wasm
+   * path is configured (an explicit options.wasmPath, or the resolved
+   * package-data path) but it is NOT an existing regular file, throw a
+   * structured RelayCelEngineError (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST)
+   * rather than letting the loader's readFileSync raise a bare ENOENT inside the
+   * Worker. An unset wasmPath is a no-op here: the `.mjs` loader applies its own
+   * default (package-data probe -> crate/target) / CEL_WASM resolution and fails
+   * loud at startup if nothing resolves. Mirrors the Python _resolve_wasm_path
+   * override gate (wasm_backed_evaluator.py:268-275).
+   */
+  private checkConfiguredWasmPresent(): void {
+    const configured = this.wasmPath;
+    if (configured === undefined) {
+      return;
+    }
+    let present = false;
+    try {
+      present = existsSync(configured) && statSync(configured).isFile();
+    } catch {
+      present = false;
+    }
+    if (!present) {
+      throw new RelayCelEngineError(
+        `wasm CEL artifact not resolvable at the configured path ` +
+          `${JSON.stringify(configured)} (file does not exist). Build it via ` +
+          "'bash packages/cel-wasm/conformance/build.sh build', set the " +
+          "CEL_WASM env override, or install an @epochly/relay-contracts " +
+          "package that ships the wasm package data.",
+        "RELAY-CEL-ENGINE-REQUEST",
+      );
+    }
+  }
+
   // --- evaluation (async) ------------------------------------------
 
   /**
@@ -656,6 +707,16 @@ export class WasmCelBackend {
     expression: string,
     bindings?: Record<string, unknown>,
   ): Promise<unknown> {
+    // Artifact-presence gate (WS-G, VAL-CWC-P3CORPUS-011): when an explicit wasm
+    // path is configured but absent, surface a structured RelayCelEngineError
+    // (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) BEFORE any wasm load -- never a
+    // bare ENOENT escaping the loader's readFileSync as an unhandled rejection.
+    // A configured-but-absent path is the presence-gate case the test exercises;
+    // an unset wasmPath defers to the `.mjs` loader's own default resolution.
+    // Mirrors the Python _resolve_wasm_path override gate
+    // (wasm_backed_evaluator.py:268-275).
+    this.checkConfiguredWasmPresent();
+
     // Host pre-screen (regex backref) BEFORE the wasm call (fail-closed).
     this.compile(expression);
 

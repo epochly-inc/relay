@@ -11,11 +11,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./wasm": "./src/_wasm/relay_cel_wasm.wasm"
   },
   "files": [
     "dist",
     "src",
+    "src/_wasm/relay_cel_wasm.wasm",
     "README.md"
   ],
   "scripts": {

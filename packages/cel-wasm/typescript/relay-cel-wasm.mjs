@@ -17,11 +17,33 @@
 //
 // Typed-canonical value form and error envelope match the Python loader and
 // crate/src/lib.rs exactly -- that identity is the ADR keystone (byte-parity).
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
-function defaultWasmPath() {
+// WS-G package-data wasm: the reproducible relay_cel_wasm.wasm is vendored as
+// data of @epochly/relay-contracts (packages/contracts-typescript/src/_wasm/),
+// so an INSTALLED package resolves the engine WITHOUT the gitignored
+// crate/target/ tree. From this loader's directory
+// (packages/cel-wasm/typescript/) the vendored copy is two levels up then into
+// contracts-typescript/src/_wasm/. Both copies are byte-identical (same pinned
+// sha 7d92aca8...); a Python+TS sha-drift guard catches any divergence.
+function packageDataWasmPath() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return normalize(
+    join(
+      here,
+      "..",
+      "..",
+      "contracts-typescript",
+      "src",
+      "_wasm",
+      "relay_cel_wasm.wasm",
+    ),
+  );
+}
+
+function crateTargetWasmPath() {
   const here = dirname(fileURLToPath(import.meta.url));
   return normalize(
     join(
@@ -34,6 +56,19 @@ function defaultWasmPath() {
       "relay_cel_wasm.wasm",
     ),
   );
+}
+
+// Default wasm artifact path (used when no explicit path and no CEL_WASM env).
+// Resolution order: the WS-G package-data copy first (works from an installed
+// package), then the in-repo crate/target/ build (dev-tree fallback). The
+// package-data copy is the same bytes as the build.sh artifact, so either path
+// loads an identical engine.
+function defaultWasmPath() {
+  const packaged = packageDataWasmPath();
+  if (existsSync(packaged)) {
+    return packaged;
+  }
+  return crateTargetWasmPath();
 }
 
 export class RelayCel {
