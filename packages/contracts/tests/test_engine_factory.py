@@ -298,9 +298,23 @@ def test_relay_cel_engine_read_only_in_engine_module() -> None:
     offenders: list[str] = []
     engine_is_read_site = False
     for py in PKG_SRC.rglob("*.py"):
+        rel = str(py.relative_to(REPO_ROOT))
+        # The ``_wasm/`` directory holds BUILD-TIME VENDORED package data (the
+        # reproducible ``.wasm`` binary and a byte-identical copy of the
+        # canonical OSS wasm loader ``packages/cel-wasm/python/relay_cel_wasm.py``
+        # shipped so a wheel-only install can LOAD the wasm). It is NOT
+        # first-party ``relay_contracts`` source: it is a verbatim, drift-guarded
+        # copy of code that lives outside ``src/``. The loader reads ``CEL_WASM``
+        # (its OWN dev-default wasm-path resolution), NEVER ``RELAY_CEL_ENGINE``,
+        # so it is not an engine-selection site; the engine-selection determinism
+        # invariant this guard protects (RELAY_CEL_ENGINE leaking out of
+        # engine.py) is unaffected. Excluding the vendored copy keeps the guard
+        # scoped to first-party host source, the same way the ascii-source lint
+        # excludes vendored / generated trees.
+        if "/_wasm/" in rel.replace("\\", "/") + "/":
+            continue
         tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         reads_env = _reads_environment(tree)
-        rel = str(py.relative_to(REPO_ROOT))
         if rel == engine_rel:
             engine_is_read_site = reads_env
             continue

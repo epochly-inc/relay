@@ -40,6 +40,21 @@ from pathlib import Path
 # separator; ``importlib.resources`` joinpath normalizes per-platform.
 WASM_PACKAGE_DATA_RELPATH: str = "_wasm/relay_cel_wasm.wasm"
 
+# The vendored wasm LOADER module's data path RELATIVE TO the imported
+# ``relay_contracts`` package root. The loader
+# (``packages/cel-wasm/python/relay_cel_wasm.py``) is a loose module with no
+# pyproject, so it is NOT importable as a top-level package in a wheel-only
+# install. WS-G ships a git-tracked VENDORED COPY of the canonical loader here
+# (``src/relay_contracts/_wasm/relay_cel_wasm.py``) and force-includes it into
+# the wheel (``[tool.hatch.build.targets.wheel.force-include]``, the SAME
+# mechanism + the SAME vendored-copy pattern the ``.wasm`` uses -- a git-tracked
+# copy in ``src/_wasm/``), so a fresh-installed wheel can LOAD the wasm, not only
+# locate it. Because the copy is a git-tracked DUPLICATE of the canonical
+# source, a BYTE-IDENTITY drift guard
+# (``test_wasm_loader_package_data.test_wasm_loader_vendored_copy_is_byte_identical_to_canonical``)
+# fails CI if the two diverge -- no silent drift.
+WASM_LOADER_PACKAGE_DATA_RELPATH: str = "_wasm/relay_cel_wasm.py"
+
 # The full sha256 of the reproducible build.sh deterministic-recipe artifact
 # (the ``[repro] PASS: byte-deterministic (<sha>)`` value). The shipped
 # package-data wasm MUST hash to this. PINNED, not signed (see module docstring).
@@ -85,14 +100,47 @@ def resolve_packaged_wasm_path() -> Path | None:
     return path
 
 
+def resolve_packaged_wasm_loader_path() -> Path | None:
+    """Resolve the package-data wasm LOADER module to a concrete on-disk path.
+
+    Mirrors :func:`resolve_packaged_wasm_path` for the loader source: resolution
+    is anchored to the IMPORTED ``relay_contracts`` package root via
+    ``importlib.resources.files('relay_contracts')``, so a fresh-installed wheel
+    locates the loader the same way it locates the ``.wasm`` -- WITHOUT the
+    in-repo ``packages/cel-wasm/python`` tree present.
+
+    Returns the :class:`pathlib.Path` to the loader ``.py`` when it exists as a
+    regular file, else ``None`` (so the caller maps a missing loader to a
+    structured engine error rather than letting a bare ``FileNotFoundError`` /
+    ``ImportError`` escape). Never raises for an absent loader.
+    """
+    try:
+        resource = importlib.resources.files("relay_contracts").joinpath(
+            WASM_LOADER_PACKAGE_DATA_RELPATH
+        )
+    except (ModuleNotFoundError, FileNotFoundError):
+        return None
+    try:
+        if not resource.is_file():
+            return None
+        path = Path(str(resource))
+    except (FileNotFoundError, OSError):
+        return None
+    if not path.is_file():
+        return None
+    return path
+
+
 def sha256_of_path(path: Path) -> str:
     """Return the hex sha256 of the bytes at ``path``."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 __all__ = [
+    "WASM_LOADER_PACKAGE_DATA_RELPATH",
     "WASM_PACKAGE_DATA_RELPATH",
     "WASM_PINNED_SHA256",
+    "resolve_packaged_wasm_loader_path",
     "resolve_packaged_wasm_path",
     "sha256_of_path",
 ]

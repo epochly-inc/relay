@@ -80,7 +80,10 @@ from .udfs import (
     RELAY_SCHEMA_MATCH_NAME,
     RELAY_TOOL_ARG_NAME,
 )
-from .wasm_artifact import resolve_packaged_wasm_path
+from .wasm_artifact import (
+    resolve_packaged_wasm_loader_path,
+    resolve_packaged_wasm_path,
+)
 from .wasm_codec import typed_to_py
 
 # The three relay.* UDFs the wasm hosts natively. A caller may pass these
@@ -99,19 +102,76 @@ _WASM_PROFILE_CODE: str = RelayErrorCode.RELAY_CEL_002
 def _load_relay_cel_class() -> type:
     """Resolve the ``RelayCel`` wasm-loader class.
 
-    Prefers the installed ``relay_cel_wasm`` module (so once WS-G ships the
-    loader as package data this Just Works); falls back to loading it from the
-    in-repo ``packages/cel-wasm/python/relay_cel_wasm.py`` source by file path
-    for the development tree, where the loader is a bare module not yet on
-    ``sys.path``. The fallback is import-path resolution only -- it does not
-    copy or fork the loader (CLAUDE.md import-boundary rule: consume, do not
-    mutate).
+    Resolution order:
+
+      1. The installed top-level ``relay_cel_wasm`` module (if a developer or
+         downstream has put the loose loader on ``sys.path``).
+      2. The in-repo ``packages/cel-wasm/python/relay_cel_wasm.py`` source by
+         file path (the development tree, where the loader is a bare module).
+      3. The WS-G PACKAGE-DATA loader shipped inside the ``relay_contracts``
+         wheel at ``_wasm/relay_cel_wasm.py`` (resolved via
+         ``importlib.resources``). This is the FALLBACK that makes a wheel-only
+         install able to LOAD the wasm: the loose loader module is not a
+         published package, and the in-repo path is absent in a wheel-only tree,
+         so without this fallback ``import relay_cel_wasm`` and the in-repo file
+         load both fail and the wasm engine cannot be constructed.
+
+    All paths are import-path resolution only -- they do not copy or fork the
+    loader at runtime (CLAUDE.md import-boundary rule: consume, do not mutate).
+    The package-data copy is produced at BUILD time by force-include from the
+    single canonical loader source (zero drift by construction).
+
+    When NONE of the three resolve (no loose module, no in-repo source, no
+    package-data loader), a structured :class:`RelayCelEngineError`
+    (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) is raised -- never a bare
+    ``ImportError`` / ``ModuleNotFoundError`` / ``FileNotFoundError`` escaping
+    the host facade.
     """
     try:
         module = importlib.import_module("relay_cel_wasm")
     except ModuleNotFoundError:
-        module = _load_relay_cel_from_repo()
+        try:
+            module = _load_relay_cel_from_repo()
+        except RelayCelError:
+            # In-repo source absent (wheel-only tree). Fall back to the WS-G
+            # package-data loader shipped inside the relay_contracts wheel.
+            module = _load_relay_cel_from_package_data()
     return module.RelayCel
+
+
+def _load_relay_cel_from_package_data() -> Any:
+    """Load the wasm loader from the ``relay_contracts`` package-data copy.
+
+    Resolves ``_wasm/relay_cel_wasm.py`` via ``importlib.resources`` (anchored to
+    the IMPORTED package root, so it works from an installed wheel without the
+    in-repo ``packages/cel-wasm/python`` tree) and executes it via
+    ``spec_from_file_location`` -- the SAME file-location load the in-repo path
+    uses, just anchored at the vendored copy. Raises a structured
+    :class:`RelayCelEngineError` (never a bare ``ImportError`` /
+    ``FileNotFoundError``) when the loader package data is absent or
+    unloadable.
+    """
+    loader_path = resolve_packaged_wasm_loader_path()
+    if loader_path is None:
+        raise RelayCelEngineError(
+            "wasm CEL loader not resolvable: no installed relay_cel_wasm module, "
+            "no in-repo packages/cel-wasm/python/relay_cel_wasm.py source, and no "
+            "packaged relay_contracts loader (importlib.resources). Install a "
+            "relay_contracts wheel that ships the wasm loader package data, or "
+            "run from the repo tree.",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
+    spec = importlib.util.spec_from_file_location(
+        "relay_cel_wasm", str(loader_path)
+    )
+    if spec is None or spec.loader is None:
+        raise RelayCelEngineError(
+            f"packaged wasm CEL loader not importable at {str(loader_path)!r}",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _load_relay_cel_from_repo() -> Any:
@@ -120,12 +180,30 @@ def _load_relay_cel_from_repo() -> Any:
     ``packages/contracts/src/relay_contracts/wasm_backed_evaluator.py`` ->
     repo root is four parents up; the loader lives at
     ``packages/cel-wasm/python/relay_cel_wasm.py``.
+
+    In a WHEEL-ONLY install (the ``relay_contracts`` package lives in
+    site-packages, not the repo tree) this in-repo path does NOT exist. The file
+    existence is checked FIRST and a structured :class:`RelayCelEngineError` is
+    raised for an absent path -- WITHOUT this guard, ``spec_from_file_location``
+    still returns a non-None spec for a nonexistent file and the bare
+    ``FileNotFoundError`` only surfaces at ``exec_module``, escaping the
+    ``except RelayCelError`` fall-through to the package-data loader and breaking
+    the wheel-only path. Raising the structured error here lets
+    :func:`_load_relay_cel_class` fall through to
+    :func:`_load_relay_cel_from_package_data`.
     """
     here = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.normpath(os.path.join(here, "..", "..", "..", ".."))
     loader_path = os.path.join(
         repo_root, "packages", "cel-wasm", "python", "relay_cel_wasm.py"
     )
+    if not os.path.isfile(loader_path):
+        # Wheel-only tree (or any layout without the in-repo loader source): a
+        # structured engine error so the caller can fall back to package data.
+        raise RelayCelEngineError(
+            f"in-repo wasm CEL loader not found at {loader_path!r}",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
     spec = importlib.util.spec_from_file_location("relay_cel_wasm", loader_path)
     if spec is None or spec.loader is None:
         raise RelayCelEngineError(
