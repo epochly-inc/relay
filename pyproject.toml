@@ -124,6 +124,20 @@ extraPaths = ["apps/local-sidecar/tests"]
 root = "packages/cel-wasm/tests"
 extraPaths = ["packages/cel-wasm/python"]
 
+# The WS-E UDF-via-CEL corpus generator (scripts/generate-relay-udf-via-cel-corpus.py)
+# drives the wasm loader through a runtime sys.path insert, identical to the
+# cel-wasm tests above: `sys.path.insert(0, REPO_ROOT / "packages/cel-wasm/python")`
+# then `from relay_cel_wasm import RelayCel  # noqa: E402`. The loader module
+# (packages/cel-wasm/python/relay_cel_wasm.py) is NOT an installed package, so
+# pyright reports the runtime-valid import as unresolved (reportMissingImports).
+# Declaring scripts/ as an execution-environment root with the python/ loader
+# dir on extraPaths mirrors the runtime search path WITHOUT changing any
+# behavior. Scoped to this root only; it does not affect any other tree and
+# does NOT exclude the scripts (they stay fully type-checked).
+[[tool.pyright.executionEnvironments]]
+root = "scripts"
+extraPaths = ["packages/cel-wasm/python"]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = [
