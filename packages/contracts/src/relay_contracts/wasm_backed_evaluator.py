@@ -72,6 +72,7 @@ from .evaluator import (
     MAX_TIMEOUT_MS,
     RelayCelEvaluator,
     _check_finite,
+    _check_profile,
     _check_regex_backref,
 )
 from .udf import PureUdf
@@ -477,12 +478,49 @@ class WasmCelEvaluator:
         """Validate ``expression`` against the host-side pre-screens.
 
         Returns the expression unchanged on success (the wasm compiles + checks
-        the AST itself; there is no host-side cel-python program to cache). The
-        regex-backreference pre-screen (RELAY-CEL-007 / REGEX-BACKREF) runs here
-        so a backref in ANY string literal surfaces the structured host error
-        BEFORE the wasm call -- mirroring :meth:`RelayCelEvaluator.compile`.
+        the AST itself; there is no host-side cel-python program to cache).
+
+        Two host-side pre-screens run here, BOTH mirroring
+        :meth:`RelayCelEvaluator.compile` so publish-time rejection is
+        engine-invariant:
+
+          1. the regex-backreference pre-screen (RELAY-CEL-007 / REGEX-BACKREF)
+             -- a backref in ANY string literal surfaces the structured host
+             error BEFORE the wasm call; and
+          2. the Relay-profile AST check (RELAY-CEL-002 / PROFILE) -- a
+             ``dyn(...)`` / ``timestamp(...)`` / ``duration(...)`` disabled-builtin
+             call is rejected at COMPILE time, not deferred to EVAL. Without this
+             the wasm engine only rejected them at eval, so
+             :func:`pipeline.publish_contract` (which calls ``compile``) let those
+             expressions slip through PUBLISH under ``RELAY_CEL_ENGINE=wasm``,
+             diverging from the celpy path (FINDING D).
+
+        The profile check needs an AST. The delegate ``_timeout_host`` carries a
+        celpy :class:`celpy.Environment` (``self._env``); parse the expression
+        through it solely to obtain the AST for :func:`_check_profile`. The wasm
+        remains the AUTHORITATIVE compiler: a celpy PARSE failure (a syntax error
+        the wasm may classify differently) is SWALLOWED here so it is NOT
+        misreported as a profile error -- the real compile error then surfaces
+        from the wasm at eval as RELAY-CEL-009 / ENGINE-COMPILE (preserving the
+        documented engine-error taxonomy). A structured ``RelayCelError`` raised
+        during parse (already canonical) is propagated.
         """
         _check_regex_backref(expression)
+        try:
+            ast = self._env.compile(expression)
+        except RelayCelError:
+            # An already-structured Relay error (e.g. a host pre-screen the
+            # celpy env surfaces) is propagated verbatim.
+            raise
+        except Exception:  # noqa: BLE001 -- celpy parse failure
+            # The wasm is the authoritative compiler; a celpy-only parse failure
+            # is NOT a profile violation. Skip the host profile check and let the
+            # wasm surface the real compile error at eval (RELAY-CEL-009).
+            return expression
+        # The profile AST check raises RelayCelProfileError (RELAY-CEL-002) on a
+        # disabled-builtin call -- the SAME rejection the celpy path emits at
+        # compile, so publish-time behavior matches across engines.
+        _check_profile(ast)
         return expression
 
     # --- evaluation --------------------------------------------------

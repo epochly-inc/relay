@@ -145,6 +145,66 @@ def test_profile_disabled_global_call_rejected_via_structured_subtype(expr, subt
 
 
 # ---------------------------------------------------------------------------
+# FINDING D: WasmCelEvaluator.compile() runs the SAME profile check at COMPILE
+# time as RelayCelEvaluator.compile(). Before the fix compile() only ran
+# _check_regex_backref and returned, so dyn()/timestamp()/duration() slipped
+# through pipeline.publish_contract() under RELAY_CEL_ENGINE=wasm (the wasm only
+# rejected them at EVAL). publish_contract calls evaluator.compile(); the wasm
+# path MUST reject at publish exactly like the celpy path.
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "expr,subtype",
+    [
+        ("dyn(1)", SUBTYPE_PROFILE_DYN_DISABLED),
+        ('timestamp("2020-01-01T00:00:00Z")', SUBTYPE_PROFILE_TS_DISABLED),
+        ('duration("1s")', SUBTYPE_PROFILE_DUR_DISABLED),
+    ],
+)
+def test_profile_disabled_call_rejected_at_compile_not_only_evaluate(expr, subtype):
+    ev = WasmCelEvaluator()
+    # The disabled-builtin call MUST be rejected at compile() (the publish path),
+    # with the SAME structured RELAY-CEL-002 PROFILE subtype the celpy path
+    # surfaces -- not deferred to evaluate().
+    with pytest.raises(RelayCelProfileError) as exc:
+        ev.compile(expr)
+    assert exc.value.code == "RELAY-CEL-002"
+    assert exc.value.subtype == subtype
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "expr,subtype",
+    [
+        ("dyn(1)", SUBTYPE_PROFILE_DYN_DISABLED),
+        ('timestamp("2020-01-01T00:00:00Z")', SUBTYPE_PROFILE_TS_DISABLED),
+        ('duration("1s")', SUBTYPE_PROFILE_DUR_DISABLED),
+    ],
+)
+def test_wasm_compile_profile_rejection_matches_celpy_compile(expr, subtype):
+    # The wasm compile() profile rejection MUST match RelayCelEvaluator.compile()
+    # (same code + subtype), so publish-time rejection is engine-invariant.
+    wasm_ev = WasmCelEvaluator()
+    celpy_ev = RelayCelEvaluator()
+    with pytest.raises(RelayCelProfileError) as wasm_exc:
+        wasm_ev.compile(expr)
+    with pytest.raises(RelayCelProfileError) as celpy_exc:
+        celpy_ev.compile(expr)
+    assert wasm_exc.value.code == celpy_exc.value.code == "RELAY-CEL-002"
+    assert wasm_exc.value.subtype == celpy_exc.value.subtype == subtype
+
+
+@pytest.mark.plumbing
+def test_wasm_compile_accepts_valid_expression():
+    # A VALID expression still compiles (the profile check only rejects the
+    # disabled builtins; it must not break normal compilation). compile()
+    # returns the expression unchanged on the wasm path.
+    ev = WasmCelEvaluator()
+    assert ev.compile("1 + 2") == "1 + 2"
+    assert ev.compile('"a".size() > 0') == '"a".size() > 0'
+
+
+# ---------------------------------------------------------------------------
 # VAL-CWC-P1HOST-005: host guards retained on the wasm path
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
