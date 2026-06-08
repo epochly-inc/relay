@@ -56,11 +56,30 @@ test = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/relay_contracts"]
+# WS-G (cel-wasm cutover): ship the reproducible single CEL engine
+# (relay_cel_wasm.wasm, the build.sh deterministic-recipe artifact) as PACKAGE
+# DATA so a fresh-installed wheel resolves the engine via importlib.resources
+# WITHOUT the gitignored crate/target/ tree. The .wasm is Apache-2.0-portable
+# CODE, not key material -- M3 PINS its sha (relay_contracts.wasm_artifact); it
+# is not signed here (signing is relay-platform/KMS, out of scope). force-include
+# guarantees the binary lands in the wheel even though hatchling's default VCS
+# file selection may skip a build-output artifact.
+artifacts = [
+  "src/relay_contracts/_wasm/relay_cel_wasm.wasm",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/relay_contracts/_wasm/relay_cel_wasm.wasm" = "relay_contracts/_wasm/relay_cel_wasm.wasm"
 
 [tool.hatch.build.targets.sdist]
 include = [
   "src/relay_contracts",
   "README.md",
+]
+# Mirror the wheel: the reproducible wasm package data is part of the sdist too,
+# so a from-sdist build reproduces the same package-data layout.
+artifacts = [
+  "src/relay_contracts/_wasm/relay_cel_wasm.wasm",
 ]
 
 [tool.uv.sources]

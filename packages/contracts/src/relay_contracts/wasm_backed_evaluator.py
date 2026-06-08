@@ -80,6 +80,7 @@ from .udfs import (
     RELAY_SCHEMA_MATCH_NAME,
     RELAY_TOOL_ARG_NAME,
 )
+from .wasm_artifact import resolve_packaged_wasm_path
 from .wasm_codec import typed_to_py
 
 # The three relay.* UDFs the wasm hosts natively. A caller may pass these
@@ -134,6 +135,104 @@ def _load_relay_cel_from_repo() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _crate_target_wasm_path() -> str | None:
+    """Resolve the in-repo ``crate/target/`` release wasm by file path.
+
+    This is the DEV-tree fallback used only when neither the package-data wasm
+    (WS-G) nor a ``CEL_WASM`` override resolves -- e.g. a from-source checkout
+    that has run ``build.sh build`` but not vendored the artifact. The path
+    mirrors the loader's ``_DEFAULT_WASM`` (this module ->
+    ``packages/contracts/src/relay_contracts`` -> repo root is four parents up;
+    the artifact lives at ``packages/cel-wasm/crate/target/.../release/...``).
+    Returns the path only if it exists as a regular file, else ``None``.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.normpath(os.path.join(here, "..", "..", "..", ".."))
+    candidate = os.path.join(
+        repo_root,
+        "packages",
+        "cel-wasm",
+        "crate",
+        "target",
+        "wasm32-unknown-unknown",
+        "release",
+        "relay_cel_wasm.wasm",
+    )
+    return candidate if os.path.isfile(candidate) else None
+
+
+def _resolve_wasm_path(override: str | None = None) -> str:
+    """Resolve a concrete wasm artifact path, gated on presence (WS-G).
+
+    Resolution order (NO environment read -- the ``CEL_WASM`` env override is the
+    loader's concern, applied in :meth:`_ensure_shared` when this resolver finds
+    no path; keeping env access out of ``packages/contracts/src`` preserves the
+    VAL-W8-005 / VAL-CWC-P4DUALRUN-008 determinism guard
+    ``test_relay_cel_engine_read_only_in_engine_module``):
+
+      1. ``override`` -- an explicit caller-supplied path (used by
+         :meth:`WasmCelEvaluator.evaluate_with_wasm_path` to point the resolver
+         at a specific -- possibly absent -- artifact for the presence-gate
+         test). An override that is not an existing file is a structured engine
+         error (NOT a bare ``FileNotFoundError``).
+      2. The shipped PACKAGE-DATA wasm via ``importlib.resources`` (the WS-G
+         primary path; works from an installed wheel without ``crate/target/``).
+      3. The in-repo ``crate/target/`` release wasm (dev-tree fallback).
+
+    When NONE of these resolve, raises a structured
+    :class:`RelayCelEngineError` (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) so a
+    missing artifact is a clear, catchable ``RelayCelError`` -- never a bare
+    ``FileNotFoundError`` / generic exception. The celpy default path does not
+    call this resolver, so a missing wasm never affects the celpy engine.
+    """
+    if override is not None:
+        if os.path.isfile(override):
+            return override
+        raise RelayCelEngineError(
+            f"wasm CEL artifact not resolvable at the supplied path "
+            f"{override!r} (file does not exist)",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
+
+    packaged = resolve_packaged_wasm_path()
+    if packaged is not None:
+        return str(packaged)
+
+    crate = _crate_target_wasm_path()
+    if crate is not None:
+        return crate
+
+    raise RelayCelEngineError(
+        "wasm CEL artifact not resolvable: no packaged relay_contracts wasm "
+        "(importlib.resources) and no in-repo crate/target/ release build. Run "
+        "'bash packages/cel-wasm/conformance/build.sh build', set the CEL_WASM "
+        "env override, or install a relay_contracts wheel that ships the wasm "
+        "package data.",
+        subtype="RELAY-CEL-ENGINE-REQUEST",
+    )
+
+
+def _resolve_wasm_path_or_none(override: str | None = None) -> str | None:
+    """Like :func:`_resolve_wasm_path` but return ``None`` instead of raising.
+
+    Used by :meth:`_ensure_shared` so that when no package-data / crate-target
+    wasm resolves, the loader is invoked with no explicit path and applies its
+    OWN ``CEL_WASM`` env / default resolution (env access stays in the loader,
+    never in ``packages/contracts/src``). The override branch still raises a
+    structured error for an explicitly-supplied absent path.
+    """
+    if override is not None:
+        # An explicit absent override is a hard structured error (presence gate).
+        return _resolve_wasm_path(override)
+    packaged = resolve_packaged_wasm_path()
+    if packaged is not None:
+        return str(packaged)
+    crate = _crate_target_wasm_path()
+    if crate is not None:
+        return crate
+    return None
 
 
 class WasmCelEvaluator:
@@ -221,11 +320,33 @@ class WasmCelEvaluator:
             if self._shared_module is not None:
                 return
             cls = _load_relay_cel_class()
+            # Resolve the wasm artifact path through the WS-G resolver: package
+            # data (importlib.resources) first, then the in-repo crate/target
+            # release build. When the resolver finds neither it returns None and
+            # the loader is invoked with no explicit path so it applies its OWN
+            # CEL_WASM env / default resolution -- env access stays in the loader,
+            # never in packages/contracts/src (determinism guard). Passing the
+            # package-data path explicitly means the shared Engine+Module compile
+            # from the vendored wasm even when the gitignored crate/target/ dev
+            # path is absent (e.g. a fresh wheel install).
+            wasm_path = _resolve_wasm_path_or_none()
             # Construct one bootstrap handle to obtain a compiled Engine+Module;
             # all per-thread handles reuse these (the Module compile is the
             # expensive step and is shareable across threads). The bootstrap
-            # handle itself is discarded.
-            bootstrap = cls()
+            # handle itself is discarded. Any load failure (a missing artifact
+            # the loader cannot resolve, or a corrupt module) is converted to the
+            # structured RELAY-CEL-009 engine error -- never a bare
+            # FileNotFoundError / wasmtime exception escaping the host facade.
+            try:
+                bootstrap = cls(wasm_path=wasm_path) if wasm_path else cls()
+            except RelayCelError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- map any load failure structurally
+                raise RelayCelEngineError(
+                    "wasm CEL engine failed to load its module: "
+                    f"{type(exc).__name__}: {exc}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                ) from exc
             self._relay_cel_cls = cls
             self._shared_engine = bootstrap._engine
             self._shared_module = bootstrap._module
@@ -325,6 +446,52 @@ class WasmCelEvaluator:
                 self._quarantine_thread_handle()
             raise
 
+        return self._decode_envelope(envelope)
+
+    def evaluate_with_wasm_path(
+        self,
+        expression: str,
+        *,
+        wasm_path: str,
+        bindings: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Evaluate ``expression`` over the wasm at an EXPLICIT ``wasm_path``.
+
+        This is the artifact-presence gate (VAL-CWC-P3CORPUS-010). The supplied
+        path is resolved through :func:`_resolve_wasm_path` with the path as an
+        override: an ABSENT path raises a structured
+        :class:`RelayCelEngineError` (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST)
+        -- never a bare ``FileNotFoundError`` / generic exception -- so a missing
+        packaged wasm surfaces as a clear, catchable ``RelayCelError``.
+
+        On a present path the expression is evaluated over a ONE-SHOT handle
+        built from that path (independent of the cached shared Engine+Module,
+        which may have been compiled from a different artifact). The same
+        host-side guards run: the regex-backref pre-screen at :meth:`compile`,
+        the wall-clock timeout via the shared ``_run_with_timeout`` helper, and
+        ``_check_finite`` on the converted result.
+        """
+        # The resolver raises the structured RELAY-CEL-009 engine error if the
+        # supplied path does not exist (the presence gate). This MUST run before
+        # any wasm load so an absent artifact never reaches wasmtime as a bare
+        # FileNotFoundError.
+        resolved = _resolve_wasm_path(override=wasm_path)
+
+        # Host pre-screen (regex backref) BEFORE the wasm call (fail-closed).
+        self.compile(expression)
+        typed_bindings = self._encode_bindings(bindings)
+
+        cls = _load_relay_cel_class()
+        handle = cls(wasm_path=resolved)
+
+        def _run() -> dict[str, Any]:
+            return handle.eval(
+                expression, typed_bindings or None, relay_profile=True
+            )
+
+        envelope = self._timeout_host._run_with_timeout(
+            _run, self.timeout_ms / 1000.0
+        )
         return self._decode_envelope(envelope)
 
     def evaluate_with_trace(
