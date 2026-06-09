@@ -24,13 +24,50 @@ The determinism guard (VAL-008) encodes the contract's grep semantics:
   - ``grep -rn 'RELAY_CEL_ENGINE' packages/gate/src`` returns NO matches
     (exit 1) -- gate src never names the engine var at all.
   - the only file under ``packages/contracts/src`` that actually READS the env
-    var (``os.environ`` / ``os.getenv`` / ``getenv``) is ``engine.py``. Other
-    contracts-src files (``pipeline.py``, ``wasm_backed_evaluator.py``) name the
-    token ONLY in docstring / comment prose that explicitly states the var is
-    NOT read there -- a deliberate negative reference, not a read. A bare
-    substring grep is fooled by that prose, so the read-site half of the guard
-    asserts on the env-READ pattern, which never matches a string literal or
-    comment, and confirms ``engine.py`` is the sole read site.
+    var is ``engine.py``. Other contracts-src files (``pipeline.py``,
+    ``wasm_backed_evaluator.py``) name the token ONLY in docstring / comment
+    prose that explicitly states the var is NOT read there -- a deliberate
+    negative reference, not a read. A bare substring grep is fooled by that
+    prose.
+
+Read-site detection -- the ENV-KEY STRING LITERAL scan (threat model):
+  EVERY real environment read of the engine var MUST name the key STRING
+  ``"RELAY_CEL_ENGINE"`` somewhere -- ``os.environ.get("RELAY_CEL_ENGINE")``,
+  ``os.getenv("RELAY_CEL_ENGINE")``, ``os.environ["RELAY_CEL_ENGINE"]``, or the
+  from-import form ``from os import environ; environ.get("RELAY_CEL_ENGINE")``
+  / ``from os import getenv; getenv("RELAY_CEL_ENGINE")``. The key is the one
+  UNAVOIDABLE token shared by all of them. So this guard scans the parsed AST
+  of each contracts-src module for a string-literal node (``ast.Constant`` with
+  a ``str`` value, INCLUDING the constant definition
+  ``_ENGINE_ENV_VAR = "RELAY_CEL_ENGINE"``) whose value is EXACTLY
+  ``RELAY_CEL_ENGINE`` and that is used in a READ position (not a docstring,
+  not a comment).
+
+  This supersedes the earlier os-API-FORM detector (which matched only
+  ``os.environ`` / ``os.getenv`` attribute access on the ``os`` name, plus a
+  bare ``getenv(...)`` call). That form-based detector was UNSOUND: a read
+  written ``from os import environ; environ.get("RELAY_CEL_ENGINE")`` (the
+  exact roborev MED evasion) named no ``os.<attr>`` node and bypassed it, so
+  the single-read-site invariant was not actually locked. Scanning the KEY
+  LITERAL instead of the os-API form catches every naturally-written read
+  regardless of import style -- it is convergent on the unavoidable token,
+  mirroring the lesson learned on the TypeScript env-guard.
+
+  Soundness vs. prose (no false positive): a string-literal AST node is NEVER
+  produced by a ``#`` comment (comments are not AST nodes), and the scan
+  EXCLUDES docstrings (the bare-string ``Expr`` that is the first statement of
+  a module / class / function body). ``pipeline.py`` mentions the token only in
+  ``#`` comments and ``wasm_backed_evaluator.py`` only in docstrings, so neither
+  trips the guard. The scan is further tightened to READ positions (Call
+  argument or Subscript index, plus the engine-var constant DEFINITION) so any
+  remaining prose-as-string-literal mention would also be excluded structurally.
+
+  Explicit, documented NON-GOAL: adversarial string-splitting
+  (``"RELAY_" + "CEL_ENGINE"``, ``"".join(...)``, byte/char construction) is
+  out of scope and is NOT detected -- identical posture to the TS env-guard. A
+  developer who deliberately obfuscates the key to hide an env read is outside
+  this guard's threat model; the guard locks the invariant against every
+  NATURALLY written read.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -46,44 +83,75 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GATE_SRC = REPO_ROOT / "packages" / "gate" / "src"
 CONTRACTS_SRC = REPO_ROOT / "packages" / "contracts" / "src"
-ENGINE_FILE = (
-    CONTRACTS_SRC / "relay_contracts" / "engine.py"
-)
+ENGINE_FILE = CONTRACTS_SRC / "relay_contracts" / "engine.py"
 
 _ENGINE_VAR = "RELAY_CEL_ENGINE"
 
-# An env-READ of the engine var: ``os.environ``/``os.getenv``/``getenv`` on a
-# line (or contiguous statement) that names the var. This pattern never matches
-# a docstring/comment that merely mentions the token, so it isolates the REAL
-# selection read from deliberate negative-reference prose.
-_ENV_READ_TOKENS = ("os.environ", "os.getenv", "getenv(")
 
+def _module_docstring_node_ids(tree: ast.AST) -> set[int]:
+    """Collect the ``id()`` of every bare-string ``ast.Constant`` that is a
+    docstring -- the first statement of a module / class / function body.
 
-def _ast_reads_environment(tree: ast.AST) -> bool:
-    """True if the AST contains a GENUINE ``os.environ`` / ``os.getenv`` /
-    bare ``getenv(...)`` access node.
-
-    Walks the parsed AST for a real environment-access node (an
-    ``ast.Attribute`` ``os.environ`` / ``os.getenv``, or a bare ``getenv(...)``
-    call). It never matches a string literal or comment, so prose like
-    ``"This module never touches os.environ"`` in a docstring is correctly NOT
-    treated as a read. Mirrors the proven detector in
-    ``test_engine_factory.test_relay_cel_engine_read_only_in_engine_module``.
+    A docstring is the only place a string literal equal to the engine var can
+    appear WITHOUT being a read (deliberate negative-reference prose, e.g.
+    ``wasm_backed_evaluator.py``'s module docstring). Excluding these node ids
+    from the key-literal scan prevents a false positive on prose while keeping
+    the scan sound against every real read (which names the key as a Call
+    argument, Subscript index, or the engine-var constant definition -- never
+    as a docstring).
     """
+    docstring_ids: set[int] = set()
     for node in ast.walk(tree):
-        # os.environ  /  os.environ[...]  /  os.environ.get(...)  /  os.getenv(...)
+        body = getattr(node, "body", None)
+        if isinstance(body, list) and body:
+            first = body[0]
+            if (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)
+            ):
+                docstring_ids.add(id(first.value))
+    return docstring_ids
+
+
+def _names_engine_key_in_read_position(tree: ast.AST) -> bool:
+    """True if the AST contains a STRING-LITERAL node whose value is EXACTLY
+    ``RELAY_CEL_ENGINE`` used in a READ position (NOT a docstring, NOT a
+    comment).
+
+    This is the SOUND read-site detector. EVERY naturally-written environment
+    read of the engine var MUST name the key string ``"RELAY_CEL_ENGINE"`` --
+    whether via ``os.environ.get("RELAY_CEL_ENGINE")``,
+    ``os.getenv("RELAY_CEL_ENGINE")``, ``os.environ["RELAY_CEL_ENGINE"]``, the
+    from-import form ``from os import environ; environ.get("RELAY_CEL_ENGINE")``
+    /  ``from os import getenv; getenv("RELAY_CEL_ENGINE")``, or the engine
+    factory's constant definition ``_ENGINE_ENV_VAR = "RELAY_CEL_ENGINE"``. The
+    key literal is the one UNAVOIDABLE token shared by all of them, so scanning
+    for it catches the read regardless of which ``os`` import form is used --
+    defeating the ``from os import environ`` evasion by construction.
+
+    Soundness vs. prose:
+      - ``#`` comments are NOT AST nodes, so they can never match.
+      - Docstrings (bare-string ``Expr`` first statements) are EXCLUDED via
+        :func:`_module_docstring_node_ids`.
+    A genuine key literal lands in a Call argument, a Subscript index, or an
+    assignment value (the constant definition) -- all READ positions, none of
+    which are docstrings. ``pipeline.py`` (comment-only mentions) and
+    ``wasm_backed_evaluator.py`` (docstring-only mentions) therefore do NOT
+    match.
+
+    NON-GOAL (documented, same posture as the TS env-guard): adversarial
+    string-splitting (``"RELAY_" + "CEL_ENGINE"``) is deliberately NOT detected.
+    A developer who obfuscates the key to hide an env read is outside this
+    guard's threat model.
+    """
+    docstring_ids = _module_docstring_node_ids(tree)
+    for node in ast.walk(tree):
         if (
-            isinstance(node, ast.Attribute)
-            and node.attr in {"environ", "getenv"}
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "os"
-        ):
-            return True
-        # a bare ``getenv(...)`` call (from-import form)
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "getenv"
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value == _ENGINE_VAR
+            and id(node) not in docstring_ids
         ):
             return True
     return False
@@ -188,21 +256,50 @@ def test_relay_cel_engine_absent_from_gate_src() -> None:
     )
 
 
+def _key_literal_read_site_files(src_root: Path) -> set[str]:
+    """Return the set of repo-relative .py paths under ``src_root`` that contain
+    a key-literal READ of the engine var (an ``ast.Constant`` str node equal to
+    ``RELAY_CEL_ENGINE`` that is NOT a docstring).
+
+    This is the convergent read-site detector (see module docstring): it scans
+    for the UNAVOIDABLE key string literal, so it catches every naturally
+    written env read regardless of which ``os`` import form names the read.
+    """
+    hits: set[str] = set()
+    for py in sorted(src_root.rglob("*.py")):
+        rel = str(py.relative_to(REPO_ROOT)).replace("\\", "/")
+        text = py.read_text(encoding="utf-8")
+        # Cheap prefilter: a file with no occurrence of the token at all cannot
+        # hold a key literal (or prose). Skip parsing it.
+        if _ENGINE_VAR not in text:
+            continue
+        if _names_engine_key_in_read_position(ast.parse(text, filename=str(py))):
+            hits.add(rel)
+    return hits
+
+
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
 def test_relay_cel_engine_read_site_is_only_engine_py() -> None:
     """The ONLY file under ``packages/contracts/src`` that READS the engine var
     is the factory ``engine.py``.
 
-    Encodes the contract's complementary grep semantics precisely. A bare
-    ``grep -rn 'RELAY_CEL_ENGINE' packages/contracts/src`` also matches
+    Encodes the contract's complementary grep semantics precisely, but SOUNDLY.
+    A bare ``grep -rn 'RELAY_CEL_ENGINE' packages/contracts/src`` also matches
     docstring / comment prose in ``pipeline.py`` and ``wasm_backed_evaluator.py``
     that explicitly states the var is NOT read there (deliberate negative
     references). The invariant the contract protects is the READ site, not the
-    appearance of the token, so this guard asserts on the env-READ pattern
-    (``os.environ`` / ``os.getenv`` / ``getenv``) on a line that also names the
-    var -- which never matches a string literal or comment -- and confirms
-    exactly ONE such file: ``engine.py``.
+    appearance of the token.
+
+    The detector scans for the ENV-KEY STRING LITERAL (``ast.Constant`` str ==
+    ``RELAY_CEL_ENGINE`` in a read position, excluding docstrings) rather than
+    the os-API FORM. Every naturally-written read MUST name that key literal --
+    ``os.environ.get(...)``, ``os.getenv(...)``, ``os.environ[...]``, or the
+    from-import form ``from os import environ; environ.get("RELAY_CEL_ENGINE")``
+    -- so the scan catches all of them, INCLUDING the from-import evasion that
+    the prior os-API-form detector missed (the roborev MED finding). It confirms
+    exactly ONE such file: ``engine.py`` (which names the key in its constant
+    definition ``_ENGINE_ENV_VAR = "RELAY_CEL_ENGINE"``).
     """
     assert CONTRACTS_SRC.is_dir(), f"contracts src tree missing at {CONTRACTS_SRC}"
     assert ENGINE_FILE.is_file(), f"factory engine.py missing at {ENGINE_FILE}"
@@ -216,54 +313,125 @@ def test_relay_cel_engine_read_site_is_only_engine_py() -> None:
         f"the engine.py read site); got grep exit {bare.returncode}"
     )
 
-    # Now isolate the REAL read sites: lines that both name the engine var (or
-    # the _ENGINE_ENV_VAR constant that holds it) AND perform an env read.
-    read_site_files: set[str] = set()
-    for py in sorted(CONTRACTS_SRC.rglob("*.py")):
-        rel = str(py.relative_to(REPO_ROOT)).replace("\\", "/")
-        text = py.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            if not any(tok in line for tok in _ENV_READ_TOKENS):
-                continue
-            # An env read that selects the engine: the read line names the var
-            # or the constant holding it. (engine.py reads via the
-            # ``_ENGINE_ENV_VAR`` constant -> os.environ.get(_ENGINE_ENV_VAR).)
-            if _ENGINE_VAR in line or "_ENGINE_ENV_VAR" in line:
-                read_site_files.add(rel)
-                break
-
     engine_rel = str(ENGINE_FILE.relative_to(REPO_ROOT)).replace("\\", "/")
+    read_site_files = _key_literal_read_site_files(CONTRACTS_SRC)
     assert read_site_files == {engine_rel}, (
         "engine selection (the RELAY_CEL_ENGINE env READ) must be performed in "
-        f"EXACTLY one contracts-src file ({engine_rel}); found read sites: "
-        f"{sorted(read_site_files)}. A new env read of RELAY_CEL_ENGINE outside "
-        "engine.py would break the single-read-site determinism invariant "
-        "(VAL-CWC-P4DUALRUN-008)."
+        f"EXACTLY one contracts-src file ({engine_rel}); found key-literal read "
+        f"sites: {sorted(read_site_files)}. A new env read of RELAY_CEL_ENGINE "
+        "outside engine.py (in ANY os-import form, since the read must name the "
+        "'RELAY_CEL_ENGINE' key string) would break the single-read-site "
+        "determinism invariant (VAL-CWC-P4DUALRUN-008)."
     )
 
-    # AST guard: catch a real env read split across lines that the line-level
-    # check would miss (var named on one statement, ``os.environ.get`` on
-    # another). A SUBSTRING scan cannot do this safely -- prose like
-    # wasm_backed_evaluator.py's docstring "This module never touches
-    # ``os.environ``" (one line below a ``RELAY_CEL_ENGINE`` mention) is text,
-    # not a read, and would false-positive. So this walks the AST for a GENUINE
-    # environment-access node (os.environ / os.getenv / getenv as attribute or
-    # call -- never a string literal or comment) and only flags a contracts-src
-    # file (other than engine.py) that BOTH performs such a read AND names the
-    # engine var. engine.py is the sanctioned read site; every other file must
-    # contain NO genuine env-access node when it names the engine var.
-    for py in sorted(CONTRACTS_SRC.rglob("*.py")):
-        rel = str(py.relative_to(REPO_ROOT)).replace("\\", "/")
-        if rel == engine_rel:
-            continue
-        text = py.read_text(encoding="utf-8")
-        if _ENGINE_VAR not in text:
-            continue
-        if _ast_reads_environment(ast.parse(text, filename=str(py))):
-            raise AssertionError(
-                f"{rel} names '{_ENGINE_VAR}' AND performs a genuine env read "
-                f"(os.environ / os.getenv / getenv); engine selection must live "
-                f"ONLY in {engine_rel}. A real RELAY_CEL_ENGINE read outside the "
-                "factory breaks the single-read-site determinism invariant "
-                "(VAL-CWC-P4DUALRUN-008)."
-            )
+
+# ---------------------------------------------------------------------------
+# Non-vacuity probes: prove the key-literal guard BITES the evasions the prior
+# os-API-form detector missed, and does NOT false-positive on prose. Each probe
+# plants a throwaway file under contracts/src, runs the SAME detector the guard
+# uses, asserts the expected verdict, then removes the file in a finally block
+# (no throwaway file is ever left behind, even on assertion failure).
+# ---------------------------------------------------------------------------
+def _write_probe(rel_name: str, body: str) -> Path:
+    """Write a throwaway probe module under contracts/src; return its path."""
+    path = CONTRACTS_SRC / "relay_contracts" / rel_name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
+def test_guard_bites_from_os_import_environ_evasion() -> None:
+    """The EXACT roborev MED evasion -- ``from os import environ`` then
+    ``environ.get("RELAY_CEL_ENGINE")`` -- MUST be detected as a read site.
+
+    The prior os-API-form detector matched only ``os.<attr>`` access and a bare
+    ``getenv(...)`` call, so this from-import read named no ``os.environ`` node
+    and bypassed the guard. The key-literal scan catches it because the read
+    still names the unavoidable ``"RELAY_CEL_ENGINE"`` key string.
+    """
+    probe = _write_probe(
+        "_probe_from_import_environ.py",
+        '"""Throwaway probe: from-os-import environ evasion."""\n'
+        "from os import environ\n\n\n"
+        "def _read() -> str | None:\n"
+        '    return environ.get("RELAY_CEL_ENGINE")\n',
+    )
+    try:
+        engine_rel = str(ENGINE_FILE.relative_to(REPO_ROOT)).replace("\\", "/")
+        probe_rel = str(probe.relative_to(REPO_ROOT)).replace("\\", "/")
+        hits = _key_literal_read_site_files(CONTRACTS_SRC)
+        assert probe_rel in hits, (
+            "GUARD VACUOUS: the from-os-import-environ evasion "
+            f"({probe_rel}) was NOT detected as a read site. The key-literal "
+            "scan must flag it because it names the 'RELAY_CEL_ENGINE' key "
+            f"string in a Call argument. Detected sites: {sorted(hits)}"
+        )
+        # And the top-level guard verdict must now be FAILURE (more than just
+        # engine.py reads the key).
+        assert hits != {engine_rel}, (
+            "GUARD VACUOUS: with the evasion planted the read-site set must no "
+            f"longer equal {{engine.py}}; got {sorted(hits)}"
+        )
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
+def test_guard_bites_os_environ_subscript_evasion() -> None:
+    """A subscript read ``os.environ["RELAY_CEL_ENGINE"]`` MUST be detected.
+
+    The key literal appears as a Subscript index -- a read position -- so the
+    key-literal scan flags it regardless of the access form.
+    """
+    probe = _write_probe(
+        "_probe_environ_subscript.py",
+        '"""Throwaway probe: os.environ subscript evasion."""\n'
+        "import os\n\n\n"
+        "def _read() -> str:\n"
+        '    return os.environ["RELAY_CEL_ENGINE"]\n',
+    )
+    try:
+        probe_rel = str(probe.relative_to(REPO_ROOT)).replace("\\", "/")
+        hits = _key_literal_read_site_files(CONTRACTS_SRC)
+        assert probe_rel in hits, (
+            "GUARD VACUOUS: the os.environ subscript evasion "
+            f"({probe_rel}) was NOT detected as a read site; the key literal in "
+            f"the Subscript index must be flagged. Detected sites: {sorted(hits)}"
+        )
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
+def test_guard_ignores_docstring_and_comment_only_mentions() -> None:
+    """A file that mentions ``RELAY_CEL_ENGINE`` ONLY in a docstring and a
+    ``#`` comment MUST NOT be detected as a read site (no false positive).
+
+    This mirrors the real tree: ``pipeline.py`` mentions the token only in
+    comments and ``wasm_backed_evaluator.py`` only in docstrings, and neither
+    reads the env var. The key-literal scan excludes docstrings (bare-string
+    first statements) and comments (not AST nodes), so prose never trips it.
+    """
+    probe = _write_probe(
+        "_probe_prose_only.py",
+        '"""Engine selection (RELAY_CEL_ENGINE) is NOT read here -- prose."""\n'
+        "# This module never reads RELAY_CEL_ENGINE; the factory owns it.\n\n\n"
+        "def _noop() -> None:\n"
+        '    """RELAY_CEL_ENGINE is named here only as documentation prose."""\n'
+        "    return None\n",
+    )
+    try:
+        probe_rel = str(probe.relative_to(REPO_ROOT)).replace("\\", "/")
+        hits = _key_literal_read_site_files(CONTRACTS_SRC)
+        assert probe_rel not in hits, (
+            "FALSE POSITIVE: a docstring/comment-only mention of "
+            f"'{_ENGINE_VAR}' ({probe_rel}) was wrongly flagged as a read site. "
+            "The key-literal scan must exclude docstrings (bare-string first "
+            "statements) and comments (not AST nodes). Detected sites: "
+            f"{sorted(hits)}"
+        )
+    finally:
+        probe.unlink(missing_ok=True)
