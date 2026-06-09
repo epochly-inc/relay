@@ -315,3 +315,220 @@ def test_cel_engine_registered_in_check_order() -> None:
     entry = next(c for c in result.checks if c.name == cel_engine.CHECK_NAME)
     assert entry.status == "pass", entry.to_dict()
     assert result.invariants_checked == len(CHECK_ORDER)
+
+
+# -----------------------------------------------------------------------------
+# roborev MED: lazy wasm-load failure during evaluate() -> WASM-UNLOADABLE,
+# never misclassified as UDF-WRONG / DYN-NOT-FENCED (VAL-CWC-P5FLIP-005 contract)
+# -----------------------------------------------------------------------------
+#
+# ``WasmCelEvaluator`` loads the wasm LAZILY: construction validates only the
+# timeout + (native) UDF set; the wasm module compiles on the FIRST ``evaluate()``
+# call (``_ensure_shared`` -> ``RelayCelEngineError`` / RELAY-CEL-009 on any load
+# failure -- see packages/contracts/.../wasm_backed_evaluator.py). A PRESENT-but-
+# corrupt / unloadable wasm therefore raises a LOAD error from ``evaluate()``,
+# NOT from construction. The probes MUST classify that as the fail-closed
+# WASM-UNLOADABLE reason, not as a UDF wrong-verdict / unfenced-dyn, so VAL-005's
+# structured fail-closed contract is not weakened into a UDF/dyn finding.
+
+
+class _LazyLoadFailEvaluator:
+    """Stand-in evaluator whose CONSTRUCTION succeeds but ``evaluate()`` raises a
+    wasm LOAD/engine error -- exactly the lazy-load failure surface.
+
+    Mirrors the real ``WasmCelEvaluator`` shape: ``RelayCelEngineError`` (the
+    RELAY-CEL-009 engine-error class the lazy ``_ensure_shared`` load raises) is
+    surfaced from ``evaluate()``, never at ``__init__``.
+    """
+
+    def __init__(self, **_kwargs: object) -> None:
+        # Construction succeeds (the real evaluator only validates timeout/UDFs).
+        pass
+
+    def evaluate(self, expression: str, bindings: object = None) -> object:
+        from relay_contracts.errors import RelayCelEngineError
+
+        raise RelayCelEngineError(
+            "simulated lazy wasm load failure (corrupt/unloadable module)",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-005")
+def test_cel_engine_udf_probe_lazy_load_failure_is_wasm_unloadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lazy wasm-LOAD error raised from ``evaluate()`` in the 3-UDF probe is a
+    WASM-UNLOADABLE finding, NOT a UDF-WRONG misclassification.
+
+    Construction succeeds; the FIRST ``evaluate()`` raises the
+    ``RelayCelEngineError`` the real lazy ``_ensure_shared`` raises. The probe
+    must emit exactly one WASM-UNLOADABLE finding and zero UDF-WRONG findings
+    (the load failed -- no verdict was ever produced)."""
+    monkeypatch.setattr(
+        cel_engine, "_build_wasm_evaluator", lambda: _LazyLoadFailEvaluator()
+    )
+
+    findings = cel_engine._probe_three_udfs()
+    codes = [f.code for f in findings]
+    # The probe evaluates each of the 6 UDF probes; each lazy evaluate() raises
+    # the load error, so EVERY finding is the fail-closed WASM-UNLOADABLE reason
+    # and NONE is UDF-WRONG (the load failed -- no verdict was ever produced).
+    assert findings, "a lazy load failure must produce at least one finding"
+    assert all(
+        c == cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE
+        for c in codes
+    ), codes
+    assert (
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG not in codes
+    ), "lazy load failure must NOT be misclassified as UDF-WRONG"
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-005")
+def test_cel_engine_dyn_probe_lazy_load_failure_is_wasm_unloadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lazy wasm-LOAD error raised from ``evaluate()`` in the dyn-fence probe is
+    a WASM-UNLOADABLE finding, NOT a DYN-NOT-FENCED misclassification.
+
+    The dyn-fence probe calls ``evaluate('dyn(1)')``; if THAT raises the lazy
+    load error (engine never loaded), the absence of a profile-fence exception
+    must NOT be read as "dyn evaluated / fence missing" -- the engine never even
+    evaluated. The probe must emit one WASM-UNLOADABLE finding and zero
+    DYN-NOT-FENCED findings."""
+    monkeypatch.setattr(
+        cel_engine, "_build_wasm_evaluator", lambda: _LazyLoadFailEvaluator()
+    )
+
+    findings = cel_engine._probe_dyn_fence()
+    codes = [f.code for f in findings]
+    assert codes == [
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE
+    ], codes
+    assert (
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED not in codes
+    ), "lazy load failure must NOT be misclassified as DYN-NOT-FENCED"
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-005")
+def test_cel_engine_run_lazy_load_failure_fails_closed_single_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: a lazy wasm-load failure makes ``run()`` fail closed with
+    ONLY WASM-UNLOADABLE findings (no UDF-WRONG / DYN-NOT-FENCED), and never
+    raises.
+
+    Both the UDF probe and the dyn probe hit the lazy load error (each builds its
+    own evaluator), so ``run`` yields one WASM-UNLOADABLE finding per probe; the
+    sha probe is independent of the lazy load (it hashes bytes on disk) so it
+    does not add a UDF/dyn finding. The check status is FAIL with a clean
+    fail-closed classification."""
+    monkeypatch.setattr(
+        cel_engine, "_build_wasm_evaluator", lambda: _LazyLoadFailEvaluator()
+    )
+
+    # run() MUST NOT raise.
+    name, findings = cel_engine.run(REPO_ROOT)
+    assert name == cel_engine.CHECK_NAME
+    codes = {f.code for f in findings}
+    assert cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE in codes
+    assert (
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG not in codes
+    ), "lazy load failure must NOT be misclassified as UDF-WRONG"
+    assert (
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED not in codes
+    ), "lazy load failure must NOT be misclassified as DYN-NOT-FENCED"
+    for finding in findings:
+        assert finding.code in FINDING_CODES
+
+
+# -----------------------------------------------------------------------------
+# roborev LOW: a non-boolean UDF result must NOT pass -- it is a wrong verdict
+# (VAL-CWC-P5FLIP-002: the engine MUST produce the correct BOOLEAN verdict)
+# -----------------------------------------------------------------------------
+#
+# ``bool(raw)`` truthiness-coerces a NON-boolean engine result, so a broken value
+# codec/engine returning ``1`` / ``0`` / a string for a boolean expression could
+# silently PASS the UDF verdict probes. The probe must instead assert the decoded
+# result is an ACTUAL boolean type (Python ``bool`` OR the CEL ``BoolType``,
+# mirroring pipeline ``_classify_outcome``) and emit UDF-WRONG on ANY non-boolean.
+
+
+class _NonBooleanResultEvaluator:
+    """Stand-in evaluator whose ``evaluate()`` returns a non-boolean TRUTHY value
+    (the integer ``1``) for every probe expression.
+
+    A truthiness coercion (``bool(1) is True``) would FALSELY pass the probes
+    whose ``expected`` is ``True``; a strict boolean-TYPE check must reject it."""
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    def evaluate(self, expression: str, bindings: object = None) -> object:
+        # A non-boolean truthy value: a broken codec returning the int 1 instead
+        # of a CEL boolean. ``bool(1) is True`` -> would falsely pass a
+        # ``expected=True`` probe under truthiness coercion.
+        return 1
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-002")
+def test_cel_engine_udf_probe_non_boolean_result_is_wrong_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-boolean TRUTHY probe result (int ``1``) must emit UDF-WRONG, not pass.
+
+    Under the old ``bool(raw)`` coercion the ``expected=True`` probes would
+    silently pass on ``1``; the strict boolean-type check must reject every
+    non-boolean result with a UDF-WRONG finding."""
+    monkeypatch.setattr(
+        cel_engine, "_build_wasm_evaluator", lambda: _NonBooleanResultEvaluator()
+    )
+
+    findings = cel_engine._probe_three_udfs()
+    assert len(findings) >= 1, (
+        "a non-boolean UDF result must NOT pass the verdict probe"
+    )
+    assert all(
+        f.code == cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG
+        for f in findings
+    ), [f.code for f in findings]
+    # Every probe (all 6) produced a non-boolean result, so each is a wrong
+    # verdict -- none silently passed via truthiness coercion.
+    assert len(findings) == len(cel_engine._UDF_PROBES), (
+        f"expected one UDF-WRONG per probe; got {len(findings)} for "
+        f"{len(cel_engine._UDF_PROBES)} probes"
+    )
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-002")
+def test_cel_engine_udf_probe_accepts_cel_booltype(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine CEL ``BoolType`` result (the type the wasm codec returns) is
+    accepted by the strict boolean-type check -- the fix must NOT regress the
+    healthy path that returns ``celtypes.BoolType`` (an int subclass that is NOT
+    a Python ``bool``).
+
+    Guards against an over-strict ``isinstance(value, bool)``-only check that
+    would falsely reject every healthy wasm verdict (``typed_to_py`` returns
+    ``celtypes.BoolType`` for a CEL boolean)."""
+    from celpy import celtypes
+
+    class _BoolTypeEvaluator:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def evaluate(self, expression: str, bindings: object = None) -> object:
+            # Return the CORRECT verdict for each probe as a CEL BoolType (the
+            # real wasm codec's type), so a healthy-but-BoolType engine passes.
+            for probe in cel_engine._UDF_PROBES:
+                if probe.expression == expression:
+                    return celtypes.BoolType(probe.expected)
+            raise AssertionError(f"unexpected probe expression {expression!r}")
+
+    monkeypatch.setattr(
+        cel_engine, "_build_wasm_evaluator", lambda: _BoolTypeEvaluator()
+    )
+
+    findings = cel_engine._probe_three_udfs()
+    assert findings == [], [(f.code, f.pattern) for f in findings]

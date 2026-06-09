@@ -234,14 +234,66 @@ def _finding(code: str, detail: str) -> Finding:
 # -----------------------------------------------------------------------------
 
 
+def _is_engine_load_error(exc: BaseException) -> bool:
+    """True iff ``exc`` is a wasm LOAD / engine error (vs a logical CEL result).
+
+    The wasm engine loads LAZILY: ``WasmCelEvaluator.evaluate()`` compiles /
+    instantiates the wasm module on first use (``_ensure_shared``), and any load
+    failure (absent / corrupt / unloadable artifact, wasmtime trap during
+    bootstrap) surfaces as :class:`RelayCelEngineError` (RELAY-CEL-009 /
+    ENGINE-COMPILE|EXEC|REQUEST|PANIC) -- NEVER at construction. A genuine
+    WRONG-VERDICT, by contrast, is the engine loading + evaluating and returning
+    the wrong boolean (no exception, or a non-engine error).
+
+    Distinguishing the two is load-bearing for the fail-closed contract
+    (VAL-CWC-P5FLIP-005): a present-but-unloadable wasm raising on first
+    ``evaluate()`` MUST be reported as the structured WASM-UNLOADABLE reason, not
+    misclassified as a UDF wrong-verdict / unfenced dyn. The engine-error class is
+    the RELAY-CEL-009 :class:`RelayCelEngineError` that the lazy
+    ``_ensure_shared`` load raises; an ``ImportError`` / ``FileNotFoundError`` /
+    wasmtime error is already wrapped into that class by the host facade, so the
+    single ``RelayCelEngineError`` check captures every lazy-load surface.
+    """
+    from relay_contracts.errors import RelayCelEngineError
+
+    return isinstance(exc, RelayCelEngineError)
+
+
+def _decoded_is_boolean(value: Any) -> bool:
+    """True iff ``value`` is an actual CEL/Python boolean TYPE (not truthy/falsy).
+
+    Mirrors the pipeline's :func:`relay_contracts.pipeline._classify_outcome`
+    type discrimination: a Python ``bool`` OR the cel-python ``BoolType`` (an int
+    subclass that is NOT a ``bool`` subclass -- the type ``typed_to_py`` returns
+    for a CEL boolean). Detection is by class-name for the BoolType case so this
+    checker stays decoupled from the evaluator's celtypes internals, exactly as
+    the pipeline does.
+
+    A truthiness coercion (``bool(raw)``) would let a broken value codec / engine
+    returning ``1`` / ``0`` / a non-empty string SILENTLY pass a boolean verdict
+    probe; asserting the boolean TYPE first closes that gap (roborev LOW).
+    """
+    if isinstance(value, bool):
+        return True
+    return type(value).__name__ == "BoolType"
+
+
 def _probe_three_udfs() -> list[Finding]:
     """Probe the three Relay UDFs through CEL; return findings (empty = healthy).
 
-    Loads the wasm evaluator once and evaluates each boolean UDF probe. A wrong
-    verdict (decoded boolean != expected) OR any structured evaluation error is a
-    ``RELAY-VERIFY-SELF-CEL-ENGINE-UDF-WRONG`` finding. The load/probe is wrapped
-    so an unloadable engine becomes a fail-closed finding rather than an escaping
-    exception.
+    Loads the wasm evaluator once and evaluates each boolean UDF probe. Outcomes:
+
+      * a wasm LOAD / engine error raised from ``evaluate()`` (lazy load of a
+        present-but-unloadable wasm) is a fail-closed
+        ``RELAY-VERIFY-SELF-CEL-ENGINE-WASM-UNLOADABLE`` finding -- NOT a wrong
+        verdict (the engine never produced a result);
+      * a NON-engine evaluation error, a NON-boolean decoded result, or a wrong
+        boolean verdict (decoded boolean != expected) is a genuine
+        ``RELAY-VERIFY-SELF-CEL-ENGINE-UDF-WRONG`` finding.
+
+    Construction is wrapped so an evaluator that cannot even be CONSTRUCTED is
+    fail-closed too; ``evaluate()`` is wrapped so the LAZY load is distinguished
+    from a logical wrong-verdict. The probe never raises.
     """
     try:
         evaluator = _build_wasm_evaluator()
@@ -257,18 +309,42 @@ def _probe_three_udfs() -> list[Finding]:
     for probe in _UDF_PROBES:
         try:
             raw = evaluator.evaluate(probe.expression, probe.bindings)
-        except Exception as exc:  # noqa: BLE001 -- a probe error is a wrong verdict
+        except Exception as exc:  # noqa: BLE001 -- classify load vs wrong-verdict
+            if _is_engine_load_error(exc):
+                # The wasm loaded LAZILY and failed: fail closed, do NOT
+                # misclassify as a UDF wrong-verdict (VAL-CWC-P5FLIP-005).
+                findings.append(
+                    _finding(
+                        RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE,
+                        f"udf-probe {probe.udf_name} [{probe.label}] wasm load "
+                        f"failed: {type(exc).__name__}: {exc}",
+                    )
+                )
+            else:
+                # A non-engine evaluation error IS a wrong verdict (the engine
+                # ran but rejected an expression that should have evaluated).
+                findings.append(
+                    _finding(
+                        RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG,
+                        f"{probe.udf_name} [{probe.label}] raised "
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                )
+            continue
+        # The probe expressions are boolean; the wasm returns a CEL boolean
+        # (celtypes.BoolType, a non-bool int subclass). Assert the decoded result
+        # is an ACTUAL boolean TYPE before comparing -- a non-boolean truthy/falsy
+        # result (e.g. a broken codec returning 1/0 or a string) is a wrong
+        # verdict, NOT a silent pass via truthiness coercion (roborev LOW).
+        if not _decoded_is_boolean(raw):
             findings.append(
                 _finding(
                     RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG,
-                    f"{probe.udf_name} [{probe.label}] raised "
-                    f"{type(exc).__name__}: {exc}",
+                    f"{probe.udf_name} [{probe.label}] non-boolean result "
+                    f"{type(raw).__name__}={raw!r} (expected a CEL boolean)",
                 )
             )
             continue
-        # The probe expressions are boolean; the wasm returns a CEL boolean
-        # (celtypes.BoolType, a non-bool int subclass) -- convert to a plain
-        # Python bool for an unambiguous comparison.
         verdict = bool(raw)
         if verdict != probe.expected:
             findings.append(
@@ -291,11 +367,26 @@ def _probe_dyn_fence() -> list[Finding]:
 
     A healthy engine surfaces :class:`RelayCelProfileError` with subtype
     ``RELAY-CEL-PROFILE-DYN-DISABLED`` (or, equivalently, RELAY-CEL-002) rather
-    than EVALUATING ``dyn(1)``. If the engine EVALUATES it (no exception) the
-    fence is missing -> one ``RELAY-VERIFY-SELF-CEL-ENGINE-DYN-NOT-FENCED``
-    finding. An engine that cannot even load is reported as fail-closed.
+    than EVALUATING ``dyn(1)``. Outcomes:
+
+      * the profile fence (RELAY-CEL-002 / DYN-DISABLED) -> healthy, zero findings;
+      * a wasm LOAD / engine error (RELAY-CEL-009 :class:`RelayCelEngineError`
+        raised by the LAZY load on first ``evaluate()``) -> fail-closed
+        ``RELAY-VERIFY-SELF-CEL-ENGINE-WASM-UNLOADABLE`` (the engine never
+        evaluated -- the absence of the fence exception is NOT "dyn evaluated");
+      * a non-profile, non-engine Relay rejection, OR the engine EVALUATING
+        ``dyn(1)`` (no exception) -> ``RELAY-VERIFY-SELF-CEL-ENGINE-DYN-NOT-FENCED``.
+
+    Construction is wrapped so an evaluator that cannot be CONSTRUCTED is
+    fail-closed; the lazy load on ``evaluate()`` is distinguished from a genuine
+    unfenced ``dyn()`` so a present-but-unloadable wasm is NOT misclassified as a
+    missing fence (VAL-CWC-P5FLIP-005).
     """
-    from relay_contracts.errors import RelayCelError, RelayCelProfileError
+    from relay_contracts.errors import (
+        RelayCelEngineError,
+        RelayCelError,
+        RelayCelProfileError,
+    )
 
     try:
         evaluator = _build_wasm_evaluator()
@@ -319,9 +410,20 @@ def _probe_dyn_fence() -> list[Finding]:
                 f"dyn() fenced with unexpected subtype {err.subtype!r}",
             )
         ]
+    except RelayCelEngineError as err:
+        # The wasm loaded LAZILY and failed (RELAY-CEL-009): fail closed, do NOT
+        # misclassify the absence of the fence exception as a missing dyn fence
+        # -- the engine never even evaluated dyn(1) (VAL-CWC-P5FLIP-005).
+        return [
+            _finding(
+                RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE,
+                f"dyn-fence-probe wasm load failed: {err.code}/{err.subtype}: "
+                f"{err}",
+            )
+        ]
     except RelayCelError as err:
-        # The engine rejected dyn() but NOT via the profile fence -- still a
-        # divergence from the expected fence behavior.
+        # The engine rejected dyn() but NOT via the profile fence and NOT via a
+        # load/engine error -- still a divergence from the expected fence behavior.
         return [
             _finding(
                 RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED,

@@ -37,7 +37,9 @@ from relay_cli.evidence_bundle import (
     ASSERTION_IDS,
     EVIDENCE_BUNDLE_SCHEMA,
 )
+from relay_cli.invariants import runner as runner_module
 from relay_cli.invariants.runner import (
+    _CHECK_DISPATCH,
     CHECK_ORDER,
     VERIFY_SELF_RESULT_SCHEMA,
     run_all_checks,
@@ -776,3 +778,83 @@ def test_verify_self_against_real_repo_exits_zero() -> None:
         + result.stderr
     )
     assert result.returncode == 0
+
+
+# -----------------------------------------------------------------------------
+# CHECK_ORDER sort + dispatch-key lock (VAL-W5-038 determinism / VAL-CWC-P5FLIP-006)
+# -----------------------------------------------------------------------------
+#
+# ``runner.CHECK_ORDER`` MUST stay alphabetic by check NAME so the verify-self
+# JSON ``checks`` array is byte-deterministic across runs, and every ordered
+# check MUST have exactly one dispatch entry (no orphan / missing). The runner
+# enforces both at module-load via ``assert``; these tests LOCK the invariant at
+# test time so a regression is caught by the suite (not only by ``-O``-stripped
+# asserts) and the non-vacuity check proves the guard actually bites.
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W5-038")
+def test_check_order_is_alphabetically_sorted() -> None:
+    """``CHECK_ORDER`` equals its own ``sorted()`` -- alphabetic by check name.
+
+    This is the determinism lock (VAL-W5-038): the JSON ``checks`` array order is
+    pinned by ``CHECK_ORDER``; if the tuple is not alphabetic, two checkouts that
+    differ only in import/constant ordering could emit different ``checks``
+    orders, breaking the determinism contract.
+    """
+    assert tuple(sorted(CHECK_ORDER)) == CHECK_ORDER, (
+        "CHECK_ORDER must be alphabetic by check name (VAL-W5-038 determinism); "
+        f"got {CHECK_ORDER!r}, expected {tuple(sorted(CHECK_ORDER))!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W5-038")
+def test_check_order_sort_guard_is_non_vacuous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shuffled ``CHECK_ORDER`` MUST make the sort lock FAIL (non-vacuity).
+
+    Proves the sort assertion in
+    :func:`test_check_order_is_alphabetically_sorted` actually bites: a tuple that
+    is NOT its own ``sorted()`` is rejected. The monkeypatch is auto-reverted at
+    teardown, so the real module constant is never mutated past this test.
+    """
+    # A deliberately out-of-order tuple drawn from the real names: swap the first
+    # two so the result is provably != sorted() (the real order is alphabetic, so
+    # reversing the first pair breaks the sort).
+    shuffled = (CHECK_ORDER[1], CHECK_ORDER[0], *CHECK_ORDER[2:])
+    assert shuffled != tuple(sorted(shuffled)), (
+        "test setup invariant: the shuffled order must not be sorted"
+    )
+    monkeypatch.setattr(runner_module, "CHECK_ORDER", shuffled)
+
+    # The sort lock, re-evaluated against the (now shuffled) module constant,
+    # MUST fail -- demonstrating the guard is not vacuously true.
+    assert tuple(sorted(runner_module.CHECK_ORDER)) != runner_module.CHECK_ORDER
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W5-038")
+def test_check_dispatch_keys_match_check_order() -> None:
+    """``_CHECK_DISPATCH`` keys are exactly ``CHECK_ORDER`` (1:1, no orphan).
+
+    Every ordered check has a dispatch entry and vice versa -- the runner relies
+    on ``_CHECK_DISPATCH[name]`` for each name in ``CHECK_ORDER``; a missing key
+    would raise mid-run and an orphan dispatch entry would silently never run.
+    Because ``CHECK_ORDER`` is sorted and contains no duplicates, the dispatch
+    keys (a ``dict``, insertion-ordered) when sorted MUST equal ``CHECK_ORDER``.
+    """
+    assert set(_CHECK_DISPATCH) == set(CHECK_ORDER), (
+        "CHECK_ORDER and _CHECK_DISPATCH key sets must match exactly; "
+        f"order-only={set(CHECK_ORDER) - set(_CHECK_DISPATCH)!r}, "
+        f"dispatch-only={set(_CHECK_DISPATCH) - set(CHECK_ORDER)!r}"
+    )
+    # No duplicate names in the order tuple (a duplicate would collapse in the
+    # dispatch dict and silently drop a check).
+    assert len(CHECK_ORDER) == len(set(CHECK_ORDER)), (
+        f"CHECK_ORDER contains duplicate check names: {CHECK_ORDER!r}"
+    )
+    # Sorted dispatch keys equal CHECK_ORDER (CHECK_ORDER is itself sorted), so
+    # the dispatch map covers exactly the ordered checks in the same name set.
+    assert tuple(sorted(_CHECK_DISPATCH)) == CHECK_ORDER
