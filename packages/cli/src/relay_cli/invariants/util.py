@@ -43,6 +43,10 @@ from verify_self.finding_codes import (
     FINDING_CODES,
     RELAY_VERIFY_SELF_BANNED_COPY,
     RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
+    RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED,
+    RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH,
+    RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG,
+    RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE,
     RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING,
     RELAY_VERIFY_SELF_KILL_BY_NAME,
     RELAY_VERIFY_SELF_MOCK_IN_SOURCE,
@@ -269,6 +273,34 @@ _SUGGESTED_FIX_BY_CODE: Final[dict[str, str]] = {
         "Set TSA_CRYPTO_IMPLEMENTED to True in "
         "packages/verifier/src/relay_verifier/tsa.py after wiring RFC 3161 "
         "TimeStampResp ASN.1 verification (M09 / VAL-V2M09-016..019)."
+    ),
+    RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG: (
+        "A Relay UDF (relay.coverage/relay.tool_arg/relay.schema_match) "
+        "probed through CEL returned the wrong verdict. The packaged "
+        "relay_cel_wasm.wasm is corrupt or stale -- re-vendor the artifact "
+        "from 'bash packages/cel-wasm/conformance/build.sh repro' and re-run "
+        "the conformance gate (ex-proto 100% + byte-parity)."
+    ),
+    RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED: (
+        "The wasm CEL engine EVALUATED a fenced dyn() instead of surfacing "
+        "RELAY-CEL-002 / RELAY-CEL-PROFILE-DYN-DISABLED. The Relay profile "
+        "fence is missing or broken in the packaged wasm -- re-build the "
+        "artifact via 'bash packages/cel-wasm/conformance/build.sh repro' and "
+        "verify the profile-fence conformance cases pass."
+    ),
+    RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH: (
+        "The loaded relay_cel_wasm.wasm sha256 does not match the pinned "
+        "WASM_PINNED_SHA256 in relay_contracts.wasm_artifact. The shipped "
+        "artifact is tampered or stale -- re-vendor the reproducible build "
+        "('bash packages/cel-wasm/conformance/build.sh repro') so the on-disk "
+        "wasm hashes to the pinned record."
+    ),
+    RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE: (
+        "The packaged CEL wasm engine (relay_cel_wasm.wasm) is absent or "
+        "unloadable. Install a relay_contracts wheel that ships the wasm "
+        "package data, or run 'bash packages/cel-wasm/conformance/build.sh "
+        "build' in a from-source checkout so WasmCelEvaluator can load the "
+        "single CEL engine."
     ),
 }
 

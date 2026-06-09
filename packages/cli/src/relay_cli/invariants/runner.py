@@ -46,6 +46,8 @@ from .atomic_primitives import CHECK_NAME as ATOMIC_PRIMITIVES_CHECK
 from .atomic_primitives import run as run_atomic_primitives
 from .banned_patterns import CHECK_NAME as BANNED_PATTERNS_CHECK
 from .banned_patterns import run as run_banned_patterns
+from .cel_engine import CHECK_NAME as CEL_ENGINE_CHECK
+from .cel_engine import run as run_cel_engine
 from .control_plane_writes import CHECK_NAME as CONTROL_PLANE_CHECK
 from .control_plane_writes import run as run_control_plane_writes
 from .gate_engine_invariants import CHECK_NAME as GATE_ENGINE_INVARIANTS_CHECK
@@ -66,19 +68,31 @@ from .util import Finding, finding_to_dict
 
 VERIFY_SELF_RESULT_SCHEMA: Final[str] = "relay.cli.verify_self.v1"
 
-# Canonical check ordering (alphabetic). Pinned so the JSON envelope is
-# byte-stable across runs (VAL-W5-038). Adding a new check requires
-# inserting it in the correct alphabetic position so the snapshot
-# fixtures track.
+# Canonical check ordering (alphabetic by check-NAME value). Pinned so the JSON
+# envelope is byte-stable across runs (VAL-W5-038) and the order is deterministic
+# regardless of import/constant ordering (VAL-CWC-P5FLIP-006: ``CHECK_ORDER ==
+# tuple(sorted(CHECK_ORDER))``). Adding a new check requires inserting it at its
+# correct alphabetic slot by NAME (the constant identifier order is NOT the value
+# order -- e.g. ``BANNED_PATTERNS_CHECK == "no-todo-fixme"`` sorts after
+# ``control-plane-write-only``); the module-load guard below enforces this.
 CHECK_ORDER: Final[tuple[str, ...]] = (
-    ATOMIC_PRIMITIVES_CHECK,
-    BANNED_PATTERNS_CHECK,
-    CONTROL_PLANE_CHECK,
-    GATE_ENGINE_INVARIANTS_CHECK,
-    MOCKS_IN_SOURCE_CHECK,
-    REKOR_VERIFIER_CHECK,
-    SIGSTORE_VERIFIER_CHECK,
-    TSA_VERIFIER_CHECK,
+    ATOMIC_PRIMITIVES_CHECK,          # atomic-primitives-only
+    CEL_ENGINE_CHECK,                 # cel-engine-single-wasm
+    CONTROL_PLANE_CHECK,              # control-plane-write-only
+    GATE_ENGINE_INVARIANTS_CHECK,     # gate-engine-invariants
+    MOCKS_IN_SOURCE_CHECK,            # no-mocks-in-prod
+    BANNED_PATTERNS_CHECK,            # no-todo-fixme
+    REKOR_VERIFIER_CHECK,             # rekor-verifier-implemented
+    SIGSTORE_VERIFIER_CHECK,          # sigstore-verifier-implemented
+    TSA_VERIFIER_CHECK,               # tsa-verifier-implemented
+)
+
+# Structural guard (VAL-CWC-P5FLIP-006 / VAL-W5-038): the canonical order MUST be
+# alphabetic by NAME so the JSON ``checks`` array is byte-deterministic and a
+# future check addition cannot silently break the ordering invariant.
+assert tuple(sorted(CHECK_ORDER)) == CHECK_ORDER, (
+    "CHECK_ORDER must be alphabetic by check name (VAL-W5-038 determinism); "
+    f"got {CHECK_ORDER!r}"
 )
 
 # Map of canonical check name -> runner function.
@@ -86,14 +100,20 @@ _CHECK_DISPATCH: Final[
     dict[str, Any]
 ] = {
     ATOMIC_PRIMITIVES_CHECK: run_atomic_primitives,
-    BANNED_PATTERNS_CHECK: run_banned_patterns,
+    CEL_ENGINE_CHECK: run_cel_engine,
     CONTROL_PLANE_CHECK: run_control_plane_writes,
     GATE_ENGINE_INVARIANTS_CHECK: run_gate_engine_invariants,
     MOCKS_IN_SOURCE_CHECK: run_mocks_in_source,
+    BANNED_PATTERNS_CHECK: run_banned_patterns,
     REKOR_VERIFIER_CHECK: run_rekor_verifier,
     SIGSTORE_VERIFIER_CHECK: run_sigstore_verifier,
     TSA_VERIFIER_CHECK: run_tsa_verifier,
 }
+
+# Every ordered check has a dispatch entry and vice versa (no orphan / missing).
+assert set(CHECK_ORDER) == set(_CHECK_DISPATCH), (
+    "CHECK_ORDER and _CHECK_DISPATCH key sets must match exactly"
+)
 
 # -----------------------------------------------------------------------------
 # Result types
