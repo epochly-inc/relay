@@ -64,7 +64,7 @@ import { RELAY_SCHEMA_MATCH_NAME } from "./udfs/schema_match.js";
 import { RELAY_TOOL_ARG_NAME } from "./udfs/tool_arg.js";
 import {
   resolvePackagedLoaderPath,
-  resolvePackagedWasmPath,
+  resolveWasmPathForLoader,
 } from "./wasm-artifact.js";
 
 // VAL-PARITY-001 / VAL-CWC-P1HOST-005: an INTEGRAL value whose magnitude exceeds
@@ -222,6 +222,29 @@ export function nativeToTyped(value: unknown): TypedValue {
   if (Array.isArray(value)) {
     return { t: "list", v: value.map(nativeToTyped) };
   }
+  // Map branch BEFORE the generic object branch (a Map IS an object, so it must
+  // be matched first). ROBOREV finding E: a non-string-keyed CEL map decoded by
+  // typedToNative is a JS Map whose KEYS are the ORIGINAL TypedValue objects.
+  // The object branch would do Object.keys(map) -> [] and re-encode it as an
+  // EMPTY map (round-trip asymmetry); this branch re-emits the typed keys + the
+  // re-encoded values, sorted by the wasm key_sort_string order, so decode ->
+  // encode is BYTE-IDENTICAL (and byte-symmetric with the Python codec).
+  if (value instanceof Map) {
+    const entries: Array<{ sort: string; pair: [TypedValue, TypedValue] }> = [];
+    for (const [k, val] of value) {
+      // The Map produced by typedToNative carries TypedValue keys; keySortString
+      // validates the key tag (bool/int/uint/string) and gives the canonical
+      // order. A key that is not a TypedValue (a hand-built Map with raw keys) is
+      // rejected fail-closed by keySortString rather than mis-encoded.
+      const typedKey = k as TypedValue;
+      entries.push({
+        sort: keySortString(typedKey),
+        pair: [typedKey, nativeToTyped(val)],
+      });
+    }
+    entries.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
+    return { t: "map", v: entries.map((e) => e.pair) };
+  }
   if (typeof value === "object") {
     const obj = value as Record<string, unknown>;
     // Map entries are sorted by the wasm key_sort_string total order
@@ -322,22 +345,26 @@ export function typedToNative(typed: TypedValue): unknown {
           "typedToNative: map 'v' must be an array of [k,v] pairs",
         );
       }
-      // Decode keys first to learn whether ALL keys are strings. The wasm CAN
-      // emit non-string map keys (key_sort_string supports bool/int/uint;
-      // lib.rs:1126-1133), so a string-only assumption was wrong. We also must
-      // be prototype-pollution-safe: a "__proto__" / "constructor" string key
-      // assigned to a plain object literal could corrupt the prototype chain.
-      const decoded: Array<[unknown, unknown]> = [];
+      // The wasm CAN emit non-string map keys (key_sort_string supports
+      // bool/int/uint; lib.rs:1126-1133). We inspect the RAW typed key tags
+      // (not the decoded native) so the key TYPE is never lost. The string-only
+      // path keeps the legacy null-prototype-object contract; any non-string key
+      // routes to a JS Map whose KEYS are the ORIGINAL TypedValue objects --
+      // LOSSLESS, so an int key 1 and a uint key 1 stay DISTINCT
+      // (ROBOREV finding D: the old typedToNative(key) decode collapsed both to
+      // JS number 1 and silently dropped one entry).
+      const rawPairs: Array<[TypedValue, TypedValue]> = [];
       let allStringKeys = true;
       for (const pair of v as unknown[]) {
         if (!Array.isArray(pair) || pair.length !== 2) {
           throw new TypeError("typedToNative: map entry must be a [k,v] pair");
         }
-        const key = typedToNative(pair[0] as TypedValue);
-        if (typeof key !== "string") {
+        const rawKey = pair[0] as TypedValue;
+        const keyTag = (rawKey as { t?: unknown }).t;
+        if (keyTag !== "string") {
           allStringKeys = false;
         }
-        decoded.push([key, typedToNative(pair[1] as TypedValue)]);
+        rawPairs.push([rawKey, pair[1] as TypedValue]);
       }
       if (allStringKeys) {
         // String-only keys -> a null-prototype object (prototype-pollution-safe:
@@ -350,19 +377,36 @@ export function typedToNative(typed: TypedValue): unknown {
           string,
           unknown
         >;
-        for (const [key, val] of decoded) {
-          out[key as string] = val;
+        for (const [rawKey, rawVal] of rawPairs) {
+          const key = requireStringV(rawKey, "string");
+          out[key] = typedToNative(rawVal);
         }
         return out;
       }
-      // At least one non-string key (bool/int/uint) -> a JS Map, which preserves
-      // the key TYPE (a plain object would coerce a number/bool key to a string).
-      // A Map has no prototype-pollution surface (set() does not touch a
-      // prototype chain). Mixed string/non-string keys also land here so the
-      // types survive.
-      const map = new Map<unknown, unknown>();
-      for (const [key, val] of decoded) {
-        map.set(key, val);
+      // At least one non-string key (bool/int/uint, possibly mixed with string
+      // keys) -> a JS Map whose KEYS are the ORIGINAL TypedValue objects. This is
+      // LOSSLESS: int vs uint vs bool vs string survive, and the key_sort_string
+      // collision check fails closed on a true duplicate CEL key (two pairs that
+      // map to the SAME ordered key) -- mirroring the Python codec, whose celpy
+      // MapType raises on a duplicate / int-vs-uint collision (the two engines
+      // MUST agree, keystone #16). A Map also has no prototype-pollution surface.
+      const map = new Map<TypedValue, unknown>();
+      const seenSortKeys = new Set<string>();
+      for (const [rawKey, rawVal] of rawPairs) {
+        // keySortString validates the key tag (bool/int/uint/string only) and is
+        // the lossless collision discriminant (int 1 != uint 1).
+        const sortKey = keySortString(rawKey);
+        if (seenSortKeys.has(sortKey)) {
+          throw new RelayCelEngineError(
+            "wasm map contains a duplicate / colliding key " +
+              `${JSON.stringify(rawKey)} (key_sort_string ${JSON.stringify(sortKey)}); ` +
+              "a CEL map cannot carry two equal keys -- failing closed rather " +
+              "than silently dropping an entry (matches the Python codec).",
+            "RELAY-CEL-ENGINE-REQUEST",
+          );
+        }
+        seenSortKeys.add(sortKey);
+        map.set(rawKey, typedToNative(rawVal));
       }
       return map;
     }
@@ -393,6 +437,52 @@ function encodeIntString(n: number): string {
 // Absolute value of a BigInt (BigInt has no Math.abs).
 function absBigInt(x: bigint): bigint {
   return x < 0n ? -x : x;
+}
+
+// 2**63: the i64 offset the wasm key_sort_string adds so signed ints sort in
+// ascending numeric order as a fixed-width zero-padded decimal (lib.rs:1126-1133
+// / wasm_codec.py _key_sort_string). Mirrors Python's _I64_OFFSET.
+const I64_SORT_OFFSET = 9223372036854775808n; // 2n**63n
+
+/**
+ * Total-order sort key for a CEL MAP KEY in the wasm key_sort_string form
+ * (lib.rs:1126-1133), the byte-faithful TS mirror of the Python codec's
+ * _key_sort_string (wasm_codec.py:206-218). Buckets, lowest first:
+ *   bool   -> "0:bool:true" / "0:bool:false"   (Rust Display)
+ *   int    -> "1:int:<(i + 2**63) zero-padded to 20 digits>"
+ *   uint   -> "2:uint:<u zero-padded to 20 digits>"
+ *   string -> "3:string:<raw codepoints>"
+ * Only these four CEL types are valid map keys (lib.rs); any other tag is a
+ * structured RelayCelEngineError (a map key the wire form cannot order is a
+ * request/marshaling failure, fail closed -- never a silent mis-sort).
+ *
+ * Exported for the byte-parity test (the round-2 map-key lossless suite) and
+ * reused by both the encode (nativeToTyped Map branch) and the decode
+ * (typedToNative collision check) so the two paths never drift.
+ */
+export function keySortString(typed: TypedValue): string {
+  const t = (typed as { t?: unknown }).t;
+  if (t === "bool") {
+    const v = (typed as { v?: unknown }).v;
+    return `0:bool:${v === true ? "true" : "false"}`;
+  }
+  if (t === "int") {
+    const v = requireStringV(typed as TypedValue, "int");
+    const offset = (BigInt(v) + I64_SORT_OFFSET).toString(10);
+    return `1:int:${offset.padStart(20, "0")}`;
+  }
+  if (t === "uint") {
+    const v = requireStringV(typed as TypedValue, "uint");
+    return `2:uint:${BigInt(v).toString(10).padStart(20, "0")}`;
+  }
+  if (t === "string") {
+    return `3:string:${requireStringV(typed as TypedValue, "string")}`;
+  }
+  throw new RelayCelEngineError(
+    `invalid CEL map key type ${JSON.stringify(t)}; only bool/int/uint/string ` +
+      "are orderable map keys in the wasm key_sort_string form",
+    "RELAY-CEL-ENGINE-REQUEST",
+  );
 }
 
 // Canonical-g double string. Faithful port of the Python codec's
@@ -856,6 +946,15 @@ export class WasmCelBackend {
   // termination (timeout / dispose), respawned on demand.
   private worker: Worker | null = null;
   private workerReady: Promise<void> | null = null;
+  // The reject function of the CURRENT workerReady startup promise. ROBOREV
+  // round-2 finding F: evals are inserted into `pending` only AFTER the startup
+  // resolves, so if MULTIPLE evals await the SAME hung startup and one times out,
+  // failAllPending() sees an EMPTY `pending` and the other startup waiters hang
+  // until their own timers. Capturing the rejecter lets disposeWorker() reject
+  // the shared startup promise so ALL waiters (their ensureWorker().catch())
+  // reject promptly on the teardown. Null when no startup is in flight (the
+  // promise already settled, or there is no current Worker).
+  private rejectWorkerReady: ((err: unknown) => void) | null = null;
   private nextReqId = 0;
   private readonly pending = new Map<number, PendingEval>();
 
@@ -888,22 +987,21 @@ export class WasmCelBackend {
       }
     }
 
-    // Resolve the wasm artifact path (WS-G, VAL-CWC-P3CORPUS-009/011):
-    //   - an explicit options.wasmPath wins (the override / presence-gate path);
-    //   - otherwise resolve the WS-G PACKAGE-DATA wasm
-    //     (@epochly/relay-contracts/src/_wasm/relay_cel_wasm.wasm) so an
-    //     installed package finds the engine WITHOUT crate/target/. If the
-    //     package-data copy is absent, leave wasmPath undefined so the `.mjs`
-    //     loader applies its OWN default (package-data probe then crate/target)
-    //     / CEL_WASM env resolution -- env access stays in the loader, never in
-    //     this src tree. Mirrors the Python _resolve_wasm_path_or_none
-    //     (wasm_backed_evaluator.py:295-313).
-    if (options.wasmPath !== undefined) {
-      this.wasmPath = options.wasmPath;
-    } else {
-      const packaged = resolvePackagedWasmPath();
-      this.wasmPath = packaged ?? undefined;
-    }
+    // Resolve the wasm artifact path (WS-G, VAL-CWC-P3CORPUS-009/011) with the
+    // EXPLICIT precedence (ROBOREV round-2 finding G):
+    //   1. an explicit options.wasmPath wins (the override / presence-gate path);
+    //   2. process.env.CEL_WASM (the operator's artifact override) -- HONORED,
+    //      no longer shadowed by the packaged wasm (the prior bug);
+    //   3. the WS-G PACKAGE-DATA wasm
+    //      (@epochly/relay-contracts/src/_wasm/relay_cel_wasm.wasm) so an
+    //      installed package finds the engine WITHOUT crate/target/;
+    //   4. undefined -- defer to the `.mjs` loader's OWN default (its
+    //      self-relative package-data probe / crate-target build).
+    // CEL_WASM is the wasm-ARTIFACT-PATH env var (NOT the RELAY_CEL_ENGINE engine
+    // selector), so resolving it here does not affect engine-selection
+    // determinism. Mirrors the operator-visible precedence the Python host
+    // achieves (its CEL_WASM read lives in the vendored loader / _wasm tree).
+    this.wasmPath = resolveWasmPathForLoader(options.wasmPath);
     this.loaderPath = options.loaderPath ?? defaultLoaderPath();
     this.hangSentinel = options.hangSentinel ?? null;
     this.startupHangSentinel = options.startupHangSentinel ?? false;
@@ -1152,6 +1250,25 @@ export class WasmCelBackend {
     this.worker = w;
 
     this.workerReady = new Promise<void>((resolveReady, rejectReady) => {
+      // Capture this startup's rejecter so disposeWorker()/dispose() can reject
+      // the SHARED startup promise for ALL waiters on a teardown (finding F).
+      // Wrap resolve/reject so the captured rejecter is cleared the instant the
+      // promise settles (idempotent: a later disposeWorker() reject becomes a
+      // no-op once the promise has already resolved/rejected).
+      const settleReady = (): void => {
+        if (this.rejectWorkerReady === rejectThisReady) {
+          this.rejectWorkerReady = null;
+        }
+      };
+      const resolveAndClear = (): void => {
+        settleReady();
+        resolveReady();
+      };
+      const rejectThisReady = (err: unknown): void => {
+        settleReady();
+        rejectReady(err);
+      };
+      this.rejectWorkerReady = rejectThisReady;
       const onMessage = (msg: {
         kind?: string;
         reqId?: number;
@@ -1159,11 +1276,11 @@ export class WasmCelBackend {
         message?: string;
       }): void => {
         if (msg.kind === "ready") {
-          resolveReady();
+          resolveAndClear();
           return;
         }
         if (msg.kind === "startup_error") {
-          rejectReady(
+          rejectThisReady(
             new RelayCelEngineError(
               `wasm loader failed at Worker startup: ${msg.message ?? "unknown"}`,
               "RELAY-CEL-ENGINE-COMPILE",
@@ -1182,7 +1299,7 @@ export class WasmCelBackend {
       w.once("error", (err: Error) => {
         // A Worker-level error (not a wasm {ok:false} envelope) fails the
         // startup promise and any in-flight evaluations, then drops the handle.
-        rejectReady(
+        rejectThisReady(
           new RelayCelEngineError(
             `wasm Worker error: ${err.message}`,
             "RELAY-CEL-ENGINE-PANIC",
@@ -1213,8 +1330,24 @@ export class WasmCelBackend {
   /** Terminate the Worker and drop the handle (quarantine). Non-throwing. */
   private disposeWorker(): void {
     const w = this.worker;
+    const rejectReady = this.rejectWorkerReady;
     this.worker = null;
     this.workerReady = null;
+    this.rejectWorkerReady = null;
+    // Finding F: if a startup was still in flight (the promise had not settled),
+    // reject it so EVERY eval awaiting this shared startup (ensureWorker().catch)
+    // rejects ON this teardown instead of hanging until its own later timer. The
+    // wrapped rejecter is idempotent (a no-op once already settled).
+    if (rejectReady !== null) {
+      rejectReady(
+        new RelayCelEngineError(
+          "wasm Worker torn down before startup completed (a concurrent " +
+            "evaluation's wall-clock timeout, or a startup failure, disposed " +
+            "the shared Worker); this evaluation was awaiting that startup",
+          "RELAY-CEL-ENGINE-REQUEST",
+        ),
+      );
+    }
     if (w !== null) {
       void w.terminate();
     }
@@ -1227,14 +1360,27 @@ export class WasmCelBackend {
    */
   async dispose(): Promise<void> {
     const w = this.worker;
+    const rejectReady = this.rejectWorkerReady;
     this.worker = null;
     this.workerReady = null;
+    this.rejectWorkerReady = null;
     this.failAllPending(
       new RelayCelEngineError(
         "WasmCelBackend disposed while an evaluation was in flight",
         "RELAY-CEL-ENGINE-REQUEST",
       ),
     );
+    // Finding F: an explicit dispose() mid-startup must also reject the shared
+    // startup promise so every eval awaiting that startup rejects promptly
+    // (rather than hanging until its own timer). Idempotent if already settled.
+    if (rejectReady !== null) {
+      rejectReady(
+        new RelayCelEngineError(
+          "WasmCelBackend disposed while a Worker startup was in flight",
+          "RELAY-CEL-ENGINE-REQUEST",
+        ),
+      );
+    }
     if (w !== null) {
       await w.terminate();
     }

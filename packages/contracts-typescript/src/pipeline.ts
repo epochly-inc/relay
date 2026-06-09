@@ -32,7 +32,7 @@ import { pathToFileURL } from "node:url";
 import { jcsCanonicalize } from "./canonical.js";
 import {
   resolvePackagedLoaderPath,
-  resolvePackagedWasmPath,
+  resolveWasmPathForLoader,
 } from "./wasm-artifact.js";
 // Single source of truth for the native<->typed codec lives in wasm-evaluator.ts
 // (VAL-CWC-P2TSGATE-005). This pipeline imports `nativeToTyped` / `TypedValue`
@@ -134,22 +134,22 @@ export function resolveLoaderUrl(): string {
 
 async function loadRelayCel(wasmPath?: string): Promise<RelayCelLoader> {
   const loaderUrl = resolveLoaderUrl();
-  // When the PACKAGED loader is used (an installed package, or the dev tree's
-  // vendored copy) and no explicit wasmPath was given, resolve the package-data
-  // wasm and pass it EXPLICITLY. The vendored loader's own self-relative
-  // defaultWasmPath() probe (../../contracts-typescript/src/_wasm/...) is
-  // computed from the CANONICAL loader's location and is WRONG when the loader
-  // is the vendored copy under src/_wasm/ -- so the host (not the relocated
-  // loader) supplies the wasm path. Mirrors WasmCelBackend / the Python host,
-  // which always resolve the package-data wasm and pass it to the loader rather
-  // than relying on the relocated loader's self-relative default.
-  let resolvedWasmPath = wasmPath;
-  if (resolvedWasmPath === undefined && resolvePackagedLoaderPath() !== null) {
-    const packagedWasm = resolvePackagedWasmPath();
-    if (packagedWasm !== null) {
-      resolvedWasmPath = packagedWasm;
-    }
-  }
+  // Resolve the wasm path to pass to the loader with the EXPLICIT precedence
+  // (ROBOREV round-2 finding G): explicit wasmPath > process.env.CEL_WASM >
+  // packaged-data wasm > undefined (defer to the loader's own default). When the
+  // PACKAGED loader is used, the host supplies the wasm path because the vendored
+  // loader's self-relative defaultWasmPath() probe is computed from the CANONICAL
+  // loader's location and is WRONG for the relocated vendored copy -- BUT the
+  // host must NOT shadow an operator's CEL_WASM override with the packaged wasm
+  // (the prior bug). resolveWasmPathForLoader enforces CEL_WASM precedence so an
+  // operator-set CEL_WASM is honored; the packaged wasm is used only when neither
+  // an explicit path nor CEL_WASM is set. When no packaged loader is present (a
+  // from-source checkout) we leave the path undefined so the canonical loader's
+  // own default resolution applies.
+  const usePackagedLoader = resolvePackagedLoaderPath() !== null;
+  const resolvedWasmPath = usePackagedLoader
+    ? resolveWasmPathForLoader(wasmPath)
+    : wasmPath;
   const mod = (await import(loaderUrl)) as unknown as RelayCelModule;
   return mod.RelayCel.load(resolvedWasmPath);
 }

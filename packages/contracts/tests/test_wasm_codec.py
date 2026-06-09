@@ -36,6 +36,7 @@ from typing import Any, cast
 
 import celpy.celtypes as ct
 import pytest
+from relay_contracts.errors import RelayCelEngineError
 from relay_contracts.wasm_codec import py_to_typed, typed_to_py
 
 
@@ -400,16 +401,66 @@ def test_round_trip_duration_tag_microsecond_domain(wire, total_seconds):
 
 
 @pytest.mark.plumbing
-def test_py_to_typed_subsecond_negative_duration_agrees_with_wasm_signloss():
-    # The wasm serializer (lib.rs:1283 f"{secs}.{nanos.abs():09}") LOSES the
-    # sign of a sub-second negative duration (secs == 0): the empirically
-    # confirmed wasm out form for -0.25s is "0.250000000". The codec MUST AGREE
-    # with the wasm (byte-parity keystone), so py_to_typed reproduces the same
-    # sign-loss. This is a documented wasm characteristic, NOT a codec defect;
-    # the codec cannot diverge from the wasm it speaks to.
-    neg_quarter = ct.DurationType(seconds=0, nanos=-250_000_000)
-    assert neg_quarter.total_seconds() == -0.25
-    assert py_to_typed(neg_quarter) == {"t": "duration", "v": "0.250000000"}
+@pytest.mark.parametrize(
+    "micros_total",
+    [
+        -250_000,  # -0.25s   (sub-second negative: secs == 0, sign on the frac)
+        -1,  # -1 microsecond, the smallest representable sub-second negative
+        -999_999,  # -0.999999s, just under -1s, still secs == 0
+        -500_000,  # -0.5s
+    ],
+)
+def test_py_to_typed_subsecond_negative_duration_fails_closed(micros_total):
+    # ROBOREV finding C (HIGH): the wasm wire form "<secs>.<09-nanos>" carries the
+    # sign ONLY on the integer seconds part. For a sub-second NEGATIVE duration
+    # (secs == 0, e.g. -0.25s) the sign is unrepresentable, so the old encode
+    # produced "0.250000000" (POSITIVE) and the decoder read it back as +0.25s --
+    # silent sign corruption. The wire form CANNOT represent the value, so the
+    # encoder now FAILS CLOSED with a structured RELAY-CEL-009 /
+    # RELAY-CEL-ENGINE-REQUEST error rather than corrupting it. (Sign-preserving
+    # the wire form is impossible without changing the pinned wasm binary, which
+    # produces the identical sign-lossy form; failing closed keeps Py and TS
+    # byte-identical and matches the existing fail-closed posture.)
+    #
+    # Built from a microsecond total (timedelta's native resolution) so the
+    # constructor does NOT normalise the value into a whole second: a sub-second
+    # negative magnitude stays sub-second (secs == 0 in the encoder).
+    dur = ct.DurationType(seconds=0, nanos=micros_total * 1000)
+    # Sanity: genuinely a sub-second negative (-1s < total < 0).
+    assert -1.0 < dur.total_seconds() < 0
+    with pytest.raises(RelayCelEngineError) as exc_info:
+        py_to_typed(dur)
+    err = exc_info.value
+    assert err.code == "RELAY-CEL-009"
+    assert err.subtype == "RELAY-CEL-ENGINE-REQUEST"
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "seconds,nanos,total_seconds",
+    [
+        (-1, 0, -1.0),  # negative whole second: sign carried on secs (OK)
+        (-5, -500_000_000, -5.5),  # negative whole+frac: secs < 0 carries sign
+        (-1, -250_000_000, -1.25),  # -1.25s: secs == -1 carries sign
+        (0, 250_000_000, 0.25),  # positive sub-second: representable
+        (3, 0, 3.0),  # positive whole second
+        (0, 0, 0.0),  # zero
+    ],
+)
+def test_py_to_typed_representable_durations_round_trip(seconds, nanos, total_seconds):
+    # Durations whose sign IS representable in the wire form (secs != 0 carries
+    # the sign, or the value is non-negative) encode and round-trip faithfully --
+    # the fail-closed guard does NOT over-reject. -1.25s (secs == -1) stays
+    # correct because the sign rides on the seconds component.
+    dur = ct.DurationType(seconds=seconds, nanos=nanos)
+    assert dur.total_seconds() == total_seconds
+    typed = py_to_typed(dur)
+    assert typed["t"] == "duration"
+    back = typed_to_py(typed)
+    assert isinstance(back, ct.DurationType)
+    assert back.total_seconds() == total_seconds
+    # And the round-trip is byte-stable (decode of the re-encode is identical).
+    assert py_to_typed(back) == typed
 
 
 @pytest.mark.plumbing

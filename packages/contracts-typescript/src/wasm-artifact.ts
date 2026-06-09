@@ -149,3 +149,45 @@ export function resolvePackagedLoaderPath(override?: string): string | null {
   }
   return candidate;
 }
+
+// Resolve the wasm artifact path to pass to the `.mjs` RelayCel loader, with the
+// EXPLICIT precedence (ROBOREV round-2 finding G):
+//
+//   1. an explicit `wasmPath` (the caller-supplied override) -- highest;
+//   2. `process.env.CEL_WASM` (the operator's artifact override);
+//   3. the WS-G PACKAGE-DATA wasm (resolvePackagedWasmPath()) -- lowest;
+//   4. `undefined` -- no host-resolved path, so the loader applies its OWN
+//      default (its self-relative package-data probe / crate-target build).
+//
+// The bug: when no explicit `wasmPath` was given and the packaged wasm resolved,
+// the host passed the PACKAGE-DATA path straight to the loader, so the loader's
+// own `wasmPath || process.env.CEL_WASM || defaultWasmPath()` chain never saw
+// CEL_WASM -- the operator's override was silently ignored while the docs still
+// claimed it was honored. This resolver makes CEL_WASM take precedence over the
+// packaged wasm: the packaged wasm is returned ONLY when neither an explicit path
+// nor CEL_WASM is set.
+//
+// CEL_WASM is the wasm-ARTIFACT-PATH env var (NOT the RELAY_CEL_ENGINE engine
+// SELECTOR), so reading it here does not affect engine-selection determinism (the
+// default-engine guard scans only for RELAY_CEL_ENGINE and explicitly exempts
+// CEL_WASM). An EMPTY/whitespace CEL_WASM is treated as UNSET so a blank
+// assignment does not point the loader at "" (which would fail to load).
+//
+// Returns a concrete path string, or `undefined` to defer to the loader's own
+// default. Never throws.
+export function resolveWasmPathForLoader(
+  wasmPath?: string,
+): string | undefined {
+  if (wasmPath !== undefined) {
+    return wasmPath;
+  }
+  const envPath = process.env.CEL_WASM;
+  if (envPath !== undefined && envPath.trim() !== "") {
+    return envPath;
+  }
+  const packaged = resolvePackagedWasmPath();
+  if (packaged !== null) {
+    return packaged;
+  }
+  return undefined;
+}

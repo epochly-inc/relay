@@ -65,6 +65,15 @@ from typing import Any
 
 import celpy.celtypes as celtypes
 
+# Absolute import (NOT ``from .errors``): this module is sometimes loaded
+# standalone via importlib.spec_from_file_location (the TS cross-host parity
+# goldens load wasm_codec.py directly, with no package context), where a
+# package-relative import has no parent and raises ImportError. The absolute form
+# resolves relay_contracts.errors from sys.path either way (the package is
+# installed in the venv), so both the package-submodule and the standalone load
+# work.
+from relay_contracts.errors import SUBTYPE_ENGINE_REQUEST, RelayCelEngineError
+
 __all__ = ["py_to_typed", "typed_to_py"]
 
 # Wire integer bounds (lib.rs:1358 / 1366): the wasm request decoder parses int
@@ -345,11 +354,23 @@ def _encode_duration(value: Any) -> str:
     ``secs = d.num_seconds()`` (truncates TOWARD ZERO),
     ``nanos = (d - seconds(secs)).num_nanoseconds()``,
     ``format!("{secs}.{:09}", nanos.abs())`` -- so the sign is carried on the
-    ``secs`` part only, and the fractional part is the ABSOLUTE nanoseconds
-    zero-padded to 9 digits. This reproduces the wasm's behavior EXACTLY,
-    including its sign-loss for a sub-second negative duration (``secs == 0``
-    drops the sign): the codec MUST agree with the wasm it speaks to
-    (byte-parity keystone #16), so this is intentional, not a defect.
+    ``secs`` part ONLY, and the fractional part is the ABSOLUTE nanoseconds
+    zero-padded to 9 digits.
+
+    ROBOREV finding C (HIGH) -- fail closed on an unrepresentable sign. Because
+    the sign rides on ``secs`` alone, a sub-second NEGATIVE duration (``secs ==
+    0``, e.g. -0.25s) has NO place to carry its sign: the naive encode emits
+    ``"0.250000000"`` (POSITIVE), which a decoder reads back as +0.25s -- silent
+    sign corruption. The pinned wasm binary serializes with the identical
+    sign-lossy ``format!`` (lib.rs:1283), so we CANNOT invent a sign-preserving
+    wire form without diverging from the wasm (byte-parity keystone #16 would
+    break) and we MUST NOT change the crate. So we FAIL CLOSED: a duration whose
+    SIGNED total cannot be faithfully represented by this wire form raises a
+    structured :class:`RelayCelEngineError` (RELAY-CEL-009 /
+    RELAY-CEL-ENGINE-REQUEST) -- matching the codec's existing fail-closed
+    posture (a value the wire form cannot carry is a request/marshaling error,
+    never a silent corruption). The TS codec applies the IDENTICAL guard, so Py
+    and TS stay byte-symmetric (both reject the same inputs).
 
     ``timedelta`` stores microsecond resolution, so a sub-microsecond duration
     is not representable in the celtypes value (the decode already truncates
@@ -367,6 +388,20 @@ def _encode_duration(value: Any) -> str:
         else -((-total_ns) // 1_000_000_000)
     )
     rem_ns = total_ns - secs * 1_000_000_000
+    # Fail closed: a negative total with a zero seconds component cannot carry
+    # its sign in "<secs>.<09-nanos>" (the sign lives on secs only). Encoding it
+    # would silently flip -0.25s to +0.25s. Reject rather than corrupt.
+    if total_ns < 0 and secs == 0:
+        raise RelayCelEngineError(
+            "duration with a sub-second negative magnitude "
+            f"({total_ns} ns total) is not representable in the wasm "
+            "'<secs>.<09-nanos>' wire form: the sign rides on the integer "
+            "seconds component, which is 0 here, so the value would silently "
+            "encode as POSITIVE. Refusing to corrupt the binding (the pinned "
+            "wasm serializer is identically sign-lossy; this fails closed "
+            "rather than diverge from it).",
+            subtype=SUBTYPE_ENGINE_REQUEST,
+        )
     return f"{secs}.{abs(rem_ns):09d}"
 
 

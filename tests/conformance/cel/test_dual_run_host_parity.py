@@ -120,7 +120,7 @@ string to the spec-correct compile error -- a CORRECTNESS IMPROVEMENT documented
 for the M5 bake (see the M5 P5FLIP section of ``packages/cel-wasm/README.md``).
 At M6 (cel-python removal) the divergence is eliminated BY CONSTRUCTION; the two
 corpus cases should then be reclassified ``eval_value`` -> ``eval_error`` (see
-the ``TODO(M6)`` note in that README section). The corpus is NOT mutated here:
+the M6 migration note in that README section). The corpus is NOT mutated here:
 the legacy ``test_w17_4_*`` cross-runtime / release-block runners still expect
 cel-python's current lenient behavior, so reclassification is M6 scope.
 
@@ -177,7 +177,7 @@ _ENGINES: tuple[str, ...] = ("celpy", "wasm")
 # documented for the M5 bake (see packages/cel-wasm/README.md M5 P5FLIP section).
 # At M6 (cel-python removal) the divergence is eliminated BY CONSTRUCTION, and
 # these two corpus cases should be reclassified eval_value -> eval_error (see the
-# TODO(M6) note in that README section). The corpus is NOT mutated here: the
+# M6 migration note in that README section). The corpus is NOT mutated here: the
 # legacy w17 cross-runtime / release-block runners still expect cel-python's
 # current lenient behavior, so reclassification is deferred to M6 scope.
 KNOWN_CELPY_NONCONFORMANCE: frozenset[str] = frozenset(
@@ -185,6 +185,42 @@ KNOWN_CELPY_NONCONFORMANCE: frozenset[str] = frozenset(
         "regex_backslash_fullwidth_digit_accepted",
         "regex_backslash_arabic_digit_accepted",
     }
+)
+
+# The EXACT corpus expression each carved-out case MUST carry. Pinning the
+# expression here (asserted equal to the live relay_cel_corpus.json value before
+# the case is excluded) means a future corpus edit that changes one of these
+# expressions to something OTHER than the adjudicated backslash + non-ASCII-digit
+# string literal can no longer be silently absorbed by the carve-out -- the
+# carve-out is legitimate ONLY for these precise two expressions. The values are
+# a double-quoted CEL string literal: a single backslash followed by FULLWIDTH
+# DIGIT ZERO (U+FF10) / ARABIC-INDIC DIGIT ZERO (U+0660). Written with explicit
+# backslash-u escapes so this source stays pure ASCII (CLAUDE.md "ASCII-Safe Source").
+KNOWN_CELPY_NONCONFORMANCE_EXPRESSIONS: dict[str, str] = {
+    # Each value is '"' + '\\' (one literal backslash) + the non-ASCII digit +
+    # '"', built with backslash-u escapes so this source is pure ASCII.
+    "regex_backslash_fullwidth_digit_accepted": '"\\\uff10"',
+    "regex_backslash_arabic_digit_accepted": '"\\\u0660"',
+}
+
+# The wasm engine's DOCUMENTED error for these expressions: the cel-rust lexer
+# correctly RAISES a compile error (a backslash that does not begin a recognized
+# escape is a LEXICAL ERROR per the CEL spec). The host wasm-backed evaluator
+# maps that to RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE (errors.py:201-225,
+# _WASM_CODE_TO_ENGINE_SUBTYPE["RELAY-CEL-001"] = SUBTYPE_ENGINE_COMPILE), and
+# the engine's own RELAY-CEL-001 compile code plus the "token recognition error"
+# lexer diagnostic are preserved in the message. The carve-out asserts ALL of
+# these so a wasm regression that raises a DIFFERENT error (a panic, an exec
+# failure, a profile rejection, or a bare non-Relay exception) is NOT silently
+# absorbed -- it falls through as a normal divergence and fails the test.
+_EXPECTED_WASM_CARVEOUT_ERROR_CLASS = "RelayCelEngineError"
+_EXPECTED_WASM_CARVEOUT_ERROR_CODE = "RELAY-CEL-009"
+_EXPECTED_WASM_CARVEOUT_ERROR_SUBTYPE = "RELAY-CEL-ENGINE-COMPILE"
+# Substrings the documented compile-error message MUST contain (the engine's own
+# RELAY-CEL-001 code, and the cel-rust lexer's "token recognition error" text).
+_EXPECTED_WASM_CARVEOUT_MESSAGE_SUBSTRINGS = (
+    "[RELAY-CEL-001]",
+    "token recognition error",
 )
 
 # Subprocess worker: reads {"cases":[{id, expression, bindings}, ...]} on stdin,
@@ -334,14 +370,25 @@ for case in payload["cases"]:
     try:
         raw = evaluator.evaluate(case["expression"], bindings)
     except Exception as exc:  # noqa: BLE001 -- exhaustive per-case diagnostics
+        # The error CLASS name is recorded for diagnostics. The engine-specific
+        # error CODE / SUBTYPE / message are ALSO recorded (when the exception is
+        # a structured RelayCelError) -- NOT to feed the parity signature (the
+        # host-vs-RELAY-CEL-009 taxonomy difference is a documented disposition,
+        # excluded from _value_comparable), but so the carve-out guard can PIN
+        # the wasm error to the documented backslash-lexer compile error rather
+        # than tolerating ANY raise. Bare (non-Relay) exceptions carry no
+        # code/subtype, so those fields stay None and the carve-out guard's
+        # exact-match assertion will REJECT them (fall through to a divergence).
+        code = getattr(exc, "code", None)
+        subtype = getattr(exc, "subtype", None)
         records.append(
             {
                 "id": case["id"],
                 "raised": True,
-                # CLASS name only; the engine-specific error CODE taxonomy
-                # difference (host vs RELAY-CEL-009) is NOT part of the parity
-                # claim (documented disposition).
                 "error_class": type(exc).__name__,
+                "error_code": code if isinstance(code, str) else None,
+                "error_subtype": subtype if isinstance(subtype, str) else None,
+                "error_message": str(exc),
             }
         )
         continue
@@ -486,6 +533,83 @@ def _value_comparable(record: dict[str, Any]) -> dict[str, Any]:
         "raised": record.get("raised"),
         "value_jcs_b64": record.get("value_jcs_b64"),
     }
+
+
+def _carveout_rejection_reason(
+    cid: str,
+    case_expr: str,
+    celpy_record: dict[str, Any],
+    wasm_record: dict[str, Any],
+) -> str | None:
+    """Decide whether a divergent case legitimately matches the documented
+    cel-python backslash-lexer carve-out (FINDING B). Returns ``None`` when the
+    case IS the documented divergence (so it may be carved out), otherwise a
+    human-readable REASON string explaining why it does NOT qualify (so the
+    caller routes it to the normal-divergence failure path).
+
+    The carve-out is legitimate ONLY when ALL of these hold:
+      1. the corpus expression is EXACTLY the pinned adjudicated literal for
+         this id (KNOWN_CELPY_NONCONFORMANCE_EXPRESSIONS) -- a corpus drift to a
+         different expression is NOT covered;
+      2. cel-python RETURNED a value (raised is False) -- the lenient path;
+      3. the wasm RAISED (raised is True);
+      4. the wasm error is the documented RelayCelEngineError / RELAY-CEL-009 /
+         RELAY-CEL-ENGINE-COMPILE carrying the engine's own ``[RELAY-CEL-001]``
+         code and the cel-rust ``token recognition error`` lexer diagnostic.
+
+    Any other wasm error (a panic, an exec failure, a profile rejection, or a
+    bare non-Relay exception that carries no code/subtype) is REJECTED so a wasm
+    regression that raises for a DIFFERENT reason is surfaced as a divergence,
+    never silently absorbed by the carve-out.
+    """
+    expected_expr = KNOWN_CELPY_NONCONFORMANCE_EXPRESSIONS.get(cid)
+    if expected_expr is None:
+        return f"id {cid!r} is not in KNOWN_CELPY_NONCONFORMANCE_EXPRESSIONS"
+    if case_expr != expected_expr:
+        return (
+            "corpus expression drifted from the pinned adjudicated literal: "
+            f"expected {expected_expr!r}, got {case_expr!r}"
+        )
+    if celpy_record.get("raised") is not False:
+        return (
+            "cel-python did NOT return a value (expected the lenient path); "
+            f"celpy.raised={celpy_record.get('raised')!r}"
+        )
+    if wasm_record.get("raised") is not True:
+        return (
+            "wasm did NOT raise (expected the spec-correct compile error); "
+            f"wasm.raised={wasm_record.get('raised')!r}"
+        )
+    error_class = wasm_record.get("error_class")
+    if error_class != _EXPECTED_WASM_CARVEOUT_ERROR_CLASS:
+        return (
+            "wasm error class is not the documented compile error: "
+            f"expected {_EXPECTED_WASM_CARVEOUT_ERROR_CLASS!r}, "
+            f"got {error_class!r}"
+        )
+    error_code = wasm_record.get("error_code")
+    if error_code != _EXPECTED_WASM_CARVEOUT_ERROR_CODE:
+        return (
+            "wasm error code is not the documented compile code: "
+            f"expected {_EXPECTED_WASM_CARVEOUT_ERROR_CODE!r}, got {error_code!r}"
+        )
+    error_subtype = wasm_record.get("error_subtype")
+    if error_subtype != _EXPECTED_WASM_CARVEOUT_ERROR_SUBTYPE:
+        return (
+            "wasm error subtype is not the documented compile subtype: "
+            f"expected {_EXPECTED_WASM_CARVEOUT_ERROR_SUBTYPE!r}, "
+            f"got {error_subtype!r}"
+        )
+    message = wasm_record.get("error_message") or ""
+    missing = [
+        s for s in _EXPECTED_WASM_CARVEOUT_MESSAGE_SUBSTRINGS if s not in message
+    ]
+    if missing:
+        return (
+            "wasm error message is missing the documented compile diagnostic "
+            f"substring(s) {missing!r}; message={message!r}"
+        )
+    return None
 
 
 @pytest.mark.plumbing
@@ -662,43 +786,70 @@ def test_dual_run_value_parity_celpy_vs_wasm_zero_divergence() -> None:
             value_compared += 1
         if celpy_cmp == wasm_cmp:
             continue
+        case_expr = next(c["expression"] for c in subset if c["id"] == cid)
         diff = {
             "case_id": cid,
-            "expression": next(c["expression"] for c in subset if c["id"] == cid),
+            "expression": case_expr,
             "celpy": celpy_cmp,
             "wasm": wasm_cmp,
         }
-        if cid in KNOWN_CELPY_NONCONFORMANCE:
-            # Adjudicated cel-python lexer non-conformance: wasm correctly RAISES
-            # (spec-correct), cel-python leniently returns a value. Recorded for
-            # the stale-carve-out guard below, NOT counted as a failure.
+        # A case is carved out ONLY when it is BOTH in the adjudicated set AND it
+        # matches the documented backslash-lexer compile-error fingerprint:
+        #   (a) the corpus expression is EXACTLY the pinned adjudicated literal,
+        #   (b) cel-python returned a value while the wasm RAISED, and
+        #   (c) the wasm error is the documented RELAY-CEL-009 /
+        #       RELAY-CEL-ENGINE-COMPILE (RelayCelEngineError) carrying the
+        #       engine's own RELAY-CEL-001 compile code + the cel-rust
+        #       "token recognition error" lexer diagnostic.
+        # If the cid is adjudicated but ANY of (a)-(c) fails -- a corpus
+        # expression drift, or a wasm regression that raises a DIFFERENT error
+        # (panic / exec / profile / bare exception) -- the case is NOT carved out
+        # and falls through as a normal divergence (which fails the test). This
+        # is the FINDING-B strengthening: the carve-out no longer suppresses ANY
+        # mismatch for the two ids; it pins the expression and the wasm error.
+        carveout_reason = _carveout_rejection_reason(
+            cid, case_expr, celpy_results[cid], wasm_results[cid]
+        )
+        if cid in KNOWN_CELPY_NONCONFORMANCE and carveout_reason is None:
+            # Adjudicated, expression-pinned, documented-compile-error divergence:
+            # recorded for the stale-carve-out guard below, NOT a failure.
             carved_out_divergences[cid] = diff
         else:
+            if cid in KNOWN_CELPY_NONCONFORMANCE:
+                # Adjudicated id but the fingerprint did NOT match -- annotate
+                # WHY so the failure diff explains the unexpected carve-out shape.
+                diff = {**diff, "carveout_rejected_because": carveout_reason}
             divergences.append(diff)
 
-    # The carve-out is only legitimate while the carved-out cases ACTUALLY still
-    # diverge in the expected direction (celpy returned a value, wasm raised). If
-    # a future cel-python fix or a corpus reclassification (M6) makes them
-    # converge, this guard fails so the now-stale carve-out is removed.
-    still_diverging = set(carved_out_divergences)
-    converged_carveouts = sorted(KNOWN_CELPY_NONCONFORMANCE - still_diverging)
-    assert converged_carveouts == [], (
+    # The carve-out is only legitimate while EACH carved-out case ACTUALLY still
+    # diverges AS the documented backslash-lexer compile error (celpy returns the
+    # lenient value, wasm raises the RELAY-CEL-009 / ENGINE-COMPILE "token
+    # recognition error"). A carved-out id that no longer diverges at all (a
+    # cel-python fix or an M6 reclassification made the engines CONVERGE) is a
+    # STALE carve-out and fails here. A carved-out id that diverges for the WRONG
+    # reason (fingerprint rejected) already landed in ``divergences`` above and
+    # fails the divergence assertion below -- so it is intentionally NOT counted
+    # as "still legitimately carved out" here.
+    legitimately_carved = set(carved_out_divergences)
+    converged_carveouts = sorted(KNOWN_CELPY_NONCONFORMANCE - legitimately_carved)
+    rejected_carveout_ids = sorted(
+        cid
+        for d in divergences
+        if (cid := d.get("case_id")) in KNOWN_CELPY_NONCONFORMANCE
+    )
+    # Only flag as STALE/converged the adjudicated ids that did NOT appear as a
+    # divergence at all (neither legitimately carved out nor fingerprint-rejected);
+    # a fingerprint-rejected id is reported by the divergence failure with its
+    # precise reason, not mislabeled here as "converged".
+    truly_converged = [c for c in converged_carveouts if c not in rejected_carveout_ids]
+    assert truly_converged == [], (
         "VAL-CWC-P4DUALRUN-004: carved-out case(s) no longer diverge "
-        f"celpy-vs-wasm: {converged_carveouts}. The KNOWN_CELPY_NONCONFORMANCE "
+        f"celpy-vs-wasm: {truly_converged}. The KNOWN_CELPY_NONCONFORMANCE "
         "carve-out is now STALE -- cel-python converged on (or the corpus was "
         "reclassified to) the spec-correct behavior. Remove these from the "
         "carve-out set (likely the M6 cel-python-removal reclassification)."
     )
-    for cid, diff in carved_out_divergences.items():
-        celpy_raised = diff["celpy"].get("raised")
-        wasm_raised = diff["wasm"].get("raised")
-        assert celpy_raised is False and wasm_raised is True, (
-            "VAL-CWC-P4DUALRUN-004: carved-out case "
-            f"{cid!r} diverges in an UNEXPECTED direction (expected cel-python "
-            "to leniently RETURN a value and wasm to spec-correctly RAISE): "
-            f"celpy.raised={celpy_raised}, wasm.raised={wasm_raised}. This is "
-            "NOT the adjudicated backslash-lexer non-conformance -- investigate."
-        )
+    for diff in carved_out_divergences.values():
         print("[dual-run-value-parity-carveout]", json.dumps(diff, sort_keys=True))
 
     if divergences:
@@ -766,6 +917,141 @@ def test_dual_run_value_comparator_detects_value_divergence() -> None:
     )
     five_again = _value_comparable({"raised": False, "value_jcs_b64": "FIVE"})
     assert five == five_again
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P4DUALRUN-004")
+def test_carveout_fingerprint_pins_expression_and_documented_wasm_error() -> None:
+    """FINDING-B negative control: the strengthened carve-out guard
+    (``_carveout_rejection_reason``) must ACCEPT only the documented
+    backslash-lexer compile divergence and REJECT every other shape.
+
+    Without this the carve-out suppressed ANY mismatch for the two adjudicated
+    ids as long as celpy returned and wasm raised, so a corpus expression drift
+    or a wasm regression that raised for a DIFFERENT reason (panic / exec /
+    profile / bare exception) would be silently hidden. Each REJECT branch below
+    is a regression that must surface as a normal divergence (a non-None reason),
+    and the single ACCEPT branch is the legitimate documented case (None)."""
+    cid = "regex_backslash_fullwidth_digit_accepted"
+    good_expr = KNOWN_CELPY_NONCONFORMANCE_EXPRESSIONS[cid]
+    celpy_returned = {"raised": False, "value_jcs_b64": "WHATEVER"}
+
+    def wasm_compile_error(**overrides: Any) -> dict[str, Any]:
+        base = {
+            "raised": True,
+            "error_class": _EXPECTED_WASM_CARVEOUT_ERROR_CLASS,
+            "error_code": _EXPECTED_WASM_CARVEOUT_ERROR_CODE,
+            "error_subtype": _EXPECTED_WASM_CARVEOUT_ERROR_SUBTYPE,
+            "error_message": (
+                "[RELAY-CEL-001] compile: token recognition error at: ..."
+            ),
+        }
+        base.update(overrides)
+        return base
+
+    # ACCEPT: the documented compile error with the pinned expression.
+    assert (
+        _carveout_rejection_reason(
+            cid, good_expr, celpy_returned, wasm_compile_error()
+        )
+        is None
+    )
+
+    # REJECT: an unknown id (not in the pinned expression map).
+    assert (
+        _carveout_rejection_reason(
+            "not_a_carveout_id", good_expr, celpy_returned, wasm_compile_error()
+        )
+        is not None
+    )
+
+    # REJECT: corpus expression drifted from the pinned literal.
+    assert (
+        _carveout_rejection_reason(
+            cid, '"\\n"', celpy_returned, wasm_compile_error()
+        )
+        is not None
+    )
+
+    # REJECT: cel-python ALSO raised (no longer the lenient path -> converged).
+    assert (
+        _carveout_rejection_reason(
+            cid, good_expr, {"raised": True}, wasm_compile_error()
+        )
+        is not None
+    )
+
+    # REJECT: wasm did NOT raise (it returned a value -> converged).
+    assert (
+        _carveout_rejection_reason(
+            cid,
+            good_expr,
+            celpy_returned,
+            {"raised": False, "value_jcs_b64": "X"},
+        )
+        is not None
+    )
+
+    # REJECT: wasm raised a DIFFERENT class (a regression, not the compile error).
+    assert (
+        _carveout_rejection_reason(
+            cid,
+            good_expr,
+            celpy_returned,
+            wasm_compile_error(error_class="RelayCelProfileError"),
+        )
+        is not None
+    )
+
+    # REJECT: wasm raised the wrong 009 SUBTYPE (e.g. a panic, not a compile).
+    assert (
+        _carveout_rejection_reason(
+            cid,
+            good_expr,
+            celpy_returned,
+            wasm_compile_error(error_subtype="RELAY-CEL-ENGINE-PANIC"),
+        )
+        is not None
+    )
+
+    # REJECT: wasm raised a different CODE entirely (host 007, not engine 009).
+    assert (
+        _carveout_rejection_reason(
+            cid,
+            good_expr,
+            celpy_returned,
+            wasm_compile_error(error_code="RELAY-CEL-007"),
+        )
+        is not None
+    )
+
+    # REJECT: the message lacks the documented lexer diagnostic substrings.
+    assert (
+        _carveout_rejection_reason(
+            cid,
+            good_expr,
+            celpy_returned,
+            wasm_compile_error(error_message="some unrelated failure"),
+        )
+        is not None
+    )
+
+    # REJECT: a bare non-Relay exception (no code/subtype captured -> None fields).
+    assert (
+        _carveout_rejection_reason(
+            cid,
+            good_expr,
+            celpy_returned,
+            {
+                "raised": True,
+                "error_class": "ValueError",
+                "error_code": None,
+                "error_subtype": None,
+                "error_message": "boom",
+            },
+        )
+        is not None
+    )
 
 
 @pytest.mark.plumbing

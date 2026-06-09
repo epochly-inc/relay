@@ -23,11 +23,16 @@
 // milestone M5." and "Do NOT remove cel-js before milestone M6."
 //
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
-import { readdirSync, readFileSync } from "node:fs";
+import {
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 
 import * as contracts from "../src/index.js";
 import { RelayCelEvaluator } from "../src/evaluator.js";
@@ -134,18 +139,18 @@ describe("VAL-CWC-P2TSGATE-013: default TS CEL engine stays cel-js (no premature
     const srcFiles = listSourceFiles(SRC_DIR);
     expect(srcFiles.length).toBeGreaterThan(0);
     const offenders: string[] = [];
-    // Match `process.env.RELAY_CEL_ENGINE` and `process.env["RELAY_CEL_ENGINE"]`
-    // / `process.env['RELAY_CEL_ENGINE']` (any whitespace), case-sensitive on
-    // the env name.
-    const envReadPattern =
-      /process\s*\.\s*env\s*(?:\.\s*RELAY_CEL_ENGINE|\[\s*["']RELAY_CEL_ENGINE["']\s*\])/;
     for (const file of srcFiles) {
-      const text = readFileSync(file, "utf8");
-      // Ignore the WS-G vendored wasm loader's CEL_WASM read (a DIFFERENT env
-      // var, path resolution only) and doc-comment mentions: the pattern above
-      // matches only an actual RELAY_CEL_ENGINE access, so comments naming the
-      // var without a process.env access do not match.
-      if (envReadPattern.test(text)) {
+      const raw = readFileSync(file, "utf8");
+      // ROBOREV round-2 finding I: strip comments AND string literals FIRST so a
+      // doc comment / message string that merely NAMES the env var (without a
+      // real read) does not false-positive, and so the broadened forms below
+      // cannot be smuggled inside a string. Then scan the executable code for ANY
+      // form of a RELAY_CEL_ENGINE env read -- the prior guard matched only the
+      // direct dot / bracket access, so a destructuring read, an optional chain,
+      // or an alias (const e = process.env; e.RELAY_CEL_ENGINE) would EVADE it
+      // (false confidence). The four patterns below close those evasions.
+      const code = stripCommentsAndStrings(raw);
+      if (readsRelayCelEngineEnv(code)) {
         offenders.push(file);
       }
     }
@@ -156,6 +161,121 @@ describe("VAL-CWC-P2TSGATE-013: default TS CEL engine stays cel-js (no premature
     )).toEqual([]);
   });
 });
+
+/**
+ * True if `code` (already comment- and string-stripped) contains ANY form of a
+ * RELAY_CEL_ENGINE read off process.env. ROBOREV round-2 finding I: covers the
+ * direct/bracket access (with optional chaining), the destructuring read, and an
+ * aliased process.env access -- so a renamed/composed/destructured read of the
+ * engine selector cannot evade the structural guard.
+ */
+export function readsRelayCelEngineEnv(code: string): boolean {
+  // 1. Direct or bracket access, with optional chaining at either step:
+  //    process.env.RELAY_CEL_ENGINE / process.env?.RELAY_CEL_ENGINE /
+  //    process.env["RELAY_CEL_ENGINE"] / process?.env?.["RELAY_CEL_ENGINE"].
+  // The dot form allows an optional `?.`; the bracket form allows an optional
+  // `?.` BEFORE the `[` (the `process?.env?.["..."]` optional-chained bracket).
+  const directOrBracket =
+    /process\s*\??\.\s*env\s*(?:\??\.\s*RELAY_CEL_ENGINE\b|\??\.?\s*\[\s*["']RELAY_CEL_ENGINE["']\s*\])/;
+  // 2. Destructuring directly off process.env:
+  //    const { RELAY_CEL_ENGINE } = process.env
+  //    const { RELAY_CEL_ENGINE: alias } = process.env  (renamed bind)
+  const destructureFromEnv =
+    /\{[^}]*\bRELAY_CEL_ENGINE\b[^}]*\}\s*=\s*process\s*\??\.\s*env\b/;
+  if (directOrBracket.test(code) || destructureFromEnv.test(code)) {
+    return true;
+  }
+  // 3. Alias the env object, then read RELAY_CEL_ENGINE off the alias:
+  //    const env = process.env;            ... env.RELAY_CEL_ENGINE
+  //    const env = process.env;            ... env["RELAY_CEL_ENGINE"]
+  //    const { RELAY_CEL_ENGINE } = env     (destructure off the alias)
+  // Collect identifiers bound directly to process.env, then look for a read of
+  // RELAY_CEL_ENGINE off any such alias (dot / bracket / destructure).
+  const aliasDecl =
+    /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*process\s*\??\.\s*env\b/g;
+  const aliases = new Set<string>();
+  for (const m of code.matchAll(aliasDecl)) {
+    aliases.add(m[1]!);
+  }
+  for (const alias of aliases) {
+    const a = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const aliasRead = new RegExp(
+      `\\b${a}\\s*\\??\\s*(?:\\.\\s*RELAY_CEL_ENGINE\\b|\\[\\s*["']RELAY_CEL_ENGINE["']\\s*\\])`,
+    );
+    const aliasDestructure = new RegExp(
+      `\\{[^}]*\\bRELAY_CEL_ENGINE\\b[^}]*\\}\\s*=\\s*${a}\\b`,
+    );
+    if (aliasRead.test(code) || aliasDestructure.test(code)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Remove `//` line comments, block comments, and string/template literals from
+ * TS source so the env-read scan sees executable code only (a comment or message
+ * string naming RELAY_CEL_ENGINE is not a read). This is a lightweight scrubber
+ * (NOT a full parser): it is conservative -- it blanks comment/string spans to
+ * spaces so positions are preserved and an env read can never hide inside one.
+ */
+export function stripCommentsAndStrings(src: string): string {
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    const c2 = src[i + 1];
+    // Line comment.
+    if (c === "/" && c2 === "/") {
+      while (i < n && src[i] !== "\n") {
+        i += 1;
+      }
+      continue;
+    }
+    // Block comment.
+    if (c === "/" && c2 === "*") {
+      i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
+        i += 1;
+      }
+      i += 2;
+      continue;
+    }
+    // String / template literal. Blank the contents so a doc/message string that
+    // merely NAMES the env var cannot false-positive -- EXCEPT a string that is a
+    // computed-member-access KEY (preceded, skipping whitespace, by `[`), which
+    // is a genuine `obj["KEY"]` access that the bracket-form scan must still see.
+    if (c === '"' || c === "'" || c === "`") {
+      // Look back (skipping whitespace) for a `[` => this string is a bracket key.
+      let j = out.length - 1;
+      while (j >= 0 && /\s/.test(out[j]!)) {
+        j -= 1;
+      }
+      const isBracketKey = j >= 0 && out[j] === "[";
+      const quote = c;
+      let literal = quote;
+      i += 1;
+      while (i < n && src[i] !== quote) {
+        if (src[i] === "\\") {
+          literal += src[i]! + (src[i + 1] ?? "");
+          i += 2;
+          continue;
+        }
+        literal += src[i];
+        i += 1;
+      }
+      literal += quote;
+      i += 1; // skip the closing quote
+      // Preserve a bracket-access key verbatim; blank any other string literal.
+      out += isBracketKey ? literal : "";
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
 
 /**
  * Recursively list every .ts / .mts / .mjs / .js source file under `dir`,
@@ -173,3 +293,83 @@ function listSourceFiles(dir: string): string[] {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// ROBOREV round-2 finding I: NON-VACUITY of the broadened env-read guard.
+// ---------------------------------------------------------------------------
+describe("roborev round-2 finding I: the env-read guard catches evasive RELAY_CEL_ENGINE reads", () => {
+  test("the predicate FLAGS every evasion form (direct/bracket/optional-chain/destructure/alias)", () => {
+    const flagged = [
+      "const v = process.env.RELAY_CEL_ENGINE;",
+      "const v = process.env?.RELAY_CEL_ENGINE;",
+      'const v = process.env["RELAY_CEL_ENGINE"];',
+      "const v = process?.env?.[\"RELAY_CEL_ENGINE\"];",
+      "const { RELAY_CEL_ENGINE } = process.env;",
+      "const { RELAY_CEL_ENGINE: sel } = process.env;",
+      "const e = process.env; const v = e.RELAY_CEL_ENGINE;",
+      'const e = process.env; const v = e["RELAY_CEL_ENGINE"];',
+      "const e = process.env; const { RELAY_CEL_ENGINE } = e;",
+    ];
+    for (const snippet of flagged) {
+      expect(
+        readsRelayCelEngineEnv(stripCommentsAndStrings(snippet)),
+        `should FLAG: ${snippet}`,
+      ).toBe(true);
+    }
+  });
+
+  test("the predicate does NOT flag mere mentions in comments or strings, or unrelated env vars", () => {
+    const clean = [
+      "// reads RELAY_CEL_ENGINE in the Python factory only",
+      "/* RELAY_CEL_ENGINE = process.env.RELAY_CEL_ENGINE */",
+      'const msg = "process.env.RELAY_CEL_ENGINE is read in Python";',
+      "const v = process.env.CEL_WASM;",
+      "const { CEL_WASM } = process.env;",
+      "const RELAY_CEL_ENGINE = 'wasm';", // a local var, not an env read
+    ];
+    for (const snippet of clean) {
+      expect(
+        readsRelayCelEngineEnv(stripCommentsAndStrings(snippet)),
+        `should NOT flag: ${snippet}`,
+      ).toBe(false);
+    }
+  });
+
+  // End-to-end non-vacuity: drop a temp src file that destructures the engine
+  // selector and prove the REAL guard scan flags it, then remove it. This proves
+  // the file-tree scan (not just the predicate in isolation) bites the evasion.
+  describe("end-to-end: a temp src file with a destructured read makes the guard FAIL", () => {
+    const TEMP = resolve(SRC_DIR, "__roborev_i_nonvacuity_probe__.ts");
+
+    afterEach(() => {
+      try {
+        unlinkSync(TEMP);
+      } catch {
+        // already removed
+      }
+    });
+
+    test("the guard's file scan flags a destructuring read in src/", () => {
+      writeFileSync(
+        TEMP,
+        "export function evade() {\n" +
+          "  const { RELAY_CEL_ENGINE } = process.env;\n" +
+          "  return RELAY_CEL_ENGINE;\n" +
+          "}\n",
+        "utf8",
+      );
+      const offenders: string[] = [];
+      for (const file of listSourceFiles(SRC_DIR)) {
+        const code = stripCommentsAndStrings(readFileSync(file, "utf8"));
+        if (readsRelayCelEngineEnv(code)) {
+          offenders.push(file);
+        }
+      }
+      // The probe MUST be flagged (the old direct/bracket-only pattern missed
+      // the destructuring form), and no OTHER src file should trip (so the guard
+      // stays clean once the probe is removed).
+      expect(offenders).toContain(TEMP);
+      expect(offenders.filter((f) => f !== TEMP)).toEqual([]);
+    });
+  });
+});

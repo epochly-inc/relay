@@ -252,6 +252,24 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
 
     observed_counts: list[int] = []
     inside_critical_section = threading.Event()
+    # ROBOREV round-2 finding J: the SECOND synchronization point (the handshake).
+    # The competitor sets this the INSTANT before it attempts the (held) tracker
+    # lock; the main thread BLOCKS inside its still-held critical section until it
+    # observes this, PROVING the competitor is genuinely at the lock door (about
+    # to block on the held lock) BEFORE the main thread registers the orphan and
+    # releases. Without this handshake a non-atomic impl that releases between the
+    # cap check and the spawn could pass if the scheduler runs the orphan
+    # registration before the competitor ever reached the lock.
+    competitor_reached_lock = threading.Event()
+    handshake_observed = threading.Event()
+    # Set by the competitor the instant it has ACQUIRED the tracker lock, read the
+    # tracker count, and RELEASED. The main thread's post-release handoff blocks
+    # on this so the lock handoff to the competitor is deterministic (the main
+    # thread does not re-acquire until the competitor's observation is recorded).
+    competitor_observed = threading.Event()
+    # Ensures the deterministic handoff runs on the FIRST main-thread release only
+    # (the competitor observes exactly once); later releases stay transparent.
+    main_release_handoff_done = threading.Event()
 
     def _slow() -> int:
         time.sleep(0.25)
@@ -264,23 +282,60 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
         """Proxy around the real tracker lock.
 
         On the MAIN thread's acquire (the helper's check+spawn critical
-        section) it sets ``inside_critical_section`` so the competitor is
-        released to attempt the lock only AFTER the main thread already
-        holds it. The competitor (any other thread) acquires/releases the
-        underlying lock transparently. Re-entrancy is not required: the
-        helper acquires the tracker lock exactly once per call.
+        section) it (1) sets ``inside_critical_section`` so the competitor is
+        released to attempt the lock only AFTER the main thread already holds
+        it, and (2) BLOCKS until ``competitor_reached_lock`` -- the finding-J
+        handshake -- so the main thread does not proceed to register the orphan
+        and release until the competitor is provably at the (held) lock. The
+        competitor acquires/releases the underlying lock transparently.
+        Re-entrancy is not required: the helper acquires the tracker lock
+        exactly once per call.
         """
+
+        def _main_critical_entry(self) -> None:
+            # The main thread now HOLDS the real lock. Release the competitor to
+            # attempt the lock, then WAIT for the handshake proving it reached
+            # the acquisition attempt (it signals just before blocking on the
+            # held lock). Record whether the handshake actually occurred so the
+            # test fails loudly if the ordering did not hold (no vacuous pass).
+            inside_critical_section.set()
+            if competitor_reached_lock.wait(timeout=2.0):
+                handshake_observed.set()
 
         def __enter__(self) -> _SignallingLock:
             real_lock.acquire()
             if threading.current_thread() is main_thread:
-                # The main thread now holds the lock: release the competitor
-                # so it attempts the (held) lock and blocks until we spawn.
-                inside_critical_section.set()
+                self._main_critical_entry()
             return self
 
+        def _main_release_handoff(self) -> None:
+            # After the main thread RELEASES the tracker lock, BLOCK until the
+            # competitor -- which the handshake proved is waiting on this lock --
+            # has fully ACQUIRED it, recorded its observation, and RELEASED. This
+            # makes the lock handoff DETERMINISTIC (no scheduler luck): the main
+            # thread never re-acquires the lock until the competitor's observation
+            # is on record. Under an ATOMIC check+spawn the competitor only ever
+            # gets the lock AFTER the orphan is registered (count >= 1); under a
+            # NON-ATOMIC impl that releases the lock BETWEEN the cap check and the
+            # spawn, this handoff hands the competitor the lock IN that gap, so it
+            # records the empty pre-spawn state (count 0) and the test FAILS. The
+            # bounded wait avoids hanging if the competitor never shows (the outer
+            # assertions then fail loudly rather than deadlock).
+            #
+            # Only the FIRST main-thread release performs the handoff (the
+            # competitor observes exactly once); later releases (if any) are
+            # transparent so they cannot deadlock waiting for a second
+            # observation that never comes.
+            if main_release_handoff_done.is_set():
+                return
+            main_release_handoff_done.set()
+            competitor_observed.wait(timeout=2.0)
+
         def __exit__(self, *exc_info: object) -> None:
+            is_main = threading.current_thread() is main_thread
             real_lock.release()
+            if is_main:
+                self._main_release_handoff()
 
         # Support the helper's `with type(self)._orphan_tracker_lock:` AND
         # any direct acquire/release callers symmetrically. The signature
@@ -289,23 +344,33 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
         def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
             acquired = real_lock.acquire(blocking, timeout)
             if acquired and threading.current_thread() is main_thread:
-                inside_critical_section.set()
+                self._main_critical_entry()
             return acquired
 
         def release(self) -> None:
+            is_main = threading.current_thread() is main_thread
             real_lock.release()
+            if is_main:
+                self._main_release_handoff()
 
     def _competitor() -> None:
         # Wait until the MAIN thread is inside _run_with_timeout's critical
-        # section (it has acquired the tracker lock for check+spawn). Only
-        # THEN attempt the SAME lock: we will block until the main thread
-        # releases AFTER it has registered the new orphan, so an atomic
-        # check+spawn means we observe count >= 1, never the pre-spawn 0.
+        # section (it has acquired the tracker lock for check+spawn).
         inside_critical_section.wait(timeout=2.0)
+        # Finding-J handshake: signal that we have REACHED the lock-acquisition
+        # attempt the INSTANT before entering the `with` (which blocks on the
+        # held lock). The main thread blocks until it sees this, so the orphan
+        # registration provably happens while we are genuinely racing the
+        # critical section -- not before we ever got here.
+        competitor_reached_lock.set()
         with RelayCelEvaluator._orphan_tracker_lock:  # noqa: SLF001
             observed_counts.append(
                 len(RelayCelEvaluator._orphaned_thread_tracker)  # noqa: SLF001
             )
+        # The observation is recorded and the lock released: release the main
+        # thread's deterministic handoff (it blocked after its own release until
+        # this point, so it does not re-acquire before we observed).
+        competitor_observed.set()
 
     signalling_lock = _SignallingLock()
     RelayCelEvaluator._orphan_tracker_lock = signalling_lock  # type: ignore[assignment]  # noqa: SLF001
@@ -320,12 +385,22 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
     finally:
         RelayCelEvaluator._orphan_tracker_lock = real_lock  # type: ignore[assignment]  # noqa: SLF001
 
+    # The handshake MUST have occurred: the main thread blocked inside its held
+    # critical section until the competitor reached the lock attempt. If it did
+    # not, the ordering the test relies on never held and the result below would
+    # be meaningless -- fail loudly rather than pass vacuously.
+    assert handshake_observed.is_set(), (
+        "finding-J handshake did not occur: the competitor never reached the "
+        "lock-acquisition attempt while the main thread held the critical "
+        "section, so the atomicity observation below would be meaningless."
+    )
     # The competitor, attempting the lock only AFTER the main thread entered
-    # the critical section, necessarily blocks until the atomic check+spawn
-    # completes and the orphan is registered: it observes count >= 1. A
-    # NON-atomic implementation that released the lock between the cap check
-    # and the spawn would expose the empty pre-spawn state (count 0) to the
-    # competitor that is now genuinely racing the critical section.
+    # the critical section (and PROVABLY at the lock door per the handshake),
+    # necessarily blocks until the atomic check+spawn completes and the orphan
+    # is registered: it observes count >= 1. A NON-atomic implementation that
+    # released the lock between the cap check and the spawn would expose the
+    # empty pre-spawn state (count 0) to the competitor that is now genuinely
+    # racing the critical section.
     assert observed_counts, "competitor thread did not record an observation"
     assert all(c >= 1 for c in observed_counts), (
         "check+spawn must be atomic: a concurrent reader must never see the "

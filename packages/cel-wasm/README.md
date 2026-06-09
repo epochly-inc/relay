@@ -337,8 +337,8 @@ must be corrected to use a valid CEL escape. The dual-run value-parity gate
 exactly these two cases under a strong guard (`KNOWN_CELPY_NONCONFORMANCE`);
 EVERY OTHER valid expression remains byte-for-byte identical across engines.
 
-TODO(M6): once cel-python is removed and the wasm engine is the only evaluator,
-reclassify these two corpus cases in
+M6 migration note: once cel-python is removed and the wasm engine is the only
+evaluator, reclassify these two corpus cases in
 `tests/conformance/cel/relay_cel_corpus.json` from `eval_value` to `eval_error`
 (the spec-correct compile-error form), and remove them from
 `KNOWN_CELPY_NONCONFORMANCE` in the dual-run test. The corpus is NOT mutated
