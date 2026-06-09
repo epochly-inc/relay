@@ -10,6 +10,7 @@
 //   RELAY-CEL-002  RELAY-CEL-PROFILE-DYN-DISABLED
 //   RELAY-CEL-002  RELAY-CEL-PROFILE-TS-DISABLED
 //   RELAY-CEL-002  RELAY-CEL-PROFILE-DUR-DISABLED
+//   RELAY-CEL-002  RELAY-CEL-PROFILE-STRUCT-DISABLED
 //   RELAY-CEL-003  RELAY-CEL-TIMEOUT-001
 //   RELAY-CEL-004  RELAY-CEL-UDF-IMPURE
 //   RELAY-CEL-004  RELAY-CEL-UDF-UNREGISTERED
@@ -32,6 +33,13 @@ export const SUBTYPE_PROFILE_TS_DISABLED =
   "RELAY-CEL-PROFILE-TS-DISABLED" as const;
 export const SUBTYPE_PROFILE_DUR_DISABLED =
   "RELAY-CEL-PROFILE-DUR-DISABLED" as const;
+// The wasm emits RELAY-CEL-PROFILE-STRUCT-DISABLED for the struct/message
+// construction fence (`Foo{...}`, struct-field entries; crate/src/lib.rs:106).
+// It shares the RELAY-CEL-002 profile code with DYN/TS/DUR and is mapped onto
+// RelayCelProfileError by decodeWasmEnvelope. Mirrors the Rust `subtypes::STRUCT`
+// constant; Python carries the same token via the wasm envelope.
+export const SUBTYPE_PROFILE_STRUCT_DISABLED =
+  "RELAY-CEL-PROFILE-STRUCT-DISABLED" as const;
 export const SUBTYPE_PROFILE_REGEX_BACKREF =
   "RELAY-CEL-PROFILE-REGEX-BACKREF" as const;
 export const SUBTYPE_TIMEOUT = "RELAY-CEL-TIMEOUT-001" as const;
@@ -84,6 +92,7 @@ export type RelayCelSubtype =
   | typeof SUBTYPE_PROFILE_DYN_DISABLED
   | typeof SUBTYPE_PROFILE_TS_DISABLED
   | typeof SUBTYPE_PROFILE_DUR_DISABLED
+  | typeof SUBTYPE_PROFILE_STRUCT_DISABLED
   | typeof SUBTYPE_PROFILE_REGEX_BACKREF
   | typeof SUBTYPE_TIMEOUT
   | typeof SUBTYPE_UDF_IMPURE
@@ -93,6 +102,33 @@ export type RelayCelSubtype =
   | typeof SUBTYPE_ENGINE_EXEC
   | typeof SUBTYPE_ENGINE_REQUEST
   | typeof SUBTYPE_ENGINE_PANIC;
+
+// The 4 ENGINE subtypes (RELAY-CEL-009). RelayCelEngineError carries ONLY one of
+// these -- never a profile (002) / UDF (004) / numeric (006) subtype, which
+// would poison the gate's signed per-condition error_code. The constructor and
+// WASM_CODE_TO_ENGINE_SUBTYPE are narrowed to this union so a non-engine subtype
+// cannot reach an engine error at the type level. Mirrors errors.py's engine
+// subtype set (SUBTYPE_ENGINE_*).
+export type RelayCelEngineSubtype =
+  | typeof SUBTYPE_ENGINE_COMPILE
+  | typeof SUBTYPE_ENGINE_EXEC
+  | typeof SUBTYPE_ENGINE_REQUEST
+  | typeof SUBTYPE_ENGINE_PANIC;
+
+// The known profile (RELAY-CEL-002) subtypes the wasm may emit. decodeWasmEnvelope
+// validates the wasm's structured subtype against this set BEFORE casting it onto
+// RelayCelProfileError, so an unknown / malformed profile subtype is treated as an
+// engine-request anomaly rather than blindly trusted. REGEX-BACKREF is a host
+// pre-screen subtype (escalated to RELAY-CEL-007), NOT a wasm-emitted 002 subtype,
+// so it is intentionally excluded here.
+export const WASM_PROFILE_SUBTYPES: ReadonlySet<RelayCelSubtype> = new Set<
+  RelayCelSubtype
+>([
+  SUBTYPE_PROFILE_DYN_DISABLED,
+  SUBTYPE_PROFILE_TS_DISABLED,
+  SUBTYPE_PROFILE_DUR_DISABLED,
+  SUBTYPE_PROFILE_STRUCT_DISABLED,
+]);
 
 // Stable JSON-serialisable envelope. Key set (`code`, `subtype`,
 // `message`) matches the cel-python Python envelope -- tests compare
@@ -191,7 +227,9 @@ export class RelayCelRegexBackreferenceError extends RelayCelProfileError {
 // per-cause subtype. (The wasm's 002 profile envelope is handled separately ->
 // RelayCelProfileError, carrying the wasm's own subtype.)
 // Mirrors packages/contracts/src/relay_contracts/errors.py:193-198 EXACTLY.
-const WASM_CODE_TO_ENGINE_SUBTYPE: Readonly<Record<string, RelayCelSubtype>> = {
+const WASM_CODE_TO_ENGINE_SUBTYPE: Readonly<
+  Record<string, RelayCelEngineSubtype>
+> = {
   "RELAY-CEL-001": SUBTYPE_ENGINE_COMPILE,
   "RELAY-CEL-004": SUBTYPE_ENGINE_EXEC,
   "RELAY-CEL-006": SUBTYPE_ENGINE_REQUEST,
@@ -209,7 +247,10 @@ export class RelayCelEngineError extends RelayCelError {
   // A RelayCelError subclass so an `instanceof RelayCelError` catch site
   // catches it (mirrors the Python subclass relationship). Mirrors
   // errors.py:201-225.
-  constructor(message: string, subtype: RelayCelSubtype = SUBTYPE_ENGINE_EXEC) {
+  constructor(
+    message: string,
+    subtype: RelayCelEngineSubtype = SUBTYPE_ENGINE_EXEC,
+  ) {
     super(message, CODE_RELAY_CEL_009, subtype);
     this.name = "RelayCelEngineError";
   }

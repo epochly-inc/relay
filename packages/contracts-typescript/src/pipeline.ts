@@ -35,7 +35,11 @@ import { jcsCanonicalize } from "./canonical.js";
 // from there rather than keeping a second copy that could drift -- a P0
 // byte-parity risk. The codec's int/double classification + BigInt overflow
 // boundary is the keystone-invariant-#16 contract with cel-python.
-import { nativeToTyped, type TypedValue } from "./wasm-evaluator.js";
+import {
+  decodeWasmEnvelope,
+  nativeToTyped,
+  type TypedValue,
+} from "./wasm-evaluator.js";
 
 // Re-export so the package public surface (index.ts) is unchanged: callers
 // importing `nativeToTyped` / `TypedValue` from "./pipeline.js" keep working,
@@ -54,6 +58,18 @@ interface WasmEnvelope {
   code?: string;
 }
 
+// The `.mjs` loader's optional eval options. `relayProfile:true` turns on the
+// Relay CEL profile's call-level fence (dyn/timestamp/duration global calls
+// rejected with RELAY-CEL-002); `container` is the optional CEL resolution
+// namespace. These field names map to the wasm-request fields the crate reads
+// (relay_profile, container; crate/src/lib.rs:239-240, 259) -- the SAME options
+// the Python host sets via relay_profile=True. Mirrors the .mjs eval signature
+// (packages/cel-wasm/typescript/relay-cel-wasm.mjs).
+interface RelayCelEvalOptions {
+  relayProfile?: boolean;
+  container?: string;
+}
+
 // Minimal structural type for the .mjs loader's RelayCel class. We import it
 // dynamically (it is a sibling .mjs in packages/cel-wasm/typescript) so this
 // module does not hard-depend on a built artifact at import time.
@@ -61,6 +77,7 @@ interface RelayCelLoader {
   eval(
     expr: string,
     bindings?: Record<string, TypedValue>,
+    options?: RelayCelEvalOptions,
   ): Promise<WasmEnvelope>;
 }
 
@@ -105,6 +122,12 @@ async function loadRelayCel(wasmPath?: string): Promise<RelayCelLoader> {
 export interface EvaluateUdfOutputsOptions {
   /** Explicit wasm artifact path; falls back to CEL_WASM / the release build. */
   wasmPath?: string;
+  /**
+   * Optional CEL resolution namespace (e.g. "com.example"), threaded into the
+   * wasm request as `container` -- the SAME field the Python host passes. Most
+   * callers omit it (the default empty container).
+   */
+  container?: string;
 }
 
 export interface UdfOutputsResult {
@@ -142,10 +165,42 @@ export async function evaluateUdfOutputs(
   }
   const hasBindings = Object.keys(typedBindings).length > 0;
 
+  // Thread the Relay profile fence (relay_profile=True) -- and the optional
+  // container -- into the wasm eval, EXACTLY as the Python host does
+  // (pipeline.py via WasmCelEvaluator.evaluate_with_trace ->
+  // handle.eval(..., relay_profile=True)). WITHOUT this, the TS mirror did NOT
+  // enforce the dyn/timestamp/duration fence, so it could emit udf evidence for
+  // expressions the Python host rejects -- a cross-host divergence and a
+  // keystone-#16 risk. The options object's `container` is omitted when unset so
+  // the wasm-request JSON stays byte-identical to the no-container form.
+  const evalOptions: RelayCelEvalOptions = { relayProfile: true };
+  if (options.container !== undefined) {
+    evalOptions.container = options.container;
+  }
   const envelope = await cel.eval(
     expression,
     hasBindings ? typedBindings : undefined,
+    evalOptions,
   );
+
+  // A non-ok envelope (e.g. a RELAY-CEL-002 profile rejection now that the fence
+  // is threaded) must surface as a structured RelayCelError -- NOT silently
+  // produce an empty udf_outputs reconstruction. decodeWasmEnvelope maps the
+  // {ok:false} cause to the right structured error (profile / engine), exactly
+  // as the Python host raises. The crate only attaches udf_trace on {ok:true},
+  // so reconstructing from a non-ok envelope would emit evidence the Python host
+  // never would.
+  if (envelope.ok !== true) {
+    // Throws the structured RelayCelError for the failure cause (profile /
+    // engine). The trace is only meaningful on a success envelope.
+    decodeWasmEnvelope(envelope);
+    // decodeWasmEnvelope always throws for a non-ok envelope; this is a
+    // defensive fallback so the contract (never proceed past a non-ok envelope)
+    // is total even if that ever changes.
+    throw new Error(
+      `wasm CEL evaluation returned a non-ok envelope: ${JSON.stringify(envelope)}`,
+    );
+  }
 
   const udfTrace = extractUdfTrace(envelope);
 

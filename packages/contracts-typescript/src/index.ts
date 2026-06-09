@@ -23,8 +23,10 @@ export type {
 // truth). `nativeToTyped` is re-exported from pipeline.js for back-compat but
 // is owned here; `typedToNative` is the round-trip inverse.
 export {
+  canonicalDoubleString,
   decodeWasmEnvelope,
   nativeToTyped,
+  RelayDouble,
   typedToNative,
   WasmCelBackend,
 } from "./wasm-evaluator.js";
@@ -77,6 +79,7 @@ export {
   SUBTYPE_PROFILE_DUR_DISABLED,
   SUBTYPE_PROFILE_DYN_DISABLED,
   SUBTYPE_PROFILE_REGEX_BACKREF,
+  SUBTYPE_PROFILE_STRUCT_DISABLED,
   SUBTYPE_PROFILE_TS_DISABLED,
   SUBTYPE_TIMEOUT,
   SUBTYPE_UDF_IMPURE,
@@ -84,6 +87,7 @@ export {
 } from "./errors.js";
 export type {
   RelayCelCode,
+  RelayCelEngineSubtype,
   RelayCelErrorEnvelope,
   RelayCelSubtype,
 } from "./errors.js";

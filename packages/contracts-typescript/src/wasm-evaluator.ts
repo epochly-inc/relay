@@ -50,6 +50,7 @@ import {
   RelayCelTimeoutError,
   RelayCelUnsupportedUdfError,
   type RelayCelSubtype,
+  WASM_PROFILE_SUBTYPES,
 } from "./errors.js";
 import {
   checkFinite,
@@ -75,6 +76,46 @@ import { resolvePackagedWasmPath } from "./wasm-artifact.js";
 // float64). For any integer V, float64(V) > MAX_SAFE_INTEGER <=> V >= 2**53, so
 // rejecting magnitude > (2**53 - 1) is exact and fail-closed in both runtimes.
 export const SAFE_INTEGER_BOUND_BIGINT = 9007199254740991n; // 2n**53n - 1n
+
+// ---------------------------------------------------------------------------
+// RelayDouble: an explicit CEL-double wrapper for a binding value.
+//
+// A plain JS `number` cannot carry the int/double distinction for a WHOLE value:
+// `1.0 === 1` and `JSON.stringify(1.0) === "1"`, so `nativeToTyped(1.0)` collapses
+// to {"t":"int","v":"1"}. The Python host's `py_to_typed(1.0)` (a Python float
+// through the JSON wire boundary) keeps it {"t":"double","v":"1.0"}. When such a
+// whole double is echoed through `relay.tool_arg`, the wasm udf_trace OUTPUT bytes
+// then diverge -- a P0 keystone-#16 byte-parity break.
+//
+// `RelayDouble` is the JS analogue of Python's float / celtypes.DoubleType: a
+// caller that needs a CEL double for a whole value wraps it
+// (`new RelayDouble(1)`), and `nativeToTyped` encodes it as
+// {"t":"double","v":"1.0"} regardless of whole-valuedness -- byte-identical to
+// the Python `py_to_typed(1.0)`. A plain whole `number` still encodes as a CEL
+// int, matching the JSON-wire-boundary parity the cross-host harness relies on
+// (a JSON integer is an int on BOTH hosts).
+//
+// The constructor is fail-closed: a non-finite or non-number value is rejected
+// (the codec never emits a non-finite double, mirroring the encode-path guard).
+// ---------------------------------------------------------------------------
+export class RelayDouble {
+  /** The finite IEEE-754 double this wrapper forces into the CEL double class. */
+  public readonly value: number;
+
+  constructor(value: number) {
+    if (typeof value !== "number") {
+      throw new TypeError(
+        `RelayDouble: value must be a number; got ${typeof value}`,
+      );
+    }
+    if (!Number.isFinite(value)) {
+      throw new RelayCelNumericOutOfBoundsError(
+        `RelayDouble: value must be finite; got ${String(value)}`,
+      );
+    }
+    this.value = value;
+  }
+}
 
 // The wasm typed-canonical value form (the {"t","v"} wire form the crate emits
 // and consumes; see crate/src/lib.rs value_to_typed / typed_to_value and the
@@ -127,6 +168,15 @@ export function nativeToTyped(value: unknown): TypedValue {
   if (value === null || value === undefined) {
     return { t: "null" };
   }
+  // RelayDouble: an explicit CEL double (the int/double distinction a bare JS
+  // `number` cannot carry for a whole value). Classified BEFORE the generic
+  // object/number branches so a RelayDouble(1) encodes {"t":"double","v":"1.0"}
+  // -- byte-identical to the Python py_to_typed(1.0) -- rather than the int the
+  // whole-valued number branch would produce. The wrapped value is finite by
+  // construction, so canonicalDoubleString always yields a decimal/sign form.
+  if (value instanceof RelayDouble) {
+    return { t: "double", v: canonicalDoubleString(value.value) };
+  }
   if (typeof value === "bigint") {
     // Arbitrary-precision integer -> decimal string (CEL int). A bigint is
     // exact at any magnitude, so no float-precision boundary applies here; the
@@ -158,10 +208,10 @@ export function nativeToTyped(value: unknown): TypedValue {
       // json_to_cel, which classifies a JSON integer as IntType).
       return { t: "int", v: decimal };
     }
-    // Non-integral -> double, canonical-g form (matches the Python codec's
-    // _canonical_double via String(n) for the finite non-zero case, which is
-    // ECMA-262 ToString -- the same shortest-round-trip form).
-    return { t: "double", v: canonicalDouble(n) };
+    // Non-integral -> double, canonical-g form (the faithful port of the Python
+    // codec's _canonical_double / cel-go strconv.FormatFloat(f,'g',-1,64), NOT a
+    // bare String(n), which diverges at the %e/%f boundary and exponent padding).
+    return { t: "double", v: canonicalDoubleString(n) };
   }
   if (typeof value === "string") {
     return { t: "string", v: value };
@@ -269,21 +319,49 @@ export function typedToNative(typed: TypedValue): unknown {
           "typedToNative: map 'v' must be an array of [k,v] pairs",
         );
       }
-      const out: Record<string, unknown> = {};
+      // Decode keys first to learn whether ALL keys are strings. The wasm CAN
+      // emit non-string map keys (key_sort_string supports bool/int/uint;
+      // lib.rs:1126-1133), so a string-only assumption was wrong. We also must
+      // be prototype-pollution-safe: a "__proto__" / "constructor" string key
+      // assigned to a plain object literal could corrupt the prototype chain.
+      const decoded: Array<[unknown, unknown]> = [];
+      let allStringKeys = true;
       for (const pair of v as unknown[]) {
         if (!Array.isArray(pair) || pair.length !== 2) {
           throw new TypeError("typedToNative: map entry must be a [k,v] pair");
         }
         const key = typedToNative(pair[0] as TypedValue);
         if (typeof key !== "string") {
-          throw new TypeError(
-            "typedToNative: map key must decode to a string for a JS object " +
-              `(got ${typeof key})`,
-          );
+          allStringKeys = false;
         }
-        out[key] = typedToNative(pair[1] as TypedValue);
+        decoded.push([key, typedToNative(pair[1] as TypedValue)]);
       }
-      return out;
+      if (allStringKeys) {
+        // String-only keys -> a null-prototype object (prototype-pollution-safe:
+        // a "__proto__" / "constructor" key becomes a plain OWN property, never
+        // touching the prototype chain). A null-prototype object with the same
+        // own string-keyed properties is structurally a plain map (and compares
+        // equal under deep-equality), preserving the existing round-trip
+        // contract while closing the pollution hole.
+        const out: Record<string, unknown> = Object.create(null) as Record<
+          string,
+          unknown
+        >;
+        for (const [key, val] of decoded) {
+          out[key as string] = val;
+        }
+        return out;
+      }
+      // At least one non-string key (bool/int/uint) -> a JS Map, which preserves
+      // the key TYPE (a plain object would coerce a number/bool key to a string).
+      // A Map has no prototype-pollution surface (set() does not touch a
+      // prototype chain). Mixed string/non-string keys also land here so the
+      // types survive.
+      const map = new Map<unknown, unknown>();
+      for (const [key, val] of decoded) {
+        map.set(key, val);
+      }
+      return map;
     }
     default:
       throw new TypeError(`typedToNative: unsupported typed tag ${String(t)}`);
@@ -294,12 +372,19 @@ export function typedToNative(typed: TypedValue): unknown {
 // internal helpers
 // ---------------------------------------------------------------------------
 
-// Decimal string for a whole-valued JS number. toFixed(0) yields the float's
-// EXACT integer value with no exponent form (e.g. 1e21 -> a full digit string),
-// matching the Python str(int(value)) form. Used by both the int classification
-// and its overflow magnitude check.
+// Decimal string for a whole-valued JS number, with NO exponent form, so the
+// downstream BigInt() parse never sees scientific notation. `toFixed(0)` is NOT
+// safe here: for |n| >= ~1e21 it returns exponential notation ("1e+21"), and
+// `BigInt("1e+21")` throws a RAW SyntaxError instead of the structured
+// RelayCelNumericOutOfBoundsError. `BigInt(n)` accepts an integral JS number
+// directly and yields the EXACT integer decimal (no exponent), so the magnitude
+// guard then raises the structured RELAY-CEL-006 error for an out-of-range
+// value. The caller has already established Number.isInteger(n) is true.
 function encodeIntString(n: number): string {
-  return n.toFixed(0);
+  // BigInt(<integral number>) is exact and never produces exponent form. (A
+  // non-integral number would throw here, but the caller only invokes this on
+  // an integral value, matching the Python str(int(value)) form.)
+  return BigInt(n).toString(10);
 }
 
 // Absolute value of a BigInt (BigInt has no Math.abs).
@@ -307,18 +392,132 @@ function absBigInt(x: bigint): bigint {
   return x < 0n ? -x : x;
 }
 
-// Canonical-g double string. Mirrors the Python codec's _canonical_double for
-// the finite branch: ECMA-262 ToString (String(n)) is the shortest round-trip
-// decimal, which the JCS encoder also uses. inf/-inf/nan are rejected upstream
-// on the encode path (non-finite binding values throw), so only finite numbers
-// reach here.
-function canonicalDouble(n: number): string {
-  if (n === 0) {
-    // Both +0 and -0 -- the codec emits "0.0" / "-0.0". A literal 0 binding is
-    // integral and never reaches this branch, so this is defensive only.
-    return Object.is(n, -0) ? "-0.0" : "0.0";
+// Canonical-g double string. Faithful port of the Python codec's
+// _canonical_double / _format_double_g (wasm_codec.py:87-159), itself
+// byte-faithful to the Rust format_double_g (crate/src/lib.rs:1131-1203), which
+// reproduces cel-go's strconv.FormatFloat(f, 'g', -1, 64). `String(n)` is NOT
+// sufficient: it diverges at the %e/%f selection boundary and the exponent
+// padding (e.g. 1e-7 -> JS "1e-7" but the canonical form is "1e-07"; 1000000.5
+// -> JS "1000000.5" but the canonical form is "1.0000005e+06"; 1e5 -> JS
+// "100000" but the canonical form is "100000.0"). Exported as
+// `canonicalDoubleString` for the byte-parity test.
+export function canonicalDoubleString(n: number): string {
+  if (Number.isNaN(n)) {
+    return "nan";
   }
-  return String(n);
+  if (!Number.isFinite(n)) {
+    return n > 0 ? "inf" : "-inf";
+  }
+  return formatDoubleG(n);
+}
+
+// Shortest round-trip decimal with cel-go's 'g'-verb %e/%f selection. Port of
+// _format_double_g (wasm_codec.py:96-159) / format_double_g (lib.rs:1131-1203):
+// switch to %e when the decimal exponent of the leading significant digit is
+// < -4 or >= 6, else %f; %f always carries a decimal point so a whole double
+// (1.0) is textually distinct from the int 1.
+function formatDoubleG(f: number): string {
+  if (f === 0) {
+    // Go prints 0 as "0"; the typed form forces a decimal point downstream.
+    return Object.is(f, -0) ? "-0.0" : "0.0";
+  }
+
+  // String(f) yields the shortest decimal that round-trips, the same shortest
+  // representation Rust's {} for f64 / Python repr(float) produces. It may be in
+  // exponent form (e.g. "1e+21", "1e-7"); normalise to significand digits + the
+  // base-10 exponent of the leading significant digit.
+  const shortest = String(f);
+  const neg = shortest.startsWith("-");
+  const mag = neg ? shortest.slice(1) : shortest;
+
+  let digits: string;
+  let exp10: number;
+  if (mag.includes("e") || mag.includes("E")) {
+    [digits, exp10] = parseExponentForm(mag);
+  } else {
+    const dot = mag.indexOf(".");
+    const intPart = dot === -1 ? mag : mag.slice(0, dot);
+    const fracPart = dot === -1 ? "" : mag.slice(dot + 1);
+    if (intPart !== "0" && intPart !== "") {
+      // exponent = len(int_part) - 1
+      exp10 = intPart.length - 1;
+      digits = intPart + fracPart;
+    } else {
+      // 0.xxxx -- find first nonzero in frac.
+      let leadZeros = 0;
+      for (const c of fracPart) {
+        if (c === "0") {
+          leadZeros += 1;
+        } else {
+          break;
+        }
+      }
+      exp10 = -leadZeros - 1;
+      digits = fracPart.slice(leadZeros);
+    }
+  }
+
+  // Strip trailing zeros of the significand.
+  while (digits.length > 1 && digits.endsWith("0")) {
+    digits = digits.slice(0, -1);
+  }
+  if (digits.length === 0) {
+    digits = "0";
+  }
+
+  const sign = neg ? "-" : "";
+
+  if (exp10 < -4 || exp10 >= 6) {
+    // %e: d.dddde(+/-)XX, exponent at least two digits.
+    const first = digits.slice(0, 1);
+    const rest = digits.slice(1);
+    const mantissa = rest.length === 0 ? first : `${first}.${rest}`;
+    const esign = exp10 < 0 ? "-" : "+";
+    const eabs = Math.abs(exp10);
+    const eabsStr = eabs < 10 ? `0${eabs}` : String(eabs);
+    return `${sign}${mantissa}e${esign}${eabsStr}`;
+  }
+
+  // %f form -- reconstruct then force a decimal point.
+  let s = reconstructFixed(digits, exp10);
+  if (!s.includes(".")) {
+    s = `${s}.0`;
+  }
+  return `${sign}${s}`;
+}
+
+// Significand digits + leading-digit base-10 exponent for an exponent-form
+// magnitude string like "1e+21" / "1.5e-7". Mirrors _parse_exponent_form
+// (wasm_codec.py:162-174). JS Number.toString exponent form normalises to one
+// leading nonzero integer digit, so the leading-digit exponent is exactly the
+// printed exponent.
+function parseExponentForm(mag: string): [string, number] {
+  const eIdx = mag.search(/[eE]/);
+  const mantissa = mag.slice(0, eIdx);
+  const exp = Number.parseInt(mag.slice(eIdx + 1), 10);
+  const dot = mantissa.indexOf(".");
+  const intPart = dot === -1 ? mantissa : mantissa.slice(0, dot);
+  const fracPart = dot === -1 ? "" : mantissa.slice(dot + 1);
+  return [intPart + fracPart, exp];
+}
+
+// Fixed-point text from significand digits + leading-digit exponent. Mirrors
+// _reconstruct_fixed (wasm_codec.py:177-191) / reconstruct_fixed
+// (lib.rs:1207-1227).
+function reconstructFixed(digits: string, exp10: number): string {
+  if (exp10 >= 0) {
+    const intLen = exp10 + 1;
+    if (digits.length <= intLen) {
+      // pad with trailing zeros.
+      return digits + "0".repeat(intLen - digits.length);
+    }
+    const intS = digits.slice(0, intLen);
+    const fracS = digits.slice(intLen);
+    return `${intS}.${fracS}`;
+  }
+  // 0.00..digits with (-exp10 - 1) leading zeros after the point.
+  const lead = -exp10 - 1;
+  return `0.${"0".repeat(lead)}${digits}`;
 }
 
 // Decode the double `v` field: the canonical inf/-inf/nan sentinels or a
@@ -340,6 +539,11 @@ function decodeDouble(v: string): number {
   return n;
 }
 
+// The wasm emits bytes as LOWERCASE hex (lib.rs:1143-1145). The strict matcher
+// accepts only [0-9a-f] (no uppercase, no non-hex char), so a non-canonical or
+// malformed encoding is rejected rather than silently mis-decoded.
+const LOWERCASE_HEX_RE = /^[0-9a-f]*$/;
+
 // Decode lowercase-hex bytes to a Uint8Array (inverse of lib.rs:1143-1145).
 function hexToBytes(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) {
@@ -347,13 +551,19 @@ function hexToBytes(hex: string): Uint8Array {
       `typedToNative: bytes hex must have even length, got ${hex.length}`,
     );
   }
+  // Validate the WHOLE string up front: Number.parseInt(pair, 16) accepts a
+  // PARTIAL hex pair (e.g. parseInt('0g', 16) === 0), silently dropping the
+  // invalid nibble. The strict [0-9a-f] matcher rejects any non-(lowercase-hex)
+  // character, including uppercase, which the wasm never emits.
+  if (!LOWERCASE_HEX_RE.test(hex)) {
+    throw new TypeError(
+      `typedToNative: bytes 'v' is not valid lowercase hex: ${JSON.stringify(hex)}`,
+    );
+  }
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
-    const byte = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    if (Number.isNaN(byte)) {
-      throw new TypeError(`typedToNative: bytes 'v' is not valid hex: ${hex}`);
-    }
-    out[i] = byte;
+    // Each pair is now guaranteed two lowercase-hex chars, so parseInt is exact.
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   return out;
 }
@@ -468,6 +678,18 @@ export function decodeWasmEnvelope(envelope: unknown): unknown {
         "RELAY-CEL-ENGINE-REQUEST",
       );
     }
+    // Validate the subtype against the KNOWN wasm profile subtype set
+    // (DYN/TS/DUR/STRUCT) BEFORE casting it onto RelayCelProfileError. The wasm
+    // should never emit an unknown profile subtype; if it does, that is an
+    // engine-request anomaly, not a trustworthy profile rejection -- treating it
+    // as one would let a bogus signed per-condition subtype through.
+    if (!WASM_PROFILE_SUBTYPES.has(subtype as RelayCelSubtype)) {
+      throw new RelayCelEngineError(
+        `wasm profile rejection carried an unknown structured subtype ` +
+          `${JSON.stringify(subtype)}: ${message}`,
+        "RELAY-CEL-ENGINE-REQUEST",
+      );
+    }
     throw new RelayCelProfileError(message, subtype as RelayCelSubtype);
   }
 
@@ -495,16 +717,35 @@ export function decodeWasmEnvelope(envelope: unknown): unknown {
 // an evaluated expression equals it, the Worker busy-blocks past the budget so
 // the host's terminate path can be exercised against a genuinely-stuck Worker.
 // It is undefined in production, so no real expression takes the hang branch.
+//
+// `startupHangSentinel` is a second OPT-IN test affordance: when true, the
+// Worker busy-blocks DURING startup (before posting `ready`) so the host's
+// bounded-startup gate can be exercised against a genuinely-stuck startup
+// (loader import / RelayCel.load() never completing). It is false in production,
+// so startup proceeds normally for any real backend.
 // ---------------------------------------------------------------------------
-function buildWorkerSource(loaderPath: string, hangSentinel: string | null): string {
+function buildWorkerSource(
+  loaderPath: string,
+  hangSentinel: string | null,
+  startupHangSentinel: boolean,
+): string {
   const loaderLiteral = JSON.stringify(loaderPath);
   const sentinelLiteral = JSON.stringify(hangSentinel);
+  const startupHangLiteral = JSON.stringify(startupHangSentinel);
   return [
     "const { workerData, parentPort } = require('node:worker_threads');",
     "const { pathToFileURL } = require('node:url');",
     "const loaderPath = " + loaderLiteral + ";",
     "const wasmPath = workerData.wasmPath || undefined;",
     "const hangSentinel = " + sentinelLiteral + ";",
+    "const startupHangSentinel = " + startupHangLiteral + ";",
+    "if (startupHangSentinel === true) {",
+    "  // Deterministic startup-hang injection (test-only; OFF in production).",
+    "  // Block BEFORE posting 'ready' so the host's bounded ensureWorker()+eval",
+    "  // timeout is the only thing that can unblock the first evaluate().",
+    "  // eslint-disable-next-line no-constant-condition",
+    "  while (true) { /* spin until terminated by the host */ }",
+    "}",
     "let cel = null;",
     "const ready = import(pathToFileURL(loaderPath).href).then(async (mod) => {",
     "  cel = await mod.RelayCel.load(wasmPath);",
@@ -578,6 +819,13 @@ export interface WasmCelBackendOptions {
    * in production (no branch is taken for any real expression).
    */
   hangSentinel?: string;
+  /**
+   * Test-only deterministic STARTUP-hang sentinel. When true, the Worker blocks
+   * during startup (before posting `ready`) so the host's bounded
+   * ensureWorker()+eval timeout can be exercised against a genuinely-stuck
+   * startup. False/undefined in production (startup proceeds normally).
+   */
+  startupHangSentinel?: boolean;
 }
 
 export class WasmCelBackend {
@@ -585,6 +833,7 @@ export class WasmCelBackend {
   private readonly wasmPath: string | undefined;
   private readonly loaderPath: string;
   private readonly hangSentinel: string | null;
+  private readonly startupHangSentinel: boolean;
 
   // Lazy-spawned persistent Worker; null after construction and after every
   // termination (timeout / dispose), respawned on demand.
@@ -640,6 +889,7 @@ export class WasmCelBackend {
     }
     this.loaderPath = options.loaderPath ?? defaultLoaderPath();
     this.hangSentinel = options.hangSentinel ?? null;
+    this.startupHangSentinel = options.startupHangSentinel ?? false;
   }
 
   // --- compilation (host-side profile pre-screen) ------------------
@@ -754,6 +1004,13 @@ export class WasmCelBackend {
    * Cloudflare Workers path is platform-CPU-limit-only until WS-J (see below);
    * we DO NOT silently skip the budget -- an explicit runtime branch selects the
    * Node Worker hard-kill here.
+   *
+   * The wall-clock budget covers the WHOLE sequence -- ensureWorker() (Worker
+   * spawn + loader import + RelayCel.load()) AND the eval -- so a stalled
+   * STARTUP (loader import / RelayCel.load() that never resolves) cannot hang
+   * the first evaluate() forever past the budget (a bug if the timeout were
+   * installed only AFTER awaiting ensureWorker()). The single deadline timer is
+   * armed BEFORE awaiting ensureWorker().
    */
   private async runOnWorker(
     expression: string,
@@ -775,56 +1032,88 @@ export class WasmCelBackend {
       );
     }
 
-    const worker = await this.ensureWorker();
-    const reqId = this.nextReqId;
-    this.nextReqId += 1;
-
     return await new Promise<WasmResponseEnvelope>((resolvePromise, rejectPromise) => {
       let settled = false;
-      const timer = setTimeout(() => {
+      let reqId: number | null = null;
+
+      const onTimeout = (): void => {
         if (settled) {
           return;
         }
         settled = true;
-        this.pending.delete(reqId);
-        // Hard-kill: abort the in-flight (or hung) evaluation. The wasm
-        // instance lives inside this Worker, so terminating it discards the
-        // instance; the next evaluate() respawns a clean Worker.
-        this.disposeWorker();
-        rejectPromise(
-          new RelayCelTimeoutError(
-            `Relay CEL wasm evaluation exceeded ${this.timeoutMs} ms ` +
-              `wall-clock budget for expression: ${JSON.stringify(expression)}`,
+        if (reqId !== null) {
+          this.pending.delete(reqId);
+        }
+        // Hard-kill: abort the in-flight (or hung) evaluation / startup. The
+        // wasm instance lives inside this Worker, so terminating it discards the
+        // instance; the next evaluate() respawns a clean Worker. BEFORE
+        // disposing, reject every PEER pending request on this shared Worker --
+        // they are being hard-killed under the same terminate() and must NOT be
+        // left hanging until their own timers fire (finding 7).
+        const timeoutErr = new RelayCelTimeoutError(
+          `Relay CEL wasm evaluation exceeded ${this.timeoutMs} ms ` +
+            `wall-clock budget for expression: ${JSON.stringify(expression)}`,
+        );
+        this.failAllPending(
+          new RelayCelEngineError(
+            "wasm Worker terminated by a concurrent evaluation's wall-clock " +
+              "timeout; this evaluation was hard-killed under the shared Worker",
+            "RELAY-CEL-ENGINE-REQUEST",
           ),
         );
-      }, this.timeoutMs);
+        this.disposeWorker();
+        rejectPromise(timeoutErr);
+      };
+
+      const timer = setTimeout(onTimeout, this.timeoutMs);
       // Do not let the timer keep the event loop alive on its own.
       if (typeof timer.unref === "function") {
         timer.unref();
       }
 
-      this.pending.set(reqId, {
-        resolve: (envelope) => {
+      // The deadline timer is now armed; awaiting ensureWorker() below is thus
+      // ALSO bounded by it (finding 6). ensureWorker() may reject (a startup
+      // error) -- propagate that, clearing the timer first.
+      this.ensureWorker()
+        .then((worker) => {
+          if (settled) {
+            // The deadline already fired (a hung startup): the Worker, if it
+            // resolved, is stale -- do not post to it.
+            return;
+          }
+          const id = this.nextReqId;
+          this.nextReqId += 1;
+          reqId = id;
+          this.pending.set(id, {
+            resolve: (envelope) => {
+              if (settled) {
+                return;
+              }
+              settled = true;
+              clearTimeout(timer);
+              this.pending.delete(id);
+              resolvePromise(envelope);
+            },
+            reject: (err) => {
+              if (settled) {
+                return;
+              }
+              settled = true;
+              clearTimeout(timer);
+              this.pending.delete(id);
+              rejectPromise(err);
+            },
+          });
+          worker.postMessage({ kind: "evaluate", reqId: id, expression, bindings });
+        })
+        .catch((err: unknown) => {
           if (settled) {
             return;
           }
           settled = true;
           clearTimeout(timer);
-          this.pending.delete(reqId);
-          resolvePromise(envelope);
-        },
-        reject: (err) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          clearTimeout(timer);
-          this.pending.delete(reqId);
           rejectPromise(err);
-        },
-      });
-
-      worker.postMessage({ kind: "evaluate", reqId, expression, bindings });
+        });
     });
   }
 
@@ -834,7 +1123,11 @@ export class WasmCelBackend {
       const w = this.worker;
       return this.workerReady.then(() => w);
     }
-    const source = buildWorkerSource(this.loaderPath, this.hangSentinel);
+    const source = buildWorkerSource(
+      this.loaderPath,
+      this.hangSentinel,
+      this.startupHangSentinel,
+    );
     const w = new Worker(source, {
       eval: true,
       workerData: { wasmPath: this.wasmPath ?? null },

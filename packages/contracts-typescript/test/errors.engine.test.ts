@@ -27,7 +27,11 @@ import {
   SUBTYPE_ENGINE_REQUEST,
   SUBTYPE_UDF_UNREGISTERED,
 } from "../src/index.js";
-import type { RelayCelCode, RelayCelSubtype } from "../src/index.js";
+import type {
+  RelayCelCode,
+  RelayCelEngineSubtype,
+  RelayCelSubtype,
+} from "../src/index.js";
 
 describe("VAL-CWC-P2TSGATE-001: RelayCelEngineError mirrors the Python RELAY-CEL-009 surface", () => {
   test("CODE_RELAY_CEL_009 is the canonical engine code", () => {
@@ -60,7 +64,7 @@ describe("VAL-CWC-P2TSGATE-001: RelayCelEngineError mirrors the Python RELAY-CEL
     });
   });
 
-  const subtypeCases: Array<readonly [RelayCelSubtype, string]> = [
+  const subtypeCases: Array<readonly [RelayCelEngineSubtype, string]> = [
     [SUBTYPE_ENGINE_COMPILE, "RELAY-CEL-ENGINE-COMPILE"],
     [SUBTYPE_ENGINE_EXEC, "RELAY-CEL-ENGINE-EXEC"],
     [SUBTYPE_ENGINE_REQUEST, "RELAY-CEL-ENGINE-REQUEST"],

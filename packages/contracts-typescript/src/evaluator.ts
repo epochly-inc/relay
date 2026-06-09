@@ -249,6 +249,17 @@ export function checkFinite(value: unknown): unknown {
     }
     return value;
   }
+  if (value instanceof Map) {
+    // A wasm map with non-string keys (bool/int/uint) decodes to a JS Map
+    // (typedToNative). Its values are NOT own-enumerable properties, so the
+    // Object.keys() branch below would skip them; iterate the Map's values
+    // explicitly so the finiteness / safe-integer guard still covers them
+    // (keys are scalar CEL keys, never collections, so they need no recursion).
+    for (const item of value.values()) {
+      checkFinite(item);
+    }
+    return value;
+  }
   if (value !== null && typeof value === "object") {
     const obj = value as Record<string, unknown>;
     for (const k of Object.keys(obj)) {
