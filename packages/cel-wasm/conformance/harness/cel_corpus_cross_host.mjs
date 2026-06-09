@@ -110,9 +110,25 @@ const LOADER_PATH = resolve(
   "relay-cel-wasm.mjs",
 );
 
-// The reproducible build.sh wasm artifact. CEL_WASM overrides for CI layouts
-// that vendor the wasm elsewhere; both hosts MUST load the SAME bytes.
-const DEFAULT_WASM_PATH = resolve(
+// The COMMITTED, git-tracked package-data wasm vendored as data of
+// @epochly/relay-contracts (packages/contracts-typescript/src/_wasm/). This is
+// the SAME canonical artifact the .mjs loader's own defaultWasmPath() prefers,
+// is ALWAYS present on a clean checkout (no build), and is byte-identical to the
+// pinned sha 7d92aca8... (a Python+TS sha-drift guard enforces that). Mirrors
+// the Python runner's package-data resolution so BOTH standalone hosts load the
+// same committed bytes with no crate build.
+const PACKAGE_DATA_WASM_PATH = resolve(
+  REPO_ROOT,
+  "packages",
+  "contracts-typescript",
+  "src",
+  "_wasm",
+  "relay_cel_wasm.wasm",
+);
+
+// The (gitignored) reproducible build.sh crate/target artifact -- a local-dev
+// fallback used only when the committed package-data copy is absent.
+const CRATE_TARGET_WASM_PATH = resolve(
   HERE,
   "..",
   "..",
@@ -122,6 +138,20 @@ const DEFAULT_WASM_PATH = resolve(
   "release",
   "relay_cel_wasm.wasm",
 );
+
+// Default wasm resolution when no explicit path and no CEL_WASM env: the
+// committed package-data copy first (works on a clean checkout), then the
+// crate/target build (dev-tree fallback). CEL_WASM overrides both for CI
+// layouts that vendor the wasm elsewhere; both hosts MUST load the SAME bytes.
+function defaultWasmPath() {
+  return existsSync(PACKAGE_DATA_WASM_PATH)
+    ? PACKAGE_DATA_WASM_PATH
+    : CRATE_TARGET_WASM_PATH;
+}
+
+// Back-compat alias for the previously-exported constant name. Now resolves the
+// committed package-data wasm first (was the gitignored crate/target path).
+const DEFAULT_WASM_PATH = defaultWasmPath();
 
 function failLoud(message) {
   // Fail-loud (non-zero) rather than skip: a silent skip would let a cross-host

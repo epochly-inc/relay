@@ -76,10 +76,21 @@ NODE_HARNESS = (
     / "cel_corpus_cross_host.mjs"
 )
 
-# The built wasm artifact BOTH hosts must load (the SAME bytes -- byte-parity is
-# void otherwise). $CEL_WASM (when set) overrides for CI layouts that vendor the
-# wasm elsewhere; both the Python loader and the Node harness honor it.
-DEFAULT_WASM = (
+# The wasm artifact BOTH hosts must load (the SAME bytes -- byte-parity is void
+# otherwise). Resolution precedence is encoded in ``_wasm_path()`` below:
+#   1. $CEL_WASM   -- explicit CI override (vendored elsewhere);
+#   2. the COMMITTED, git-tracked PACKAGE-DATA wasm shipped as data of
+#      ``relay_contracts`` (``_wasm/relay_cel_wasm.wasm``), resolved via the
+#      canonical resolver ``relay_contracts.wasm_artifact.resolve_packaged_wasm_path``
+#      -- ALWAYS present on a clean checkout (no build), and byte-identical to
+#      ``WASM_PINNED_SHA256`` (a guard test enforces that on-disk hash), so the
+#      test loads EXACTLY what the installed package loads;
+#   3. the (gitignored) crate/target build -- a local-dev convenience only.
+# Step 2 is why the global tier-1 ``pytest -m plumbing`` runs this keystone
+# cross-host parity gate on a CLEAN checkout WITHOUT building the crate/target
+# wasm -- a skip-if-absent guard would silently drop the gate, which is
+# unacceptable (keystone invariant #16).
+CRATE_TARGET_WASM = (
     REPO_ROOT
     / "packages"
     / "cel-wasm"
@@ -100,13 +111,50 @@ sys.path.insert(0, str(REPO_ROOT / "packages" / "contracts" / "src"))
 sys.path.insert(0, str(REPO_ROOT / "packages" / "cel-wasm" / "python"))
 
 from relay_contracts import jcs_canonicalize  # noqa: E402  -- after sys.path
+from relay_contracts.wasm_artifact import (  # noqa: E402  -- after sys.path
+    WASM_PINNED_SHA256,
+    resolve_packaged_wasm_path,
+    sha256_of_path,
+)
 from relay_contracts.wasm_codec import py_to_typed  # noqa: E402  -- after sys.path
 
 
 def _wasm_path() -> str:
-    """The wasm both hosts load: $CEL_WASM when set, else the crate/target
-    release artifact. Returned as a string for the loader + the Node env."""
-    return os.environ.get("CEL_WASM", str(DEFAULT_WASM))
+    """The wasm BOTH hosts load, returned as a string for the loader + the Node
+    env. Resolution precedence (see CRATE_TARGET_WASM):
+
+      1. $CEL_WASM when set -- the explicit CI override.
+      2. The COMMITTED, git-tracked PACKAGE-DATA wasm of ``relay_contracts``,
+         resolved through the CANONICAL resolver
+         (``relay_contracts.wasm_artifact.resolve_packaged_wasm_path``). This is
+         ALWAYS present on a clean checkout (no build) and is byte-identical to
+         ``WASM_PINNED_SHA256`` (an on-disk-hash guard test enforces that), so
+         this test loads EXACTLY what the installed package loads and runs on a
+         clean tier-1 ``pytest -m plumbing`` with no crate build.
+      3. The (gitignored) crate/target build -- a LOCAL-DEV fallback only.
+
+    Defense-in-depth: when the package-data path is used, its sha256 MUST equal
+    ``WASM_PINNED_SHA256`` -- a wrong/stale vendored wasm FAILS LOUD here rather
+    than producing a misleading cross-host "parity" pass on the wrong bytes.
+    """
+    override = os.environ.get("CEL_WASM")
+    if override:
+        return override
+    packaged = resolve_packaged_wasm_path()
+    if packaged is not None:
+        actual = sha256_of_path(packaged)
+        assert actual == WASM_PINNED_SHA256, (
+            "VAL-CWC-P4DUALRUN-005: the committed package-data wasm at "
+            f"{packaged} hashes to {actual}, NOT the pinned "
+            f"{WASM_PINNED_SHA256}. Cross-host parity on the wrong bytes would "
+            "be a misleading pass; refusing to run on a stale/tampered wasm. "
+            "Rebuild via the deterministic recipe and re-vendor the package "
+            "data, or set $CEL_WASM to the correct artifact."
+        )
+        return str(packaged)
+    # Local-dev fallback: the gitignored crate/target build. If that is also
+    # absent the loader raises FileNotFoundError -- LOUD, not a silent skip.
+    return str(CRATE_TARGET_WASM)
 
 
 def _load_corpus() -> dict[str, Any]:
@@ -131,9 +179,11 @@ def _is_covered(case: dict[str, Any]) -> bool:
 
 
 def _make_python_cel() -> Any:
-    """Construct the PYTHON wasm host handle (relay_cel_wasm.RelayCel). It honors
-    $CEL_WASM (the evidence command sets it via _wasm_path), else the loader's
-    crate/target default. Imported at runtime so collection of sibling files on a
+    """Construct the PYTHON wasm host handle (relay_cel_wasm.RelayCel). The wasm
+    it loads is resolved by ``_wasm_path()`` (precedence: $CEL_WASM > the
+    committed package-data wasm > the crate/target build), so on a CLEAN checkout
+    with neither $CEL_WASM set nor a crate build it loads the committed
+    package-data wasm. Imported at runtime so collection of sibling files on a
     checkout without the built wasm does not error at import time."""
     import importlib  # noqa: PLC0415  -- runtime loader import (cel-wasm convention)
 
