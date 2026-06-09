@@ -75,15 +75,28 @@ def _run_pytest_for_package(pkg_path: str, quick: bool) -> tuple[int, int, str, 
     abs_path = REPO_ROOT / pkg_path
     if not abs_path.exists():
         return (0, 0, f"PACKAGE-MISSING: {pkg_path}", 2)
-    cmd = ["pytest", "-m", "plumbing", "--tb=no", "-q", pkg_path]
+    # Invoke pytest through the ACTIVE interpreter (``sys.executable -m pytest``)
+    # rather than a bare ``pytest`` on PATH. A bare ``pytest`` resolves via PATH
+    # and can hit a STALE GLOBAL pytest (e.g. 7.4.4) that rejects the project's
+    # ``minversion = 8.0`` with a UsageError (exit 4) and NO passing-count summary
+    # line -- which this script would then parse as ``passed=0`` and report as a
+    # spurious regression (the intermittent failed=1 / offenders artifact). Using
+    # ``sys.executable -m pytest`` guarantees the pinned venv pytest (8.x).
+    cmd = [sys.executable, "-m", "pytest", "-m", "plumbing", "--tb=no", "-q", pkg_path]
     if quick:
-        cmd.insert(1, "--collect-only")
+        # Insert after the ``-m pytest`` prefix so the flag still precedes the
+        # pytest arguments (was index 1 for the bare-``pytest`` argv).
+        cmd.insert(3, "--collect-only")
     proc = subprocess.run(
         cmd,
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
         check=False,
+        # Never let a child test that reads stdin (e.g. a CLI readline test) hang
+        # this script when it is run interactively. The subprocess gets EOF
+        # immediately.
+        stdin=subprocess.DEVNULL,
     )
     tail = (proc.stdout or "").strip().splitlines()
     summary = tail[-1] if tail else ""
