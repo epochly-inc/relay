@@ -54,6 +54,22 @@ export const WASM_PACKAGE_DATA_SUBPATH = "./wasm" as const;
 export const WASM_PACKAGE_DATA_RELPATH =
   "src/_wasm/relay_cel_wasm.wasm" as const;
 
+// The vendored `.mjs` LOADER's path RELATIVE TO the package root. The canonical
+// loader (packages/cel-wasm/typescript/relay-cel-wasm.mjs) is a REPO sibling
+// that does NOT ship in this package's `files`, so an installed
+// @epochly/relay-contracts could resolve the .wasm (via WASM_PACKAGE_DATA_RELPATH)
+// yet NOT construct the wasm backend -- the loader was missing from every
+// packaged path. WS-G ships a git-tracked VENDORED COPY of the canonical loader
+// here (src/_wasm/relay-cel-wasm.mjs, in package.json `files` via the `src` dir),
+// so a fresh-installed package can LOAD the wasm, not only locate it. This is the
+// TypeScript mirror of the Python WASM_LOADER_PACKAGE_DATA_RELPATH
+// (packages/contracts/src/relay_contracts/wasm_artifact.py). Because the copy is
+// a git-tracked DUPLICATE of the canonical source, a BYTE-IDENTITY drift guard
+// (wasm_loader_package_data.test.ts) fails CI if the two diverge -- no silent
+// drift. POSIX-style separator; resolved per-platform via node:path.
+export const WASM_LOADER_PACKAGE_DATA_RELPATH =
+  "src/_wasm/relay-cel-wasm.mjs" as const;
+
 // The full sha256 of the reproducible build.sh deterministic-recipe artifact
 // (the `[repro] PASS: byte-deterministic (<sha>)` value). EQUAL to the Python
 // WASM_PINNED_SHA256 (packages/contracts/src/relay_contracts/wasm_artifact.py):
@@ -96,6 +112,39 @@ export function resolvePackagedWasmPath(override?: string): string | null {
   } catch {
     // Any filesystem error (permissions, broken symlink, etc.) is treated as
     // "not resolvable" -- the caller maps that to a structured engine error.
+    return null;
+  }
+  return candidate;
+}
+
+// Resolve the package-data `.mjs` LOADER to a concrete on-disk path, gated on
+// presence. Mirrors resolvePackagedWasmPath() for the loader source: resolution
+// is anchored to THIS module's on-disk location (so it works from the dev tree
+// and an installed package alike -- the `src` dir ships in `files`), NOT a cwd-
+// or crate/target/-relative path. The TS counterpart of the Python
+// resolve_packaged_wasm_loader_path (wasm_artifact.py).
+//
+// When `override` is supplied it is treated as an explicit candidate path (used
+// by the absent-loader test). Otherwise the package-data path
+// (WASM_LOADER_PACKAGE_DATA_RELPATH under the package root) is used.
+//
+// Non-throwing: returns the resolved path when it exists as a regular file, else
+// null, so the caller can fall back to the repo sibling (dev tree) or map a
+// missing loader to a structured engine error rather than letting a bare ENOENT
+// escape. Never throws for an absent loader.
+export function resolvePackagedLoaderPath(override?: string): string | null {
+  const candidate =
+    override ?? resolve(packageRoot(), WASM_LOADER_PACKAGE_DATA_RELPATH);
+  try {
+    if (!existsSync(candidate)) {
+      return null;
+    }
+    if (!statSync(candidate).isFile()) {
+      return null;
+    }
+  } catch {
+    // Any filesystem error (permissions, broken symlink, etc.) is treated as
+    // "not resolvable" -- the caller falls back / maps to a structured error.
     return null;
   }
   return candidate;

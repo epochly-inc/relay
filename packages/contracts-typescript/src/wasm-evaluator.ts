@@ -62,7 +62,10 @@ import type { PureUdf } from "./udf.js";
 import { RELAY_COVERAGE_NAME } from "./udfs/coverage.js";
 import { RELAY_SCHEMA_MATCH_NAME } from "./udfs/schema_match.js";
 import { RELAY_TOOL_ARG_NAME } from "./udfs/tool_arg.js";
-import { resolvePackagedWasmPath } from "./wasm-artifact.js";
+import {
+  resolvePackagedLoaderPath,
+  resolvePackagedWasmPath,
+} from "./wasm-artifact.js";
 
 // VAL-PARITY-001 / VAL-CWC-P1HOST-005: an INTEGRAL value whose magnitude exceeds
 // Number.MAX_SAFE_INTEGER (2**53 - 1) cannot be represented exactly as a JS
@@ -780,12 +783,26 @@ function buildWorkerSource(
   ].join("\n");
 }
 
-// Resolve the sibling `.mjs` loader path. wasm-evaluator.ts lives at
-// packages/contracts-typescript/src/, so the loader is at
-// packages/cel-wasm/typescript/relay-cel-wasm.mjs (three levels up + sibling
-// package). Mirrors the Python _load_relay_cel_from_repo path resolution
-// (wasm_backed_evaluator.py:116-136).
-function defaultLoaderPath(): string {
+// Resolve the `.mjs` loader path, preferring the PACKAGED loader.
+//
+// WS-G ships a git-tracked vendored copy of the canonical loader as package data
+// (@epochly/relay-contracts/src/_wasm/relay-cel-wasm.mjs, in package.json
+// `files`), so an INSTALLED package can construct the wasm backend WITHOUT the
+// repo sibling path (which does NOT exist in an install). Resolution order:
+//   1. the packaged loader (resolvePackagedLoaderPath) -- works from both the
+//      dev tree and a fresh install (the `src` dir ships in `files`);
+//   2. the repo sibling packages/cel-wasm/typescript/relay-cel-wasm.mjs (three
+//      levels up + sibling package) as a DEV fallback when the package-data copy
+//      is somehow absent.
+// Mirrors the Python _load_relay_cel_class resolution order (package-data loader
+// after the in-repo dev path) -- both ecosystems ship the SAME loader bytes (a
+// byte-identity drift guard enforces it), so either path loads an identical
+// loader.
+export function defaultLoaderPath(): string {
+  const packaged = resolvePackagedLoaderPath();
+  if (packaged !== null) {
+    return packaged;
+  }
   const here = fileURLToPath(new URL(".", import.meta.url));
   return resolve(
     here,

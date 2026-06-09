@@ -30,6 +30,10 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 import { jcsCanonicalize } from "./canonical.js";
+import {
+  resolvePackagedLoaderPath,
+  resolvePackagedWasmPath,
+} from "./wasm-artifact.js";
 // Single source of truth for the native<->typed codec lives in wasm-evaluator.ts
 // (VAL-CWC-P2TSGATE-005). This pipeline imports `nativeToTyped` / `TypedValue`
 // from there rather than keeping a second copy that could drift -- a P0
@@ -94,20 +98,34 @@ interface RelayCelModule {
 // binding.
 
 // ---------------------------------------------------------------------------
-// Lazy, cached loader resolution. The .mjs loader is a sibling package
-// (packages/cel-wasm/typescript/relay-cel-wasm.mjs) resolved from this source
-// file's location so it works from both src/ (vitest) and dist/ (built).
+// Lazy loader resolution, preferring the PACKAGED loader.
+//
+// WS-G ships a git-tracked vendored copy of the canonical loader as package data
+// (@epochly/relay-contracts/src/_wasm/relay-cel-wasm.mjs, in package.json
+// `files`), so an INSTALLED package can import the loader WITHOUT the repo
+// sibling path (which does NOT exist in an install). Resolution order:
+//   1. the packaged loader (resolvePackagedLoaderPath) -- works from both the
+//      dev tree and a fresh install;
+//   2. the repo sibling packages/cel-wasm/typescript/relay-cel-wasm.mjs as a DEV
+//      fallback when the package-data copy is somehow absent.
+// Mirrors wasm-evaluator.defaultLoaderPath() and the Python _load_relay_cel_class
+// resolution order; both ecosystems ship the SAME loader bytes (a byte-identity
+// drift guard enforces it).
 // ---------------------------------------------------------------------------
 const requireFromHere = createRequire(import.meta.url);
 
-// Absolute file:// URL of the sibling .mjs wasm loader, resolved relative to
-// THIS module so it works from both src/ (vitest, ts source) and dist/ (built
-// js): ../../cel-wasm/typescript/relay-cel-wasm.mjs reaches the loader from
-// packages/contracts-typescript/src/ (or dist/). createRequire(...).resolve
-// returns an absolute filesystem path; pathToFileURL turns it into the ESM
-// import specifier (cross-platform: Windows backslash paths become valid
-// file:// URLs).
-function loaderUrl(): string {
+// Absolute file:// URL of the `.mjs` wasm loader, preferring the packaged copy.
+// pathToFileURL turns an absolute filesystem path into the ESM import specifier
+// (cross-platform: Windows backslash paths become valid file:// URLs). Exported
+// so the WS-G loader package-data guard can assert it targets the packaged
+// loader, not the repo sibling.
+export function resolveLoaderUrl(): string {
+  const packaged = resolvePackagedLoaderPath();
+  if (packaged !== null) {
+    return pathToFileURL(packaged).href;
+  }
+  // Dev-tree fallback: the repo sibling at ../../cel-wasm/typescript/ relative
+  // to this module (src/ under vitest, dist/ when built).
   const fsPath = requireFromHere.resolve(
     "../../cel-wasm/typescript/relay-cel-wasm.mjs",
   );
@@ -115,8 +133,25 @@ function loaderUrl(): string {
 }
 
 async function loadRelayCel(wasmPath?: string): Promise<RelayCelLoader> {
-  const mod = (await import(loaderUrl())) as unknown as RelayCelModule;
-  return mod.RelayCel.load(wasmPath);
+  const loaderUrl = resolveLoaderUrl();
+  // When the PACKAGED loader is used (an installed package, or the dev tree's
+  // vendored copy) and no explicit wasmPath was given, resolve the package-data
+  // wasm and pass it EXPLICITLY. The vendored loader's own self-relative
+  // defaultWasmPath() probe (../../contracts-typescript/src/_wasm/...) is
+  // computed from the CANONICAL loader's location and is WRONG when the loader
+  // is the vendored copy under src/_wasm/ -- so the host (not the relocated
+  // loader) supplies the wasm path. Mirrors WasmCelBackend / the Python host,
+  // which always resolve the package-data wasm and pass it to the loader rather
+  // than relying on the relocated loader's self-relative default.
+  let resolvedWasmPath = wasmPath;
+  if (resolvedWasmPath === undefined && resolvePackagedLoaderPath() !== null) {
+    const packagedWasm = resolvePackagedWasmPath();
+    if (packagedWasm !== null) {
+      resolvedWasmPath = packagedWasm;
+    }
+  }
+  const mod = (await import(loaderUrl)) as unknown as RelayCelModule;
+  return mod.RelayCel.load(resolvedWasmPath);
 }
 
 export interface EvaluateUdfOutputsOptions {

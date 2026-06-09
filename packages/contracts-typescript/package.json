@@ -18,17 +18,18 @@
     "dist",
     "src",
     "src/_wasm/relay_cel_wasm.wasm",
+    "src/_wasm/relay-cel-wasm.mjs",
     "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src && tsc -p tsconfig.json --noEmit",
-    "lint:eslint": "eslint src",
+    "lint": "eslint . --ignore-pattern test/fixtures/floating-promise-sample.ts && tsc -p tsconfig.json --noEmit",
+    "lint:eslint": "eslint . --ignore-pattern test/fixtures/floating-promise-sample.ts",
     "test": "vitest run --reporter=verbose"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "cel-js": "0.8.2"

@@ -105,7 +105,6 @@ describe("VAL-CWC-P3CORPUS-006: Node cross-host UDF-via-CEL Py-wasm == Node-wasm
     // strings before the assertion (a real divergence is a P0).
     if (failures.length > 0) {
       for (const f of failures) {
-        // eslint-disable-next-line no-console
         console.error(`FAIL: ${f.label} Py=${f.pyHex} Node=${f.nodeHex}`);
       }
     }
