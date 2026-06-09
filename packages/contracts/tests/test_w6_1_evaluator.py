@@ -35,6 +35,7 @@ from relay_contracts.errors import (
     SUBTYPE_TIMEOUT,
     SUBTYPE_UDF_IMPURE,
 )
+from relay_contracts.evaluator import MAX_TIMEOUT_MS
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PKG_SRC = REPO_ROOT / "packages" / "contracts" / "src" / "relay_contracts"
@@ -657,11 +658,34 @@ def cel_engine(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) 
     return request.param
 
 
-def _make(engine: str, **kwargs: object) -> object:
-    """Build an evaluator for ``engine`` through the production factory."""
+def _make(
+    engine: str, *, timeout_ms: int = MAX_TIMEOUT_MS, **kwargs: object
+) -> object:
+    """Build an evaluator for ``engine`` through the production factory.
+
+    Cross-engine VALUE / ERROR-CLASS parity assertions are decoupled from the
+    50 ms production wall-clock default by constructing the evaluator with the
+    spec-max budget (``MAX_TIMEOUT_MS`` == 250, the per-tenant cap from CQ1) by
+    default. A fast, profile-clean evaluation must NOT spuriously trip the
+    host-thread wall-clock under heavy concurrent full-suite load: the wasm
+    engine's host-thread wall-clock guard over-fires on thread-scheduling
+    jitter + wasmtime/Store overhead (NOT a genuinely slow eval) and raises
+    RelayCelTimeoutError (RELAY-CEL-003) instead of the expected value/error,
+    failing the parity assertion spuriously. The generous budget removes that
+    coupling without altering any test's INTENT.
+
+    The production default (50 ms, CQ1) is UNCHANGED -- this headroom lives
+    only in the parity-test construction path. Timeout-BEHAVIOR tests pass an
+    explicit small ``timeout_ms`` (e.g. 20) which overrides this default, so
+    they still exercise the wall-clock at their intended tight budget. The
+    underlying wasm wall-clock jitter-sensitivity is fundamentally resolved by
+    the M7 P7EDGE deterministic FUEL metering (which replaces the host
+    wall-clock guard with in-engine fuel accounting); this test-construction
+    headroom is the tier-1 robustness measure until that lands.
+    """
     from relay_contracts.engine import make_cel_evaluator
 
-    return make_cel_evaluator(**kwargs)  # type: ignore[arg-type]
+    return make_cel_evaluator(timeout_ms=timeout_ms, **kwargs)  # type: ignore[arg-type]
 
 
 def _arm_slow_eval(engine: str, evaluator: object) -> None:

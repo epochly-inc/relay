@@ -387,7 +387,21 @@ def test_store_quarantine_after_timeout_does_not_corrupt_next_evaluate(monkeypat
 
 @pytest.mark.plumbing
 def test_concurrent_evaluate_correct_per_thread_results():
-    ev = WasmCelEvaluator()
+    # This is a per-thread VALUE-correctness assertion (8 threads x 25 fast
+    # evals must each return the right int), NOT a timeout-behavior test. It is
+    # decoupled from the 50 ms production wall-clock default by constructing the
+    # evaluator with the spec-max budget (MAX_TIMEOUT_MS == 250, the per-tenant
+    # cap from CQ1). Under heavy concurrent full-suite load the wasm host-thread
+    # wall-clock guard over-fires on thread-scheduling jitter + wasmtime/Store
+    # overhead (NOT a genuinely slow eval) and raises RELAY-CEL-003 instead of
+    # the correct value, failing this assertion spuriously. The generous budget
+    # removes that coupling without altering the test's INTENT. The production
+    # default (50 ms, CQ1) is UNCHANGED. The underlying wasm wall-clock
+    # jitter-sensitivity is fundamentally resolved by the M7 P7EDGE
+    # deterministic FUEL metering (in-engine fuel accounting replaces the host
+    # wall-clock guard); this headroom is the tier-1 robustness measure until
+    # that lands.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     results: dict[int, Any] = {}
     errors: dict[int, str] = {}
 
