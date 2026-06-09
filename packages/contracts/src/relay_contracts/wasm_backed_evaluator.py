@@ -586,6 +586,16 @@ class WasmCelEvaluator:
         host-side guards run: the regex-backref pre-screen at :meth:`compile`,
         the wall-clock timeout via the shared ``_run_with_timeout`` helper, and
         ``_check_finite`` on the converted result.
+
+        Load / handle-construction failures fail closed IDENTICALLY to the
+        shared path (:meth:`_ensure_shared`): a corrupt-but-present artifact
+        (valid path, garbage bytes) raises a bare ``wasmtime.WasmtimeError`` /
+        loader error from ``Module.from_file`` at construction; that is wrapped
+        here into the SAME structured :class:`RelayCelEngineError`
+        (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) so the explicit-path API never
+        leaks a bare engine exception out of the host facade. Only the handle
+        construction is wrapped -- a genuine evaluation result or an already
+        structured ``RelayCelError`` flows through unchanged.
         """
         # The resolver raises the structured RELAY-CEL-009 engine error if the
         # supplied path does not exist (the presence gate). This MUST run before
@@ -598,7 +608,22 @@ class WasmCelEvaluator:
         typed_bindings = self._encode_bindings(bindings)
 
         cls = _load_relay_cel_class()
-        handle = cls(wasm_path=resolved)
+        # Construct the one-shot handle, mirroring _ensure_shared's wrap EXACTLY:
+        # an already-structured RelayCelError propagates verbatim, and any other
+        # load / module-instantiation failure (a corrupt-but-present artifact
+        # surfacing a bare wasmtime.WasmtimeError, or any loader error) is
+        # converted to the structured RELAY-CEL-009 engine error -- never a bare
+        # wasmtime exception escaping the host facade.
+        try:
+            handle = cls(wasm_path=resolved)
+        except RelayCelError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- map any load failure structurally
+            raise RelayCelEngineError(
+                "wasm CEL engine failed to load its module: "
+                f"{type(exc).__name__}: {exc}",
+                subtype="RELAY-CEL-ENGINE-REQUEST",
+            ) from exc
 
         def _run() -> dict[str, Any]:
             return handle.eval(
