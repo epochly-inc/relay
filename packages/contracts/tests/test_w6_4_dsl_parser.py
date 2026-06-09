@@ -226,6 +226,159 @@ def test_publish_accepts_structured_op_expression_without_cel() -> None:
 
 
 # ---------------------------------------------------------------------------
+# VAL-W6-042: publish-time MALFORMED-SYNTAX rejection is ENGINE-INVARIANT.
+#
+# Regression guard for the M5 keystone flip (bf4572c). Once the factory
+# default is wasm, ``publish_contract`` routes through
+# ``WasmCelEvaluator.compile``, whose host pre-screens (regex-backref +
+# profile AST) do NOT full-parse, so a MALFORMED-SYNTAX expression passes
+# ``compile()``. ``publish_contract`` then reparses via ``_env.compile`` for
+# the unregistered-UDF callee walk. Before the fix that reparse leaked a RAW
+# ``celpy.celparser.CELParseError`` (not a Relay-structured error) under the
+# wasm default, diverging from the celpy path that emits
+# ``ContractParseError`` / RELAY-CONTRACT-004. Publish-time syntax rejection
+# MUST be engine-invariant: the same malformed contract MUST raise the
+# IDENTICAL structured error class + code under BOTH engines.
+# ---------------------------------------------------------------------------
+
+_MALFORMED_CEL_EXPRESSIONS = [
+    "1 + ",          # trailing binary operator, no RHS
+    "foo((",         # unbalanced open parens
+    "((1 + 2)",      # missing close paren
+    "a &&",          # trailing logical-and, no RHS
+]
+
+
+def _malformed_behavioral_doc(expression: str) -> dict:
+    return {
+        "schema_version": "relay.assertion.behavioral.v1",
+        "assertion_id": "VAL-BAD-SYNTAX",
+        "kind": "behavioral",
+        "severity": "p0",
+        "expression": expression,
+        "owner_email": "a@b.example",
+        "lifecycle_state": "active",
+    }
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-042")
+@pytest.mark.parametrize("expression", _MALFORMED_CEL_EXPRESSIONS)
+def test_publish_rejects_malformed_cel_under_wasm_default(
+    monkeypatch: pytest.MonkeyPatch, expression: str
+) -> None:
+    """Malformed-syntax CEL MUST raise a structured ContractParseError
+    (RELAY-CONTRACT-004) at publish under the WASM DEFAULT (env unset).
+
+    RED before the fix: the reparse at pipeline.py leaks a raw
+    celpy CELParseError instead of the structured contract error.
+    """
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
+    parsed = parse_contract(_malformed_behavioral_doc(expression))
+    with pytest.raises(ContractParseError) as ctx:
+        publish_contract(parsed)
+    assert ctx.value.code == "RELAY-CONTRACT-004"
+    assert ctx.value.payload["assertion_id"] == "VAL-BAD-SYNTAX"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-042")
+@pytest.mark.parametrize("expression", _MALFORMED_CEL_EXPRESSIONS)
+def test_publish_rejects_malformed_cel_under_celpy(
+    monkeypatch: pytest.MonkeyPatch, expression: str
+) -> None:
+    """The celpy path (RELAY_CEL_ENGINE=celpy) already rejects malformed
+    syntax at publish with the same structured error; this pins that the
+    rollback engine's publish behavior is unchanged by the fix."""
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
+    parsed = parse_contract(_malformed_behavioral_doc(expression))
+    with pytest.raises(ContractParseError) as ctx:
+        publish_contract(parsed)
+    assert ctx.value.code == "RELAY-CONTRACT-004"
+    assert ctx.value.payload["assertion_id"] == "VAL-BAD-SYNTAX"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-042")
+def test_publish_malformed_cel_engine_invariant_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SAME malformed contract MUST raise the IDENTICAL structured
+    error class + code under BOTH engines (engine-invariant rejection)."""
+    expression = "foo(("
+
+    def _publish_and_capture() -> ContractParseError:
+        parsed = parse_contract(_malformed_behavioral_doc(expression))
+        with pytest.raises(ContractParseError) as ctx:
+            publish_contract(parsed)
+        return ctx.value
+
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
+    wasm_err = _publish_and_capture()
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
+    celpy_err = _publish_and_capture()
+
+    assert type(wasm_err) is type(celpy_err) is ContractParseError
+    assert wasm_err.code == celpy_err.code == "RELAY-CONTRACT-004"
+    assert (
+        wasm_err.payload["assertion_id"]
+        == celpy_err.payload["assertion_id"]
+        == "VAL-BAD-SYNTAX"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-042")
+def test_publish_regression_behaviors_preserved_under_wasm_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under the wasm default, the existing publish behaviors are preserved:
+    a VALID contract publishes; an unregistered-UDF call and a profile
+    violation (dyn) each still raise RELAY-CONTRACT-004."""
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
+
+    # Valid: no exception.
+    valid = parse_contract({
+        "schema_version": "relay.assertion.behavioral.v1",
+        "assertion_id": "VAL-OK-CEL",
+        "kind": "behavioral",
+        "severity": "p0",
+        "expression": "1 + 1 == 2",
+        "owner_email": "a@b.example",
+        "lifecycle_state": "active",
+    })
+    publish_contract(valid)
+
+    # Unregistered UDF: RELAY-CONTRACT-004.
+    udf_doc = parse_contract({
+        "schema_version": "relay.assertion.behavioral.v1",
+        "assertion_id": "VAL-BAD-UDF",
+        "kind": "behavioral",
+        "severity": "p0",
+        "expression": "totally_made_up_udf(1, 2)",
+        "owner_email": "a@b.example",
+        "lifecycle_state": "active",
+    })
+    with pytest.raises(ContractParseError) as udf_ctx:
+        publish_contract(udf_doc)
+    assert udf_ctx.value.code == "RELAY-CONTRACT-004"
+
+    # Profile violation (dyn): RELAY-CONTRACT-004.
+    dyn_doc = parse_contract({
+        "schema_version": "relay.assertion.behavioral.v1",
+        "assertion_id": "VAL-BAD-DYN",
+        "kind": "behavioral",
+        "severity": "p0",
+        "expression": "dyn(1) == 1",
+        "owner_email": "a@b.example",
+        "lifecycle_state": "active",
+    })
+    with pytest.raises(ContractParseError) as dyn_ctx:
+        publish_contract(dyn_doc)
+    assert dyn_ctx.value.code == "RELAY-CONTRACT-004"
+
+
+# ---------------------------------------------------------------------------
 # VAL-W6-043: severity in {p0,p1,p2,p3}, lifecycle in {draft,active,deprecated,retired}
 # ---------------------------------------------------------------------------
 

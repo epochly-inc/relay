@@ -34,6 +34,7 @@ import time
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from celpy.celparser import CELParseError
 from relay_schemas.error_codes import RelayErrorCode
 
 from .canonical import jcs_canonicalize
@@ -166,8 +167,33 @@ def publish_contract(
     # MUST be either a registered UDF or a CEL builtin. Anything else
     # is rejected at publish per VAL-W6-042 ("unregistered UDF MUST be
     # rejected at publish, not at first evaluation").
+    #
+    # This reparse obtains the celpy AST for the callee walk. It runs OUTSIDE
+    # the ``evaluator.compile`` structured-error translation above, so a
+    # MALFORMED-SYNTAX expression -- which the wasm host pre-screens do NOT
+    # full-parse (WasmCelEvaluator.compile returns the expression unchanged on
+    # a celpy parse failure, deferring to the wasm's authoritative compiler) --
+    # raises a RAW celpy ``CELParseError`` here. Under the celpy engine
+    # ``RelayCelEvaluator.compile`` already wraps that parse failure into a
+    # structured ``RelayCelError`` caught above; under the wasm default the raw
+    # error would leak. Publish-time syntax rejection MUST be engine-invariant
+    # (M5 flip regression bf4572c), so translate the celpy parse failure into
+    # the SAME structured ``ContractParseError`` / RELAY-CONTRACT-004 the celpy
+    # path produces -- consistent with the other publish-time raises here.
     registered = {udf.name for udf in udfs}
-    ast = evaluator._env.compile(expression)  # noqa: SLF001 -- internal AST access
+    try:
+        ast = evaluator._env.compile(expression)  # noqa: SLF001 -- internal AST access
+    except CELParseError as exc:
+        raise ContractParseError(
+            f"Malformed CEL syntax in assertion {parsed.assertion_id!r}: "
+            f"{exc}",
+            code=RelayErrorCode.RELAY_CONTRACT_004,
+            payload={
+                "assertion_id": parsed.assertion_id,
+                "cel_token": "RELAY-CEL-SYNTAX",
+                "reason": "cel-parse-error",
+            },
+        ) from exc
     callees = set(_walk_function_call_idents(ast))
     unknown_callees = sorted(
         name for name in callees
