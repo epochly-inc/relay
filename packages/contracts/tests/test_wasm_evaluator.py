@@ -78,7 +78,10 @@ def test_facade_matches_relay_cel_evaluator():
 @pytest.mark.plumbing
 def test_default_construction_accepts_udfs_keyword():
     # Empty udfs tuple is accepted (the wasm hosts the 3 relay.* UDFs natively).
-    ev = WasmCelEvaluator()
+    # Value assertion decoupled from the 50 ms wall-clock to avoid host-thread
+    # jitter under concurrent load; production 50 ms default (CQ1) unchanged;
+    # root cause resolved by M7 P7EDGE fuel metering.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     assert hasattr(ev, "_env")
     assert ev.evaluate("1 + 2") == 3
 
@@ -105,7 +108,10 @@ def test_timeout_non_int_rejected(bad_timeout):
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
 def test_baseline_arithmetic_through_wasm():
-    ev = WasmCelEvaluator()
+    # Value assertion decoupled from the 50 ms wall-clock to avoid host-thread
+    # jitter under concurrent load; production 50 ms default (CQ1) unchanged;
+    # root cause resolved by M7 P7EDGE fuel metering.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     result = ev.evaluate("1 + 2")
     assert result == 3
     # typed_to_py returns the exact cel-python IntType.
@@ -114,7 +120,10 @@ def test_baseline_arithmetic_through_wasm():
 
 @pytest.mark.plumbing
 def test_baseline_with_bindings():
-    ev = WasmCelEvaluator()
+    # Value assertion decoupled from the 50 ms wall-clock to avoid host-thread
+    # jitter under concurrent load; production 50 ms default (CQ1) unchanged;
+    # root cause resolved by M7 P7EDGE fuel metering.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     out = ev.evaluate("x + y", {"x": celtypes.IntType(5), "y": celtypes.IntType(7)})
     assert out == 12
     assert isinstance(out, celtypes.IntType)
@@ -122,7 +131,10 @@ def test_baseline_with_bindings():
 
 @pytest.mark.plumbing
 def test_none_and_empty_bindings():
-    ev = WasmCelEvaluator()
+    # Value assertion decoupled from the 50 ms wall-clock to avoid host-thread
+    # jitter under concurrent load; production 50 ms default (CQ1) unchanged;
+    # root cause resolved by M7 P7EDGE fuel metering.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     assert ev.evaluate("1 + 1", None) == 2
     assert ev.evaluate("2 + 2", {}) == 4
 
@@ -226,7 +238,12 @@ def test_regex_backref_rejected_on_evaluate_too():
 
 @pytest.mark.plumbing
 def test_numeric_oob_rejected_host_side_on_result():
-    ev = WasmCelEvaluator()
+    # Error-class (RELAY-CEL-006) assertion reached AFTER the eval runs through
+    # the wasm wall-clock guard; decoupled from the 50 ms default so host-thread
+    # jitter under concurrent load cannot replace the expected 006 with a
+    # spurious RELAY-CEL-003 timeout. Production 50 ms default (CQ1) unchanged;
+    # root cause resolved by M7 P7EDGE fuel metering.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     # The wasm returns the exact int 9007199254740993 (> 2**53 - 1); the host
     # _check_finite runs on the typed_to_py result and rejects it.
     with pytest.raises(RelayCelNumericOutOfBoundsError) as exc:
@@ -237,7 +254,10 @@ def test_numeric_oob_rejected_host_side_on_result():
 
 @pytest.mark.plumbing
 def test_in_range_large_int_accepted():
-    ev = WasmCelEvaluator()
+    # Value assertion decoupled from the 50 ms wall-clock to avoid host-thread
+    # jitter under concurrent load; production 50 ms default (CQ1) unchanged;
+    # root cause resolved by M7 P7EDGE fuel metering.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     # 2**53 - 1 == 9007199254740991 is the inclusive bound -- accepted.
     assert ev.evaluate("9007199254740990 + 1") == 9007199254740991
 
@@ -261,7 +281,10 @@ def test_allowlist_udfs_accepted():
     # The 3 hardcoded relay.* UDFs are allowed (they are native to the wasm).
     from relay_contracts import RELAY_UDFS
 
-    ev = WasmCelEvaluator(udfs=RELAY_UDFS)
+    # Value assertion decoupled from the 50 ms wall-clock to avoid host-thread
+    # jitter under concurrent load; production 50 ms default (CQ1) unchanged;
+    # root cause resolved by M7 P7EDGE fuel metering.
+    ev = WasmCelEvaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
     assert ev.evaluate("1 + 2") == 3
 
 
@@ -270,7 +293,12 @@ def test_allowlist_udfs_accepted():
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
 def test_wasm_exec_failure_maps_to_009_engine_exec():
-    ev = WasmCelEvaluator()
+    # Engine error-class (RELAY-CEL-009) assertion reached AFTER the eval runs
+    # through the wasm wall-clock guard; decoupled from the 50 ms default so
+    # host-thread jitter under concurrent load cannot replace the expected 009
+    # with a spurious RELAY-CEL-003 timeout. Production 50 ms default (CQ1)
+    # unchanged; root cause resolved by M7 P7EDGE fuel metering.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     # 1 / 0 -> the wasm returns {"ok": false, "code": "RELAY-CEL-004"} (exec).
     with pytest.raises(RelayCelEngineError) as exc:
         ev.evaluate("1 / 0")
@@ -293,7 +321,13 @@ def test_wasm_exec_failure_maps_to_009_engine_exec():
     ],
 )
 def test_wasm_false_envelope_each_cause_maps_to_009(monkeypatch, wasm_code, expected_subtype):
-    ev = WasmCelEvaluator()
+    # Engine error-class (RELAY-CEL-009 per cause) assertion reached AFTER the
+    # eval runs through the wasm wall-clock guard; decoupled from the 50 ms
+    # default so host-thread jitter under concurrent load cannot replace the
+    # expected 009 subtype with a spurious RELAY-CEL-003 timeout. Production
+    # 50 ms default (CQ1) unchanged; root cause resolved by M7 P7EDGE fuel
+    # metering.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
 
     def fake_eval(expr, bindings=None, container=None, relay_profile=False):
         return {"ok": False, "error": "engine said no", "code": wasm_code}
@@ -314,7 +348,12 @@ def test_wasm_false_envelope_each_cause_maps_to_009(monkeypatch, wasm_code, expe
 
 @pytest.mark.plumbing
 def test_wasm_request_failure_does_not_surface_as_host_numeric_oob(monkeypatch):
-    ev = WasmCelEvaluator()
+    # Engine error-class (RELAY-CEL-009 / ENGINE-REQUEST) assertion reached AFTER
+    # the eval runs through the wasm wall-clock guard; decoupled from the 50 ms
+    # default so host-thread jitter under concurrent load cannot replace the
+    # expected 009 with a spurious RELAY-CEL-003 timeout. Production 50 ms default
+    # (CQ1) unchanged; root cause resolved by M7 P7EDGE fuel metering.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
 
     def fake_eval(expr, bindings=None, container=None, relay_profile=False):
         return {"ok": False, "error": "bad request", "code": "RELAY-CEL-006"}

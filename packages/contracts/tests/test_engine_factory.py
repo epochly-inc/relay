@@ -165,8 +165,13 @@ def test_allowlist_udfs_forwarded_to_wasm_evaluator(
     monkeypatch.setenv("RELAY_CEL_ENGINE", "wasm")
     from relay_contracts import RELAY_UDFS
     from relay_contracts.engine import make_cel_evaluator
+    from relay_contracts.evaluator import MAX_TIMEOUT_MS
 
-    ev = make_cel_evaluator(udfs=RELAY_UDFS)
+    # Value assertion decoupled from the 50 ms wall-clock to avoid host-thread
+    # jitter under concurrent load; the factory forwards timeout_ms to the wasm
+    # evaluator. Production 50 ms default (CQ1) unchanged; root cause resolved by
+    # M7 P7EDGE fuel metering.
+    ev = make_cel_evaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
     assert type(ev).__name__ == "WasmCelEvaluator"
     assert ev.evaluate("1 + 2") == 3
 

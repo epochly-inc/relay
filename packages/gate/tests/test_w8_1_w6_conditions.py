@@ -143,8 +143,16 @@ def test_evaluator_default_backend_is_wasm_when_env_unset(
     )
     assert isinstance(default_evaluator._cel, WasmCelEvaluator)  # noqa: SLF001
     # The default backend round-trips a trivial expression (it is wired, not a
-    # bare stub).
-    assert int(make_cel_evaluator(udfs=()).evaluate("1 + 2")) == 3
+    # bare stub). Value assertion decoupled from the 50 ms wall-clock to avoid
+    # host-thread jitter under concurrent load; the factory forwards timeout_ms
+    # to the default wasm evaluator. Production 50 ms default (CQ1) unchanged;
+    # root cause resolved by M7 P7EDGE fuel metering.
+    from relay_contracts.evaluator import MAX_TIMEOUT_MS
+
+    assert (
+        int(make_cel_evaluator(udfs=(), timeout_ms=MAX_TIMEOUT_MS).evaluate("1 + 2"))
+        == 3
+    )
 
 
 @pytest.mark.plumbing

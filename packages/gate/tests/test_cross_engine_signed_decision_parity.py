@@ -80,6 +80,7 @@ from relay_contracts import (
     WasmCelEvaluator,
     make_cel_evaluator,
 )
+from relay_contracts.evaluator import MAX_TIMEOUT_MS
 from relay_gate_engine import (
     GateAssertion,
     GateEvaluator,
@@ -192,9 +193,19 @@ def _build_evaluator(engine: str) -> GateEvaluator:
     env-free (the only env read is inside the factory). All other gate
     collaborators (evidence provider, manifest resolver) are identical across
     the two engine runs so the ONLY difference is the CEL backend.
+
+    Both engines are built with ``timeout_ms=MAX_TIMEOUT_MS``: this is a
+    value/error-class PARITY assertion (byte-identical signed payload across
+    celpy and wasm), not a timeout-behavior test, so it is decoupled from the
+    50 ms wall-clock to avoid host-thread jitter under concurrent load (a
+    spurious RELAY-CEL-003 in ONE engine's outcome but not the other would break
+    the byte parity). The budget is identical for BOTH engines, so the result
+    -- and the signed bytes derived from it -- is unchanged; only the wall-clock
+    headroom grows. Production 50 ms default (CQ1) unchanged; root cause resolved
+    by M7 P7EDGE fuel metering.
     """
     with _engine_env(engine):
-        cel = make_cel_evaluator(udfs=RELAY_UDFS)
+        cel = make_cel_evaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
     return GateEvaluator(
         evidence_provider=InMemoryEvidenceProvider(),
         manifest_resolver=InMemoryManifestResolver(
