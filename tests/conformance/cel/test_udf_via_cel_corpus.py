@@ -234,6 +234,19 @@ def test_cel_js_parseable_classifier_boundary_semantics() -> None:
     assert f('relay.coverage({"steps": [{"type": "t", "name": "a"}]}, "a")') is False
     # A brace inside a string literal is NOT a map literal (must not false-fire):
     assert f('relay.tool_arg(call, "a{type:b,c:d}")') is True
+    # The boundary is the STRING key "type"; a BARE (unquoted) identifier key
+    # `type` is a DIFFERENT key and must NOT trip the boundary. Only string-
+    # literal keys count toward the "type" membership test (a bare `type` token
+    # is indistinguishable from the string key "type" only if the classifier
+    # forgets to track quotedness -- the regression this case pins).
+    assert f("relay.tool_arg(Foo{type: 1, args: 2}, \"k\")") is True
+    assert f("relay.coverage({steps: [{type: 1, name: 2}]}, \"a\")") is True
+    # Mixed: a bare `type` key alongside a STRING `other` key still has no
+    # STRING "type" key, so it stays parseable.
+    assert f('relay.schema_match({type: 1, "other": 2}, "k")') is True
+    # But a STRING "type" key with >=2 keys is still NOT parseable, even when the
+    # second key is bare.
+    assert f('relay.schema_match({"type": 1, other: 2}, "k")') is False
 
 
 # ===========================================================================

@@ -125,4 +125,50 @@ describe("VAL-CWC-P2TSGATE-004: .mjs loader honors the relay_profile param", () 
     expect(env.ok).toBe(true);
     expect(env.value).toEqual({ t: "int", v: "3" });
   });
+
+  // VAL-CWC-P2TSGATE-004: the loader also forwards the `container` half of the
+  // {relayProfile, container} options object. Container is the CEL resolution
+  // namespace: an unqualified identifier resolves against it (the crate calls
+  // context.set_container, crate/src/lib.rs:259-260). These cases are
+  // container-SENSITIVE -- the unqualified `x` resolves to the qualified binding
+  // `com.example.x` ONLY when the container is forwarded. A loader that dropped
+  // `container` (the prior {relayProfile}-only forwarding) would surface
+  // RELAY-CEL-004 UndeclaredReference instead, so a broken container forward is
+  // caught here. The byte form mirrors the Python loader probe exactly.
+  test("container forwards the CEL resolution namespace: unqualified ident resolves to a qualified binding", async () => {
+    const env = await cel.eval(
+      "x",
+      { "com.example.x": { t: "int", v: "7" } },
+      { container: "com.example" },
+    );
+    expect(env.ok).toBe(true);
+    expect(env.value).toEqual({ t: "int", v: "7" });
+  });
+
+  test("non-vacuity: WITHOUT the container the same expression is UndeclaredReference", async () => {
+    // Same expression + same binding, but no container forwarded: the
+    // unqualified `x` is undeclared (RELAY-CEL-004). This proves the prior
+    // success was caused by the forwarded container, not by a binding that
+    // would resolve regardless -- i.e. the container assertion is real.
+    const env = await cel.eval("x", {
+      "com.example.x": { t: "int", v: "7" },
+    });
+    expect(env.ok).toBe(false);
+    expect(env.code).toBe("RELAY-CEL-004");
+  });
+
+  test("container resolution prefers the namespaced binding over a bare one", async () => {
+    // Under container com.example, the qualified `com.example.x` (7) wins over a
+    // bare `x` (5): a broken container forward would instead return 5.
+    const env = await cel.eval(
+      "x",
+      {
+        "com.example.x": { t: "int", v: "7" },
+        x: { t: "int", v: "5" },
+      },
+      { container: "com.example" },
+    );
+    expect(env.ok).toBe(true);
+    expect(env.value).toEqual({ t: "int", v: "7" });
+  });
 });

@@ -75,6 +75,34 @@ def _make_cel() -> Any:
     return relay_cel_wasm.RelayCel()
 
 
+@pytest.fixture(scope="module")
+def cel() -> Any:
+    """One shared wasm handle for the module.
+
+    Construction is DEFERRED to fixture-setup time (not module import) so that
+    pytest *collection* of this file -- and, more importantly, of the sibling
+    files under ``tests/conformance/cel`` -- never touches the wasm. On a clean
+    checkout where the built wasm / ``$CEL_WASM`` artifact is absent, unrelated
+    deselected collection must NOT error: this fixture is only set up when a
+    selected test actually requests it, and a missing artifact yields a clear
+    SKIP with a regenerate hint rather than a ``FileNotFoundError`` collection
+    error.
+
+    The loader is single-Store-per-instance and these tests run sequentially in
+    one thread, so a single module-scoped handle is correct (and matches how the
+    generator recorded the goldens with one ``RelayCel()``).
+    """
+    try:
+        return _make_cel()
+    except FileNotFoundError as exc:
+        pytest.skip(
+            "VAL-CWC-P3CORPUS-005: built CEL wasm artifact not found "
+            f"({exc.filename!r}); build it via "
+            "`bash packages/cel-wasm/conformance/build.sh build` (or set "
+            "$CEL_WASM to a built relay_cel_wasm.wasm) and re-run."
+        )
+
+
 def _load_cases() -> list[dict[str, Any]]:
     assert CORPUS_PATH.exists(), (
         f"VAL-CWC-P3CORPUS-005: missing UDF-via-CEL corpus at {CORPUS_PATH}; "
@@ -87,16 +115,12 @@ def _load_cases() -> list[dict[str, Any]]:
 
 
 # Load the corpus ONCE at collection time so there is exactly one parametrized
-# node per case (collected count == case count == 15).
+# node per case (collected count == case count == 15). This is pure JSON I/O and
+# does NOT touch the wasm, so it is safe at module import.
 _CASES: list[dict[str, Any]] = _load_cases()
 
-# One shared wasm handle for the module: the loader is single-Store-per-instance
-# and these tests run sequentially in one thread, so a single handle is correct
-# (and matches how the generator recorded the goldens with one RelayCel()).
-_CEL: Any = _make_cel()
 
-
-def _wasm_jcs_b64(case: dict[str, Any]) -> str:
+def _wasm_jcs_b64(cel: Any, case: dict[str, Any]) -> str:
     """Drive ``case['input_expression']`` (+ its plain-Python ``bindings``)
     THROUGH the built wasm with ``relay_profile=True`` and return the base64 of
     the JCS-canonicalized typed-canonical ``value`` -- the SAME byte form the
@@ -105,7 +129,7 @@ def _wasm_jcs_b64(case: dict[str, Any]) -> str:
     typed_bindings = {
         name: py_to_typed(value) for name, value in case["bindings"].items()
     }
-    response = _CEL.eval(
+    response = cel.eval(
         case["input_expression"], typed_bindings or None, relay_profile=True
     )
     assert response.get("ok"), (
@@ -123,14 +147,14 @@ def _wasm_jcs_b64(case: dict[str, Any]) -> str:
     _CASES,
     ids=[f"py_byte_match-{c['label']}" for c in _CASES],
 )
-def test_udf_via_cel_py_byte_match_per_case(case: dict[str, Any]) -> None:
+def test_udf_via_cel_py_byte_match_per_case(cel: Any, case: dict[str, Any]) -> None:
     """One node PER corpus case: the JCS bytes the BUILT wasm produces for this
     case BYTE-MATCH the stored ``py_jcs_b64`` golden.
 
     Each node id carries ``py_byte_match`` so ``-k 'udf_via_cel and
     py_byte_match'`` collects exactly the per-case runner (one node per case).
     """
-    produced_b64 = _wasm_jcs_b64(case)
+    produced_b64 = _wasm_jcs_b64(cel, case)
     stored_b64 = case["py_jcs_b64"]
     assert produced_b64 == stored_b64, (
         f"VAL-CWC-P3CORPUS-005: case {case.get('label')!r} JCS byte mismatch.\n"
@@ -151,7 +175,7 @@ def test_udf_via_cel_py_byte_match_per_case(case: dict[str, Any]) -> None:
 # ``tests/conformance/cel -m plumbing`` regression sweep.
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P3CORPUS-005")
-def test_corrupted_golden_makes_exactly_that_case_fail() -> None:
+def test_corrupted_golden_makes_exactly_that_case_fail(cel: Any) -> None:
     """Non-vacuity: a deliberately-corrupted golden makes EXACTLY that one case
     fail, proving the per-case byte-match assertion is real (it is not trivially
     satisfied by, e.g., comparing a value to itself).
@@ -172,8 +196,8 @@ def test_corrupted_golden_makes_exactly_that_case_fail() -> None:
     # The corrupted golden cannot match the freshly produced wasm bytes.
     assert victim["py_jcs_b64"] != good_b64, "corruption must change the golden"
     with pytest.raises(AssertionError):
-        test_udf_via_cel_py_byte_match_per_case(victim)
+        test_udf_via_cel_py_byte_match_per_case(cel, victim)
 
     # And the UNCORRUPTED first case still passes (the failure is specific to
     # the corrupted golden, not a blanket failure of the runner).
-    test_udf_via_cel_py_byte_match_per_case(dict(_CASES[0]))
+    test_udf_via_cel_py_byte_match_per_case(cel, dict(_CASES[0]))

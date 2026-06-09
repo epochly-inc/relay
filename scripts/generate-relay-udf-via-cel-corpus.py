@@ -172,17 +172,30 @@ def _match_close_brace(expression: str, open_idx: int) -> int:
     return n
 
 
-def _top_level_map_keys(inner: str) -> list[str]:
+def _top_level_map_keys(inner: str) -> tuple[int, list[str]]:
     """Parse the TOP-LEVEL keys of a map literal given its inner text (the text
-    between the outer braces). Returns the list of string-literal key texts
-    (the decoded key string for string keys; the raw token for non-string
-    keys, which the >=2-key/"type" test never matches on).
+    between the outer braces).
+
+    Returns ``(total_key_count, string_key_values)``:
+
+      - ``total_key_count`` is the number of top-level ``key : value`` entries
+        (a bare identifier key, an int key, and a string key all count once).
+      - ``string_key_values`` is the decoded values of ONLY those keys written
+        as a string literal (``"type"`` / ``'type'``).
+
+    The split is load-bearing for the cel-js boundary: the ``>=2 keys`` shape is
+    a property of the whole map, but the ``"type"`` membership is specifically
+    the STRING key ``"type"`` (legacy task #20). A bare identifier key ``type``
+    is a DIFFERENT key: it must NOT count toward ``"type"`` membership, because
+    its decoded token would otherwise be byte-identical to the string value and
+    falsely trip the boundary.
 
     Splits on top-level commas (ignoring commas inside nested ``{}``, ``[]``,
     ``()``, and string literals) into ``key : value`` entries, then extracts
     the key token left of the FIRST top-level ``:``.
     """
-    keys: list[str] = []
+    total = 0
+    string_keys: list[str] = []
     for entry in _split_top_level(inner, ","):
         key_token = _split_top_level(entry, ":")
         if not key_token:
@@ -190,8 +203,11 @@ def _top_level_map_keys(inner: str) -> list[str]:
         raw_key = key_token[0].strip()
         if not raw_key:
             continue
-        keys.append(_decode_key(raw_key))
-    return keys
+        total += 1
+        decoded, is_string_literal = _decode_key(raw_key)
+        if is_string_literal:
+            string_keys.append(decoded)
+    return total, string_keys
 
 
 def _split_top_level(text: str, sep: str) -> list[str]:
@@ -221,17 +237,29 @@ def _split_top_level(text: str, sep: str) -> list[str]:
     return parts
 
 
-def _decode_key(raw_key: str) -> str:
-    """Decode a string-literal key token to its string value; return the raw
-    token unchanged for a non-string key (so it cannot match ``"type"``).
+def _decode_key(raw_key: str) -> tuple[str, bool]:
+    """Decode a map key token.
+
+    Returns ``(value, is_string_literal)``:
+
+      - For a STRING-literal key (``"type"`` / ``'type'``): the decoded string
+        value and ``True``.
+      - For any other token (a bare identifier like ``type``, an int key, etc.):
+        the raw token unchanged and ``False``.
+
+    Tracking ``is_string_literal`` is required so the caller can distinguish a
+    bare identifier key ``type`` from the STRING key ``"type"``: returning the
+    bare token's text alone would make it byte-identical to the decoded string
+    value and falsely match the ``"type"`` boundary membership test.
     """
     if len(raw_key) >= 2 and raw_key[0] in ("'", '"') and raw_key[-1] == raw_key[0]:
         body = raw_key[1:-1]
         # Unescape the minimal CEL escapes needed for key matching. Keys are
         # simple identifiers like "type"; this handles a backslash-escaped quote
         # defensively without a full CEL unescaper.
-        return body.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
-    return raw_key
+        decoded = body.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
+        return decoded, True
+    return raw_key, False
 
 
 def validate_case_engines(case: dict[str, Any]) -> None:
@@ -263,10 +291,14 @@ def compute_cel_js_parseable(input_expression: str) -> bool:
 
     This is the SINGLE source for the boundary: both this generator and the
     guard test call it and must agree on every case.
+
+    The ``>=2 keys`` shape is over ALL top-level keys (bare or string), but the
+    ``"type"`` membership is specifically the STRING key ``"type"``: a bare
+    identifier key ``type`` is a DIFFERENT key and does NOT trip the boundary.
     """
     for inner in _scan_map_literals(input_expression):
-        keys = _top_level_map_keys(inner)
-        if len(keys) >= 2 and "type" in keys:
+        total_keys, string_keys = _top_level_map_keys(inner)
+        if total_keys >= 2 and "type" in string_keys:
             return False
     return True
 

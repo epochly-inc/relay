@@ -298,6 +298,10 @@ def test_wasm_loader_missing_celpy_default_unaffected(
         wbe, "resolve_packaged_wasm_loader_path", lambda: None, raising=True
     )
 
+    # This test asserts the *default* (celpy) path; clear any ambient
+    # RELAY_CEL_ENGINE so an env of `wasm` does not build a WasmCelEvaluator
+    # (mirror the pattern in test_engine_factory.py).
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
     ev = make_cel_evaluator(udfs=())
     assert type(ev).__name__ == "RelayCelEvaluator"
     result = ev.evaluate("1 + 2")

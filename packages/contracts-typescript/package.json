@@ -26,7 +26,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . --ignore-pattern test/fixtures/floating-promise-sample.ts && tsc -p tsconfig.json --noEmit",
     "lint:eslint": "eslint . --ignore-pattern test/fixtures/floating-promise-sample.ts",
-    "test": "vitest run --reporter=verbose"
+    "test": "npm run build && vitest run --reporter=verbose"
   },
   "engines": {
     "node": ">=22.13.0"

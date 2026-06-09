@@ -23,7 +23,7 @@
 // milestone M5." and "Do NOT remove cel-js before milestone M6."
 //
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -35,7 +35,8 @@ import { WasmCelBackend } from "../src/wasm-evaluator.js";
 import { RELAY_UDFS } from "../src/udfs/registry.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const EVALUATOR_SRC = resolve(HERE, "..", "src", "evaluator.ts");
+const SRC_DIR = resolve(HERE, "..", "src");
+const EVALUATOR_SRC = resolve(SRC_DIR, "evaluator.ts");
 
 describe("VAL-CWC-P2TSGATE-013: default TS CEL engine stays cel-js (no premature wasm flip)", () => {
   test("the primary evaluator export is RelayCelEvaluator, not WasmCelBackend", () => {
@@ -84,9 +85,28 @@ describe("VAL-CWC-P2TSGATE-013: default TS CEL engine stays cel-js (no premature
     // the Python `type(make_cel_evaluator(udfs=...)).__name__ ==
     // 'RelayCelEvaluator'` assertion.
     const defaultEvaluator = new RelayCelEvaluator({ udfs: RELAY_UDFS });
-    expect(defaultEvaluator.constructor).toBe(RelayCelEvaluator);
-    expect(defaultEvaluator.constructor.name).toBe("RelayCelEvaluator");
-    expect(defaultEvaluator).not.toBeInstanceOf(WasmCelBackend);
+    try {
+      expect(defaultEvaluator.constructor).toBe(RelayCelEvaluator);
+      expect(defaultEvaluator.constructor.name).toBe("RelayCelEvaluator");
+      expect(defaultEvaluator).not.toBeInstanceOf(WasmCelBackend);
+
+      // Identity/prototype checks alone could be satisfied by a composition
+      // wrapper that delegates to wasm at runtime. Prove the default actually
+      // ROUTES through cel-js by evaluating an expression: RelayCelEvaluator.
+      // evaluate() is the SYNCHRONOUS cel-js worker path (it returns the value
+      // directly, not a Promise). The wasm backend's evaluate() returns a
+      // Promise (worker_threads async loader). So a synchronous numeric result
+      // here is positive evidence the cel-js engine evaluated it -- a wasm-backed
+      // default would return a thenable, failing the `not Promise` assertion.
+      const sum = defaultEvaluator.evaluate("1 + 1");
+      expect(sum).not.toBeInstanceOf(Promise);
+      expect(sum).toBe(2);
+      // A second expression touching string concat exercises the cel-js parse +
+      // eval path, not just integer fast-math.
+      expect(defaultEvaluator.evaluate('"a" + "b"')).toBe("ab");
+    } finally {
+      defaultEvaluator.dispose();
+    }
   });
 
   test("there is no TS env-var engine factory that flips the default to wasm at M2", () => {
@@ -102,27 +122,54 @@ describe("VAL-CWC-P2TSGATE-013: default TS CEL engine stays cel-js (no premature
     const exportedNames = Object.keys(contracts);
     expect(exportedNames).toContain("RelayCelEvaluator");
     expect(exportedNames).toContain("WasmCelBackend");
-    // No no-arg "default engine" factory function silently resolving to wasm:
-    // the package exposes the two evaluator classes explicitly, and the
-    // primary/default one is the cel-js RelayCelEvaluator (asserted above). A
-    // hypothetical makeCelEvaluator()/defaultCelEvaluator() that returned a
-    // WasmCelBackend by default would constitute the premature flip this guard
-    // forbids; none such exists at M2.
-    const candidateFactoryNames = [
-      "makeCelEvaluator",
-      "defaultCelEvaluator",
-      "createCelEvaluator",
-      "selectCelEngine",
-    ];
-    for (const factoryName of candidateFactoryNames) {
-      const maybeFactory = (contracts as Record<string, unknown>)[factoryName];
-      if (typeof maybeFactory === "function") {
-        // If a factory exists, its zero-arg (unset-default) result MUST be the
-        // cel-js evaluator, never the wasm backend.
-        const produced = (maybeFactory as () => unknown)();
-        expect(produced).not.toBeInstanceOf(WasmCelBackend);
-        expect(produced).toBeInstanceOf(RelayCelEvaluator);
+
+    // Dynamic guard (NOT a hardcoded factory-name allowlist): a hardcoded list
+    // of candidate factory names (makeCelEvaluator/defaultCelEvaluator/...)
+    // would miss a differently-named factory that reads RELAY_CEL_ENGINE. The
+    // load-bearing boundary is "RELAY_CEL_ENGINE is read ONLY in the Python
+    // factory" -- so we scan the ENTIRE TS src/ tree for ANY read of
+    // process.env.RELAY_CEL_ENGINE (or a bracket-form env access). Any such read
+    // in the TS package, under ANY function name, trips this guard. This is the
+    // grep-based structural check that a renamed/composed factory cannot evade.
+    const srcFiles = listSourceFiles(SRC_DIR);
+    expect(srcFiles.length).toBeGreaterThan(0);
+    const offenders: string[] = [];
+    // Match `process.env.RELAY_CEL_ENGINE` and `process.env["RELAY_CEL_ENGINE"]`
+    // / `process.env['RELAY_CEL_ENGINE']` (any whitespace), case-sensitive on
+    // the env name.
+    const envReadPattern =
+      /process\s*\.\s*env\s*(?:\.\s*RELAY_CEL_ENGINE|\[\s*["']RELAY_CEL_ENGINE["']\s*\])/;
+    for (const file of srcFiles) {
+      const text = readFileSync(file, "utf8");
+      // Ignore the WS-G vendored wasm loader's CEL_WASM read (a DIFFERENT env
+      // var, path resolution only) and doc-comment mentions: the pattern above
+      // matches only an actual RELAY_CEL_ENGINE access, so comments naming the
+      // var without a process.env access do not match.
+      if (envReadPattern.test(text)) {
+        offenders.push(file);
       }
     }
+    expect(offenders, (
+      "engine selection (RELAY_CEL_ENGINE) must be read ONLY in the Python " +
+      "packages/contracts factory (boundaries.md); found a process.env." +
+      `RELAY_CEL_ENGINE read in TS src/: ${offenders.join(", ")}`
+    )).toEqual([]);
   });
 });
+
+/**
+ * Recursively list every .ts / .mts / .mjs / .js source file under `dir`,
+ * skipping nothing (the whole src/ tree is in scope for the env-read scan).
+ */
+function listSourceFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...listSourceFiles(full));
+    } else if (/\.(?:ts|mts|cts|mjs|cjs|js)$/.test(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+}

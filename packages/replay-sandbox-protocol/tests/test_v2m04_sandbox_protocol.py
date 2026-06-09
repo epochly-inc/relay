@@ -377,16 +377,20 @@ def test_grep_finds_only_protocol_definition() -> None:
                 "grep",
                 "-rn",
                 "-E",
-                # Skip build-artifact trees (mirrors the Python-sibling guard
-                # at test_no_concrete_replay_sandbox_drivers_in_oss, which
-                # excludes .venv/__pycache__). cel-wasm's crate/target and
+                # Skip Rust BUILD-ARTIFACT trees only (mirrors the Python-sibling
+                # guard at test_no_concrete_replay_sandbox_drivers_in_oss, which
+                # excludes .venv/__pycache__). cel-wasm's crate/target AND
                 # vendor/cel/target are ~1.1GB of Rust build output; without
-                # pruning them grep exceeds the 15s timeout. The one true
-                # ReplaySandboxDriver Protocol definition lives in
-                # packages/replay-sandbox-protocol/src, not under any
-                # target/ or vendor/ dir, so this does not weaken the guard.
+                # pruning them grep exceeds the 15s timeout. ``--exclude-dir=
+                # target`` prunes BOTH (it matches a dir named ``target`` at ANY
+                # depth, including ``vendor/cel/target``), so the heavy trees are
+                # excluded while committed source under ``vendor/`` is STILL
+                # scanned -- we deliberately do NOT ``--exclude-dir=vendor``,
+                # which would hide a future legit (or illicit) concrete
+                # ReplaySandboxDriver added in committed vendor SOURCE. The one
+                # true ReplaySandboxDriver Protocol definition lives in
+                # packages/replay-sandbox-protocol/src, not under any target/ dir.
                 "--exclude-dir=target",
-                "--exclude-dir=vendor",
                 r"class[[:space:]]+\w*ReplaySandboxDriver",
                 "packages",
                 "apps",

@@ -30,10 +30,38 @@ import importlib.metadata
 import re
 
 import pytest
+from packaging.requirements import Requirement
 
 pytestmark = pytest.mark.plumbing
 
 _DIST_NAME = "epochly-relay-contracts"
+
+# The PEP 508 environment marker variable `extra` rendered by ``str(Marker)``
+# always appears as a BARE identifier token (a comparison operand), never inside
+# a quoted string. This pattern matches the `extra` VARIABLE while NOT matching
+# the string VALUE "extra" (e.g. the contrived ``sys_platform == "extra"``),
+# because a quoted value is preceded/followed by a quote character.
+_EXTRA_MARKER_VARIABLE = re.compile(r"""(?<!['"\w])extra(?!['"\w])""")
+
+
+def _requires_extra(req: Requirement) -> bool:
+    """True if ``req``'s marker references the ``extra`` variable (optional dep).
+
+    A runtime dependency under ``[project].dependencies`` carries no
+    ``extra == "..."`` marker; an optional / extras dependency (declared under
+    ``[project.optional-dependencies]``) DOES.
+
+    Detection uses the public ``str(Marker)`` rendering (a stable, documented
+    form) and matches the ``extra`` marker VARIABLE token -- not a quoted string
+    value that merely happens to be the word ``extra``. An ``evaluate``-based
+    probe is insufficient because it requires guessing the exact extra name the
+    marker gates on; scanning the rendered marker for the variable token catches
+    ANY extra-gated requirement regardless of the extra's name.
+    """
+    marker = req.marker
+    if marker is None:
+        return False
+    return bool(_EXTRA_MARKER_VARIABLE.search(str(marker)))
 
 # ---------------------------------------------------------------------------
 # (a) Metadata assertion: wasmtime present as a runtime requirement with a
@@ -56,23 +84,45 @@ def test_wasmtime_declared_as_runtime_dependency_with_version_constraint() -> No
         "it may not be installed or may be missing metadata."
     )
 
-    # Find any requirement whose bare name is 'wasmtime' (case-insensitive
-    # per PEP 508 normalized names).
-    wasmtime_reqs = [r for r in reqs if re.match(r"(?i)^wasmtime\b", r.strip())]
-    assert wasmtime_reqs, (
-        f"No 'wasmtime' requirement found in "
-        f"importlib.metadata.requires('{_DIST_NAME}').\n"
+    # Parse every Requires-Dist with PEP 508 semantics (packaging.Requirement)
+    # rather than a prefix regex. The prefix regex `^wasmtime\b` accepted ANY
+    # wasmtime line -- including one carrying an `extra == "..."` marker -- so
+    # moving wasmtime to an OPTIONAL dependency group would have slipped past.
+    # We require a TRUE runtime dependency: name == 'wasmtime' (PEP 503
+    # normalized, case-insensitive), a NON-EMPTY version specifier, AND NO
+    # `extra` marker (an extra-gated requirement is optional, not runtime).
+    parsed: list[Requirement] = []
+    for raw in reqs:
+        try:
+            parsed.append(Requirement(raw))
+        except Exception as exc:  # noqa: BLE001 -- surface the offending line
+            pytest.fail(f"Unparseable Requires-Dist {raw!r}: {exc}")
+
+    def _normalized(name: str) -> str:
+        # PEP 503 name normalization (lowercase; runs of -_. collapse to -).
+        import re as _re  # noqa: PLC0415 -- local helper
+
+        return _re.sub(r"[-_.]+", "-", name).lower()
+
+    runtime_wasmtime = [
+        r
+        for r in parsed
+        if _normalized(r.name) == "wasmtime" and not _requires_extra(r)
+    ]
+    assert runtime_wasmtime, (
+        "No RUNTIME 'wasmtime' requirement (name == 'wasmtime', no `extra` "
+        "marker) found in importlib.metadata.requires"
+        f"('{_DIST_NAME}').\n"
         f"Current requirements: {reqs}\n"
-        "Add 'wasmtime>=...,<...' under [project].dependencies in "
-        "packages/contracts/pyproject.toml."
+        "Declare 'wasmtime>=...,<...' under [project].dependencies (NOT under "
+        "[project.optional-dependencies]) in packages/contracts/pyproject.toml."
     )
 
-    # The requirement must carry a version constraint (not just 'wasmtime').
-    # A bare 'wasmtime' with no specifier would not constitute a pinned dep.
-    wasmtime_req = wasmtime_reqs[0]
-    has_version_constraint = bool(re.search(r"[><=!]", wasmtime_req))
-    assert has_version_constraint, (
-        f"wasmtime requirement '{wasmtime_req}' has no version constraint. "
+    # The runtime requirement must carry a NON-EMPTY version specifier; a bare
+    # 'wasmtime' with no specifier is not a pinned dependency.
+    wasmtime_req = runtime_wasmtime[0]
+    assert len(wasmtime_req.specifier) > 0, (
+        f"wasmtime requirement '{wasmtime_req}' has no version specifier. "
         "Pin it, e.g. 'wasmtime>=45,<46', under [project].dependencies."
     )
 

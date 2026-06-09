@@ -117,7 +117,9 @@ def test_wasm_missing_artifact_structured_error() -> None:
     )
 
 
-def test_wasm_missing_artifact_structured_error_celpy_default_unaffected() -> None:
+def test_wasm_missing_artifact_structured_error_celpy_default_unaffected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The celpy default path still constructs + evaluates with the wasm absent.
 
     A missing wasm artifact must NOT break the default (celpy) engine: the
@@ -125,6 +127,10 @@ def test_wasm_missing_artifact_structured_error_celpy_default_unaffected() -> No
     """
     from relay_contracts.engine import make_cel_evaluator
 
+    # This test asserts the *default* (celpy) path; clear any ambient
+    # RELAY_CEL_ENGINE so an env of `wasm` does not build a WasmCelEvaluator
+    # (mirror the pattern in test_engine_factory.py).
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
     ev = make_cel_evaluator(udfs=())
     assert type(ev).__name__ == "RelayCelEvaluator"
     result = ev.evaluate("1 + 2")

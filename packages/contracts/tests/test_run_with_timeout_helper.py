@@ -139,28 +139,50 @@ def test_run_with_timeout_raises_timeout_on_slow_callable() -> None:
 
 
 def test_run_with_timeout_raises_resource_exhausted_at_cap() -> None:
-    """At ``MAX_ORPHAN_THREADS`` live orphans, the helper refuses to spawn."""
+    """At ``MAX_ORPHAN_THREADS`` live orphans, the helper refuses to spawn.
+
+    Determinism (the load-bearing part): every spawned worker must stay LIVE
+    until the cap assertion fires. A wall-clock ``time.sleep(0.25)`` is NOT a
+    safe block here -- on a slow / loaded box the ``MAX_ORPHAN_THREADS`` (64)
+    iterations can take longer than 250 ms, so the earliest sleepers finish and
+    get PRUNED (the helper prunes dead orphans before the cap check), the live
+    count never reaches the cap, and the resource-exhausted error never fires
+    (flaky). Instead we block each worker on a ``threading.Event`` that is
+    released only in the ``finally`` cleanup, so all spawned workers are
+    guaranteed live the entire time -- the cap is reached deterministically.
+    """
 
     evaluator = RelayCelEvaluator()
 
+    # Released ONLY in the finally cleanup, so every worker stays a live orphan
+    # until the cap assertion has fired (no wall-clock dependence).
+    release = threading.Event()
+
     def _slow() -> int:
-        # Outlive the 1 ms budget so each call leaves a live orphan.
-        time.sleep(0.25)
+        # Block until cleanup releases us. The 1 ms budget elapses long before
+        # this returns, so each call leaves a guaranteed-live orphan.
+        release.wait(timeout=30.0)
         return 1
 
     raised: BaseException | None = None
-    for i in range(MAX_ORPHAN_THREADS + 1):
-        try:
-            evaluator._run_with_timeout(_slow, 0.001)  # noqa: SLF001
-        except RelayCelResourceExhaustedError as exc:
-            raised = exc
-            assert i == MAX_ORPHAN_THREADS, (
-                f"resource-exhausted fired at call {i}; "
-                f"expected exactly at {MAX_ORPHAN_THREADS}"
-            )
-            break
-        except RelayCelTimeoutError:
-            continue
+    try:
+        for i in range(MAX_ORPHAN_THREADS + 1):
+            try:
+                evaluator._run_with_timeout(_slow, 0.001)  # noqa: SLF001
+            except RelayCelResourceExhaustedError as exc:
+                raised = exc
+                assert i == MAX_ORPHAN_THREADS, (
+                    f"resource-exhausted fired at call {i}; "
+                    f"expected exactly at {MAX_ORPHAN_THREADS}"
+                )
+                break
+            except RelayCelTimeoutError:
+                continue
+    finally:
+        # Release every blocked worker so it terminates promptly; the autouse
+        # tracker-clear fixture drops the references for the next test.
+        release.set()
+
     assert raised is not None
     assert raised.code == "RELAY-CEL-008"
     assert raised.subtype == "RELAY-CEL-RESOURCE-EXHAUSTED"
@@ -204,51 +226,106 @@ def test_run_with_timeout_propagates_callable_exception_and_frees_slot() -> None
 def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
     """The cap check and the thread start MUST happen under the SAME lock
     acquisition (no release between observing ``live < cap`` and adding the
-    new thread). We instrument the tracker lock to count acquisitions that
-    overlap a tracker mutation and assert the helper does not re-acquire
-    the lock between the cap check and the spawn.
+    new thread).
 
     We verify the invariant by asserting that while the helper holds the
     lock, no second thread can observe the tracker in the
     checked-but-not-yet-spawned state: a competing acquirer is blocked
     until the spawn has registered the thread, so the post-state it sees
     already includes the new orphan.
+
+    Synchronization (the load-bearing part): the competitor must only
+    ATTEMPT the lock AFTER the main thread is *inside* the check+spawn
+    critical section. If the competitor were released before the main
+    thread acquires the lock (the prior bug), it could acquire the lock
+    first and observe the empty pre-spawn tracker (count 0) -- defeating
+    the check (the assertion would then be vacuously satisfiable by a
+    NON-atomic implementation, since the competitor never races the
+    actual critical section). We achieve the ordering by instrumenting the
+    tracker lock: a wrapper SIGNALS ``inside_critical_section`` on the main
+    thread's acquire and only then is the competitor allowed to attempt the
+    (still-held) lock, so it necessarily blocks until the main thread
+    releases AFTER registering the orphan.
     """
 
     evaluator = RelayCelEvaluator()
 
     observed_counts: list[int] = []
-    barrier_ready = threading.Event()
-    proceed = threading.Event()
+    inside_critical_section = threading.Event()
 
     def _slow() -> int:
         time.sleep(0.25)
         return 1
 
+    real_lock = RelayCelEvaluator._orphan_tracker_lock  # noqa: SLF001
+    main_thread = threading.current_thread()
+
+    class _SignallingLock:
+        """Proxy around the real tracker lock.
+
+        On the MAIN thread's acquire (the helper's check+spawn critical
+        section) it sets ``inside_critical_section`` so the competitor is
+        released to attempt the lock only AFTER the main thread already
+        holds it. The competitor (any other thread) acquires/releases the
+        underlying lock transparently. Re-entrancy is not required: the
+        helper acquires the tracker lock exactly once per call.
+        """
+
+        def __enter__(self) -> _SignallingLock:
+            real_lock.acquire()
+            if threading.current_thread() is main_thread:
+                # The main thread now holds the lock: release the competitor
+                # so it attempts the (held) lock and blocks until we spawn.
+                inside_critical_section.set()
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            real_lock.release()
+
+        # Support the helper's `with type(self)._orphan_tracker_lock:` AND
+        # any direct acquire/release callers symmetrically. The signature
+        # mirrors threading.Lock.acquire exactly (blocking + timeout) so the
+        # proxy is a transparent substitute.
+        def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+            acquired = real_lock.acquire(blocking, timeout)
+            if acquired and threading.current_thread() is main_thread:
+                inside_critical_section.set()
+            return acquired
+
+        def release(self) -> None:
+            real_lock.release()
+
     def _competitor() -> None:
-        # Wait until the main thread is inside _run_with_timeout (it holds
-        # the tracker lock during check+spawn). Then try to read the
-        # tracker under the SAME lock; if check+spawn are atomic, by the
-        # time we acquire the lock the new orphan is already registered.
-        barrier_ready.wait(timeout=2.0)
-        proceed.wait(timeout=2.0)
+        # Wait until the MAIN thread is inside _run_with_timeout's critical
+        # section (it has acquired the tracker lock for check+spawn). Only
+        # THEN attempt the SAME lock: we will block until the main thread
+        # releases AFTER it has registered the new orphan, so an atomic
+        # check+spawn means we observe count >= 1, never the pre-spawn 0.
+        inside_critical_section.wait(timeout=2.0)
         with RelayCelEvaluator._orphan_tracker_lock:  # noqa: SLF001
             observed_counts.append(
                 len(RelayCelEvaluator._orphaned_thread_tracker)  # noqa: SLF001
             )
 
-    t = threading.Thread(target=_competitor, daemon=True)
-    t.start()
-    barrier_ready.set()
-    proceed.set()
+    signalling_lock = _SignallingLock()
+    RelayCelEvaluator._orphan_tracker_lock = signalling_lock  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        t = threading.Thread(target=_competitor, daemon=True)
+        t.start()
 
-    with pytest.raises(RelayCelTimeoutError):
-        evaluator._run_with_timeout(_slow, 0.001)  # noqa: SLF001
+        with pytest.raises(RelayCelTimeoutError):
+            evaluator._run_with_timeout(_slow, 0.001)  # noqa: SLF001
 
-    t.join(timeout=2.0)
-    # The competitor, acquiring the lock AFTER the atomic check+spawn,
-    # observes the orphan already registered (count >= 1). A non-atomic
-    # check-then-act could expose the empty pre-spawn state (count 0).
+        t.join(timeout=2.0)
+    finally:
+        RelayCelEvaluator._orphan_tracker_lock = real_lock  # type: ignore[assignment]  # noqa: SLF001
+
+    # The competitor, attempting the lock only AFTER the main thread entered
+    # the critical section, necessarily blocks until the atomic check+spawn
+    # completes and the orphan is registered: it observes count >= 1. A
+    # NON-atomic implementation that released the lock between the cap check
+    # and the spawn would expose the empty pre-spawn state (count 0) to the
+    # competitor that is now genuinely racing the critical section.
     assert observed_counts, "competitor thread did not record an observation"
     assert all(c >= 1 for c in observed_counts), (
         "check+spawn must be atomic: a concurrent reader must never see the "
