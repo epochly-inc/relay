@@ -34,7 +34,11 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 
-import { RelayCelError } from "../src/errors.js";
+import {
+  RelayCelEngineError,
+  RelayCelError,
+  RelayCelTimeoutError,
+} from "../src/errors.js";
 import { WasmCelBackend } from "../src/wasm-evaluator.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -89,20 +93,26 @@ describe("roborev finding F: concurrent evals on a hung startup BOTH reject on t
     });
     let waiterCount = 0;
     let sharedStartup: Promise<unknown> | null = null;
+    // ROBOREV round-4 finding B1: an `expect()` thrown INSIDE onStartupWait is
+    // SWALLOWED by the host (wasm-evaluator.ts wraps the hook call in a try/catch
+    // so a test barrier hook can never break the eval path). So the prior
+    // in-hook `expect(startup).toBe(sharedStartup)` did NOT bite -- a regression
+    // that handed each eval its OWN startup promise was silently swallowed and the
+    // test still passed. We instead RECORD the observed promise identities here
+    // (no assertion inside the hook) and ASSERT after `await bothWaiting`, OUTSIDE
+    // the swallowed hook, that both evals awaited the SAME startup.
+    const observedStartups: Array<Promise<unknown>> = [];
 
     backend = new WasmCelBackend({
       wasmPath,
       timeoutMs: budget,
       startupHangSentinel: true,
       onStartupWait: (startup) => {
-        // Every eval awaiting the startup must await the SAME promise identity --
-        // that is the precise property the fix relies on (a shared startup whose
-        // rejection reaches all waiters). Assert it here so a regression that
-        // gives each eval its OWN startup promise is caught.
+        // RECORD only -- never assert in here (the host swallows hook throws,
+        // finding B1). The identity check runs after bothWaiting, in test scope.
+        observedStartups.push(startup);
         if (sharedStartup === null) {
           sharedStartup = startup;
-        } else {
-          expect(startup).toBe(sharedStartup);
         }
         waiterCount += 1;
         if (waiterCount === 2) {
@@ -122,6 +132,16 @@ describe("roborev finding F: concurrent evals on a hung startup BOTH reject on t
     await bothWaiting;
     expect(waiterCount).toBe(2);
 
+    // ROBOREV round-4 finding B1: assert the SHARED-startup property HERE, in test
+    // scope, where an assertion actually bites (the in-hook version was swallowed
+    // by the host). Both evals must have awaited the SAME startup promise identity
+    // -- the precise property the fix relies on (a single shared startup whose
+    // rejection reaches every waiter). A regression handing each eval its OWN
+    // startup promise is caught here.
+    expect(observedStartups).toHaveLength(2);
+    expect(observedStartups[0]).toBe(observedStartups[1]);
+    expect(observedStartups[1]).toBe(sharedStartup);
+
     // Both evals reject (the shared startup never resolves; the first eval's
     // deadline fires and tears down the shared Worker, rejecting the shared
     // startup for BOTH waiters -- the second does NOT wait for its own timer).
@@ -129,12 +149,61 @@ describe("roborev finding F: concurrent evals on a hung startup BOTH reject on t
     const [firstResult, secondResult] = results;
 
     expect(firstResult.status).toBe("rejected");
-    if (firstResult.status === "rejected") {
-      expect(firstResult.reason).toBeInstanceOf(RelayCelError);
-    }
     expect(secondResult.status).toBe("rejected");
-    if (secondResult.status === "rejected") {
-      expect(secondResult.reason).toBeInstanceOf(RelayCelError);
+    if (firstResult.status !== "rejected" || secondResult.status !== "rejected") {
+      throw new Error("both evals must reject");
     }
+    // Both rejections are RelayCelErrors (the closed error envelope contract).
+    expect(firstResult.reason).toBeInstanceOf(RelayCelError);
+    expect(secondResult.reason).toBeInstanceOf(RelayCelError);
+
+    // ROBOREV round-4 finding B2: "both reject as RelayCelError" does NOT prove the
+    // SECOND waiter was rejected by the shared-Worker TEARDOWN rather than by its
+    // OWN later timer -- a RelayCelTimeoutError IS a RelayCelError, so a broken
+    // impl that leaves the 2nd waiter to its own timeout (the very bug finding F
+    // fixes) would still pass the weak check (both fire at ~the same budget).
+    //
+    // The two rejection paths are DISTINGUISHABLE by error CLASS / code:
+    //   - SELF-TIMEOUT (a waiter's own deadline fires)  -> RelayCelTimeoutError
+    //     (RELAY-CEL-003 / RELAY-CEL-TIMEOUT-001), thrown at the timer callback.
+    //   - SHARED TEARDOWN (disposeWorker rejects the shared startup for the OTHER
+    //     waiters) -> RelayCelEngineError (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST),
+    //     message "wasm Worker torn down before startup completed ...".
+    //
+    // Exactly ONE waiter's timer wins the race and tears the Worker down (that
+    // waiter rejects with the TIMEOUT error); the OTHER waiter is rejected by that
+    // teardown (the shared-startup rejection reaches its ensureWorker().catch as a
+    // MICROTASK, which runs before its own timer MACROTASK) -- so it rejects with
+    // the ENGINE teardown error, NOT a second timeout. We assert that split:
+    // exactly one TIMEOUT + exactly one ENGINE teardown across the two rejections.
+    // A regression where the 2nd waiter is left to its OWN timer would produce TWO
+    // RelayCelTimeoutErrors (and ZERO teardown ENGINE errors) -- failing this.
+    const reasons = [firstResult.reason, secondResult.reason];
+    const timeoutRejections = reasons.filter(
+      (r) => r instanceof RelayCelTimeoutError,
+    );
+    const teardownRejections = reasons.filter(
+      (r) =>
+        r instanceof RelayCelEngineError &&
+        // The teardown path is RELAY-CEL-009 / ENGINE-REQUEST, NOT the timeout's
+        // RELAY-CEL-003. (RelayCelTimeoutError is NOT a RelayCelEngineError, so
+        // the instanceof already excludes the timeout; the code is the explicit
+        // teardown discriminant.)
+        (r as RelayCelEngineError).code === "RELAY-CEL-009",
+    );
+    // Exactly one of each: the winning timer (TIMEOUT) and the waiter it tore down
+    // (ENGINE teardown). This is the proof that the second waiter did NOT reject
+    // from its own timeout.
+    expect(
+      timeoutRejections,
+      "exactly one waiter must reject from its OWN wall-clock timeout " +
+        `(the timer that won the race); got ${timeoutRejections.length}`,
+    ).toHaveLength(1);
+    expect(
+      teardownRejections,
+      "exactly one waiter must reject from the SHARED-Worker TEARDOWN " +
+        "(RELAY-CEL-009 / ENGINE-REQUEST), proving it was NOT left to its own " +
+        `timeout; got ${teardownRejections.length}`,
+    ).toHaveLength(1);
   });
 });

@@ -32,6 +32,7 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import ts from "typescript";
 import { afterEach, describe, expect, test } from "vitest";
 
 import * as contracts from "../src/index.js";
@@ -138,19 +139,20 @@ describe("VAL-CWC-P2TSGATE-013: default TS CEL engine stays cel-js (no premature
     // grep-based structural check that a renamed/composed factory cannot evade.
     const srcFiles = listSourceFiles(SRC_DIR);
     expect(srcFiles.length).toBeGreaterThan(0);
+    // ROBOREV round-4 finding A: the prior comment/string SCRUBBER + regex scan
+    // kept producing evasion cases (round-3: a read inside a ${...} interpolation;
+    // round-4: a `}` inside an interpolation COMMENT like `${/* } */ ...}`
+    // prematurely terminated the captured body, dropping the real read). Those are
+    // all artifacts of approximating the language with regex. We now scan with the
+    // TypeScript COMPILER (an AST walk), which parses the source EXACTLY: comments
+    // and string-literal TEXT are not part of the AST, so a read can never hide in
+    // one, and a read inside a template `${...}` interpolation is an ordinary
+    // expression node the walk visits. The whole comment/string-evasion class is
+    // eliminated by construction.
     const offenders: string[] = [];
     for (const file of srcFiles) {
       const raw = readFileSync(file, "utf8");
-      // ROBOREV round-2 finding I: strip comments AND string literals FIRST so a
-      // doc comment / message string that merely NAMES the env var (without a
-      // real read) does not false-positive, and so the broadened forms below
-      // cannot be smuggled inside a string. Then scan the executable code for ANY
-      // form of a RELAY_CEL_ENGINE env read -- the prior guard matched only the
-      // direct dot / bracket access, so a destructuring read, an optional chain,
-      // or an alias (const e = process.env; e.RELAY_CEL_ENGINE) would EVADE it
-      // (false confidence). The four patterns below close those evasions.
-      const code = stripCommentsAndStrings(raw);
-      if (readsRelayCelEngineEnv(code)) {
+      if (sourceReadsRelayCelEngineEnv(raw, file)) {
         offenders.push(file);
       }
     }
@@ -162,213 +164,221 @@ describe("VAL-CWC-P2TSGATE-013: default TS CEL engine stays cel-js (no premature
   });
 });
 
+// The env var whose read from process.env this guard forbids in TS src/.
+const ENGINE_ENV_VAR = "RELAY_CEL_ENGINE";
+
 /**
- * True if `code` (already comment- and string-stripped) contains ANY form of a
- * RELAY_CEL_ENGINE read off process.env. ROBOREV round-2 finding I: covers the
- * direct/bracket access (with optional chaining), the destructuring read, and an
- * aliased process.env access -- so a renamed/composed/destructured read of the
- * engine selector cannot evade the structural guard.
+ * True if `source` contains ANY read of `RELAY_CEL_ENGINE` off `process.env`,
+ * determined by a TypeScript COMPILER AST walk (ROBOREV round-4 finding A).
+ *
+ * The prior implementation approximated the language with a comment/string
+ * SCRUBBER plus regexes; that approach kept producing evasion cases (round-3: a
+ * read hidden inside a `${...}` template interpolation; round-4: a `}` inside an
+ * interpolation COMMENT, `${/* } *​/ process.env.RELAY_CEL_ENGINE}`, prematurely
+ * terminated the captured body and dropped the read). Those are all artifacts of
+ * regex-approximating a real grammar. A genuine parse eliminates the entire
+ * class: `ts.createSourceFile` builds the AST, in which COMMENTS and
+ * string-literal TEXT are NOT nodes (so a read can never hide in one), and a read
+ * inside a template `${...}` interpolation is an ordinary expression node the
+ * walk visits like any other. We detect:
+ *
+ *   1. member access of RELAY_CEL_ENGINE off `process.env` (and off any local
+ *      identifier bound to `process.env`):
+ *        process.env.RELAY_CEL_ENGINE          (PropertyAccessExpression)
+ *        process.env?.RELAY_CEL_ENGINE          (optional chaining: same node)
+ *        process.env["RELAY_CEL_ENGINE"]        (ElementAccessExpression, string arg)
+ *        process?.env?.["RELAY_CEL_ENGINE"]      (optional-chained bracket)
+ *        const e = process.env; e.RELAY_CEL_ENGINE / e["RELAY_CEL_ENGINE"]
+ *   2. destructuring RELAY_CEL_ENGINE off `process.env` (or an alias of it),
+ *      incl. an aliased bind { RELAY_CEL_ENGINE: x }:
+ *        const { RELAY_CEL_ENGINE } = process.env
+ *        const { RELAY_CEL_ENGINE: sel } = process.env
+ *        const e = process.env; const { RELAY_CEL_ENGINE } = e
+ *
+ * `filePath` only labels the synthetic SourceFile (diagnostics); the scan does
+ * not type-check, so no tsconfig / program is needed. The file extension drives
+ * the scriptKind so `.mjs`/`.cts`/`.tsx` parse correctly.
  */
-export function readsRelayCelEngineEnv(code: string): boolean {
-  // 1. Direct or bracket access, with optional chaining at either step:
-  //    process.env.RELAY_CEL_ENGINE / process.env?.RELAY_CEL_ENGINE /
-  //    process.env["RELAY_CEL_ENGINE"] / process?.env?.["RELAY_CEL_ENGINE"].
-  // The dot form allows an optional `?.`; the bracket form allows an optional
-  // `?.` BEFORE the `[` (the `process?.env?.["..."]` optional-chained bracket).
-  const directOrBracket =
-    /process\s*\??\.\s*env\s*(?:\??\.\s*RELAY_CEL_ENGINE\b|\??\.?\s*\[\s*["']RELAY_CEL_ENGINE["']\s*\])/;
-  // 2. Destructuring directly off process.env:
-  //    const { RELAY_CEL_ENGINE } = process.env
-  //    const { RELAY_CEL_ENGINE: alias } = process.env  (renamed bind)
-  const destructureFromEnv =
-    /\{[^}]*\bRELAY_CEL_ENGINE\b[^}]*\}\s*=\s*process\s*\??\.\s*env\b/;
-  if (directOrBracket.test(code) || destructureFromEnv.test(code)) {
-    return true;
+export function sourceReadsRelayCelEngineEnv(
+  source: string,
+  filePath: string,
+): boolean {
+  const sf = ts.createSourceFile(
+    filePath,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(filePath),
+  );
+
+  // Identifiers locally bound DIRECTLY to `process.env` (const e = process.env).
+  // A read of RELAY_CEL_ENGINE off any such alias is equivalent to reading it off
+  // process.env. Collected in a first pass so a `const e = process.env` that
+  // textually FOLLOWS the alias read is still caught.
+  const envAliases = collectProcessEnvAliases(sf);
+
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) {
+      return;
+    }
+    // (1) Member access: <envExpr>.RELAY_CEL_ENGINE or <envExpr>["RELAY_CEL_ENGINE"].
+    if (ts.isPropertyAccessExpression(node)) {
+      if (
+        node.name.text === ENGINE_ENV_VAR &&
+        isProcessEnvExpression(node.expression, envAliases)
+      ) {
+        found = true;
+        return;
+      }
+    } else if (ts.isElementAccessExpression(node)) {
+      const arg = node.argumentExpression;
+      if (
+        ts.isStringLiteralLike(arg) &&
+        arg.text === ENGINE_ENV_VAR &&
+        isProcessEnvExpression(node.expression, envAliases)
+      ) {
+        found = true;
+        return;
+      }
+    } else if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer !== undefined &&
+      ts.isObjectBindingPattern(node.name) &&
+      isProcessEnvExpression(node.initializer, envAliases) &&
+      objectBindingPullsEngineVar(node.name)
+    ) {
+      // (2) Destructuring read: const { RELAY_CEL_ENGINE [: alias] } = process.env
+      // (or = an alias of process.env).
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return found;
+}
+
+/**
+ * True if `expr` denotes `process.env` -- either the literal member access
+ * `process.env` / `process?.env`, or an identifier in `envAliases` (a local
+ * binding `const e = process.env`). Used as the receiver test for both the
+ * member-access and the destructuring detectors.
+ */
+function isProcessEnvExpression(
+  expr: ts.Expression,
+  envAliases: ReadonlySet<string>,
+): boolean {
+  if (ts.isIdentifier(expr)) {
+    return envAliases.has(expr.text);
   }
-  // 3. Alias the env object, then read RELAY_CEL_ENGINE off the alias:
-  //    const env = process.env;            ... env.RELAY_CEL_ENGINE
-  //    const env = process.env;            ... env["RELAY_CEL_ENGINE"]
-  //    const { RELAY_CEL_ENGINE } = env     (destructure off the alias)
-  // Collect identifiers bound directly to process.env, then look for a read of
-  // RELAY_CEL_ENGINE off any such alias (dot / bracket / destructure).
-  const aliasDecl =
-    /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*process\s*\??\.\s*env\b/g;
+  // process.env (PropertyAccess) or process?.env -- a `.env` off an identifier
+  // named `process`. Bracket form process["env"] also denotes process.env.
+  if (ts.isPropertyAccessExpression(expr)) {
+    return expr.name.text === "env" && isProcessIdentifier(expr.expression);
+  }
+  if (ts.isElementAccessExpression(expr)) {
+    const arg = expr.argumentExpression;
+    return (
+      ts.isStringLiteralLike(arg) &&
+      arg.text === "env" &&
+      isProcessIdentifier(expr.expression)
+    );
+  }
+  return false;
+}
+
+/** True if `expr` is the bare identifier `process`. */
+function isProcessIdentifier(expr: ts.Expression): boolean {
+  return ts.isIdentifier(expr) && expr.text === "process";
+}
+
+/**
+ * Collect every local identifier bound DIRECTLY to `process.env` via a variable
+ * declaration `const|let|var e = process.env`. A subsequent read of
+ * RELAY_CEL_ENGINE off such an alias is a process.env read. (We deliberately do
+ * NOT chase deeper aliasing-of-aliases: the production boundary is "no
+ * RELAY_CEL_ENGINE read in TS src/ at all", so the one-hop alias closes the
+ * realistic evasion while staying a precise, false-positive-free structural
+ * check.)
+ */
+function collectProcessEnvAliases(sf: ts.SourceFile): ReadonlySet<string> {
   const aliases = new Set<string>();
-  for (const m of code.matchAll(aliasDecl)) {
-    aliases.add(m[1]!);
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      isLiteralProcessEnv(node.initializer)
+    ) {
+      aliases.add(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return aliases;
+}
+
+/** True if `expr` is the literal `process.env` / `process?.env` / process["env"]. */
+function isLiteralProcessEnv(expr: ts.Expression): boolean {
+  if (ts.isPropertyAccessExpression(expr)) {
+    return expr.name.text === "env" && isProcessIdentifier(expr.expression);
   }
-  for (const alias of aliases) {
-    const a = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const aliasRead = new RegExp(
-      `\\b${a}\\s*\\??\\s*(?:\\.\\s*RELAY_CEL_ENGINE\\b|\\[\\s*["']RELAY_CEL_ENGINE["']\\s*\\])`,
+  if (ts.isElementAccessExpression(expr)) {
+    const arg = expr.argumentExpression;
+    return (
+      ts.isStringLiteralLike(arg) &&
+      arg.text === "env" &&
+      isProcessIdentifier(expr.expression)
     );
-    const aliasDestructure = new RegExp(
-      `\\{[^}]*\\bRELAY_CEL_ENGINE\\b[^}]*\\}\\s*=\\s*${a}\\b`,
-    );
-    if (aliasRead.test(code) || aliasDestructure.test(code)) {
+  }
+  return false;
+}
+
+/**
+ * True if an object binding pattern `{ ... }` pulls RELAY_CEL_ENGINE, whether
+ * bound under its own name (`{ RELAY_CEL_ENGINE }`) or aliased
+ * (`{ RELAY_CEL_ENGINE: sel }`). The PROPERTY name (not the local bind name) is
+ * the env-var read, so we inspect `element.propertyName ?? element.name`.
+ */
+function objectBindingPullsEngineVar(pattern: ts.ObjectBindingPattern): boolean {
+  for (const element of pattern.elements) {
+    // `{ a: b }` -> propertyName = a (the read), name = b (the local bind).
+    // `{ a }`    -> propertyName undefined, name = a (both read and bind).
+    const keyNode = element.propertyName ?? element.name;
+    if (ts.isIdentifier(keyNode) && keyNode.text === ENGINE_ENV_VAR) {
+      return true;
+    }
+    // A computed property key { ["RELAY_CEL_ENGINE"]: x } carries the name in a
+    // string/numeric literal node.
+    if (
+      element.propertyName !== undefined &&
+      ts.isStringLiteralLike(element.propertyName) &&
+      element.propertyName.text === ENGINE_ENV_VAR
+    ) {
       return true;
     }
   }
   return false;
 }
 
-/**
- * Remove `//` line comments, block comments, and string/template literals from
- * TS source so the env-read scan sees executable code only (a comment or message
- * string naming RELAY_CEL_ENGINE is not a read). This is a lightweight scrubber
- * (NOT a full parser): it is conservative -- it blanks comment/string spans to
- * spaces so positions are preserved and an env read can never hide inside one.
- */
-export function stripCommentsAndStrings(src: string): string {
-  let out = "";
-  let i = 0;
-  const n = src.length;
-  while (i < n) {
-    const c = src[i];
-    const c2 = src[i + 1];
-    // Line comment.
-    if (c === "/" && c2 === "/") {
-      while (i < n && src[i] !== "\n") {
-        i += 1;
-      }
-      continue;
-    }
-    // Block comment.
-    if (c === "/" && c2 === "*") {
-      i += 2;
-      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
-        i += 1;
-      }
-      i += 2;
-      continue;
-    }
-    // Plain string ('/"). Blank the contents so a doc/message string that merely
-    // NAMES the env var cannot false-positive -- EXCEPT a string that is a
-    // computed-member-access KEY (preceded, skipping whitespace, by `[`), which is
-    // a genuine `obj["KEY"]` access that the bracket-form scan must still see.
-    if (c === '"' || c === "'") {
-      // Look back (skipping whitespace) for a `[` => this string is a bracket key.
-      let j = out.length - 1;
-      while (j >= 0 && /\s/.test(out[j]!)) {
-        j -= 1;
-      }
-      const isBracketKey = j >= 0 && out[j] === "[";
-      const quote = c;
-      let literal = quote;
-      i += 1;
-      while (i < n && src[i] !== quote) {
-        if (src[i] === "\\") {
-          literal += src[i]! + (src[i + 1] ?? "");
-          i += 2;
-          continue;
-        }
-        literal += src[i];
-        i += 1;
-      }
-      literal += quote;
-      i += 1; // skip the closing quote
-      // Preserve a bracket-access key verbatim; blank any other string literal.
-      out += isBracketKey ? literal : "";
-      continue;
-    }
-    // Template literal. ROBOREV round-3 finding C: blank only the literal TEXT
-    // portions, but PRESERVE and recursively scrub the ${...} interpolation
-    // BODIES -- those are executable code where a RELAY_CEL_ENGINE read can hide,
-    // and blanking the WHOLE template (the prior behavior) let such a read evade
-    // the scan. The recursion handles nested templates / strings inside the
-    // interpolation.
-    if (c === "`") {
-      i += 1; // skip the opening backtick
-      while (i < n && src[i] !== "`") {
-        if (src[i] === "\\") {
-          // Escaped char in the literal text: skip both (blanked, not emitted).
-          i += 2;
-          continue;
-        }
-        if (src[i] === "$" && src[i + 1] === "{") {
-          // Interpolation: capture the balanced ${...} body and recursively
-          // scrub it so an env read inside it survives the scan.
-          const end = findInterpolationEnd(src, i + 2, n);
-          const body = src.slice(i + 2, end);
-          out += stripCommentsAndStrings(body);
-          // Advance past the closing `}` (end points AT it, or AT n if
-          // unterminated -- then the outer loop ends).
-          i = end < n ? end + 1 : n;
-          continue;
-        }
-        // Ordinary literal text: blanked (not emitted), positions not preserved
-        // across the template but a text mention can never be a read.
-        i += 1;
-      }
-      i += 1; // skip the closing backtick (or past n if unterminated)
-      continue;
-    }
-    out += c;
-    i += 1;
+/** Map a file extension to the TS scriptKind so each source parses correctly. */
+function scriptKindFor(filePath: string): ts.ScriptKind {
+  if (filePath.endsWith(".tsx")) {
+    return ts.ScriptKind.TSX;
   }
-  return out;
-}
-
-/**
- * Index of the `}` that closes a template-literal interpolation that opened at
- * `start` (the first char AFTER the `${`). Balances nested `{`/`}` and SKIPS
- * over nested strings, template literals, and their own interpolations so a `}`
- * inside a nested string/template does not prematurely close this one. Returns
- * the index OF the closing `}`, or `n` if the interpolation is unterminated.
- *
- * ROBOREV round-3 finding C: the template-literal scrubber needs the exact
- * interpolation body so it can recursively scan executable code (where a
- * RELAY_CEL_ENGINE read can hide) while still blanking the literal text around it.
- */
-function findInterpolationEnd(src: string, start: number, n: number): number {
-  let depth = 0; // nesting of plain `{`...`}` inside the interpolation body
-  let i = start;
-  while (i < n) {
-    const c = src[i];
-    // Skip a nested plain string: its braces/backticks are inert text.
-    if (c === '"' || c === "'") {
-      i += 1;
-      while (i < n && src[i] !== c) {
-        i += src[i] === "\\" ? 2 : 1;
-      }
-      i += 1;
-      continue;
-    }
-    // Skip a nested template literal, recursing through its own interpolations
-    // so a `}` inside the nested template does not close THIS interpolation.
-    if (c === "`") {
-      i += 1;
-      while (i < n && src[i] !== "`") {
-        if (src[i] === "\\") {
-          i += 2;
-          continue;
-        }
-        if (src[i] === "$" && src[i + 1] === "{") {
-          const inner = findInterpolationEnd(src, i + 2, n);
-          i = inner < n ? inner + 1 : n;
-          continue;
-        }
-        i += 1;
-      }
-      i += 1; // past the closing backtick
-      continue;
-    }
-    if (c === "{") {
-      depth += 1;
-      i += 1;
-      continue;
-    }
-    if (c === "}") {
-      if (depth === 0) {
-        return i;
-      }
-      depth -= 1;
-      i += 1;
-      continue;
-    }
-    i += 1;
+  if (filePath.endsWith(".jsx")) {
+    return ts.ScriptKind.JSX;
   }
-  return n;
+  if (
+    filePath.endsWith(".js") ||
+    filePath.endsWith(".mjs") ||
+    filePath.endsWith(".cjs")
+  ) {
+    return ts.ScriptKind.JS;
+  }
+  // .ts / .mts / .cts
+  return ts.ScriptKind.TS;
 }
 
 /**
@@ -389,10 +399,21 @@ function listSourceFiles(dir: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// ROBOREV round-2 finding I: NON-VACUITY of the broadened env-read guard.
+// ROBOREV round-4 finding A: NON-VACUITY of the AST-based env-read guard.
+//
+// The predicate (sourceReadsRelayCelEngineEnv) replaces the regex/scrubber scan
+// with a TypeScript COMPILER AST walk. The whole comment/string-evasion class is
+// gone by construction (comments and string-literal TEXT are not AST nodes). The
+// predicate-level cases below confirm the AST detector FLAGS every read form and
+// does NOT flag mere mentions; the end-to-end cases prove the REAL src/-tree scan
+// (the guard the suite runs) bites each evasion when a probe file is present.
 // ---------------------------------------------------------------------------
-describe("roborev round-2 finding I: the env-read guard catches evasive RELAY_CEL_ENGINE reads", () => {
-  test("the predicate FLAGS every evasion form (direct/bracket/optional-chain/destructure/alias)", () => {
+describe("roborev round-4 finding A: the AST env-read guard catches evasive RELAY_CEL_ENGINE reads", () => {
+  // The predicate is fed a synthetic file name only to drive its scriptKind; the
+  // scan is purely structural (no type-checking, no tsconfig).
+  const SCAN = "__probe__.ts";
+
+  test("the AST predicate FLAGS every read form (direct/optional-chain/bracket/destructure/alias/interpolation)", () => {
     const flagged = [
       "const v = process.env.RELAY_CEL_ENGINE;",
       "const v = process.env?.RELAY_CEL_ENGINE;",
@@ -403,37 +424,54 @@ describe("roborev round-2 finding I: the env-read guard catches evasive RELAY_CE
       "const e = process.env; const v = e.RELAY_CEL_ENGINE;",
       'const e = process.env; const v = e["RELAY_CEL_ENGINE"];',
       "const e = process.env; const { RELAY_CEL_ENGINE } = e;",
+      // The alias declared AFTER its use is still resolved (two-pass collection).
+      "function f() { return e.RELAY_CEL_ENGINE; } const e = process.env;",
+      // Read inside a template ${...} interpolation (round-3 class).
+      "const v = `${process.env.RELAY_CEL_ENGINE}`;",
+      "const v = `engine=${process.env.RELAY_CEL_ENGINE} suffix`;",
+      "const v = `outer ${`inner ${process.env.RELAY_CEL_ENGINE}`}`;",
+      // The EXACT round-4 evasion: a `}` inside an interpolation COMMENT. The
+      // regex/scrubber prematurely terminated the body at the `}` in `/* } */`
+      // and dropped the real read; the AST never sees the comment at all.
+      "const v = `${/* } */ process.env.RELAY_CEL_ENGINE}`;",
+      // A line comment with a brace inside the interpolation, same class.
+      "const v = `${ // } trailing\n  process.env.RELAY_CEL_ENGINE}`;",
     ];
     for (const snippet of flagged) {
       expect(
-        readsRelayCelEngineEnv(stripCommentsAndStrings(snippet)),
+        sourceReadsRelayCelEngineEnv(snippet, SCAN),
         `should FLAG: ${snippet}`,
       ).toBe(true);
     }
   });
 
-  test("the predicate does NOT flag mere mentions in comments or strings, or unrelated env vars", () => {
+  test("the AST predicate does NOT flag mere mentions in comments/strings/template-text or unrelated env vars", () => {
     const clean = [
       "// reads RELAY_CEL_ENGINE in the Python factory only",
       "/* RELAY_CEL_ENGINE = process.env.RELAY_CEL_ENGINE */",
       'const msg = "process.env.RELAY_CEL_ENGINE is read in Python";',
+      "const msg = `process.env.RELAY_CEL_ENGINE is read in Python`;",
       "const v = process.env.CEL_WASM;",
       "const { CEL_WASM } = process.env;",
       "const RELAY_CEL_ENGINE = 'wasm';", // a local var, not an env read
+      // A read off an unrelated object that merely shares the property name.
+      "const cfg = { RELAY_CEL_ENGINE: 'x' }; const v = cfg.RELAY_CEL_ENGINE;",
     ];
     for (const snippet of clean) {
       expect(
-        readsRelayCelEngineEnv(stripCommentsAndStrings(snippet)),
+        sourceReadsRelayCelEngineEnv(snippet, SCAN),
         `should NOT flag: ${snippet}`,
       ).toBe(false);
     }
   });
 
-  // End-to-end non-vacuity: drop a temp src file that destructures the engine
-  // selector and prove the REAL guard scan flags it, then remove it. This proves
-  // the file-tree scan (not just the predicate in isolation) bites the evasion.
-  describe("end-to-end: a temp src file with a destructured read makes the guard FAIL", () => {
-    const TEMP = resolve(SRC_DIR, "__roborev_i_nonvacuity_probe__.ts");
+  // End-to-end non-vacuity: drop a temp src file carrying a real read, prove the
+  // REAL file-tree scan (the exact loop the guard runs) flags it, then remove it.
+  // One probe per evasion FORM the regex approach historically missed, INCLUDING
+  // the round-4 `}`-in-interpolation-comment case. Each probe MUST trip the scan,
+  // and NO other src file may (so the guard stays clean once the probe is gone).
+  describe("end-to-end: a temp src file with a real read makes the src/-tree scan FAIL", () => {
+    const TEMP = resolve(SRC_DIR, "__roborev_a_ast_probe__.ts");
 
     afterEach(() => {
       try {
@@ -443,103 +481,56 @@ describe("roborev round-2 finding I: the env-read guard catches evasive RELAY_CE
       }
     });
 
-    test("the guard's file scan flags a destructuring read in src/", () => {
-      writeFileSync(
-        TEMP,
-        "export function evade() {\n" +
+    const scanSrcTree = (): string[] => {
+      const offenders: string[] = [];
+      for (const file of listSourceFiles(SRC_DIR)) {
+        if (sourceReadsRelayCelEngineEnv(readFileSync(file, "utf8"), file)) {
+          offenders.push(file);
+        }
+      }
+      return offenders;
+    };
+
+    const probes: Array<{ label: string; body: string }> = [
+      {
+        label: "destructuring read",
+        body:
+          "export function evade() {\n" +
           "  const { RELAY_CEL_ENGINE } = process.env;\n" +
           "  return RELAY_CEL_ENGINE;\n" +
           "}\n",
-        "utf8",
-      );
-      const offenders: string[] = [];
-      for (const file of listSourceFiles(SRC_DIR)) {
-        const code = stripCommentsAndStrings(readFileSync(file, "utf8"));
-        if (readsRelayCelEngineEnv(code)) {
-          offenders.push(file);
-        }
-      }
-      // The probe MUST be flagged (the old direct/bracket-only pattern missed
-      // the destructuring form), and no OTHER src file should trip (so the guard
-      // stays clean once the probe is removed).
-      expect(offenders).toContain(TEMP);
-      expect(offenders.filter((f) => f !== TEMP)).toEqual([]);
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ROBOREV round-3 finding C: the scrubber must NOT swallow a RELAY_CEL_ENGINE
-// read hidden inside a TEMPLATE-LITERAL INTERPOLATION ${...}.
-//
-// stripCommentsAndStrings blanked the ENTIRE backtick template literal, including
-// the executable ${...} expressions. A genuine env read placed inside a ${...}
-// interpolation was therefore stripped BEFORE the scan, evading the guard. The
-// fix must preserve (and recursively scrub) the ${...} interpolation BODIES while
-// still blanking the literal text portions (so a mere MENTION of the env var in
-// the literal text stays a non-read).
-// ---------------------------------------------------------------------------
-describe("roborev round-3 finding C: the env-read guard sees inside template-literal interpolations", () => {
-  test("a RELAY_CEL_ENGINE read inside a ${...} interpolation is NOT stripped (it is FLAGGED)", () => {
-    const evasions = [
-      "const v = `${process.env.RELAY_CEL_ENGINE}`;",
-      "const v = `engine=${process.env.RELAY_CEL_ENGINE} suffix`;",
-      'const v = `${process.env["RELAY_CEL_ENGINE"]}`;',
-      "const v = `${(() => { const { RELAY_CEL_ENGINE } = process.env; return RELAY_CEL_ENGINE; })()}`;",
-      // Nested template inside the interpolation: the inner read must still surface.
-      "const v = `outer ${`inner ${process.env.RELAY_CEL_ENGINE}`}`;",
-    ];
-    for (const snippet of evasions) {
-      expect(
-        readsRelayCelEngineEnv(stripCommentsAndStrings(snippet)),
-        `should FLAG (interpolation read): ${snippet}`,
-      ).toBe(true);
-    }
-  });
-
-  test("a mere MENTION in the template-literal TEXT (not an interpolation) is NOT flagged", () => {
-    const clean = [
-      "const msg = `process.env.RELAY_CEL_ENGINE is read in Python`;",
-      "const msg = `the ${'x'} env var RELAY_CEL_ENGINE lives in the Python factory`;",
-    ];
-    for (const snippet of clean) {
-      expect(
-        readsRelayCelEngineEnv(stripCommentsAndStrings(snippet)),
-        `should NOT flag (literal-text mention): ${snippet}`,
-      ).toBe(false);
-    }
-  });
-
-  // End-to-end non-vacuity: a temp src file with an interpolation read must make
-  // the REAL file-tree scan FAIL, then be removed.
-  describe("end-to-end: a temp src file with an interpolation read makes the guard FAIL", () => {
-    const TEMP = resolve(SRC_DIR, "__roborev_c_interp_probe__.ts");
-
-    afterEach(() => {
-      try {
-        unlinkSync(TEMP);
-      } catch {
-        // already removed
-      }
-    });
-
-    test("the guard's file scan flags a ${...}-interpolation read in src/", () => {
-      writeFileSync(
-        TEMP,
-        "export function evade(): string {\n" +
+      },
+      {
+        label: "optional-chaining read",
+        body:
+          "export function evade(): string | undefined {\n" +
+          "  return process.env?.RELAY_CEL_ENGINE;\n" +
+          "}\n",
+      },
+      {
+        label: "template-${...}-interpolation read",
+        body:
+          "export function evade(): string {\n" +
           "  return `selected:${process.env.RELAY_CEL_ENGINE}`;\n" +
           "}\n",
-        "utf8",
-      );
-      const offenders: string[] = [];
-      for (const file of listSourceFiles(SRC_DIR)) {
-        const code = stripCommentsAndStrings(readFileSync(file, "utf8"));
-        if (readsRelayCelEngineEnv(code)) {
-          offenders.push(file);
-        }
-      }
-      expect(offenders).toContain(TEMP);
-      expect(offenders.filter((f) => f !== TEMP)).toEqual([]);
-    });
+      },
+      {
+        label: "round-4: read behind a `}` in an interpolation COMMENT",
+        body:
+          "export function evade(): string {\n" +
+          "  return `${/* } */ process.env.RELAY_CEL_ENGINE}`;\n" +
+          "}\n",
+      },
+    ];
+
+    for (const { label, body } of probes) {
+      test(`the src/-tree scan flags a ${label} in src/`, () => {
+        writeFileSync(TEMP, body, "utf8");
+        const offenders = scanSrcTree();
+        // The probe MUST be flagged, and no OTHER src file should trip.
+        expect(offenders).toContain(TEMP);
+        expect(offenders.filter((f) => f !== TEMP)).toEqual([]);
+      });
+    }
   });
 });
