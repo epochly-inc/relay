@@ -242,11 +242,11 @@ export function stripCommentsAndStrings(src: string): string {
       i += 2;
       continue;
     }
-    // String / template literal. Blank the contents so a doc/message string that
-    // merely NAMES the env var cannot false-positive -- EXCEPT a string that is a
-    // computed-member-access KEY (preceded, skipping whitespace, by `[`), which
-    // is a genuine `obj["KEY"]` access that the bracket-form scan must still see.
-    if (c === '"' || c === "'" || c === "`") {
+    // Plain string ('/"). Blank the contents so a doc/message string that merely
+    // NAMES the env var cannot false-positive -- EXCEPT a string that is a
+    // computed-member-access KEY (preceded, skipping whitespace, by `[`), which is
+    // a genuine `obj["KEY"]` access that the bracket-form scan must still see.
+    if (c === '"' || c === "'") {
       // Look back (skipping whitespace) for a `[` => this string is a bracket key.
       let j = out.length - 1;
       while (j >= 0 && /\s/.test(out[j]!)) {
@@ -271,10 +271,104 @@ export function stripCommentsAndStrings(src: string): string {
       out += isBracketKey ? literal : "";
       continue;
     }
+    // Template literal. ROBOREV round-3 finding C: blank only the literal TEXT
+    // portions, but PRESERVE and recursively scrub the ${...} interpolation
+    // BODIES -- those are executable code where a RELAY_CEL_ENGINE read can hide,
+    // and blanking the WHOLE template (the prior behavior) let such a read evade
+    // the scan. The recursion handles nested templates / strings inside the
+    // interpolation.
+    if (c === "`") {
+      i += 1; // skip the opening backtick
+      while (i < n && src[i] !== "`") {
+        if (src[i] === "\\") {
+          // Escaped char in the literal text: skip both (blanked, not emitted).
+          i += 2;
+          continue;
+        }
+        if (src[i] === "$" && src[i + 1] === "{") {
+          // Interpolation: capture the balanced ${...} body and recursively
+          // scrub it so an env read inside it survives the scan.
+          const end = findInterpolationEnd(src, i + 2, n);
+          const body = src.slice(i + 2, end);
+          out += stripCommentsAndStrings(body);
+          // Advance past the closing `}` (end points AT it, or AT n if
+          // unterminated -- then the outer loop ends).
+          i = end < n ? end + 1 : n;
+          continue;
+        }
+        // Ordinary literal text: blanked (not emitted), positions not preserved
+        // across the template but a text mention can never be a read.
+        i += 1;
+      }
+      i += 1; // skip the closing backtick (or past n if unterminated)
+      continue;
+    }
     out += c;
     i += 1;
   }
   return out;
+}
+
+/**
+ * Index of the `}` that closes a template-literal interpolation that opened at
+ * `start` (the first char AFTER the `${`). Balances nested `{`/`}` and SKIPS
+ * over nested strings, template literals, and their own interpolations so a `}`
+ * inside a nested string/template does not prematurely close this one. Returns
+ * the index OF the closing `}`, or `n` if the interpolation is unterminated.
+ *
+ * ROBOREV round-3 finding C: the template-literal scrubber needs the exact
+ * interpolation body so it can recursively scan executable code (where a
+ * RELAY_CEL_ENGINE read can hide) while still blanking the literal text around it.
+ */
+function findInterpolationEnd(src: string, start: number, n: number): number {
+  let depth = 0; // nesting of plain `{`...`}` inside the interpolation body
+  let i = start;
+  while (i < n) {
+    const c = src[i];
+    // Skip a nested plain string: its braces/backticks are inert text.
+    if (c === '"' || c === "'") {
+      i += 1;
+      while (i < n && src[i] !== c) {
+        i += src[i] === "\\" ? 2 : 1;
+      }
+      i += 1;
+      continue;
+    }
+    // Skip a nested template literal, recursing through its own interpolations
+    // so a `}` inside the nested template does not close THIS interpolation.
+    if (c === "`") {
+      i += 1;
+      while (i < n && src[i] !== "`") {
+        if (src[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (src[i] === "$" && src[i + 1] === "{") {
+          const inner = findInterpolationEnd(src, i + 2, n);
+          i = inner < n ? inner + 1 : n;
+          continue;
+        }
+        i += 1;
+      }
+      i += 1; // past the closing backtick
+      continue;
+    }
+    if (c === "{") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (c === "}") {
+      if (depth === 0) {
+        return i;
+      }
+      depth -= 1;
+      i += 1;
+      continue;
+    }
+    i += 1;
+  }
+  return n;
 }
 
 /**
@@ -368,6 +462,82 @@ describe("roborev round-2 finding I: the env-read guard catches evasive RELAY_CE
       // The probe MUST be flagged (the old direct/bracket-only pattern missed
       // the destructuring form), and no OTHER src file should trip (so the guard
       // stays clean once the probe is removed).
+      expect(offenders).toContain(TEMP);
+      expect(offenders.filter((f) => f !== TEMP)).toEqual([]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ROBOREV round-3 finding C: the scrubber must NOT swallow a RELAY_CEL_ENGINE
+// read hidden inside a TEMPLATE-LITERAL INTERPOLATION ${...}.
+//
+// stripCommentsAndStrings blanked the ENTIRE backtick template literal, including
+// the executable ${...} expressions. A genuine env read placed inside a ${...}
+// interpolation was therefore stripped BEFORE the scan, evading the guard. The
+// fix must preserve (and recursively scrub) the ${...} interpolation BODIES while
+// still blanking the literal text portions (so a mere MENTION of the env var in
+// the literal text stays a non-read).
+// ---------------------------------------------------------------------------
+describe("roborev round-3 finding C: the env-read guard sees inside template-literal interpolations", () => {
+  test("a RELAY_CEL_ENGINE read inside a ${...} interpolation is NOT stripped (it is FLAGGED)", () => {
+    const evasions = [
+      "const v = `${process.env.RELAY_CEL_ENGINE}`;",
+      "const v = `engine=${process.env.RELAY_CEL_ENGINE} suffix`;",
+      'const v = `${process.env["RELAY_CEL_ENGINE"]}`;',
+      "const v = `${(() => { const { RELAY_CEL_ENGINE } = process.env; return RELAY_CEL_ENGINE; })()}`;",
+      // Nested template inside the interpolation: the inner read must still surface.
+      "const v = `outer ${`inner ${process.env.RELAY_CEL_ENGINE}`}`;",
+    ];
+    for (const snippet of evasions) {
+      expect(
+        readsRelayCelEngineEnv(stripCommentsAndStrings(snippet)),
+        `should FLAG (interpolation read): ${snippet}`,
+      ).toBe(true);
+    }
+  });
+
+  test("a mere MENTION in the template-literal TEXT (not an interpolation) is NOT flagged", () => {
+    const clean = [
+      "const msg = `process.env.RELAY_CEL_ENGINE is read in Python`;",
+      "const msg = `the ${'x'} env var RELAY_CEL_ENGINE lives in the Python factory`;",
+    ];
+    for (const snippet of clean) {
+      expect(
+        readsRelayCelEngineEnv(stripCommentsAndStrings(snippet)),
+        `should NOT flag (literal-text mention): ${snippet}`,
+      ).toBe(false);
+    }
+  });
+
+  // End-to-end non-vacuity: a temp src file with an interpolation read must make
+  // the REAL file-tree scan FAIL, then be removed.
+  describe("end-to-end: a temp src file with an interpolation read makes the guard FAIL", () => {
+    const TEMP = resolve(SRC_DIR, "__roborev_c_interp_probe__.ts");
+
+    afterEach(() => {
+      try {
+        unlinkSync(TEMP);
+      } catch {
+        // already removed
+      }
+    });
+
+    test("the guard's file scan flags a ${...}-interpolation read in src/", () => {
+      writeFileSync(
+        TEMP,
+        "export function evade(): string {\n" +
+          "  return `selected:${process.env.RELAY_CEL_ENGINE}`;\n" +
+          "}\n",
+        "utf8",
+      );
+      const offenders: string[] = [];
+      for (const file of listSourceFiles(SRC_DIR)) {
+        const code = stripCommentsAndStrings(readFileSync(file, "utf8"));
+        if (readsRelayCelEngineEnv(code)) {
+          offenders.push(file);
+        }
+      }
       expect(offenders).toContain(TEMP);
       expect(offenders.filter((f) => f !== TEMP)).toEqual([]);
     });

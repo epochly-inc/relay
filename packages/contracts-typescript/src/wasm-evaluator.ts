@@ -231,18 +231,44 @@ export function nativeToTyped(value: unknown): TypedValue {
   // encode is BYTE-IDENTICAL (and byte-symmetric with the Python codec).
   if (value instanceof Map) {
     const entries: Array<{ sort: string; pair: [TypedValue, TypedValue] }> = [];
+    // ROBOREV round-3 finding B: a duplicate CEL key (two pairs colliding on the
+    // SAME keySortString) cannot exist in a CEL map. The wasm decoder inserts into
+    // a Rust HashMap (lib.rs:1437 `hm.insert`), so a duplicate silently OVERWRITES
+    // one value (data loss). Fail closed here -- byte-symmetric with the
+    // typedToNative DECODE path, which already rejects a colliding key (round-2
+    // finding D), and with the Python codec (a celpy MapType raises on a duplicate
+    // insert). keystone #16: the two hosts MUST agree.
+    const seenSortKeys = new Set<string>();
     for (const [k, val] of value) {
       // The Map produced by typedToNative carries TypedValue keys; keySortString
       // validates the key tag (bool/int/uint/string) and gives the canonical
       // order. A key that is not a TypedValue (a hand-built Map with raw keys) is
       // rejected fail-closed by keySortString rather than mis-encoded.
       const typedKey = k as TypedValue;
+      const sort = keySortString(typedKey);
+      if (seenSortKeys.has(sort)) {
+        throw new RelayCelEngineError(
+          "nativeToTyped: JS Map contains a duplicate / colliding CEL key " +
+            `${JSON.stringify(typedKey)} (key_sort_string ${JSON.stringify(sort)}); ` +
+            "a CEL map cannot carry two equal keys -- failing closed rather than " +
+            "letting the wasm HashMap silently overwrite one value (matches the " +
+            "Python codec and the typedToNative decode path).",
+          "RELAY-CEL-ENGINE-REQUEST",
+        );
+      }
+      seenSortKeys.add(sort);
       entries.push({
-        sort: keySortString(typedKey),
+        sort,
         pair: [typedKey, nativeToTyped(val)],
       });
     }
-    entries.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
+    // ROBOREV round-3 finding A: order by UTF-8 BYTES (compareSortKeys), NOT JS
+    // `<` (UTF-16 code units). The pinned crate sorts by Rust `str` Ord (UTF-8
+    // bytes, lib.rs:1270) and Python by `str` code-point order (wasm_codec.py:311)
+    // -- both equal code-point order, which DIFFERS from UTF-16 order for
+    // supplementary-plane (non-BMP) string keys. keystone #16: this re-encode must
+    // be byte-identical to both.
+    entries.sort((a, b) => compareSortKeys(a.sort, b.sort));
     return { t: "map", v: entries.map((e) => e.pair) };
   }
   if (typeof value === "object") {
@@ -259,7 +285,12 @@ export function nativeToTyped(value: unknown): TypedValue {
     for (const k of Object.keys(obj)) {
       sortKeys.push({ key: k, sort: `3:string:${k}` });
     }
-    sortKeys.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
+    // ROBOREV round-3 finding A: order by UTF-8 BYTES (compareSortKeys), NOT JS
+    // `<` (UTF-16 code units), so a non-BMP string key sorts in code-point order
+    // (matching the crate's Rust `str` Ord and Python's code-point sort). Object
+    // keys are unique JS strings, so the encode-path duplicate guard the Map
+    // branch needs does not apply here (no two object keys can collide).
+    sortKeys.sort((a, b) => compareSortKeys(a.sort, b.sort));
     for (const { key } of sortKeys) {
       entries.push([{ t: "string", v: key }, nativeToTyped(obj[key])]);
     }
@@ -483,6 +514,42 @@ export function keySortString(typed: TypedValue): string {
       "are orderable map keys in the wasm key_sort_string form",
     "RELAY-CEL-ENGINE-REQUEST",
   );
+}
+
+// Shared UTF-8 encoder for the map-key total order. A single instance avoids
+// re-allocating per comparison (TextEncoder is stateless and UTF-8-only).
+const SORT_KEY_UTF8 = new TextEncoder();
+
+/**
+ * Total order over two key_sort_string values, comparing their UTF-8 BYTE
+ * sequences lexicographically. ROBOREV round-3 finding A (keystone #16): the
+ * pinned wasm crate sorts map entries by Rust `str` Ord (lib.rs:1270
+ * `a.0.cmp(&b.0)`), which compares UTF-8 BYTES; the Python codec sorts by `str`
+ * code-point order (wasm_codec.py:311 `entries.sort(key=lambda e: e[0])`). For
+ * valid Unicode, UTF-8 byte order == code-point order, and BOTH differ from JS
+ * `<` (UTF-16 code-unit order) for supplementary-plane (non-BMP, >= U+10000)
+ * string keys -- a surrogate pair's lead unit (0xD800..0xDBFF) sorts BELOW a BMP
+ * char in [0xE000, 0xFFFF] under UTF-16 but ABOVE it under code-point / UTF-8
+ * order. Encoding each sort key to UTF-8 and comparing the bytes reproduces the
+ * crate's and Python's order EXACTLY, so the TS map re-encode is byte-identical
+ * on both hosts. The bool/int/uint buckets are pure ASCII (so the byte order is
+ * trivially their code-unit order); the string bucket carries the raw key, where
+ * the UTF-8 comparison is load-bearing.
+ *
+ * Returns < 0 if `a` sorts before `b`, > 0 if after, 0 if equal.
+ */
+export function compareSortKeys(a: string, b: string): number {
+  const ba = SORT_KEY_UTF8.encode(a);
+  const bb = SORT_KEY_UTF8.encode(b);
+  const n = ba.length < bb.length ? ba.length : bb.length;
+  for (let i = 0; i < n; i++) {
+    const da = ba[i]!;
+    const db = bb[i]!;
+    if (da !== db) {
+      return da - db;
+    }
+  }
+  return ba.length - bb.length;
 }
 
 // Canonical-g double string. Faithful port of the Python codec's
@@ -933,6 +1000,18 @@ export interface WasmCelBackendOptions {
    * startup. False/undefined in production (startup proceeds normally).
    */
   startupHangSentinel?: boolean;
+  /**
+   * Test-only deterministic barrier hook. Invoked SYNCHRONOUSLY each time an
+   * evaluation begins awaiting the shared Worker startup promise (immediately
+   * after arming its deadline timer, before/at the `ensureWorker()` await). The
+   * argument is the IDENTITY of the shared startup promise that eval is awaiting,
+   * so a test can confirm that MULTIPLE concurrent evals are awaiting the SAME
+   * startup BEFORE any timeout fires -- removing the need for wall-clock
+   * `setTimeout` staggers to "probably" interleave them (ROBOREV round-3 finding
+   * D: the race test was scheduler-sensitive). Undefined in production (no hook
+   * is invoked). Never throws into the host: the host ignores a hook throw.
+   */
+  onStartupWait?: (sharedStartup: Promise<unknown>) => void;
 }
 
 export class WasmCelBackend {
@@ -941,6 +1020,10 @@ export class WasmCelBackend {
   private readonly loaderPath: string;
   private readonly hangSentinel: string | null;
   private readonly startupHangSentinel: boolean;
+  // Test-only barrier hook (finding D); null in production.
+  private readonly onStartupWait:
+    | ((sharedStartup: Promise<unknown>) => void)
+    | null;
 
   // Lazy-spawned persistent Worker; null after construction and after every
   // termination (timeout / dispose), respawned on demand.
@@ -1005,6 +1088,7 @@ export class WasmCelBackend {
     this.loaderPath = options.loaderPath ?? defaultLoaderPath();
     this.hangSentinel = options.hangSentinel ?? null;
     this.startupHangSentinel = options.startupHangSentinel ?? false;
+    this.onStartupWait = options.onStartupWait ?? null;
   }
 
   // --- compilation (host-side profile pre-screen) ------------------
@@ -1189,7 +1273,21 @@ export class WasmCelBackend {
       // The deadline timer is now armed; awaiting ensureWorker() below is thus
       // ALSO bounded by it (finding 6). ensureWorker() may reject (a startup
       // error) -- propagate that, clearing the timer first.
-      this.ensureWorker()
+      const workerPromise = this.ensureWorker();
+      // Test-only barrier (finding D): after ensureWorker() has established (or
+      // reused) the shared startup promise, notify the hook with that SHARED
+      // promise's identity so a test can confirm MULTIPLE concurrent evals are
+      // awaiting the SAME startup before any timeout fires -- a deterministic
+      // barrier in place of a wall-clock stagger. The hook is null in production.
+      // A hook throw must NOT corrupt the eval: swallow it.
+      if (this.onStartupWait !== null && this.workerReady !== null) {
+        try {
+          this.onStartupWait(this.workerReady);
+        } catch {
+          // A test barrier hook must never break the host eval path.
+        }
+      }
+      workerPromise
         .then((worker) => {
           if (settled) {
             // The deadline already fired (a hung startup): the Worker, if it
