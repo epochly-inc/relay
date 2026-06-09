@@ -1,20 +1,39 @@
-"""M4 P4DUALRUN guard tests: default-stays-celpy + RELAY_CEL_ENGINE read site.
+"""P4DUALRUN guard tests: default engine (M4 celpy -> M5 wasm) + RELAY_CEL_ENGINE
+read site.
 
 These are TEST-ONLY guards. They change no production source: they LOCK two
 load-bearing invariants so a future edit cannot silently backslide them.
 
+M4 -> M5 FLIP TRANSITION (this file): the default-engine assertions were
+ORIGINALLY milestone-scoped to "through M4" -- they asserted that an unset /
+blank ``RELAY_CEL_ENGINE`` selected celpy, deliberately so a PREMATURE flip to
+wasm before M5 would FAIL them (the boundaries.md hard rule "Do NOT flip the
+RELAY_CEL_ENGINE default to wasm before milestone M5"). M5 (WS-H) is exactly the
+milestone that DELIBERATELY flips the factory default to wasm -- the cutover's
+most consequential change. These assertions are therefore TRANSITIONED to the
+NEW post-flip reality: an unset / blank ``RELAY_CEL_ENGINE`` now selects wasm,
+and the legacy celpy evaluator is reachable ONLY via the explicit
+``RELAY_CEL_ENGINE=celpy`` rollback override. Leaving the old celpy-default
+assertion here would be a FALSE assertion post-flip; the guard is converted (not
+deleted) so it keeps catching an ACCIDENTAL revert -- now an accidental revert
+BACK to a celpy default. The determinism / single-read-site guards (VAL-008,
+below) are UNCHANGED -- they still hold exactly as before (the env is still read
+only in ``engine.py``).
+
 Covers:
-  - VAL-CWC-P4DUALRUN-007: the default CEL engine STAYS celpy through M4. With
-    ``RELAY_CEL_ENGINE`` unset (and with it set-but-blank) the
-    ``packages/contracts`` factory (``make_cel_evaluator`` / the engine-name
-    resolver in ``engine.py``) selects the celpy-backed ``RelayCelEvaluator``,
-    NOT the ``WasmCelEvaluator``. The flip to wasm is explicitly deferred to M5
-    (WS-H); a wasm default here would fail the assertion.
+  - VAL-CWC-P4DUALRUN-007: the default CEL engine invariant. M1-M4 EVIDENCE: the
+    default was celpy. M5 (WS-H) flips it to wasm. With ``RELAY_CEL_ENGINE``
+    unset (and with it set-but-blank) the ``packages/contracts`` factory
+    (``make_cel_evaluator`` / the engine-name resolver in ``engine.py``) now
+    selects the wasm-backed ``WasmCelEvaluator``, NOT the legacy
+    ``RelayCelEvaluator``. (The flip itself is also locked by the dedicated
+    P5FLIP tests in ``test_p5flip_default_engine_wasm.py``.)
   - VAL-CWC-P4DUALRUN-008: engine selection (the ``RELAY_CEL_ENGINE`` READ)
     appears ONLY in the contracts factory (``engine.py``) and is ABSENT from
     ``packages/gate`` src. A gate-src read would trip the VAL-W8-005 /
     VAL-CWC-P4DUALRUN-008 gate-determinism grep (a gate decision must not
-    depend on ambient process environment).
+    depend on ambient process environment). UNAFFECTED by the M5 flip -- the
+    read site is still exactly ``engine.py``.
 
 The default-engine assertions (VAL-007) read the default through the factory
 with the env explicitly cleared, exactly as the contract Evidence requires
@@ -359,64 +378,100 @@ def scan_source(filename: str, source_text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# VAL-CWC-P4DUALRUN-007: default engine stays celpy through M4 (env unset/blank)
+# VAL-CWC-P4DUALRUN-007: default engine -- TRANSITIONED M4 celpy -> M5 wasm
+# (env unset/blank). Through M1-M4 the unset/blank default was celpy and these
+# guards asserted that (so a premature pre-M5 flip would FAIL them). M5 (WS-H)
+# DELIBERATELY flips the default to wasm; the guards are CONVERTED -- not deleted
+# -- to the post-flip reality so they still catch an ACCIDENTAL revert (now a
+# revert back to a celpy default). The legacy celpy evaluator is reachable only
+# via the explicit RELAY_CEL_ENGINE=celpy rollback override (asserted below).
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P4DUALRUN-007")
-def test_default_engine_is_celpy_when_env_unset_through_m4(
+def test_default_engine_is_wasm_when_env_unset_post_m5_flip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Contract Evidence: with ``RELAY_CEL_ENGINE`` CLEARED from the env, the
-    contracts factory resolves to the celpy-backed evaluator (NOT wasm).
+    contracts factory resolves to the wasm-backed evaluator (NOT celpy).
 
-    Asserts BOTH the engine-name resolution (``_select_engine_name`` -> celpy)
-    AND the concrete returned type (``RelayCelEvaluator``), so the default is
-    pinned at the resolver level and at the constructed-instance level. The
-    flip to wasm is M5 (WS-H); a wasm default would fail here.
+    Asserts BOTH the engine-name resolution (``_select_engine_name`` -> wasm) AND
+    the concrete returned type (``WasmCelEvaluator``), so the default is pinned at
+    the resolver level and at the constructed-instance level. M1-M4 this returned
+    celpy; the M5 (WS-H) flip makes the unset-env default wasm. A regression back
+    to a celpy default would fail here.
     """
     # The contract explicitly requires the test clear RELAY_CEL_ENGINE.
     monkeypatch.delenv(_ENGINE_VAR, raising=False)
 
+    from relay_contracts import RELAY_UDFS
     from relay_contracts.engine import _select_engine_name, make_cel_evaluator
     from relay_contracts.evaluator import RelayCelEvaluator
     from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
-    # Engine-name resolution: unset -> "celpy", never "wasm".
-    assert _select_engine_name() == "celpy", (
-        "default-stays-celpy invariant broken: with RELAY_CEL_ENGINE unset the "
-        "factory resolver must return 'celpy' through M4 (the flip to wasm is "
-        f"M5/WS-H); got {_select_engine_name()!r}"
+    # Engine-name resolution: unset -> "wasm" (the M5 flip), never "celpy".
+    assert _select_engine_name() == "wasm", (
+        "M5 default-flip broken: with RELAY_CEL_ENGINE unset the factory "
+        "resolver must return 'wasm' (the M5 flip; M1-M4 it was 'celpy'); got "
+        f"{_select_engine_name()!r}"
     )
 
-    # Concrete type: the celpy evaluator, NOT the wasm evaluator.
-    ev = make_cel_evaluator(udfs=())
-    assert isinstance(ev, RelayCelEvaluator), (
-        "unset RELAY_CEL_ENGINE must construct the celpy RelayCelEvaluator; "
-        f"got {type(ev).__name__}"
+    # Concrete type: the wasm evaluator, NOT the legacy celpy evaluator.
+    ev = make_cel_evaluator(udfs=RELAY_UDFS)
+    assert isinstance(ev, WasmCelEvaluator), (
+        "unset RELAY_CEL_ENGINE must construct the WasmCelEvaluator after the "
+        f"M5 flip; got {type(ev).__name__}"
     )
-    assert not isinstance(ev, WasmCelEvaluator), (
-        "unset RELAY_CEL_ENGINE must NOT construct the WasmCelEvaluator at M4 "
-        f"(default flip is deferred to M5); got {type(ev).__name__}"
+    assert not isinstance(ev, RelayCelEvaluator), (
+        "unset RELAY_CEL_ENGINE must NOT construct the legacy RelayCelEvaluator "
+        f"after the M5 flip (celpy is the explicit rollback only); got "
+        f"{type(ev).__name__}"
     )
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P4DUALRUN-007")
-def test_default_engine_is_celpy_when_env_blank_through_m4(
+def test_default_engine_is_wasm_when_env_blank_post_m5_flip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A set-but-BLANK ``RELAY_CEL_ENGINE=""`` is the standard 'no selection'
-    signal and MUST resolve to the safe default (celpy), same as unset -- so the
-    default-stays-celpy invariant cannot be bypassed with an empty export."""
+    signal and MUST resolve to the post-flip default (wasm), same as unset -- so
+    the M5 flip cannot be bypassed (back to celpy) with an empty export. Only an
+    explicit ``RELAY_CEL_ENGINE=celpy`` reaches the legacy evaluator."""
     monkeypatch.setenv(_ENGINE_VAR, "")
+
+    from relay_contracts import RELAY_UDFS
+    from relay_contracts.engine import _select_engine_name, make_cel_evaluator
+    from relay_contracts.evaluator import RelayCelEvaluator
+    from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
+
+    assert _select_engine_name() == "wasm", (
+        "blank RELAY_CEL_ENGINE='' must resolve to the wasm default after the "
+        f"M5 flip; got {_select_engine_name()!r}"
+    )
+    ev = make_cel_evaluator(udfs=RELAY_UDFS)
+    assert isinstance(ev, WasmCelEvaluator)
+    assert not isinstance(ev, RelayCelEvaluator)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P4DUALRUN-007")
+def test_explicit_celpy_rollback_override_still_reaches_legacy_evaluator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The M5 flip preserves the rollback escape hatch: an EXPLICIT
+    ``RELAY_CEL_ENGINE=celpy`` still resolves to celpy and constructs the legacy
+    cel-python ``RelayCelEvaluator`` (removed at M6). This is the only way to
+    reach the legacy engine post-flip; it guards the bake-window rollback path so
+    a future edit cannot silently sever it while the default is wasm."""
+    monkeypatch.setenv(_ENGINE_VAR, "celpy")
 
     from relay_contracts.engine import _select_engine_name, make_cel_evaluator
     from relay_contracts.evaluator import RelayCelEvaluator
     from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
     assert _select_engine_name() == "celpy", (
-        "blank RELAY_CEL_ENGINE='' must resolve to the celpy default through "
-        f"M4; got {_select_engine_name()!r}"
+        "explicit RELAY_CEL_ENGINE=celpy must resolve to 'celpy' (the rollback "
+        f"override) even after the M5 default flip; got {_select_engine_name()!r}"
     )
     ev = make_cel_evaluator(udfs=())
     assert isinstance(ev, RelayCelEvaluator)

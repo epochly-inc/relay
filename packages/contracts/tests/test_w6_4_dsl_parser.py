@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from pathlib import Path
 
@@ -421,12 +420,9 @@ def test_runtime_outcome_envelope_pass_fail_error() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W6-045")
-@pytest.mark.skipif(
-    os.environ.get("RELAY_CEL_ENGINE", "").strip() == "wasm",
-    reason="bare-name custom UDF; the wasm engine has no registration slot and "
-    "rejects it (RELAY-CEL-004 / UDF-UNREGISTERED). This is a celpy-path test.",
-)
-def test_runtime_invokes_application_udf_and_records_in_envelope() -> None:
+def test_runtime_invokes_application_udf_and_records_in_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A CEL expression that calls a registered UDF MUST surface the UDF
     name in udfs_invoked and the JCS-canonical output bytes.
 
@@ -437,7 +433,13 @@ def test_runtime_invokes_application_udf_and_records_in_envelope() -> None:
     the pipeline plumbing; the call-site rewrite to dotted form is
     tracked separately. Here we exercise the binding contract with a
     plain-identifier pure UDF registered alongside the parser pipeline.
+
+    This is a CELPY-path test (the wasm engine has no registration slot for the
+    bare-name custom ``my_check`` UDF -- RELAY-CEL-004 / UDF-UNREGISTERED). After
+    the M5 default flip the engine is PINNED to celpy here so the celpy binding
+    contract is exercised regardless of the now-wasm ambient default.
     """
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
     from relay_contracts import register_udf
 
     def my_check(trace: list, step: str) -> bool:

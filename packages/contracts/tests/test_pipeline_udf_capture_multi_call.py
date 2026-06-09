@@ -38,10 +38,14 @@ from relay_contracts.errors import RelayCelUnsupportedUdfError
 from relay_contracts.pipeline import evaluate_assertion, publish_contract
 
 # The contracts factory reads RELAY_CEL_ENGINE (engine.py is the ONLY env read
-# site). The celpy-capture cases require the default/celpy engine; the
-# wasm-rejection cases require the wasm engine. Each block guards on the
-# selected engine so the suite is green under either selection. pipeline.py
-# never reads this env -- the gate is in the test only.
+# site). The celpy-capture cases require the LEGACY celpy engine -- custom-UDF
+# registration is a celpy-only capability the wasm engine has no slot for. After
+# the M5 flip the factory DEFAULT is wasm, so the celpy-capture tests can no
+# longer rely on an unset env meaning celpy; they PIN the engine to celpy via
+# monkeypatch (so they test the celpy contract regardless of the ambient
+# default). The wasm-rejection cases require the wasm engine and run only when
+# the operator explicitly selects RELAY_CEL_ENGINE=wasm. pipeline.py never reads
+# this env -- it constructs through the factory, which reads it at call time.
 _WASM_SELECTED = os.environ.get("RELAY_CEL_ENGINE", "").strip() == "wasm"
 
 
@@ -67,12 +71,9 @@ def _logical_outputs(udf_outputs: dict[str, object], name: str) -> list[object]:
 
 
 @pytest.mark.plumbing
-@pytest.mark.skipif(
-    _WASM_SELECTED,
-    reason="celpy custom-UDF capture; the wasm engine rejects my_check (see "
-    "test_wasm_rejects_custom_udf_*)",
-)
-def test_udf_capture_preserves_every_invocation_in_order() -> None:
+def test_udf_capture_preserves_every_invocation_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Calling a UDF twice in a CEL expression MUST record both outputs.
 
     The expression ``my_check("a") && my_check("b")`` invokes the same
@@ -81,7 +82,14 @@ def test_udf_capture_preserves_every_invocation_in_order() -> None:
     ``udf_outputs_jcs`` field in the envelope MUST carry both -- it is a
     list in evaluation order. The wire form is typed-canonical
     (VAL-CWC-P1HOST-015); the LOGICAL captured values stay ``[True, False]``.
+
+    This is the CELPY custom-UDF capture contract (the wasm engine has no
+    registration slot for ``my_check``). After the M5 default flip the engine is
+    PINNED to celpy here so the test exercises the celpy capture path regardless
+    of the now-wasm ambient default; the wasm-rejection counterpart is
+    ``test_wasm_rejects_custom_udf_*``.
     """
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
     calls: list[str] = []
 
     def my_check(arg: str) -> bool:
@@ -120,17 +128,20 @@ def test_udf_capture_preserves_every_invocation_in_order() -> None:
 
 
 @pytest.mark.plumbing
-@pytest.mark.skipif(
-    _WASM_SELECTED,
-    reason="celpy custom-UDF capture; the wasm engine rejects my_check (see "
-    "test_wasm_rejects_custom_udf_*)",
-)
-def test_udf_capture_single_call_still_a_list() -> None:
+def test_udf_capture_single_call_still_a_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A single-call invocation also yields a one-element list.
 
     The post-fix wire shape is consistently a list -- consumers should
     not need to branch on "scalar vs list" based on call count.
+
+    CELPY custom-UDF capture contract; the engine is PINNED to celpy after the
+    M5 default flip (the wasm engine rejects ``my_check`` -- see
+    ``test_wasm_rejects_custom_udf_*``).
     """
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
+
     def my_check(trace: list, step: str) -> bool:
         return any(item.get("step") == step for item in trace)
 

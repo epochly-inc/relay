@@ -117,20 +117,24 @@ def test_wasm_missing_artifact_structured_error() -> None:
     )
 
 
-def test_wasm_missing_artifact_structured_error_celpy_default_unaffected(
+def test_wasm_missing_artifact_structured_error_celpy_engine_unaffected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The celpy default path still constructs + evaluates with the wasm absent.
+    """The celpy engine still constructs + evaluates with the wasm absent.
 
-    A missing wasm artifact must NOT break the default (celpy) engine: the
-    factory with RELAY_CEL_ENGINE unset returns a working RelayCelEvaluator.
+    A missing wasm artifact must NOT break the celpy engine: the celpy evaluator
+    carries no wasm dependency, so the factory under RELAY_CEL_ENGINE=celpy
+    returns a working RelayCelEvaluator even with the artifact gone. After the M5
+    default flip the engine is PINNED to celpy (the unset default is now wasm);
+    the invariant under test -- celpy is independent of the wasm artifact -- is
+    unchanged, only the way to reach celpy is now the explicit rollback selector.
     """
     from relay_contracts.engine import make_cel_evaluator
 
-    # This test asserts the *default* (celpy) path; clear any ambient
-    # RELAY_CEL_ENGINE so an env of `wasm` does not build a WasmCelEvaluator
-    # (mirror the pattern in test_engine_factory.py).
-    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
+    # Pin the legacy celpy engine explicitly: this test asserts celpy is
+    # independent of the wasm artifact. Post-M5-flip an unset env builds the wasm
+    # evaluator, so celpy is selected by the rollback override.
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
     ev = make_cel_evaluator(udfs=())
     assert type(ev).__name__ == "RelayCelEvaluator"
     result = ev.evaluate("1 + 2")

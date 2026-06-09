@@ -1,20 +1,30 @@
-"""WS-A engine factory tier-1 plumbing tests (M1 P1HOST).
+"""WS-A engine factory tier-1 plumbing tests (M1 P1HOST, M5-flip transitioned).
 
 ``make_cel_evaluator()`` (``relay_contracts.engine``) is the SINGLE place the
 ``RELAY_CEL_ENGINE`` environment variable is read in the whole codebase. It
-selects between the cel-python-backed ``RelayCelEvaluator`` (the default) and the
-wasm-backed ``WasmCelEvaluator`` (``RELAY_CEL_ENGINE=wasm``), forwarding the
-``udfs`` / ``timeout_ms`` keyword arguments with identical semantics, and rejects
-an unknown engine name with a clear ``ValueError``.
+selects between the wasm-backed ``WasmCelEvaluator`` (the DEFAULT as of M5, and
+the value when ``RELAY_CEL_ENGINE`` is unset / blank) and the cel-python-backed
+``RelayCelEvaluator`` (``RELAY_CEL_ENGINE=celpy``, the rollback override),
+forwarding the ``udfs`` / ``timeout_ms`` keyword arguments with identical
+semantics, and rejects an unknown engine name with a clear ``ValueError``.
 
 Covers:
   - VAL-CWC-P1HOST-009: ``make_cel_evaluator`` reads ``RELAY_CEL_ENGINE`` and
     returns the right class (factory-only env read); unknown value -> ValueError.
-  - VAL-CWC-P1HOST-010: with ``RELAY_CEL_ENGINE`` unset, the default STAYS celpy
-    at M1 (the flip to wasm is WS-H / M5, not now).
-
-These tests are RED until ``packages/contracts/src/relay_contracts/engine.py``
-exists with ``make_cel_evaluator``.
+    The explicit-engine selection (celpy vs wasm), the udf / timeout forwarding,
+    the case-sensitivity / whitespace-trim / unknown-value handling, and the
+    single-read-site determinism guard are engine-default-agnostic and hold both
+    before and after the M5 flip.
+  - VAL-CWC-P1HOST-010: the engine-DEFAULT assertion. M1-M4 EVIDENCE: with
+    ``RELAY_CEL_ENGINE`` unset the default was celpy. M5 (WS-H) DELIBERATELY
+    FLIPS the factory default to wasm (the cutover's most consequential change),
+    so this file's default-engine assertions are TRANSITIONED from the old
+    celpy-default to the new wasm-default reality: an unset / blank
+    ``RELAY_CEL_ENGINE`` now constructs the ``WasmCelEvaluator``, and the legacy
+    celpy evaluator is reachable ONLY via the explicit ``RELAY_CEL_ENGINE=celpy``
+    rollback override. Leaving the old celpy-default assertions here would be a
+    FALSE assertion post-flip; pinning the udf-forwarding test to its intended
+    engine keeps its coverage intact.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -38,35 +48,42 @@ def _clear_engine_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# VAL-CWC-P1HOST-010: default engine stays celpy at M1 (env unset)
+# VAL-CWC-P1HOST-010: default engine (env unset) -- TRANSITIONED M1 celpy -> M5
+# wasm. M1-M4 the unset default was celpy; M5 (WS-H) flips it to wasm, so these
+# assertions now pin the NEW wasm default (the old celpy-default would be a false
+# assertion post-flip). The flip itself is locked by the P5FLIP tests
+# (test_p5flip_default_engine_wasm.py); these keep the P1HOST default-engine
+# coverage truthful after the cutover.
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P1HOST-010")
-def test_default_engine_is_celpy_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With ``RELAY_CEL_ENGINE`` absent, the factory returns the celpy evaluator.
+def test_default_engine_is_wasm_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With ``RELAY_CEL_ENGINE`` absent, the factory returns the wasm evaluator.
 
-    The flip to wasm is WS-H (M5); at M1 the default MUST stay celpy.
+    The default FLIPPED to wasm at M5 (WS-H). Through M1-M4 this returned celpy;
+    post-flip an unset env constructs the ``WasmCelEvaluator``.
     """
     monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
     from relay_contracts.engine import make_cel_evaluator
 
     ev = make_cel_evaluator(udfs=())
-    assert type(ev).__name__ == "RelayCelEvaluator"
+    assert type(ev).__name__ == "WasmCelEvaluator"
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P1HOST-010")
-def test_default_engine_is_celpy_returns_relay_cel_evaluator_instance(
+def test_default_engine_is_wasm_returns_wasm_cel_evaluator_instance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The unset-env default is an actual ``RelayCelEvaluator`` instance (the
-    cel-python evaluator), not merely a class whose name happens to match."""
+    """The unset-env default is an actual ``WasmCelEvaluator`` instance (the
+    wasm-backed evaluator, M5 flip), not merely a class whose name happens to
+    match."""
     monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
     from relay_contracts.engine import make_cel_evaluator
-    from relay_contracts.evaluator import RelayCelEvaluator
+    from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
     ev = make_cel_evaluator()
-    assert isinstance(ev, RelayCelEvaluator)
+    assert isinstance(ev, WasmCelEvaluator)
 
 
 # ---------------------------------------------------------------------------
@@ -121,13 +138,20 @@ def test_unknown_engine_raises_clear_value_error(
 @pytest.mark.fulfills("VAL-CWC-P1HOST-009")
 def test_udfs_forwarded_to_celpy_evaluator(monkeypatch: pytest.MonkeyPatch) -> None:
     """The ``udfs`` keyword is forwarded to the selected evaluator: a custom
-    pure UDF registered through the factory is callable on the celpy path."""
-    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
+    pure UDF registered through the factory is callable on the celpy path.
+
+    This test exercises CELPY's custom-UDF registration (a capability unique to
+    the legacy evaluator; the wasm engine has no registration slot and rejects
+    extra UDFs). After the M5 flip the factory default is wasm, so the engine is
+    pinned EXPLICITLY to celpy here -- the test means to test celpy udf
+    forwarding, not whatever the ambient default happens to be."""
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
     from relay_contracts.engine import make_cel_evaluator
     from relay_contracts.udf import register_udf
 
     udf = register_udf("doubler", lambda x: x * 2, pure=True, arity=1)
     ev = make_cel_evaluator(udfs=(udf,))
+    assert type(ev).__name__ == "RelayCelEvaluator"
     assert int(ev.evaluate("doubler(21)")) == 42
 
 
@@ -189,13 +213,17 @@ def test_timeout_ms_forwarded_and_bounds_enforced(
 @pytest.mark.fulfills("VAL-CWC-P1HOST-009")
 def test_default_udfs_is_empty_tuple(monkeypatch: pytest.MonkeyPatch) -> None:
     """``make_cel_evaluator()`` with no ``udfs`` argument defaults to an empty
-    UDF set (constructs cleanly on both engines)."""
+    UDF set (constructs cleanly on both engines).
+
+    Engine selection: env unset is the M5 default (wasm); explicit celpy reaches
+    the legacy evaluator. Both construct cleanly with the empty default UDF set.
+    """
     from relay_contracts.engine import make_cel_evaluator
 
     monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
-    assert type(make_cel_evaluator()).__name__ == "RelayCelEvaluator"
-    monkeypatch.setenv("RELAY_CEL_ENGINE", "wasm")
     assert type(make_cel_evaluator()).__name__ == "WasmCelEvaluator"
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
+    assert type(make_cel_evaluator()).__name__ == "RelayCelEvaluator"
 
 
 # ---------------------------------------------------------------------------
@@ -203,17 +231,18 @@ def test_default_udfs_is_empty_tuple(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P1HOST-009")
-def test_empty_string_env_treated_as_default_celpy(
+def test_empty_string_env_treated_as_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An EMPTY ``RELAY_CEL_ENGINE`` (set but blank, e.g. ``RELAY_CEL_ENGINE=``)
-    is treated as 'unset' -> the safe default (celpy). A blank env var is the
-    standard 'no selection' signal; failing closed to celpy is the safe choice
-    and keeps the default-stays-celpy invariant intact at M1."""
+    is treated as 'unset' -> the default. A blank env var is the standard 'no
+    selection' signal; it resolves to the default, which is wasm as of M5 (the
+    flip) -- an empty export cannot pin the legacy celpy engine, only an explicit
+    ``RELAY_CEL_ENGINE=celpy`` selects the rollback override."""
     monkeypatch.setenv("RELAY_CEL_ENGINE", "")
     from relay_contracts.engine import make_cel_evaluator
 
-    assert type(make_cel_evaluator(udfs=())).__name__ == "RelayCelEvaluator"
+    assert type(make_cel_evaluator(udfs=())).__name__ == "WasmCelEvaluator"
 
 
 @pytest.mark.plumbing

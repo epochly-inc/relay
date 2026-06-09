@@ -151,19 +151,23 @@ def test_wasm_pipeline_udf_outputs_jcs_matches_typed_canonical_encoding() -> Non
 
 
 @pytest.mark.plumbing
-@pytest.mark.skipif(
-    os.environ.get("RELAY_CEL_ENGINE", "").strip() == "wasm",
-    reason="bare-name custom UDF (is_pos); the wasm engine rejects non-allowlist "
-    "UDFs. This asserts the celpy-path typed-canonical encoding.",
-)
-def test_celpy_pipeline_emits_typed_canonical_not_raw() -> None:
+def test_celpy_pipeline_emits_typed_canonical_not_raw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The celpy pipeline path emits TYPED-CANONICAL udf_outputs_jcs (the single
     contract), not raw cel-python objects.
 
     Uses a bare-name UDF (the only UDF form cel-python can evaluate through
     CEL). The emitted bytes MUST equal the typed-canonical encoding of the same
     logical outputs -- proving the celpy path was migrated off raw-object JCS.
+
+    This asserts the CELPY-path encoding (the wasm engine rejects the
+    non-allowlist ``is_pos`` UDF). After the M5 default flip the engine is PINNED
+    to celpy here so the celpy encoding is exercised regardless of the now-wasm
+    ambient default.
     """
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
+
     def is_pos(n: int) -> bool:
         return n > 0
 

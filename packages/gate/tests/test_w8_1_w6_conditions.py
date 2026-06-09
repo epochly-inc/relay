@@ -20,7 +20,8 @@ from _w8_1_helpers import (
     make_gate,
     make_pipeline,
 )
-from relay_contracts import CelEvaluatorProtocol, RelayCelEvaluator, make_cel_evaluator
+from relay_contracts import CelEvaluatorProtocol, make_cel_evaluator
+from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
 
 @pytest.mark.plumbing
@@ -116,16 +117,18 @@ def test_evaluator_uses_w6_contracts_cel_backend(evaluator) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W8-002")
-def test_evaluator_default_backend_is_relaycel_when_env_unset(
+def test_evaluator_default_backend_is_wasm_when_env_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With ``RELAY_CEL_ENGINE`` unset, the gate's default CEL backend is celpy.
+    """With ``RELAY_CEL_ENGINE`` unset, the gate's default CEL backend is wasm.
 
-    Pins the M1 default-stays-celpy invariant from the gate's vantage point:
-    the contracts factory, called with the env cleared, yields a
-    ``RelayCelEvaluator`` -- so a gate built on that default holds a
-    ``RelayCelEvaluator`` backend. (Under ``RELAY_CEL_ENGINE=wasm`` the
-    engine-agnostic guard above covers the wasm path.)
+    Pins the post-M5-flip default from the gate's vantage point: the gate stays
+    engine-agnostic (it never reads ``RELAY_CEL_ENGINE`` -- that would trip the
+    VAL-W8-005 determinism grep) and follows the contracts factory default. M1-M4
+    that default was celpy; the M5 (WS-H) flip makes it wasm, so a gate built on
+    the unset-env default now holds a ``WasmCelEvaluator`` backend. (Under
+    ``RELAY_CEL_ENGINE=celpy`` the rollback override yields the legacy backend;
+    the engine-agnostic guard above covers either selection.)
     """
     from _w8_1_helpers import (
         InMemoryEvidenceProvider,
@@ -138,7 +141,7 @@ def test_evaluator_default_backend_is_relaycel_when_env_unset(
         evidence_provider=InMemoryEvidenceProvider(),
         manifest_resolver=InMemoryManifestResolver(),
     )
-    assert isinstance(default_evaluator._cel, RelayCelEvaluator)  # noqa: SLF001
+    assert isinstance(default_evaluator._cel, WasmCelEvaluator)  # noqa: SLF001
     # The default backend round-trips a trivial expression (it is wired, not a
     # bare stub).
     assert int(make_cel_evaluator(udfs=()).evaluate("1 + 2")) == 3

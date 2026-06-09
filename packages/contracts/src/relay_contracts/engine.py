@@ -6,12 +6,17 @@ host-side CEL evaluators that share the identical
 :class:`CelEvaluatorProtocol` facade (``__init__(*, timeout_ms, udfs)``,
 ``compile``, ``evaluate``, ``_env``):
 
-  - ``celpy`` (the DEFAULT, and the value when ``RELAY_CEL_ENGINE`` is unset or
-    blank): :class:`relay_contracts.evaluator.RelayCelEvaluator`, the
-    cel-python-backed evaluator.
-  - ``wasm`` (``RELAY_CEL_ENGINE=wasm``):
+  - ``wasm`` (the DEFAULT as of milestone M5, and the value when
+    ``RELAY_CEL_ENGINE`` is unset or blank):
     :class:`relay_contracts.wasm_backed_evaluator.WasmCelEvaluator`, the single
-    wasm CEL engine behind the same host facade.
+    wasm CEL engine behind the host facade. This is now the engine EVERY
+    consumer that does not explicitly opt out runs on.
+  - ``celpy`` (``RELAY_CEL_ENGINE=celpy``):
+    :class:`relay_contracts.evaluator.RelayCelEvaluator`, the legacy
+    cel-python-backed evaluator. It is retained ONLY as the rollback escape
+    hatch during the one-release bake window (cel-python is removed at M6); a
+    deployment that hits a wasm regression can set ``RELAY_CEL_ENGINE=celpy`` to
+    fall back to the legacy path while the regression is diagnosed.
 
 An unknown engine name is rejected with a clear :class:`ValueError` naming the
 bad value AND the allowed set -- never a silent fallback to a default.
@@ -22,14 +27,17 @@ Why selection lives ONLY here (a load-bearing invariant):
     factory (WS-D / VAL-CWC-P2TSGATE-010) and NEVER reads ``RELAY_CEL_ENGINE``
     itself. A gate-src env read would trip the VAL-W8-005 gate-determinism
     grep (the gate decision must not depend on ambient process environment).
-  - Keeping the read in exactly one file means the default-stays-celpy
-    invariant (M1..M4; the flip to wasm is WS-H / M5) is enforced at a single
+  - Keeping the read in exactly one file means the default engine (now wasm, M5)
+    and the rollback escape hatch (explicit ``celpy``) are governed at a single
     auditable point.
 
-The DEFAULT does NOT flip to wasm here. Per the locked decision (boundaries.md:
-"Do NOT flip the RELAY_CEL_ENGINE default to wasm before milestone M5"), an
-unset / blank ``RELAY_CEL_ENGINE`` selects celpy. Changing that default is a
-WS-H (M5) deliverable, not a routine edit to this factory.
+The M5 flip (this factory's default): an unset / blank ``RELAY_CEL_ENGINE`` now
+selects ``wasm``. Through M1-M4 the default was ``celpy`` and the wasm path lived
+behind the flag (boundaries.md: "Do NOT flip the RELAY_CEL_ENGINE default to
+wasm before milestone M5"); M5 (WS-H) is exactly the milestone that flips it. The
+M1-M4 dual-run byte-parity work PROVED celpy and wasm agree on every in-corpus
+expression, so the flip is behavior-preserving for the contract/gate workload;
+``RELAY_CEL_ENGINE=celpy`` remains the deliberate rollback override until M6.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -49,15 +57,21 @@ from .wasm_backed_evaluator import WasmCelEvaluator
 # engine_module and the VAL-W8-005 / VAL-CWC-P4DUALRUN-008 determinism greps).
 _ENGINE_ENV_VAR: str = "RELAY_CEL_ENGINE"
 
-# Canonical engine tokens. ``celpy`` is the M1 default (the flip to wasm is
-# WS-H / M5). Matching is exact (case-sensitive) after surrounding-whitespace
-# trim -- no locale-dependent case-folding, so selection is deterministic.
+# Canonical engine tokens. ``wasm`` is the default as of M5 (the flip landed in
+# WS-H / M5); ``celpy`` is the explicit rollback override (removed at M6).
+# Matching is exact (case-sensitive) after surrounding-whitespace trim -- no
+# locale-dependent case-folding, so selection is deterministic.
 _ENGINE_CELPY: str = "celpy"
 _ENGINE_WASM: str = "wasm"
 
-# The default engine when RELAY_CEL_ENGINE is unset or blank. STAYS celpy at
-# M1; do NOT flip to wasm here (boundaries.md hard rule -- that is WS-H / M5).
-_DEFAULT_ENGINE: str = _ENGINE_CELPY
+# The default engine when RELAY_CEL_ENGINE is unset or blank. FLIPPED to wasm at
+# M5 (WS-H) -- this is the cutover's most consequential change: every consumer
+# that constructs an evaluator through this factory without setting
+# RELAY_CEL_ENGINE now runs on the single wasm CEL engine. M1-M4 kept this at
+# celpy behind the flag; the M1-M4 dual-run byte-parity work proved celpy and
+# wasm agree, so the flip is behavior-preserving. ``RELAY_CEL_ENGINE=celpy`` is
+# the deliberate rollback escape hatch through the one-release bake (until M6).
+_DEFAULT_ENGINE: str = _ENGINE_WASM
 
 _ALLOWED_ENGINES: tuple[str, ...] = (_ENGINE_CELPY, _ENGINE_WASM)
 
@@ -88,7 +102,7 @@ class CelEvaluatorProtocol(Protocol):
 def _select_engine_name() -> str:
     """Resolve the engine name from ``RELAY_CEL_ENGINE`` (the ONLY env read).
 
-    An absent or blank value resolves to the default (celpy at M1). A
+    An absent or blank value resolves to the default (wasm as of M5). A
     non-blank value is trimmed of surrounding whitespace (a common
     shell-export accident) and matched case-sensitively against the allowed
     tokens. An unknown value raises a clear :class:`ValueError`.
@@ -99,8 +113,9 @@ def _select_engine_name() -> str:
     value = raw.strip()
     if value == "":
         # A set-but-blank env var (e.g. ``RELAY_CEL_ENGINE=``) is the standard
-        # "no selection" signal; fall back to the safe default (celpy). This
-        # preserves the default-stays-celpy invariant at M1.
+        # "no selection" signal; fall back to the default. As of M5 that default
+        # is wasm (the flip); an empty export cannot pin the legacy celpy engine
+        # -- only an explicit ``RELAY_CEL_ENGINE=celpy`` selects the rollback.
         return _DEFAULT_ENGINE
     if value not in _ALLOWED_ENGINES:
         allowed = ", ".join(repr(name) for name in _ALLOWED_ENGINES)
@@ -120,13 +135,14 @@ def make_cel_evaluator(
     """Construct the CEL evaluator for the selected engine.
 
     Reads ``RELAY_CEL_ENGINE`` (the SINGLE read site) to choose the backend:
-    ``celpy`` (default; unset / blank) -> :class:`RelayCelEvaluator`; ``wasm``
-    -> :class:`WasmCelEvaluator`. ``timeout_ms`` and ``udfs`` are forwarded to
-    the selected evaluator's constructor with IDENTICAL semantics, so the
-    factory is a transparent substitute for constructing either class
-    directly: the same bound checks (positive int, <= ``MAX_TIMEOUT_MS``) and
-    the same UDF handling (celpy registers them; the wasm accepts the 3 native
-    ``relay.*`` UDFs and rejects any other fail-closed) apply.
+    ``wasm`` (the M5 default; unset / blank) -> :class:`WasmCelEvaluator`;
+    ``celpy`` (the explicit rollback override) -> :class:`RelayCelEvaluator`.
+    ``timeout_ms`` and ``udfs`` are forwarded to the selected evaluator's
+    constructor with IDENTICAL semantics, so the factory is a transparent
+    substitute for constructing either class directly: the same bound checks
+    (positive int, <= ``MAX_TIMEOUT_MS``) and the same UDF handling (the wasm
+    accepts the 3 native ``relay.*`` UDFs and rejects any other fail-closed; the
+    legacy celpy path registers them) apply.
 
     Args:
         timeout_ms: per-evaluation wall-clock budget in milliseconds. ``None``
