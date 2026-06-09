@@ -174,8 +174,10 @@ const ENGINE_ENV_VAR = "RELAY_CEL_ENGINE";
  * The prior implementation approximated the language with a comment/string
  * SCRUBBER plus regexes; that approach kept producing evasion cases (round-3: a
  * read hidden inside a `${...}` template interpolation; round-4: a `}` inside an
- * interpolation COMMENT, `${/* } *​/ process.env.RELAY_CEL_ENGINE}`, prematurely
- * terminated the captured body and dropped the read). Those are all artifacts of
+ * interpolation COMMENT -- a template like dollar-brace, then a block comment
+ * "slash-star close-brace star-slash", then `process.env.RELAY_CEL_ENGINE`, then
+ * the closing brace -- prematurely terminated the captured body at the `}` inside
+ * the block comment and dropped the read). Those are all artifacts of
  * regex-approximating a real grammar. A genuine parse eliminates the entire
  * class: `ts.createSourceFile` builds the AST, in which COMMENTS and
  * string-literal TEXT are NOT nodes (so a read can never hide in one), and a read
@@ -195,6 +197,28 @@ const ENGINE_ENV_VAR = "RELAY_CEL_ENGINE";
  *        const { RELAY_CEL_ENGINE: sel } = process.env
  *        const e = process.env; const { RELAY_CEL_ENGINE } = e
  *
+ * ROBOREV round-5 finding A: the receiver test NORMALIZES the expression first by
+ * recursively unwrapping the common TS expression wrappers that a naturally
+ * written read may carry, so none of these evade the scan:
+ *        (process.env).RELAY_CEL_ENGINE                      (parenthesized)
+ *        process.env!.RELAY_CEL_ENGINE                       (non-null assertion)
+ *        (process.env as NodeJS.ProcessEnv)["RELAY_CEL_ENGINE"]  (as-assertion)
+ *        (process.env satisfies NodeJS.ProcessEnv).RELAY_CEL_ENGINE  (satisfies)
+ *        <NodeJS.ProcessEnv>process.env                      (angle assertion)
+ * The same normalization is applied to alias initializers, so
+ *        const e = (process.env as any); e.RELAY_CEL_ENGINE
+ * is caught too.
+ *
+ * ROBOREV round-5 finding B: aliases are tracked PER LEXICAL SCOPE, not file-wide.
+ * A `const env = process.env` in one function does not bleed into an unrelated
+ * same-named parameter/local `env` in another function. An inner declaration of
+ * the alias name that is NOT a process.env binding MASKS the outer alias within
+ * that scope; a reassignment of the alias name to a non-process.env value clears
+ * it for the rest of that scope. Aliases declared in an enclosing scope remain
+ * visible to nested scopes (ordinary closure capture), and a forward reference
+ * to an alias declared later in the same scope still resolves (per-scope
+ * declarations are gathered before reads in that scope are judged).
+ *
  * `filePath` only labels the synthetic SourceFile (diagnostics); the scan does
  * not type-check, so no tsconfig / program is needed. The file extension drives
  * the scriptKind so `.mjs`/`.cts`/`.tsx` parse correctly.
@@ -211,22 +235,80 @@ export function sourceReadsRelayCelEngineEnv(
     scriptKindFor(filePath),
   );
 
-  // Identifiers locally bound DIRECTLY to `process.env` (const e = process.env).
-  // A read of RELAY_CEL_ENGINE off any such alias is equivalent to reading it off
-  // process.env. Collected in a first pass so a `const e = process.env` that
-  // textually FOLLOWS the alias read is still caught.
-  const envAliases = collectProcessEnvAliases(sf);
+  // Identifiers locally bound to `process.env` (const e = process.env), tracked
+  // PER LEXICAL SCOPE (ROBOREV round-5 finding B). Each frame maps a name to
+  // `true` (it IS a process.env alias in this scope) or `false` (it is a local
+  // binding of that name that is NOT an alias -- a shadow that MASKS any outer
+  // alias). Resolution walks the stack inner-to-outer; the nearest frame with an
+  // entry for the name wins. So a `const env = process.env` in one function never
+  // bleeds into an unrelated same-named parameter `env` in another function.
+  const scopes: Array<Map<string, boolean>> = [];
+
+  // Does the identifier `name` resolve to a process.env alias in the current
+  // scope chain? The nearest binding (alias or shadow) wins; no binding -> not
+  // an alias.
+  const resolvesToEnvAlias = (name: string): boolean => {
+    for (let i = scopes.length - 1; i >= 0; i -= 1) {
+      const frame = scopes[i];
+      const entry = frame?.get(name);
+      if (entry !== undefined) {
+        return entry;
+      }
+    }
+    return false;
+  };
+
+  // True if `expr` denotes `process.env`: the literal `process.env` /
+  // `process?.env` / `process["env"]` member access, OR an identifier that
+  // resolves to a process.env alias in the current scope chain. The expression is
+  // NORMALIZED first (round-5 finding A) so wrappers like (x), x!, x as T,
+  // <T>x, x satisfies T do not hide the receiver.
+  const isProcessEnvExpr = (expr: ts.Expression): boolean => {
+    const inner = unwrapExpression(expr);
+    if (ts.isIdentifier(inner)) {
+      return resolvesToEnvAlias(inner.text);
+    }
+    return isLiteralProcessEnv(inner);
+  };
 
   let found = false;
   const visit = (node: ts.Node): void => {
     if (found) {
       return;
     }
+    if (isScopeNode(node)) {
+      // Enter a new lexical scope: gather THIS scope's own bindings (params +
+      // direct var/let/const declarations, not descending into nested scopes)
+      // BEFORE judging reads, so a forward reference to an alias declared later
+      // in the same scope still resolves, and a non-alias binding of an alias
+      // name masks the outer alias for the whole inner scope.
+      const frame = new Map<string, boolean>();
+      gatherScopeBindings(node, frame);
+      scopes.push(frame);
+      ts.forEachChild(node, visit);
+      scopes.pop();
+      return;
+    }
+
+    // Reassignment of an alias name to a non-process.env value clears it for the
+    // rest of the current scope: `env = somethingElse`.
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(node.left) &&
+      scopes.length > 0
+    ) {
+      const current = scopes[scopes.length - 1];
+      if (current !== undefined && current.has(node.left.text)) {
+        current.set(node.left.text, isProcessEnvExpr(node.right));
+      }
+    }
+
     // (1) Member access: <envExpr>.RELAY_CEL_ENGINE or <envExpr>["RELAY_CEL_ENGINE"].
     if (ts.isPropertyAccessExpression(node)) {
       if (
         node.name.text === ENGINE_ENV_VAR &&
-        isProcessEnvExpression(node.expression, envAliases)
+        isProcessEnvExpr(node.expression)
       ) {
         found = true;
         return;
@@ -236,7 +318,7 @@ export function sourceReadsRelayCelEngineEnv(
       if (
         ts.isStringLiteralLike(arg) &&
         arg.text === ENGINE_ENV_VAR &&
-        isProcessEnvExpression(node.expression, envAliases)
+        isProcessEnvExpr(node.expression)
       ) {
         found = true;
         return;
@@ -245,7 +327,7 @@ export function sourceReadsRelayCelEngineEnv(
       ts.isVariableDeclaration(node) &&
       node.initializer !== undefined &&
       ts.isObjectBindingPattern(node.name) &&
-      isProcessEnvExpression(node.initializer, envAliases) &&
+      isProcessEnvExpr(node.initializer) &&
       objectBindingPullsEngineVar(node.name)
     ) {
       // (2) Destructuring read: const { RELAY_CEL_ENGINE [: alias] } = process.env
@@ -260,66 +342,148 @@ export function sourceReadsRelayCelEngineEnv(
 }
 
 /**
- * True if `expr` denotes `process.env` -- either the literal member access
- * `process.env` / `process?.env`, or an identifier in `envAliases` (a local
- * binding `const e = process.env`). Used as the receiver test for both the
- * member-access and the destructuring detectors.
+ * Recursively unwrap the TS expression wrappers that a naturally written read may
+ * carry, so the underlying receiver is exposed for the process.env test (ROBOREV
+ * round-5 finding A). Unwraps:
+ *   - ParenthesizedExpression   (x)
+ *   - NonNullExpression         x!
+ *   - AsExpression              x as T
+ *   - SatisfiesExpression       x satisfies T
+ *   - TypeAssertionExpression   <T>x
+ * Idempotent on a bare expression; loops until a fixed point so nested wrappers
+ * like `((process.env as any)!)` collapse to `process.env`.
  */
-function isProcessEnvExpression(
-  expr: ts.Expression,
-  envAliases: ReadonlySet<string>,
-): boolean {
-  if (ts.isIdentifier(expr)) {
-    return envAliases.has(expr.text);
+function unwrapExpression(expr: ts.Expression): ts.Expression {
+  let current = expr;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isTypeAssertionExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    return current;
   }
-  // process.env (PropertyAccess) or process?.env -- a `.env` off an identifier
-  // named `process`. Bracket form process["env"] also denotes process.env.
-  if (ts.isPropertyAccessExpression(expr)) {
-    return expr.name.text === "env" && isProcessIdentifier(expr.expression);
+}
+
+/**
+ * True if `node` opens a new lexical scope for alias tracking: the source file,
+ * any function-like node (its parameters live in this scope), or a block (for
+ * block-scoped let/const). Covers the common cases without modelling every ES
+ * scoping nuance -- the threat model is ACCIDENTAL reads, not adversarial scope
+ * gymnastics.
+ */
+function isScopeNode(node: ts.Node): boolean {
+  return (
+    ts.isSourceFile(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isBlock(node) ||
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node) ||
+    ts.isCatchClause(node)
+  );
+}
+
+/**
+ * Populate `frame` with the bindings declared DIRECTLY in the scope rooted at
+ * `scopeNode` -- function parameters and `var`/`let`/`const` declarations -- WITHOUT
+ * descending into nested function/block scopes (those get their own frames). A
+ * declaration whose initializer is `process.env` (after unwrapping wrappers) is an
+ * alias (`true`); any other declaration of a name is a shadow (`false`) that masks
+ * an outer alias of the same name within this scope.
+ */
+function gatherScopeBindings(
+  scopeNode: ts.Node,
+  frame: Map<string, boolean>,
+): void {
+  // Parameters of a function-like scope are non-alias bindings in this scope.
+  const params = (scopeNode as { parameters?: ts.NodeArray<ts.ParameterDeclaration> })
+    .parameters;
+  if (params !== undefined) {
+    for (const param of params) {
+      recordBindingName(param.name, /* isAlias */ false, frame);
+    }
   }
-  if (ts.isElementAccessExpression(expr)) {
-    const arg = expr.argumentExpression;
-    return (
-      ts.isStringLiteralLike(arg) &&
-      arg.text === "env" &&
-      isProcessIdentifier(expr.expression)
-    );
+
+  const walk = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node)) {
+      if (ts.isIdentifier(node.name)) {
+        const isAlias =
+          node.initializer !== undefined &&
+          isLiteralProcessEnv(unwrapExpression(node.initializer));
+        // A later non-alias declaration of an alias name in the same scope should
+        // NOT clobber an existing alias to a shadow; prefer alias=true if any
+        // declaration in the scope binds it to process.env.
+        const existing = frame.get(node.name.text);
+        if (existing === true) {
+          // keep the alias
+        } else {
+          frame.set(node.name.text, isAlias);
+        }
+      } else {
+        // Destructuring/array binding names are non-alias bindings.
+        recordBindingName(node.name, /* isAlias */ false, frame);
+      }
+      // Do NOT descend into the initializer here: a nested scope inside it gets
+      // its own frame during the main walk.
+      return;
+    }
+    // Do not cross into a nested scope while gathering THIS scope's bindings.
+    if (node !== scopeNode && isScopeNode(node)) {
+      return;
+    }
+    ts.forEachChild(node, walk);
+  };
+  // Walk the scope body but not re-enter the scope node's own scope marker.
+  ts.forEachChild(scopeNode, walk);
+}
+
+/**
+ * Record every identifier bound by `name` (a plain identifier or a destructuring
+ * pattern) into `frame` with the given alias flag, without clobbering an existing
+ * alias=true entry.
+ */
+function recordBindingName(
+  name: ts.BindingName,
+  isAlias: boolean,
+  frame: Map<string, boolean>,
+): void {
+  if (ts.isIdentifier(name)) {
+    if (frame.get(name.text) !== true) {
+      frame.set(name.text, isAlias);
+    }
+    return;
   }
-  return false;
+  // Object/array binding pattern: each bound element is a non-alias local.
+  for (const element of name.elements) {
+    if (ts.isBindingElement(element)) {
+      recordBindingName(element.name, isAlias, frame);
+    }
+  }
 }
 
 /** True if `expr` is the bare identifier `process`. */
 function isProcessIdentifier(expr: ts.Expression): boolean {
-  return ts.isIdentifier(expr) && expr.text === "process";
+  const inner = unwrapExpression(expr);
+  return ts.isIdentifier(inner) && inner.text === "process";
 }
 
 /**
- * Collect every local identifier bound DIRECTLY to `process.env` via a variable
- * declaration `const|let|var e = process.env`. A subsequent read of
- * RELAY_CEL_ENGINE off such an alias is a process.env read. (We deliberately do
- * NOT chase deeper aliasing-of-aliases: the production boundary is "no
- * RELAY_CEL_ENGINE read in TS src/ at all", so the one-hop alias closes the
- * realistic evasion while staying a precise, false-positive-free structural
- * check.)
+ * True if `expr` is the literal `process.env` / `process?.env` / `process["env"]`.
+ * `expr` is expected to be ALREADY normalized by `unwrapExpression`; the receiver
+ * `process` is normalized again defensively in `isProcessIdentifier`.
  */
-function collectProcessEnvAliases(sf: ts.SourceFile): ReadonlySet<string> {
-  const aliases = new Set<string>();
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer !== undefined &&
-      isLiteralProcessEnv(node.initializer)
-    ) {
-      aliases.add(node.name.text);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return aliases;
-}
-
-/** True if `expr` is the literal `process.env` / `process?.env` / process["env"]. */
 function isLiteralProcessEnv(expr: ts.Expression): boolean {
   if (ts.isPropertyAccessExpression(expr)) {
     return expr.name.text === "env" && isProcessIdentifier(expr.expression);
@@ -436,6 +600,18 @@ describe("roborev round-4 finding A: the AST env-read guard catches evasive RELA
       "const v = `${/* } */ process.env.RELAY_CEL_ENGINE}`;",
       // A line comment with a brace inside the interpolation, same class.
       "const v = `${ // } trailing\n  process.env.RELAY_CEL_ENGINE}`;",
+      // ROBOREV round-5 finding A: common TS expression wrappers around the
+      // receiver. Each unwraps to `process.env`, so each is a real read.
+      "const v = (process.env).RELAY_CEL_ENGINE;", // parenthesized
+      "const v = process.env!.RELAY_CEL_ENGINE;", // non-null assertion
+      'const v = (process.env as NodeJS.ProcessEnv)["RELAY_CEL_ENGINE"];', // as-assertion
+      "const v = (process.env satisfies NodeJS.ProcessEnv).RELAY_CEL_ENGINE;", // satisfies
+      "const v = (<NodeJS.ProcessEnv>process.env).RELAY_CEL_ENGINE;", // angle assertion
+      // A wrapped ALIAS initializer: the alias still resolves to process.env.
+      "const e = (process.env as any); const v = e.RELAY_CEL_ENGINE;",
+      "const e = (process.env)!; const v = e.RELAY_CEL_ENGINE;",
+      // Nested wrappers collapse to a fixed point.
+      "const v = ((process.env as any)!).RELAY_CEL_ENGINE;",
     ];
     for (const snippet of flagged) {
       expect(
@@ -532,5 +708,203 @@ describe("roborev round-4 finding A: the AST env-read guard catches evasive RELA
         expect(offenders.filter((f) => f !== TEMP)).toEqual([]);
       });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ROBOREV round-5 finding A: the receiver test must NORMALIZE common TS
+// expression wrappers ((x), x!, x as T, x satisfies T, <T>x) before deciding
+// whether a receiver -- or an alias initializer -- is `process.env`. Without
+// unwrapping, a NATURALLY written read like `(process.env).RELAY_CEL_ENGINE` or
+// `const e = (process.env as any); e.RELAY_CEL_ENGINE` evades the guard. The
+// end-to-end probes below prove the REAL src/-tree scan bites each wrapped form.
+// ---------------------------------------------------------------------------
+describe("roborev round-5 finding A: the guard unwraps expression wrappers around process.env", () => {
+  const TEMP = resolve(SRC_DIR, "__roborev_a5_wrap_probe__.ts");
+
+  afterEach(() => {
+    try {
+      unlinkSync(TEMP);
+    } catch {
+      // already removed
+    }
+  });
+
+  const scanSrcTree = (): string[] => {
+    const offenders: string[] = [];
+    for (const file of listSourceFiles(SRC_DIR)) {
+      if (sourceReadsRelayCelEngineEnv(readFileSync(file, "utf8"), file)) {
+        offenders.push(file);
+      }
+    }
+    return offenders;
+  };
+
+  const probes: Array<{ label: string; body: string }> = [
+    {
+      label: "parenthesized receiver",
+      body:
+        "export function evade(): string | undefined {\n" +
+        "  return (process.env).RELAY_CEL_ENGINE;\n" +
+        "}\n",
+    },
+    {
+      label: "non-null-assertion receiver",
+      body:
+        "export function evade(): string | undefined {\n" +
+        "  return process.env!.RELAY_CEL_ENGINE;\n" +
+        "}\n",
+    },
+    {
+      label: "as-assertion receiver (bracket access)",
+      body:
+        "export function evade(): string | undefined {\n" +
+        '  return (process.env as NodeJS.ProcessEnv)["RELAY_CEL_ENGINE"];\n' +
+        "}\n",
+    },
+    {
+      label: "satisfies receiver",
+      body:
+        "export function evade(): string | undefined {\n" +
+        "  return (process.env satisfies NodeJS.ProcessEnv).RELAY_CEL_ENGINE;\n" +
+        "}\n",
+    },
+    {
+      label: "wrapped alias initializer",
+      body:
+        "export function evade(): string | undefined {\n" +
+        "  const e = (process.env as any);\n" +
+        "  return e.RELAY_CEL_ENGINE;\n" +
+        "}\n",
+    },
+  ];
+
+  for (const { label, body } of probes) {
+    test(`the src/-tree scan flags a ${label} in src/`, () => {
+      writeFileSync(TEMP, body, "utf8");
+      const offenders = scanSrcTree();
+      // The probe MUST be flagged (proves non-vacuity end-to-end), and no OTHER
+      // src file may trip (so the guard stays clean once the probe is gone).
+      expect(offenders).toContain(TEMP);
+      expect(offenders.filter((f) => f !== TEMP)).toEqual([]);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ROBOREV round-5 finding B: aliases are tracked PER LEXICAL SCOPE, not file-wide.
+// A `process.env` alias named `env` in one function must NOT cause an UNRELATED
+// same-named parameter/local `env` in another function to be treated as
+// process.env (a false positive that wrongly fails the guard). We prove BOTH:
+//   - true positive:  an aliased read of RELAY_CEL_ENGINE still fails the guard;
+//   - no false alarm: an unrelated same-named local reading a DIFFERENT prop is fine.
+// ---------------------------------------------------------------------------
+describe("roborev round-5 finding B: alias tracking honors lexical scope / shadowing", () => {
+  const SCAN = "__probe__.ts";
+
+  test("an aliased read of RELAY_CEL_ENGINE in one function is FLAGGED (true positive)", () => {
+    const src =
+      "function f1() { const env = process.env; return env.RELAY_CEL_ENGINE; }\n" +
+      "function f2(env: Record<string, string>) { return env.SOMETHING_ELSE; }\n";
+    expect(sourceReadsRelayCelEngineEnv(src, SCAN)).toBe(true);
+  });
+
+  test("an unrelated same-named local in another scope does NOT cause a false positive", () => {
+    // f1's `env` alias reads a NON-engine var; f2's UNRELATED `env` param reads
+    // RELAY_CEL_ENGINE off ITSELF (not process.env). There is no real
+    // process.env.RELAY_CEL_ENGINE read anywhere, so the guard must NOT flag.
+    const src =
+      "function f1() { const env = process.env; return env.SOMETHING_ELSE; }\n" +
+      "function f2(env: Record<string, string>) { return env.RELAY_CEL_ENGINE; }\n";
+    expect(sourceReadsRelayCelEngineEnv(src, SCAN)).toBe(false);
+  });
+
+  test("an inner shadow masks an outer alias of the same name within the inner scope", () => {
+    // Module-scope `env` IS process.env; the inner function redeclares `env` as a
+    // plain parameter (a shadow), so the inner `env.RELAY_CEL_ENGINE` is NOT a
+    // process.env read.
+    const src =
+      "const env = process.env;\n" +
+      "function inner(env: Record<string, string>) { return env.RELAY_CEL_ENGINE; }\n";
+    expect(sourceReadsRelayCelEngineEnv(src, SCAN)).toBe(false);
+  });
+
+  test("an outer alias is still visible to a nested scope that does NOT shadow it", () => {
+    // The nested function captures the module-scope alias `env` (no shadow), so
+    // the read off it IS a process.env read.
+    const src =
+      "const env = process.env;\n" +
+      "function inner() { return env.RELAY_CEL_ENGINE; }\n";
+    expect(sourceReadsRelayCelEngineEnv(src, SCAN)).toBe(true);
+  });
+
+  test("reassigning the alias name to a non-process.env value clears it in scope", () => {
+    // `env` starts as a process.env alias, then is reassigned to a plain object;
+    // the LATER read off `env` is NOT a process.env read.
+    const src =
+      "function f() {\n" +
+      "  let env = process.env;\n" +
+      "  env = { RELAY_CEL_ENGINE: 'x' } as any;\n" +
+      "  return env.RELAY_CEL_ENGINE;\n" +
+      "}\n";
+    expect(sourceReadsRelayCelEngineEnv(src, SCAN)).toBe(false);
+  });
+
+  // End-to-end non-vacuity for finding B: a real src file with an aliased,
+  // lexically-scoped read must fail the src/-tree scan; an unrelated same-named
+  // local elsewhere in the same file must NOT add a false offender.
+  describe("end-to-end: a scoped aliased read fails the scan without false positives", () => {
+    const TEMP = resolve(SRC_DIR, "__roborev_b5_scope_probe__.ts");
+
+    afterEach(() => {
+      try {
+        unlinkSync(TEMP);
+      } catch {
+        // already removed
+      }
+    });
+
+    const scanSrcTree = (): string[] => {
+      const offenders: string[] = [];
+      for (const file of listSourceFiles(SRC_DIR)) {
+        if (sourceReadsRelayCelEngineEnv(readFileSync(file, "utf8"), file)) {
+          offenders.push(file);
+        }
+      }
+      return offenders;
+    };
+
+    test("the scan flags the aliased read and only that file", () => {
+      const body =
+        "export function f1(): string | undefined {\n" +
+        "  const env = process.env;\n" +
+        "  return env.RELAY_CEL_ENGINE;\n" +
+        "}\n" +
+        "export function f2(env: Record<string, string>): string {\n" +
+        "  return env.SOMETHING_ELSE;\n" +
+        "}\n";
+      writeFileSync(TEMP, body, "utf8");
+      const offenders = scanSrcTree();
+      expect(offenders).toContain(TEMP);
+      expect(offenders.filter((f) => f !== TEMP)).toEqual([]);
+    });
+
+    test("a file whose ONLY same-named local is unrelated adds NO offender", () => {
+      // No real process.env.RELAY_CEL_ENGINE read here: f1's alias reads a
+      // different prop; f2's unrelated `env` param reads RELAY_CEL_ENGINE off
+      // itself. The src/-tree must stay clean (no offender from this file).
+      const body =
+        "export function f1(): string | undefined {\n" +
+        "  const env = process.env;\n" +
+        "  return env.SOMETHING_ELSE;\n" +
+        "}\n" +
+        "export function f2(env: Record<string, string>): string {\n" +
+        "  return env.RELAY_CEL_ENGINE;\n" +
+        "}\n";
+      writeFileSync(TEMP, body, "utf8");
+      const offenders = scanSrcTree();
+      expect(offenders).not.toContain(TEMP);
+      expect(offenders).toEqual([]);
+    });
   });
 });
