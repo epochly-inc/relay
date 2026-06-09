@@ -532,3 +532,195 @@ def test_cel_engine_udf_probe_accepts_cel_booltype(
 
     findings = cel_engine._probe_three_udfs()
     assert findings == [], [(f.code, f.pattern) for f in findings]
+
+
+# -----------------------------------------------------------------------------
+# roborev MED (defense-in-depth): a BARE loader / import / OS / wasmtime error
+# escaping lazy load must STILL classify as WASM-UNLOADABLE -- never UDF-WRONG /
+# DYN-NOT-FENCED (VAL-CWC-P5FLIP-005 fail-closed contract).
+# -----------------------------------------------------------------------------
+#
+# The wasm facade (wasm_backed_evaluator.py) is DESIGNED to wrap every lazy-load
+# surface (absent loader module, in-repo / package-data source, the shared-engine
+# wasmtime instantiation in ``_ensure_shared``) into ``RelayCelEngineError``
+# (RELAY-CEL-009). Investigation confirms the cel_engine probe's load path
+# (``_build_wasm_evaluator().evaluate()`` -> ``_ensure_shared``) correctly
+# surfaces a corrupt-but-present wasm as ``RelayCelEngineError`` (the
+# try/except wrap at ``wasm_backed_evaluator._ensure_shared`` re-wraps the bare
+# ``wasmtime.WasmtimeError``).
+#
+# DEFENSE IN DEPTH: the probe classifier must NOT depend on the facade never
+# drifting. A bare ``ImportError`` / ``ModuleNotFoundError`` / ``FileNotFoundError``
+# / ``OSError`` / wasmtime instantiation error escaping ``evaluate()`` is STILL a
+# load failure -- it MUST map to WASM-UNLOADABLE, not to a UDF wrong-verdict / an
+# unfenced dyn. These tests fault-inject each bare-error surface and assert the
+# fail-closed classification holds.
+
+
+def _bare_error_evaluator_factory(exc: BaseException):
+    """Build a stand-in evaluator whose ``evaluate()`` raises ``exc`` (bare).
+
+    Construction succeeds (the real evaluator only validates timeout/UDFs); the
+    FIRST ``evaluate()`` raises the supplied BARE exception -- modelling a lazy
+    load surface the facade FAILED to wrap into ``RelayCelEngineError``.
+    """
+
+    class _BareErrorEvaluator:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def evaluate(self, expression: str, bindings: object = None) -> object:
+            raise exc
+
+    return lambda: _BareErrorEvaluator()
+
+
+_BARE_LOAD_ERRORS: tuple[BaseException, ...] = (
+    ImportError("simulated bare ImportError from lazy wasm load"),
+    ModuleNotFoundError("simulated bare ModuleNotFoundError"),
+    FileNotFoundError("simulated bare FileNotFoundError (absent wasm)"),
+    OSError("simulated bare OSError reading the wasm artifact"),
+)
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-005")
+@pytest.mark.parametrize(
+    "exc",
+    _BARE_LOAD_ERRORS,
+    ids=lambda e: type(e).__name__,
+)
+def test_cel_engine_udf_probe_bare_load_error_is_wasm_unloadable(
+    monkeypatch: pytest.MonkeyPatch, exc: BaseException
+) -> None:
+    """A BARE import / OS / file-not-found error from ``evaluate()`` in the UDF
+    probe is a WASM-UNLOADABLE finding, NOT a UDF-WRONG misclassification.
+
+    Defense-in-depth: even if the facade fails to wrap a lazy-load surface into
+    ``RelayCelEngineError``, the probe must fail closed (a load failure means no
+    verdict was produced)."""
+    monkeypatch.setattr(
+        cel_engine, "_build_wasm_evaluator", _bare_error_evaluator_factory(exc)
+    )
+
+    findings = cel_engine._probe_three_udfs()
+    codes = [f.code for f in findings]
+    assert findings, "a bare load failure must produce at least one finding"
+    assert all(
+        c == cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE
+        for c in codes
+    ), codes
+    assert (
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG not in codes
+    ), "bare load failure must NOT be misclassified as UDF-WRONG"
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-005")
+@pytest.mark.parametrize(
+    "exc",
+    _BARE_LOAD_ERRORS,
+    ids=lambda e: type(e).__name__,
+)
+def test_cel_engine_dyn_probe_bare_load_error_is_wasm_unloadable(
+    monkeypatch: pytest.MonkeyPatch, exc: BaseException
+) -> None:
+    """A BARE import / OS / file-not-found error from ``evaluate()`` in the
+    dyn-fence probe is a WASM-UNLOADABLE finding, NOT a DYN-NOT-FENCED
+    misclassification.
+
+    The absence of a profile-fence exception when the engine never even loaded
+    must NOT be read as 'dyn evaluated / fence missing'."""
+    monkeypatch.setattr(
+        cel_engine, "_build_wasm_evaluator", _bare_error_evaluator_factory(exc)
+    )
+
+    findings = cel_engine._probe_dyn_fence()
+    codes = [f.code for f in findings]
+    assert codes == [
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE
+    ], codes
+    assert (
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED not in codes
+    ), "bare load failure must NOT be misclassified as DYN-NOT-FENCED"
+
+
+def _wasmtime_error_or_skip() -> BaseException:
+    """Return a real ``wasmtime.WasmtimeError`` instance, or skip if absent.
+
+    The wasmtime instantiation error is a BARE ``Exception`` subclass (NOT an
+    ``OSError`` / ``ImportError``), so the probe classifier must recognize it
+    explicitly. This is the exact bare type a corrupt-but-present wasm surfaces
+    from the one-shot-handle load path (``evaluate_with_wasm_path``)."""
+    try:
+        from wasmtime import WasmtimeError
+    except Exception:  # noqa: BLE001 -- wasmtime not installed -> skip
+        pytest.skip("wasmtime not importable in this environment")
+    return WasmtimeError("simulated bare wasmtime instantiation failure")
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-005")
+def test_cel_engine_udf_probe_bare_wasmtime_error_is_wasm_unloadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A BARE ``wasmtime.WasmtimeError`` from ``evaluate()`` in the UDF probe is a
+    WASM-UNLOADABLE finding, NOT a UDF-WRONG misclassification.
+
+    ``WasmtimeError`` is a plain ``Exception`` subclass (not ``OSError`` /
+    ``ImportError``), so the classifier must recognize the wasmtime error type
+    explicitly -- the corrupt-but-present wasm surfaces exactly this type from the
+    one-shot-handle load path."""
+    exc = _wasmtime_error_or_skip()
+    monkeypatch.setattr(
+        cel_engine, "_build_wasm_evaluator", _bare_error_evaluator_factory(exc)
+    )
+
+    findings = cel_engine._probe_three_udfs()
+    codes = [f.code for f in findings]
+    assert findings, "a bare wasmtime load failure must produce a finding"
+    assert all(
+        c == cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE
+        for c in codes
+    ), codes
+    assert (
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG not in codes
+    ), "bare wasmtime load failure must NOT be misclassified as UDF-WRONG"
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-005")
+def test_cel_engine_corrupt_but_present_wasm_is_wasm_unloadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A CORRUPT-but-present wasm (a real file of GARBAGE bytes pointed at by the
+    shared-engine resolver) makes ``run()`` fail closed with WASM-UNLOADABLE
+    findings only -- it does NOT raise and does NOT misclassify.
+
+    This exercises the REAL lazy-load path end to end: a present file whose bytes
+    are not a valid wasm module. ``_ensure_shared`` instantiates wasmtime against
+    those bytes; the bare ``WasmtimeError`` is wrapped into ``RelayCelEngineError``
+    by the facade and the probe classifies it as WASM-UNLOADABLE. Investigation
+    finding: the corrupt-but-present wasm surfaces WRAPPED (RelayCelEngineError)
+    through the shared-engine evaluate() path; the defensive classifier also
+    covers the BARE surface should that ever drift."""
+    import relay_contracts.wasm_backed_evaluator as wbe
+
+    garbage = tmp_path / "corrupt.wasm"
+    garbage.write_bytes(b"not a valid wasm module \x00\x01\x02\x03" * 32)
+
+    # Point the shared-engine resolver at the garbage file so the LAZY
+    # _ensure_shared bootstrap instantiates wasmtime against corrupt bytes.
+    monkeypatch.setattr(
+        wbe, "_resolve_wasm_path_or_none", lambda override=None: str(garbage)
+    )
+
+    # run() MUST NOT raise.
+    name, findings = cel_engine.run(REPO_ROOT)
+    assert name == cel_engine.CHECK_NAME
+    codes = {f.code for f in findings}
+    assert cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE in codes
+    assert (
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG not in codes
+    ), "corrupt-but-present wasm must NOT be misclassified as UDF-WRONG"
+    assert (
+        cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED not in codes
+    ), "corrupt-but-present wasm must NOT be misclassified as DYN-NOT-FENCED"
+    for finding in findings:
+        assert finding.code in FINDING_CODES

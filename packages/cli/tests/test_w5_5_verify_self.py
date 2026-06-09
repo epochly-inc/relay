@@ -26,6 +26,7 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ from relay_cli.evidence_bundle import (
 from relay_cli.invariants import runner as runner_module
 from relay_cli.invariants.runner import (
     _CHECK_DISPATCH,
+    CEL_ENGINE_CHECK,
     CHECK_ORDER,
     VERIFY_SELF_RESULT_SCHEMA,
     run_all_checks,
@@ -61,9 +63,17 @@ def _run_rly(
     *,
     cwd: Path | None = None,
     timeout: float = 90.0,
+    unset_env: Iterable[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Invoke ``uv run rly <args>`` non-TTY (capture_output=True)."""
+    """Invoke ``uv run rly <args>`` non-TTY (capture_output=True).
+
+    ``unset_env`` names are DELETED from the child environment (so a variable can
+    be made truly UNSET, distinct from set-but-blank). ``extra_env`` is applied
+    after the unset, so passing the same name in both makes it set.
+    """
     env = os.environ.copy()
+    for name in unset_env or ():
+        env.pop(name, None)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -777,6 +787,96 @@ def test_verify_self_against_real_repo_exits_zero() -> None:
         + " stderr="
         + result.stderr
     )
+    assert result.returncode == 0
+
+
+# -----------------------------------------------------------------------------
+# VAL-CWC-P5FLIP-007 / -008: rly verify-self --json passes with the cel_engine
+# check green -- on a healthy default install (env unset) AND under an explicit
+# RELAY_CEL_ENGINE=wasm selection. CLI-integration: invoke the real CLI exactly
+# as the contract Evidence command specifies, parse stdout JSON, and assert the
+# cel_engine entry is present with status == "pass".
+# -----------------------------------------------------------------------------
+
+
+def _cel_engine_entry(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the cel_engine check entry from a verify-self JSON payload.
+
+    Locates the ``checks[]`` object whose ``name`` equals the cel_engine
+    ``CHECK_NAME``. Asserts the entry is PRESENT (a missing entry -- the
+    pre-registration state this test guards against -- fails here, so the test is
+    non-vacuous: it would FAIL if the cel_engine check were not wired into the
+    runner / CLI output)."""
+    checks = payload.get("checks")
+    assert isinstance(checks, list), payload
+    names = [c.get("name") for c in checks]
+    assert CEL_ENGINE_CHECK in names, (
+        f"cel_engine check {CEL_ENGINE_CHECK!r} absent from verify-self "
+        f"checks array; present names={names!r}"
+    )
+    return next(c for c in checks if c.get("name") == CEL_ENGINE_CHECK)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-007")
+def test_verify_self_json_cel_engine_pass_default_install() -> None:
+    """``rly verify-self --json`` (RELAY_CEL_ENGINE UNSET) exits 0 with overall
+    pass, failures 0, and the cel_engine check present + status pass.
+
+    This is the VAL-CWC-P5FLIP-007 CLI-integration assertion: it invokes the real
+    CLI exactly as the contract Evidence command (``uv run rly verify-self
+    --json`` with the engine-selection env UNSET), parses stdout JSON, and asserts
+    the cel_engine entry. ``_cel_engine_entry`` fails if the entry is ABSENT, so
+    the test is non-vacuous (it would FAIL if the cel_engine check were not
+    registered into the runner / surfaced in the CLI output)."""
+    # Truly UNSET the engine-selection env in the child process (delete the key,
+    # not merely blank it) so the assertion matches the contract Evidence command
+    # ("RELAY_CEL_ENGINE unset") exactly, regardless of the caller's environment.
+    result = _run_rly(
+        ["verify-self", "--json"],
+        unset_env=["RELAY_CEL_ENGINE"],
+        timeout=90.0,
+    )
+    payload = json.loads(result.stdout.strip())
+    assert payload["overall"] == "pass", (
+        "verify-self --json FAIL (engine unset): "
+        + json.dumps(payload, indent=2)
+        + " stderr="
+        + result.stderr
+    )
+    assert payload["failures"] == 0, payload
+    entry = _cel_engine_entry(payload)
+    assert entry["status"] == "pass", entry
+    assert result.returncode == 0
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-008")
+def test_verify_self_json_cel_engine_pass_explicit_wasm_engine() -> None:
+    """``RELAY_CEL_ENGINE=wasm rly verify-self --json`` exits 0 with the
+    cel_engine check green.
+
+    VAL-CWC-P5FLIP-008: the invariant must pass under the EXPLICIT wasm engine
+    selection (release-gate #5 precondition for the default flip). Invokes the
+    real CLI exactly as the contract Evidence command
+    (``RELAY_CEL_ENGINE=wasm uv run rly verify-self --json``), parses stdout JSON,
+    and asserts overall pass + the cel_engine entry status pass. The cel_engine
+    check loads the wasm DIRECTLY (engine-selection-agnostic), so this also
+    confirms the wasm path is healthy under the explicit selection."""
+    result = _run_rly(
+        ["verify-self", "--json"],
+        extra_env={"RELAY_CEL_ENGINE": "wasm"},
+        timeout=90.0,
+    )
+    payload = json.loads(result.stdout.strip())
+    assert payload["overall"] == "pass", (
+        "verify-self --json FAIL (RELAY_CEL_ENGINE=wasm): "
+        + json.dumps(payload, indent=2)
+        + " stderr="
+        + result.stderr
+    )
+    entry = _cel_engine_entry(payload)
+    assert entry["status"] == "pass", entry
     assert result.returncode == 0
 
 

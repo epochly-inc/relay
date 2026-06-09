@@ -234,6 +234,35 @@ def _finding(code: str, detail: str) -> Finding:
 # -----------------------------------------------------------------------------
 
 
+def _wasmtime_error_types() -> tuple[type[BaseException], ...]:
+    """Best-effort tuple of the wasmtime instantiation/runtime error types.
+
+    The wasm loader (``packages/cel-wasm/python/relay_cel_wasm.py``) imports
+    wasmtime; a corrupt-but-present wasm surfaces a bare
+    :class:`wasmtime.WasmtimeError` (a plain ``Exception`` subclass -- NOT an
+    ``OSError`` / ``ImportError``) from the one-shot-handle load path. Importing
+    wasmtime here is best-effort: if it is not installed the tuple is empty (the
+    other bare base-error classes still cover the common load surfaces), and the
+    import itself NEVER raises out of the classifier.
+    """
+    try:
+        from wasmtime import Trap, WasmtimeError
+    except Exception:  # noqa: BLE001 -- wasmtime absent: no extra types to add
+        return ()
+    return (WasmtimeError, Trap)
+
+
+# Bare (un-wrapped) exception base classes that, when escaping the LAZY wasm
+# load, are a load / artifact / import failure -- NEVER a logical CEL
+# wrong-verdict. ``ImportError`` covers ``ModuleNotFoundError`` (a subclass);
+# ``OSError`` covers ``FileNotFoundError`` / ``PermissionError`` (subclasses)
+# reading the artifact.
+_BARE_LOAD_ERROR_TYPES: Final[tuple[type[BaseException], ...]] = (
+    ImportError,
+    OSError,
+)
+
+
 def _is_engine_load_error(exc: BaseException) -> bool:
     """True iff ``exc`` is a wasm LOAD / engine error (vs a logical CEL result).
 
@@ -248,15 +277,29 @@ def _is_engine_load_error(exc: BaseException) -> bool:
     Distinguishing the two is load-bearing for the fail-closed contract
     (VAL-CWC-P5FLIP-005): a present-but-unloadable wasm raising on first
     ``evaluate()`` MUST be reported as the structured WASM-UNLOADABLE reason, not
-    misclassified as a UDF wrong-verdict / unfenced dyn. The engine-error class is
-    the RELAY-CEL-009 :class:`RelayCelEngineError` that the lazy
-    ``_ensure_shared`` load raises; an ``ImportError`` / ``FileNotFoundError`` /
-    wasmtime error is already wrapped into that class by the host facade, so the
-    single ``RelayCelEngineError`` check captures every lazy-load surface.
+    misclassified as a UDF wrong-verdict / unfenced dyn.
+
+    The PRIMARY surface is the RELAY-CEL-009 :class:`RelayCelEngineError` that the
+    lazy ``_ensure_shared`` load raises: the host facade wraps a bare
+    ``ImportError`` / ``FileNotFoundError`` / ``wasmtime.WasmtimeError`` from the
+    shared-engine bootstrap into that class (verified: a corrupt-but-present wasm
+    pointed at by the shared-engine resolver surfaces WRAPPED as
+    ``RelayCelEngineError``). DEFENSE IN DEPTH (roborev MED): this classifier ALSO
+    treats a BARE ``ImportError`` / ``ModuleNotFoundError`` / ``FileNotFoundError``
+    / ``OSError`` / ``wasmtime`` instantiation error as a load failure, so a load
+    surface the facade ever FAILS to wrap (e.g. the one-shot-handle path, or
+    future facade drift) STILL fails closed to WASM-UNLOADABLE rather than being
+    misclassified as a wrong-verdict / unfenced dyn. A genuine wrong-verdict
+    (engine loaded + evaluated, wrong boolean) carries none of these types, so the
+    UDF-WRONG / DYN-NOT-FENCED distinction is preserved.
     """
     from relay_contracts.errors import RelayCelEngineError
 
-    return isinstance(exc, RelayCelEngineError)
+    if isinstance(exc, RelayCelEngineError):
+        return True
+    if isinstance(exc, _BARE_LOAD_ERROR_TYPES):
+        return True
+    return isinstance(exc, _wasmtime_error_types())
 
 
 def _decoded_is_boolean(value: Any) -> bool:
@@ -370,17 +413,24 @@ def _probe_dyn_fence() -> list[Finding]:
     than EVALUATING ``dyn(1)``. Outcomes:
 
       * the profile fence (RELAY-CEL-002 / DYN-DISABLED) -> healthy, zero findings;
-      * a wasm LOAD / engine error (RELAY-CEL-009 :class:`RelayCelEngineError`
-        raised by the LAZY load on first ``evaluate()``) -> fail-closed
-        ``RELAY-VERIFY-SELF-CEL-ENGINE-WASM-UNLOADABLE`` (the engine never
-        evaluated -- the absence of the fence exception is NOT "dyn evaluated");
-      * a non-profile, non-engine Relay rejection, OR the engine EVALUATING
+      * a wasm LOAD / engine error -- the RELAY-CEL-009
+        :class:`RelayCelEngineError` raised by the LAZY load on first
+        ``evaluate()``, OR (defense in depth, roborev MED) a BARE
+        ``ImportError`` / ``ModuleNotFoundError`` / ``FileNotFoundError`` /
+        ``OSError`` / ``wasmtime`` instantiation error escaping an un-wrapped load
+        surface -> fail-closed ``RELAY-VERIFY-SELF-CEL-ENGINE-WASM-UNLOADABLE``
+        (the engine never evaluated -- the absence of the fence exception is NOT
+        "dyn evaluated");
+      * a non-profile, non-LOAD Relay rejection, OR the engine EVALUATING
         ``dyn(1)`` (no exception) -> ``RELAY-VERIFY-SELF-CEL-ENGINE-DYN-NOT-FENCED``.
 
     Construction is wrapped so an evaluator that cannot be CONSTRUCTED is
     fail-closed; the lazy load on ``evaluate()`` is distinguished from a genuine
     unfenced ``dyn()`` so a present-but-unloadable wasm is NOT misclassified as a
-    missing fence (VAL-CWC-P5FLIP-005).
+    missing fence (VAL-CWC-P5FLIP-005). The except clauses are ordered so the
+    LOAD / engine error is classified BEFORE any residual wrong-verdict path,
+    and a bare (un-wrapped) load error is caught by the trailing
+    ``_is_engine_load_error`` guard rather than escaping the probe.
     """
     from relay_contracts.errors import (
         RelayCelEngineError,
@@ -428,6 +478,29 @@ def _probe_dyn_fence() -> list[Finding]:
             _finding(
                 RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED,
                 f"dyn() rejected by non-profile error {err.code}/{err.subtype}",
+            )
+        ]
+    except Exception as exc:  # noqa: BLE001 -- classify bare load vs divergence
+        # Defense in depth (roborev MED): a BARE (un-wrapped) load error escaping
+        # the facade -- ImportError / ModuleNotFoundError / FileNotFoundError /
+        # OSError / a wasmtime instantiation error -- is a LOAD failure (the
+        # engine never evaluated dyn(1)), so fail closed to WASM-UNLOADABLE rather
+        # than letting it ESCAPE the probe or be read as a missing fence. A
+        # non-load bare error (the engine loaded then raised something unexpected
+        # during dyn eval) stays a fence DIVERGENCE.
+        if _is_engine_load_error(exc):
+            return [
+                _finding(
+                    RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE,
+                    f"dyn-fence-probe wasm load failed: "
+                    f"{type(exc).__name__}: {exc}",
+                )
+            ]
+        return [
+            _finding(
+                RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED,
+                f"dyn() probe raised non-load error "
+                f"{type(exc).__name__}: {exc}",
             )
         ]
     # No exception -> the engine EVALUATED dyn(1): the fence is missing.
