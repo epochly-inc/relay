@@ -30,71 +30,87 @@ The determinism guard (VAL-008) encodes the contract's grep semantics:
     negative reference, not a read. A bare substring grep is fooled by that
     prose.
 
-Read-site detection -- the TWO covered forms (threat model):
-  EVERY naturally-written environment read of the engine var names the engine
-  key in ONE of two forms, and this guard flags BOTH:
+Read-site detection -- TOKEN-PRESENCE scan (threat model):
+  The prior rounds of this guard FAILED by enumerating access FORMS (first the
+  ``os.<attr>`` API shape, then the ``RELAY_CEL_ENGINE`` literal, then
+  ``ast.Name`` + ``ast.ImportFrom`` of ``_ENGINE_ENV_VAR``). Each form-branch
+  left a tail: ``from os import environ`` named no ``os.<attr>`` node; importing
+  ``_ENGINE_ENV_VAR`` named no literal; and the roborev MED form
+  ``import relay_contracts.engine as engine; os.environ.get(
+  engine._ENGINE_ENV_VAR)`` reads the SAME env var through an
+  ``ast.Attribute.attr`` -- neither an ``ast.Name`` nor an ``ImportFrom`` name,
+  so the form-(b) enumeration skipped it. Enumerating forms is a losing game.
 
-  (a) The ENV-KEY STRING LITERAL form. A read that spells the key inline names
-      the string ``"RELAY_CEL_ENGINE"`` somewhere --
-      ``os.environ.get("RELAY_CEL_ENGINE")``, ``os.getenv("RELAY_CEL_ENGINE")``,
-      ``os.environ["RELAY_CEL_ENGINE"]``, or the from-import form
-      ``from os import environ; environ.get("RELAY_CEL_ENGINE")`` /
-      ``from os import getenv; getenv("RELAY_CEL_ENGINE")``. The guard scans the
-      parsed AST for a string-literal node (``ast.Constant`` with a ``str``
-      value, INCLUDING the constant definition
-      ``_ENGINE_ENV_VAR = "RELAY_CEL_ENGINE"``) whose value is EXACTLY
-      ``RELAY_CEL_ENGINE`` and that is NOT a docstring (comments are not AST
-      nodes, so they can never match).
+  This round STOPS enumerating forms and switches to a SOUND TOKEN-PRESENCE scan
+  (the round-6 lesson from the TS env-guard). The engine-selection key can be
+  named non-adversarially only TWO ways, and BOTH leave an unavoidable token in
+  an AST node field:
 
-  (b) The SANCTIONED-CONSTANT form. A read that does NOT spell the literal but
-      instead names the engine var via the factory's sanctioned constant
-      ``_ENGINE_ENV_VAR`` --
-      ``from relay_contracts.engine import _ENGINE_ENV_VAR; os.environ.get(
-      _ENGINE_ENV_VAR)`` (the EXACT roborev MED evasion). This file contains NO
-      ``RELAY_CEL_ENGINE`` literal at all, so the form-(a) literal scan alone
-      would skip it. The guard therefore ALSO flags any module (other than the
-      factory ``engine.py`` itself) that references the sanctioned constant via
-      EITHER (i) an ``ast.Name(id="_ENGINE_ENV_VAR")`` usage, OR (ii) a
-      ``from ... import _ENGINE_ENV_VAR`` ``ast.ImportFrom`` name (including the
-      aliased form ``import _ENGINE_ENV_VAR as X`` -- the import name is matched,
-      so the aliased read site is caught at the import).
+  (a) The ENV-KEY STRING LITERAL ``"RELAY_CEL_ENGINE"``. EVERY read that spells
+      the key inline names this string -- ``os.environ.get("RELAY_CEL_ENGINE")``,
+      ``os.getenv("RELAY_CEL_ENGINE")``, ``os.environ["RELAY_CEL_ENGINE"]``, the
+      from-import form ``from os import environ; environ.get("RELAY_CEL_ENGINE")``,
+      or the constant definition ``_ENGINE_ENV_VAR = "RELAY_CEL_ENGINE"``. The
+      guard flags any non-docstring ``ast.Constant`` ``str`` node equal to
+      ``RELAY_CEL_ENGINE`` (comments are not AST nodes, so they never match).
 
-  Covering both (a) the literal and (b) the sanctioned-constant reference is the
-  convergent fix for the roborev MED finding: the prior os-API-FORM detector
-  (which matched only ``os.environ`` / ``os.getenv`` attribute access on the
-  ``os`` name) was UNSOUND because ``from os import environ; environ.get(...)``
-  named no ``os.<attr>`` node, and the literal-only successor was STILL evadable
-  because importing ``_ENGINE_ENV_VAR`` reads the same env var WITHOUT spelling
-  the literal. Scanning for both the unavoidable key literal AND the sanctioned
-  constant that aliases it closes the loop -- mirroring the round-6 lesson and
-  the TypeScript env-guard.
+  (b) The SANCTIONED CONSTANT IDENTIFIER ``_ENGINE_ENV_VAR``. A read that does
+      NOT spell the literal instead names the factory's sanctioned constant.
+      EVERY such reference -- ``_ENGINE_ENV_VAR`` (Name),
+      ``engine._ENGINE_ENV_VAR`` (Attribute.attr; the roborev MED form),
+      ``from relay_contracts.engine import _ENGINE_ENV_VAR`` (alias.name),
+      ``import ... import _ENGINE_ENV_VAR as K`` (alias.name), and any future
+      access path -- contains the IDENTIFIER TOKEN ``_ENGINE_ENV_VAR`` SOMEWHERE
+      in an identifier-bearing node field. So the guard walks the AST and flags
+      the file when ANY node carries the string ``_ENGINE_ENV_VAR`` in an
+      identifier field -- ``ast.Name.id``, ``ast.Attribute.attr``,
+      ``ast.alias.name`` / ``ast.alias.asname``, ``ast.keyword.arg``,
+      function / class / param names (``.name`` / ``.arg``), etc. By keying on
+      the identifier TOKEN rather than a specific node shape, this subsumes Name
+      + ImportFrom + Attribute + every future access path with NO remaining
+      form-tail. There is nothing left to enumerate.
+
+  Why token-presence is the convergent fix: the detector keys on the two
+  UNAVOIDABLE tokens -- ``RELAY_CEL_ENGINE`` (the key literal) and
+  ``_ENGINE_ENV_VAR`` (the sanctioned constant) -- so EVERY non-adversarial
+  reference is covered BY CONSTRUCTION, independent of which os-import form,
+  attribute path, or import alias the read happens to use. This mirrors the
+  round-6 TS env-guard lesson: detect the token, not the shape.
 
   Soundness vs. prose (no false positive):
-    - ``#`` comments are NEVER AST nodes, so they can never match either form.
-    - Form (a) EXCLUDES docstrings (the bare-string ``Expr`` first statement of
+    - ``#`` comments are NEVER AST nodes, so they can never match either arm.
+    - Arm (a) EXCLUDES docstrings (the bare-string ``Expr`` first statement of
       a module / class / function body), so a docstring that merely names the
       literal as prose does not trip it.
-    - Form (b) matches an ``ast.Name``/``ast.ImportFrom`` for ``_ENGINE_ENV_VAR``
-      -- a docstring or comment that mentions the token ``_ENGINE_ENV_VAR`` as
-      prose produces a string literal / no AST node, NEVER a ``Name`` or import,
-      so prose does not trip it either.
+    - Arm (b) matches the token ``_ENGINE_ENV_VAR`` only in an IDENTIFIER field
+      (``id`` / ``attr`` / ``name`` / ``asname`` / ``arg``). A docstring or
+      comment that mentions the token as prose produces a string-literal
+      ``ast.Constant`` (whose ``.value`` is NOT an identifier field) or no AST
+      node at all, so prose does not trip it either.
   ``pipeline.py`` mentions ``RELAY_CEL_ENGINE`` only in ``#`` comments and
-  ``wasm_backed_evaluator.py`` only in docstrings, and neither references
-  ``_ENGINE_ENV_VAR`` as a Name/import, so neither trips the guard.
+  ``wasm_backed_evaluator.py`` only in docstrings, and neither carries the
+  ``_ENGINE_ENV_VAR`` identifier token in any node field, so neither trips.
 
   Explicit, documented NON-GOAL: adversarial string-splitting
-  (``"RELAY_" + "CEL_ENGINE"``, ``"".join(...)``, byte/char construction) is
-  out of scope and is NOT detected -- identical posture to the TS env-guard. A
-  developer who deliberately obfuscates the key to hide an env read is outside
-  this guard's threat model.
+  (``"RELAY_" + "CEL_ENGINE"``, ``"".join(...)``, byte/char construction, or
+  ``getattr(engine, "_ENGINE" + "_ENV_VAR")``) is out of scope and is NOT
+  detected -- identical posture to the TS env-guard. A developer who
+  deliberately obfuscates the key to hide an env read is outside this guard's
+  threat model. The detector keys on the unavoidable tokens
+  ``RELAY_CEL_ENGINE`` (key literal) and ``_ENGINE_ENV_VAR`` (sanctioned
+  constant), covering every non-adversarial reference by construction.
 
-Probe isolation (roborev LOW fix): the read-site scanner is a PURE function over
-IN-MEMORY source (:func:`scan_source` takes ``(filename, source_text)`` and
-returns a bool). The real-tree guard scans the actual contracts-src ``*.py``
-files READ-ONLY (no writes anywhere). The non-vacuity probes feed in-memory
-source STRINGS to the SAME pure scanner -- they NEVER write throwaway modules
-into ``packages/contracts/src``. So the guard cannot observe a probe artifact
-under parallel pytest, and the test never requires a writable source tree.
+Probe isolation (roborev LOW fix): the non-vacuity probes drive the REAL on-disk
+read path :func:`_engine_read_site_files` (its cheap two-token PREFILTER followed
+by the AST :func:`scan_source`) over an ISOLATED scan root (pytest ``tmp_path``),
+NOT :func:`scan_source` in isolation. Each probe writes its throwaway module into
+the tmp root -- NEVER into ``packages/contracts/src`` -- and asserts
+``_engine_read_site_files(tmp_root)`` reports the expected verdict. Driving the
+real prefilter+scan locks the prefilter regression: if someone reverts the
+prefilter to literal-only, the ``_ENGINE_ENV_VAR``-only probe through the real
+path FAILS (the prior LOW left the prefilter unexercised by calling
+``scan_source`` directly). The real contracts-src tree is still scanned
+READ-ONLY; probes touch only the isolated tmp root.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -173,63 +189,91 @@ def _names_engine_key_literal(tree: ast.AST) -> bool:
     return False
 
 
-def _references_engine_constant(tree: ast.AST) -> bool:
-    """Form (b): True if the AST references the sanctioned constant
-    ``_ENGINE_ENV_VAR`` via EITHER an ``ast.Name`` usage OR an ``ast.ImportFrom``
-    that imports the name.
+# The AST node attributes that carry a Python IDENTIFIER (a bound or referenced
+# name), as opposed to arbitrary string DATA. A reference to the sanctioned
+# constant lands the token ``_ENGINE_ENV_VAR`` in exactly these fields, never in
+# a string-literal ``ast.Constant.value`` (which is DATA, not an identifier).
+# Single-identifier fields hold a ``str``; list fields (``Global``/``Nonlocal``
+# ``names``) hold a ``list[str]``.
+_IDENTIFIER_STR_FIELDS: tuple[str, ...] = (
+    "id",  # ast.Name
+    "attr",  # ast.Attribute (the roborev MED form: engine._ENGINE_ENV_VAR)
+    "name",  # ast.alias / FunctionDef / AsyncFunctionDef / ClassDef / ExceptHandler
+    "asname",  # ast.alias (the `import ... as X` binding)
+    "arg",  # ast.arg (parameter name) / ast.keyword (kwarg name)
+)
+_IDENTIFIER_LIST_FIELDS: tuple[str, ...] = (
+    "names",  # ast.Global / ast.Nonlocal hold a list[str] of identifiers
+)
 
-    This catches the read that does NOT spell the ``RELAY_CEL_ENGINE`` literal
-    but instead reads the env var through the factory's sanctioned constant --
-    ``from relay_contracts.engine import _ENGINE_ENV_VAR; os.environ.get(
-    _ENGINE_ENV_VAR)`` (the roborev MED evasion). Two structural signals, either
-    suffices:
 
-      (i)  an ``ast.Name(id="_ENGINE_ENV_VAR")`` -- the constant USED as a value
-           (e.g. as the Call argument / Subscript index of the env read, or in
-           an f-string), and also its assignment target / Load in ``engine.py``.
-      (ii) an ``ast.ImportFrom`` whose ``names`` include an alias with
-           ``name == "_ENGINE_ENV_VAR"`` -- ``from relay_contracts.engine import
-           _ENGINE_ENV_VAR`` AND the aliased form
-           ``import _ENGINE_ENV_VAR as X`` (the import NAME is matched, not the
-           local binding, so an aliased read site is caught at the import even
-           when the later usage is the alias ``X``, not ``_ENGINE_ENV_VAR``).
+def _names_engine_constant_token(tree: ast.AST) -> bool:
+    """Arm (b): True if the IDENTIFIER token ``_ENGINE_ENV_VAR`` appears in ANY
+    identifier-bearing node field anywhere in the AST.
 
-    Soundness vs. prose: a docstring or ``#`` comment that mentions the token
-    ``_ENGINE_ENV_VAR`` produces a string-literal / no AST node -- NEVER an
-    ``ast.Name`` or ``ast.ImportFrom`` -- so prose does not trip this form.
+    This is a SOUND TOKEN-PRESENCE scan, NOT a form enumeration. The prior
+    rounds enumerated access FORMS (``ast.Name`` usage, then also
+    ``ast.ImportFrom`` name) and each left a tail -- most recently the roborev
+    MED form ``import relay_contracts.engine as engine; os.environ.get(
+    engine._ENGINE_ENV_VAR)`` where ``_ENGINE_ENV_VAR`` is an
+    ``ast.Attribute.attr``, neither a ``Name`` nor an ``ImportFrom`` name. We
+    STOP enumerating forms: EVERY non-adversarial reference to the sanctioned
+    constant -- ``_ENGINE_ENV_VAR`` (Name.id), ``engine._ENGINE_ENV_VAR``
+    (Attribute.attr), ``from ... import _ENGINE_ENV_VAR`` (alias.name),
+    ``import _ENGINE_ENV_VAR as K`` (alias.name), a param / function named after
+    it (arg / name), and any future access path -- places the IDENTIFIER TOKEN
+    ``_ENGINE_ENV_VAR`` in one of the identifier fields enumerated by
+    :data:`_IDENTIFIER_STR_FIELDS` / :data:`_IDENTIFIER_LIST_FIELDS`. Walking the
+    AST and checking those fields subsumes Name + ImportFrom + Attribute + every
+    future form with NO remaining tail.
+
+    Soundness vs. prose (no false positive): the token is matched ONLY in an
+    identifier field. A docstring or ``#`` comment that mentions
+    ``_ENGINE_ENV_VAR`` as prose produces a string-literal ``ast.Constant``
+    (whose ``.value`` is DATA, not in the identifier set) or no AST node at all,
+    so prose never trips this arm. The documented NON-GOAL stands: a
+    dynamically-assembled identifier (``getattr(engine, "_ENGINE" +
+    "_ENV_VAR")``) hides the token in a split string literal and is out of
+    scope, exactly like the TS env-guard.
     """
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id == _ENGINE_CONST:
-            return True
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name == _ENGINE_CONST:
-                    return True
+        for field in _IDENTIFIER_STR_FIELDS:
+            value = getattr(node, field, None)
+            if isinstance(value, str) and value == _ENGINE_CONST:
+                return True
+        for field in _IDENTIFIER_LIST_FIELDS:
+            value = getattr(node, field, None)
+            if isinstance(value, list) and _ENGINE_CONST in value:
+                return True
     return False
 
 
 def scan_source(filename: str, source_text: str) -> bool:
-    """PURE read-site detector over in-memory source.
+    """PURE read-site detector over in-memory source (TOKEN-PRESENCE scan).
 
     Return True if ``source_text`` (parsed as a Python module named ``filename``)
-    is an engine-var READ site -- i.e. it names the engine-selection key in
-    EITHER covered form:
+    is an engine-var READ site -- i.e. it carries EITHER of the two unavoidable
+    engine-selection tokens, by construction covering every non-adversarial
+    reference (no form enumeration):
 
       (a) the ``RELAY_CEL_ENGINE`` string literal in a non-docstring position
           (:func:`_names_engine_key_literal`), OR
-      (b) a reference to the sanctioned constant ``_ENGINE_ENV_VAR`` via an
-          ``ast.Name`` usage or a ``from ... import _ENGINE_ENV_VAR`` import
-          (:func:`_references_engine_constant`).
+      (b) the IDENTIFIER token ``_ENGINE_ENV_VAR`` in ANY identifier-bearing AST
+          node field -- ``Name.id``, ``Attribute.attr``, ``alias.name`` /
+          ``asname``, ``arg``, function / class names, etc.
+          (:func:`_names_engine_constant_token`). This subsumes the Name,
+          ImportFrom, AND ``ast.Attribute.attr`` (roborev MED) access paths.
 
     This function performs NO filesystem access: it neither reads ``filename``
     from disk nor writes anything. ``filename`` is used only as the AST
-    ``filename`` for clearer SyntaxError messages. The real-tree guard supplies
-    on-disk source READ-ONLY; the non-vacuity probes supply in-memory strings.
-    Keeping the scanner pure means a probe can never mutate the checkout and the
-    guard can never observe a probe artifact under parallel pytest (roborev LOW).
+    ``filename`` for clearer SyntaxError messages. The real-tree guard and the
+    non-vacuity probes both reach this scanner through
+    :func:`_engine_read_site_files` (the real two-token prefilter + AST scan);
+    the probes point that path at an isolated ``tmp_path`` root so a probe can
+    never mutate the checkout or be observed under parallel pytest (roborev LOW).
     """
     tree = ast.parse(source_text, filename=filename)
-    return _names_engine_key_literal(tree) or _references_engine_constant(tree)
+    return _names_engine_key_literal(tree) or _names_engine_constant_token(tree)
 
 
 # ---------------------------------------------------------------------------
@@ -331,22 +375,33 @@ def test_relay_cel_engine_absent_from_gate_src() -> None:
     )
 
 
-def _engine_read_site_files(src_root: Path) -> set[str]:
-    """Return the set of repo-relative .py paths under ``src_root`` that are
-    engine-var READ sites, scanning the on-disk source READ-ONLY.
+def _engine_read_site_files(src_root: Path = CONTRACTS_SRC) -> set[str]:
+    """Return the set of ``src_root``-relative .py paths under ``src_root`` that
+    are engine-var READ sites, scanning the on-disk source READ-ONLY.
 
-    Each ``*.py`` is read once (no writes) and handed to the PURE
-    :func:`scan_source` detector, which flags BOTH the form-(a) key literal and
-    the form-(b) sanctioned-constant reference. A cheap prefilter skips a file
-    only when it contains NEITHER token (``RELAY_CEL_ENGINE`` nor
-    ``_ENGINE_ENV_VAR``) anywhere -- such a file cannot hold either form, so it
-    need not be parsed. (The MED evasion file holds ``_ENGINE_ENV_VAR`` without
-    the literal, so it survives the prefilter and is parsed -- exactly the gap
-    the prior literal-only prefilter left open.)
+    This is the REAL read path: a cheap two-token PREFILTER followed by the AST
+    :func:`scan_source`. ``src_root`` defaults to the real ``packages/contracts/
+    src`` tree (so the real-tree guard calls it bare), but the non-vacuity probes
+    pass an ISOLATED pytest ``tmp_path`` root so they exercise THIS prefilter +
+    scan -- not :func:`scan_source` alone -- over throwaway modules written into
+    the tmp root, never into the real checkout (roborev LOW fix).
+
+    Each ``*.py`` is read once (no writes). The PREFILTER skips a file only when
+    it contains NEITHER token (``RELAY_CEL_ENGINE`` nor ``_ENGINE_ENV_VAR``)
+    anywhere -- such a file cannot hold a read in either arm, so it need not be
+    parsed. The prefilter keys on BOTH tokens precisely so a
+    ``_ENGINE_ENV_VAR``-only file (the roborev MED form, which holds NO
+    ``RELAY_CEL_ENGINE`` literal) survives the prefilter and is parsed -- the gap
+    a literal-only prefilter would leave open. Reverting the prefilter to
+    literal-only makes the ``_ENGINE_ENV_VAR``-only probe (driven through THIS
+    function over the tmp root) fail, which is exactly the regression lock.
+
+    Returned paths are relative to ``src_root`` (NOT ``REPO_ROOT``) so the helper
+    is meaningful for an isolated tmp root that lives outside the repo.
     """
     hits: set[str] = set()
     for py in sorted(src_root.rglob("*.py")):
-        rel = str(py.relative_to(REPO_ROOT)).replace("\\", "/")
+        rel = str(py.relative_to(src_root)).replace("\\", "/")
         text = py.read_text(encoding="utf-8")
         if _ENGINE_VAR not in text and _ENGINE_CONST not in text:
             continue
@@ -368,16 +423,19 @@ def test_relay_cel_engine_read_site_is_only_engine_py() -> None:
     references). The invariant the contract protects is the READ site, not the
     appearance of the token.
 
-    The detector flags a file when it names the engine key in EITHER covered
-    form: (a) the ``RELAY_CEL_ENGINE`` string literal in a non-docstring
-    position, OR (b) a reference to the sanctioned constant ``_ENGINE_ENV_VAR``
-    (``ast.Name`` usage or ``from ... import _ENGINE_ENV_VAR``). Form (b) is the
-    convergent fix for the roborev MED finding: a read written
-    ``from relay_contracts.engine import _ENGINE_ENV_VAR; os.environ.get(
-    _ENGINE_ENV_VAR)`` reads the SAME env var without spelling the literal, so a
-    literal-only scan would miss it. It confirms exactly ONE such file:
-    ``engine.py`` (which both defines the literal ``_ENGINE_ENV_VAR =
-    "RELAY_CEL_ENGINE"`` and uses the constant).
+    The detector is a TOKEN-PRESENCE scan: it flags a file that carries EITHER
+    unavoidable token: (a) the ``RELAY_CEL_ENGINE`` string literal in a
+    non-docstring position, OR (b) the IDENTIFIER token ``_ENGINE_ENV_VAR`` in
+    ANY identifier-bearing node field (``Name.id`` / ``Attribute.attr`` /
+    ``alias.name`` / ``asname`` / ``arg`` / ...). Arm (b) is the convergent fix
+    for the roborev MED finding: a read written ``import relay_contracts.engine
+    as engine; os.environ.get(engine._ENGINE_ENV_VAR)`` reads the SAME env var
+    via an ``ast.Attribute.attr`` -- no literal, no ``ast.Name``, no
+    ``ImportFrom`` -- so the prior form enumeration missed it. Token-presence
+    covers Name + Attribute + import alias + every future access path with no
+    remaining tail. It confirms exactly ONE such file: ``engine.py`` (which both
+    defines the literal ``_ENGINE_ENV_VAR = "RELAY_CEL_ENGINE"`` and uses the
+    constant).
     """
     assert CONTRACTS_SRC.is_dir(), f"contracts src tree missing at {CONTRACTS_SRC}"
     assert ENGINE_FILE.is_file(), f"factory engine.py missing at {ENGINE_FILE}"
@@ -391,42 +449,99 @@ def test_relay_cel_engine_read_site_is_only_engine_py() -> None:
         f"the engine.py read site); got grep exit {bare.returncode}"
     )
 
-    engine_rel = str(ENGINE_FILE.relative_to(REPO_ROOT)).replace("\\", "/")
+    # _engine_read_site_files returns paths relative to its scan root
+    # (CONTRACTS_SRC here), so compute the expected engine path the same way.
+    engine_rel = str(ENGINE_FILE.relative_to(CONTRACTS_SRC)).replace("\\", "/")
     read_site_files = _engine_read_site_files(CONTRACTS_SRC)
     assert read_site_files == {engine_rel}, (
         "engine selection (the RELAY_CEL_ENGINE env READ) must be performed in "
         f"EXACTLY one contracts-src file ({engine_rel}); found read sites: "
         f"{sorted(read_site_files)}. A new env read of RELAY_CEL_ENGINE outside "
         "engine.py -- whether it spells the 'RELAY_CEL_ENGINE' key literal OR "
-        "reads it via the sanctioned constant _ENGINE_ENV_VAR -- would break the "
+        "reads it via the sanctioned constant _ENGINE_ENV_VAR in ANY identifier "
+        "field (Name / Attribute.attr / import alias) -- would break the "
         "single-read-site determinism invariant (VAL-CWC-P4DUALRUN-008)."
     )
 
 
 # ---------------------------------------------------------------------------
-# Non-vacuity probes (roborev LOW fix): IN-MEMORY only -- no probe writes any
-# file into packages/contracts/src. Each probe feeds an in-memory source STRING
-# to the SAME pure :func:`scan_source` the real-tree guard uses, asserts the
-# expected verdict, and mutates nothing on disk. This proves the guard BITES the
-# evasions the prior os-API-form / literal-only detectors missed, and does NOT
-# false-positive on prose -- without ever requiring a writable source tree or
-# risking a parallel-pytest observation of a probe artifact.
+# Non-vacuity probes (roborev LOW fix): each probe drives the REAL on-disk read
+# path :func:`_engine_read_site_files` (its two-token PREFILTER + AST
+# :func:`scan_source`) over an ISOLATED pytest ``tmp_path`` root. The probe
+# WRITES its throwaway module into the tmp root -- NEVER into
+# packages/contracts/src -- and asserts the real path's verdict. Driving the
+# real prefilter+scan (not :func:`scan_source` in isolation) is the roborev LOW
+# fix: it LOCKS the prefilter regression -- reverting the prefilter to
+# literal-only makes the ``_ENGINE_ENV_VAR``-only probe FAIL through the real
+# path. The real checkout is untouched; only the isolated tmp root is written.
 # ---------------------------------------------------------------------------
+def _flagged_via_real_path(tmp_path: Path, filename: str, body: str) -> bool:
+    """Write ``body`` as ``filename`` into the ISOLATED ``tmp_path`` scan root,
+    then run the REAL on-disk read path :func:`_engine_read_site_files` over that
+    root and return whether the file was flagged as a read site.
+
+    This exercises the genuine prefilter + AST scan (the same code the real-tree
+    guard runs), not :func:`scan_source` alone -- so the prefilter cannot silently
+    regress to literal-only without a probe failing. Writes land ONLY under
+    ``tmp_path`` (pytest's per-test isolated dir); the real source tree is never
+    touched.
+    """
+    target = tmp_path / filename
+    target.write_text(body, encoding="utf-8")
+    hits = _engine_read_site_files(tmp_path)
+    return filename in hits
+
+
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
-def test_guard_bites_imported_constant_evasion() -> None:
-    """The EXACT roborev MED evasion -- import the sanctioned constant and read
-    through it, ``from relay_contracts.engine import _ENGINE_ENV_VAR`` then
-    ``os.environ.get(_ENGINE_ENV_VAR)`` -- MUST be flagged.
+def test_guard_bites_module_attribute_constant_evasion(tmp_path: Path) -> None:
+    """The EXACT roborev MED evasion -- a MODULE-ATTRIBUTE reference to the
+    sanctioned constant, ``import relay_contracts.engine as engine`` then
+    ``os.environ.get(engine._ENGINE_ENV_VAR)`` -- MUST be flagged through the
+    real read path.
 
-    This file contains NO ``RELAY_CEL_ENGINE`` literal at all, so the form-(a)
-    literal scan (and its literal-only prefilter) would skip it. Form (b) catches
-    it via BOTH the ``ImportFrom`` of ``_ENGINE_ENV_VAR`` and the ``ast.Name``
-    usage in the env read -- closing the single-read-site invariant against the
-    sanctioned-constant alias.
+    Here ``_ENGINE_ENV_VAR`` is an ``ast.Attribute.attr`` -- NOT an ``ast.Name``,
+    NOT an ``ImportFrom`` name -- and the file holds NO ``RELAY_CEL_ENGINE``
+    literal. The prior Name+ImportFrom form enumeration skipped it entirely (the
+    finding). The token-presence scan flags it because ``_ENGINE_ENV_VAR`` lands
+    in the ``attr`` identifier field, and the two-token prefilter parses the file
+    because ``_ENGINE_ENV_VAR`` appears as a substring.
     """
     body = (
-        '"""Throwaway probe (in-memory): imported-constant MED evasion."""\n'
+        '"""Throwaway probe: module-attribute constant (roborev MED)."""\n'
+        "import relay_contracts.engine as engine\n"
+        "import os\n\n\n"
+        "def _read() -> str | None:\n"
+        "    return os.environ.get(engine._ENGINE_ENV_VAR)\n"
+    )
+    assert _ENGINE_VAR not in body, (
+        "probe sanity: the module-attribute evasion must contain NO "
+        f"'{_ENGINE_VAR}' literal (that is the whole point); it names the "
+        f"constant only via the attribute {_ENGINE_CONST}"
+    )
+    assert _flagged_via_real_path(tmp_path, "_probe_module_attr.py", body), (
+        "GUARD VACUOUS: the roborev MED module-attribute evasion (read via "
+        f"engine.{_ENGINE_CONST}, an ast.Attribute.attr, with NO '{_ENGINE_VAR}' "
+        "literal) was NOT flagged through the real prefilter+scan path. The "
+        "token-presence scan must match the identifier in the attr field."
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
+def test_guard_bites_imported_constant_evasion(tmp_path: Path) -> None:
+    """The imported-constant evasion -- ``from relay_contracts.engine import
+    _ENGINE_ENV_VAR`` then ``os.environ.get(_ENGINE_ENV_VAR)`` -- MUST be flagged
+    through the real read path.
+
+    This file contains NO ``RELAY_CEL_ENGINE`` literal at all, so a literal-only
+    prefilter would SKIP it before any AST parse. The two-token prefilter keeps
+    it (``_ENGINE_ENV_VAR`` is present), and the token-presence scan flags it via
+    the ``alias.name`` of the import AND the ``ast.Name`` usage in the read --
+    locking the prefilter regression through the real path (roborev LOW).
+    """
+    body = (
+        '"""Throwaway probe: imported-constant evasion."""\n'
         "from relay_contracts.engine import _ENGINE_ENV_VAR\n"
         "import os\n\n\n"
         "def _read() -> str | None:\n"
@@ -437,91 +552,76 @@ def test_guard_bites_imported_constant_evasion() -> None:
         f"'{_ENGINE_VAR}' literal (that is the whole point); body names only "
         f"the sanctioned constant {_ENGINE_CONST}"
     )
-    assert scan_source("_probe_imported_constant.py", body), (
-        "GUARD VACUOUS: the imported-constant MED evasion (read via "
-        f"{_ENGINE_CONST}, with NO '{_ENGINE_VAR}' literal) was NOT flagged. "
-        "Form (b) must flag it via the ImportFrom and/or the Name usage."
+    assert _flagged_via_real_path(tmp_path, "_probe_imported_constant.py", body), (
+        "GUARD VACUOUS: the imported-constant evasion (read via "
+        f"{_ENGINE_CONST}, with NO '{_ENGINE_VAR}' literal) was NOT flagged "
+        "through the real prefilter+scan path. The two-token prefilter must keep "
+        "the file and the token-presence scan must match the alias name / Name."
     )
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
-def test_guard_bites_imported_constant_aliased_evasion() -> None:
+def test_guard_bites_imported_constant_aliased_evasion(tmp_path: Path) -> None:
     """The aliased imported-constant form -- ``from relay_contracts.engine
     import _ENGINE_ENV_VAR as KEY`` then ``os.environ.get(KEY)`` -- MUST be
-    flagged via the ImportFrom NAME (the import name is ``_ENGINE_ENV_VAR`` even
-    though the local binding is ``KEY``), so an aliased read site is caught at
-    the import even when no later ``_ENGINE_ENV_VAR`` Name appears."""
+    flagged through the real read path via the import ``alias.name`` (which is
+    ``_ENGINE_ENV_VAR`` even though the local binding is ``KEY``), so an aliased
+    read site is caught at the import even when no later ``_ENGINE_ENV_VAR`` Name
+    appears."""
     body = (
-        '"""Throwaway probe (in-memory): aliased imported-constant evasion."""\n'
+        '"""Throwaway probe: aliased imported-constant evasion."""\n'
         "from relay_contracts.engine import _ENGINE_ENV_VAR as KEY\n"
         "import os\n\n\n"
         "def _read() -> str | None:\n"
         "    return os.environ.get(KEY)\n"
     )
     assert _ENGINE_VAR not in body
-    assert scan_source("_probe_imported_constant_aliased.py", body), (
-        "GUARD VACUOUS: the ALIASED imported-constant evasion was NOT flagged. "
-        f"The ImportFrom name '{_ENGINE_CONST}' must be matched even under an "
-        "`as` alias."
+    assert _flagged_via_real_path(
+        tmp_path, "_probe_imported_constant_aliased.py", body
+    ), (
+        "GUARD VACUOUS: the ALIASED imported-constant evasion was NOT flagged "
+        f"through the real path. The import alias.name '{_ENGINE_CONST}' must be "
+        "matched even under an `as` alias."
     )
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
-def test_guard_bites_os_environ_subscript_evasion() -> None:
-    """A subscript read ``os.environ["RELAY_CEL_ENGINE"]`` MUST be flagged.
+def test_guard_bites_os_environ_subscript_literal_evasion(tmp_path: Path) -> None:
+    """A subscript read ``os.environ["RELAY_CEL_ENGINE"]`` -- the key literal in
+    a read position -- MUST be flagged through the real read path.
 
-    The key literal appears as a Subscript index -- a read position -- so the
-    form-(a) literal scan flags it regardless of the access form.
+    The key literal appears as a Subscript index, so the literal arm flags it
+    regardless of the access form; the two-token prefilter keeps the file because
+    ``RELAY_CEL_ENGINE`` is present.
     """
     body = (
-        '"""Throwaway probe (in-memory): os.environ subscript evasion."""\n'
+        '"""Throwaway probe: os.environ subscript literal."""\n'
         "import os\n\n\n"
         "def _read() -> str:\n"
         '    return os.environ["RELAY_CEL_ENGINE"]\n'
     )
-    assert scan_source("_probe_environ_subscript.py", body), (
-        "GUARD VACUOUS: the os.environ subscript evasion was NOT flagged; the "
-        "key literal in the Subscript index must trip form (a)."
+    assert _flagged_via_real_path(tmp_path, "_probe_environ_subscript.py", body), (
+        "GUARD VACUOUS: the os.environ subscript literal was NOT flagged through "
+        "the real path; the key literal in the Subscript index must trip arm (a)."
     )
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
-def test_guard_bites_from_os_import_environ_evasion() -> None:
-    """The prior round's evasion -- ``from os import environ`` then
-    ``environ.get("RELAY_CEL_ENGINE")`` -- MUST be flagged.
-
-    The original os-API-form detector matched only ``os.<attr>`` access, so this
-    from-import read named no ``os.environ`` node and bypassed it. The form-(a)
-    literal scan catches it because the read still names the unavoidable
-    ``"RELAY_CEL_ENGINE"`` key string.
-    """
-    body = (
-        '"""Throwaway probe (in-memory): from-os-import environ evasion."""\n'
-        "from os import environ\n\n\n"
-        "def _read() -> str | None:\n"
-        '    return environ.get("RELAY_CEL_ENGINE")\n'
-    )
-    assert scan_source("_probe_from_import_environ.py", body), (
-        "GUARD VACUOUS: the from-os-import-environ evasion was NOT flagged; the "
-        "key literal in the Call argument must trip form (a)."
-    )
-
-
-@pytest.mark.plumbing
-@pytest.mark.fulfills("VAL-CWC-P4DUALRUN-008")
-def test_guard_ignores_docstring_and_comment_only_mentions() -> None:
+def test_guard_ignores_docstring_and_comment_only_mentions(tmp_path: Path) -> None:
     """A file that mentions ``RELAY_CEL_ENGINE`` / ``_ENGINE_ENV_VAR`` ONLY in a
-    docstring and a ``#`` comment MUST NOT be flagged (no false positive).
+    docstring and a ``#`` comment MUST NOT be flagged through the real read path
+    (no false positive).
 
     This mirrors the real tree: ``pipeline.py`` mentions the token only in
     comments and ``wasm_backed_evaluator.py`` only in docstrings, and neither
-    reads the env var. Form (a) excludes docstrings (bare-string first
-    statements) and comments (not AST nodes); form (b) matches only an
-    ``ast.Name``/``ast.ImportFrom`` for the constant, never a prose mention, so
-    neither form trips.
+    reads the env var. The literal arm excludes docstrings (bare-string first
+    statements) and comments (not AST nodes); the token-presence arm matches
+    ``_ENGINE_ENV_VAR`` ONLY in an identifier field (id / attr / alias name /
+    arg), never in a docstring ``ast.Constant.value`` (which is DATA), so prose
+    does not trip it.
     """
     body = (
         '"""Engine selection (RELAY_CEL_ENGINE / _ENGINE_ENV_VAR) is NOT read '
@@ -532,12 +632,19 @@ def test_guard_ignores_docstring_and_comment_only_mentions() -> None:
         '    """RELAY_CEL_ENGINE / _ENGINE_ENV_VAR named here only as prose."""\n'
         "    return None\n"
     )
-    assert not scan_source("_probe_prose_only.py", body), (
+    # Sanity: the body really does carry both tokens (so the prefilter cannot
+    # vacuously skip it and the no-false-positive claim is non-trivial -- the
+    # file IS parsed and the AST scan IS the thing rejecting it).
+    assert _ENGINE_VAR in body and _ENGINE_CONST in body, (
+        "probe sanity: the prose body must contain BOTH tokens so the prefilter "
+        "parses it and the AST scan (not the prefilter) is what declines it"
+    )
+    assert not _flagged_via_real_path(tmp_path, "_probe_prose_only.py", body), (
         "FALSE POSITIVE: a docstring/comment-only mention of "
         f"'{_ENGINE_VAR}' / '{_ENGINE_CONST}' was wrongly flagged as a read "
-        "site. Form (a) must exclude docstrings (bare-string first statements) "
-        "and comments (not AST nodes); form (b) must match only an "
-        "ast.Name/ast.ImportFrom, never prose."
+        "site through the real path. The literal arm must exclude docstrings and "
+        "comments; the token-presence arm must match the identifier ONLY in an "
+        "identifier field, never in a docstring/comment prose mention."
     )
 
 
@@ -559,7 +666,8 @@ def test_real_contracts_src_pipeline_and_wasm_evaluator_not_flagged() -> None:
         candidate = CONTRACTS_SRC / "relay_contracts" / name
         if not candidate.is_file():
             continue
-        rel = str(candidate.relative_to(REPO_ROOT)).replace("\\", "/")
+        # _engine_read_site_files returns CONTRACTS_SRC-relative paths.
+        rel = str(candidate.relative_to(CONTRACTS_SRC)).replace("\\", "/")
         text = candidate.read_text(encoding="utf-8")
         # Sanity: the file is a real prose-mention file (else this assertion is
         # vacuous for it). Only assert non-flag when the token actually appears.
