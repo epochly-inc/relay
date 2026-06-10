@@ -7,6 +7,17 @@
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 export { jcsCanonicalize } from "./canonical.js";
+// VAL-CWC-P5FLIP-011 (M5): the canonical engine-selection factory. Default
+// (engine unset/blank) constructs the wasm-backed WasmCelBackend; explicit
+// "celjs"/"cel-js" constructs the legacy cel-js RelayCelEvaluator (the
+// rollback escape hatch until M6). TS mirror of the Python make_cel_evaluator
+// (packages/contracts/src/relay_contracts/engine.py).
+export { makeCelEvaluator } from "./engine.js";
+export type {
+  CelEngineName,
+  CelEvaluator,
+  MakeCelEvaluatorOptions,
+} from "./engine.js";
 export {
   DEFAULT_TIMEOUT_MS,
   MAX_TIMEOUT_MS,

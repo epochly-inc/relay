@@ -29,6 +29,7 @@ import {
   RelayCelTimeoutError,
   SUBTYPE_TIMEOUT,
 } from "../src/errors.js";
+import { MAX_TIMEOUT_MS } from "../src/evaluator.js";
 import { WasmCelBackend } from "../src/wasm-evaluator.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -56,9 +57,20 @@ describe("VAL-CWC-P2TSGATE-008: per-runtime wall-clock timeout (Node Worker hard
           "must not skip.",
       );
     }
+    // timeoutMs is MAX_TIMEOUT_MS (the 250ms Relay cap), NOT the 50ms default:
+    // the budget covers Worker COLD START (spawn + .mjs import + wasm compile),
+    // and after the deliberate hard-kill below the recovery eval respawns a
+    // fresh Worker inside its budget. Under concurrent full-suite load a 50ms
+    // budget spuriously times out trivial evals (RELAY-CEL-003 with the value
+    // always correct otherwise) -- the SAME jitter class the Python side swept
+    // in commit 7a2bc04 ("decouple wasm result/parity assertions from 50ms
+    // wall-clock"). The timeout-BEHAVIOR assertion below is budget-independent:
+    // the hangSentinel spins FOREVER, so the hard-kill fires deterministically
+    // at any budget. Root cause is resolved by M7 P7EDGE deterministic fuel
+    // metering; this is the interim tier-1 robustness measure.
     backend = new WasmCelBackend({
       wasmPath,
-      timeoutMs: 50,
+      timeoutMs: MAX_TIMEOUT_MS,
       hangSentinel: "__RELAY_CEL_TEST_HANG__",
     });
   });

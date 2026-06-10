@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
+import { MAX_TIMEOUT_MS } from "../src/evaluator.js";
 import { WasmCelBackend } from "../src/wasm-evaluator.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -47,7 +48,14 @@ describe("VAL-CWC-P2TSGATE-006: WasmCelBackend evaluate() is async", () => {
           "must not skip.",
       );
     }
-    backend = new WasmCelBackend({ wasmPath });
+    // timeoutMs is MAX_TIMEOUT_MS (the 250ms Relay cap), NOT the 50ms default:
+    // this suite asserts RESULTS (not timeout behavior), and the budget covers
+    // Worker COLD START (spawn + .mjs import + wasm compile) on the first
+    // evaluate(). Under concurrent full-suite load a 50ms budget spuriously
+    // times out trivial evals -- the SAME jitter class the Python side swept in
+    // commit 7a2bc04. Root cause is resolved by M7 P7EDGE deterministic fuel
+    // metering; this is the interim tier-1 robustness measure.
+    backend = new WasmCelBackend({ wasmPath, timeoutMs: MAX_TIMEOUT_MS });
   });
 
   afterAll(async () => {

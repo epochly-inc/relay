@@ -1,26 +1,31 @@
-// VAL-CWC-P2TSGATE-013 (TS half): the default CEL engine stays cel-js at M2 --
-// no premature flip to wasm.
+// VAL-CWC-P5FLIP-011 (M5 / WS-H): the TS contracts factory defaults to the
+// WASM CEL engine; cel-js is returned ONLY on explicit selection.
 //
-// This is the TypeScript mirror of the Python default_engine guard
-// (packages/contracts/tests/test_engine_factory.py
-// test_default_engine_is_celpy_when_env_unset), which asserts
-// make_cel_evaluator() with RELAY_CEL_ENGINE unset returns the cel-python
-// RelayCelEvaluator. On the TS side the package exposes NO env-var engine
-// factory at M2 (by design / boundaries.md: engine selection is read ONLY in
-// the packages/contracts Python factory; the TS wasm backend is an opt-in class,
-// not the default). So "the TS default" is the package's primary evaluator
-// export -- the cel-js-backed RelayCelEvaluator -- NOT the opt-in wasm
-// WasmCelBackend.
+// This suite is the TRANSITIONED successor of the M2 fence
+// (VAL-CWC-P2TSGATE-013), which asserted the default STAYED cel-js while the
+// wasm backend was an opt-in class. M5 is exactly the milestone that flips the
+// default (boundaries.md: "Do NOT flip the RELAY_CEL_ENGINE default to wasm
+// before milestone M5" -- this IS M5). The canonical selection factory
+// `makeCelEvaluator` (src/engine.ts, the TS mirror of the Python
+// make_cel_evaluator in packages/contracts/src/relay_contracts/engine.py) now
+// constructs the wasm-backed `WasmCelBackend` when the engine selection is
+// UNSET (or blank), and the legacy cel-js `RelayCelEvaluator` ONLY when the
+// caller explicitly selects "celjs" / "cel-js" (the rollback escape hatch
+// through the one-release bake; cel-js is removed at M6, per boundaries.md
+// "Do NOT remove cel-js before milestone M6").
 //
-// The flip to a wasm default is WS-H / M5, NOT M2. This suite is the structural
-// fence: it FAILS (bites) if anyone makes the default the wasm engine before
-// M5 -- by aliasing the default export to WasmCelBackend, by making
-// RelayCelEvaluator a wasm subclass, by re-pointing RelayCelEvaluator at the
-// wasm loader, or by introducing a TS engine factory that returns wasm with the
-// engine selector unset.
+// Pre-flip non-vacuity: at the pre-flip baseline (workerStartCommit 7a2bc04)
+// this file's predecessor PROVED the unset default routed through cel-js
+// synchronously (the "constructing the unset-default evaluator does not load
+// the wasm engine" case, green in the baseline run), and NO factory existed
+// (the package exported only the two classes). The default-equals-wasm
+// assertions below therefore encode a REAL behavior flip, not a vacuous truth.
 //
-// boundaries.md: "Do NOT flip the RELAY_CEL_ENGINE default to wasm before
-// milestone M5." and "Do NOT remove cel-js before milestone M6."
+// Determinism boundary, UNCHANGED by the flip: the TS selection is
+// CONFIG/PARAM-based, NOT environment-based. The engine-selector ENV VAR is
+// read ONLY in the Python packages/contracts factory; the AST presence scan
+// below (unchanged from M2) still FAILS the suite if any production TS src/
+// file ever names that selector.
 //
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
 import {
@@ -36,109 +41,272 @@ import ts from "typescript";
 import { afterEach, describe, expect, test } from "vitest";
 
 import * as contracts from "../src/index.js";
-import { RelayCelEvaluator } from "../src/evaluator.js";
-import { WasmCelBackend } from "../src/wasm-evaluator.js";
+import { makeCelEvaluator } from "../src/engine.js";
+import { RelayCelUnsupportedUdfError } from "../src/errors.js";
+import {
+  DEFAULT_TIMEOUT_MS,
+  MAX_TIMEOUT_MS,
+  RelayCelEvaluator,
+} from "../src/evaluator.js";
+import { registerUdf } from "../src/udf.js";
 import { RELAY_UDFS } from "../src/udfs/registry.js";
+import {
+  resolvePackagedLoaderPath,
+  resolvePackagedWasmPath,
+} from "../src/wasm-artifact.js";
+import { WasmCelBackend } from "../src/wasm-evaluator.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = resolve(HERE, "..", "src");
 const EVALUATOR_SRC = resolve(SRC_DIR, "evaluator.ts");
 
-describe("VAL-CWC-P2TSGATE-013: default TS CEL engine stays cel-js (no premature wasm flip)", () => {
-  test("the primary evaluator export is RelayCelEvaluator, not WasmCelBackend", () => {
-    // index.ts re-exports RelayCelEvaluator as the package's primary CEL
-    // evaluator (mirroring make_cel_evaluator()'s celpy default). WasmCelBackend
-    // is an opt-in named export, never the default. If the primary export were
-    // re-pointed at the wasm backend, this fails.
-    expect(contracts.RelayCelEvaluator).toBe(RelayCelEvaluator);
-    expect(contracts.RelayCelEvaluator).not.toBe(WasmCelBackend);
-    expect(RelayCelEvaluator).not.toBe(WasmCelBackend);
-    expect(RelayCelEvaluator.name).toBe("RelayCelEvaluator");
+describe("VAL-CWC-P5FLIP-011: TS factory default engine is wasm; cel-js only on explicit selection", () => {
+  test("default engine is wasm: makeCelEvaluator() with the engine selection unset constructs WasmCelBackend", async () => {
+    // The TS analogue of the Python `type(make_cel_evaluator(udfs=...)).__name__
+    // == 'WasmCelEvaluator'` assertion (VAL-CWC-P5FLIP-009): no `engine` option
+    // -> the wasm backend. Pre-flip (M2-M4) the package's default evaluator was
+    // the cel-js RelayCelEvaluator and no factory existed; this is the flip.
+    const unsetDefault = makeCelEvaluator({ udfs: RELAY_UDFS });
+    try {
+      expect(unsetDefault).toBeInstanceOf(WasmCelBackend);
+      expect(unsetDefault.constructor).toBe(WasmCelBackend);
+      expect(unsetDefault.constructor.name).toBe("WasmCelBackend");
+      expect(unsetDefault).not.toBeInstanceOf(RelayCelEvaluator);
+    } finally {
+      await unsetDefault.dispose();
+    }
+
+    // A bare zero-argument call and an explicit `engine: undefined` are the
+    // SAME "no selection" signal -- both resolve to the wasm default.
+    const bare = makeCelEvaluator();
+    try {
+      expect(bare).toBeInstanceOf(WasmCelBackend);
+      expect(bare.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
+    } finally {
+      await bare.dispose();
+    }
+    const explicitUndefined = makeCelEvaluator({ engine: undefined });
+    try {
+      expect(explicitUndefined).toBeInstanceOf(WasmCelBackend);
+    } finally {
+      await explicitUndefined.dispose();
+    }
   });
 
-  test("the default evaluator is NOT the wasm backend (no class identity / subclass flip)", () => {
-    // A flip-to-wasm could be smuggled in by aliasing the default to the wasm
-    // class or making the default a subclass of WasmCelBackend. Either would
-    // route the unset-default through the wasm engine -- both are M5 work, not
-    // M2.
-    const ev = new RelayCelEvaluator();
-    expect(ev).not.toBeInstanceOf(WasmCelBackend);
-    // The default class does not derive from the wasm backend.
-    expect(
-      RelayCelEvaluator.prototype instanceof WasmCelBackend,
-    ).toBe(false);
-    expect(
-      WasmCelBackend.prototype.isPrototypeOf(RelayCelEvaluator.prototype),
-    ).toBe(false);
+  test("default engine is wasm: a blank/whitespace engine token is 'no selection' and resolves to wasm", async () => {
+    // Mirrors the Python factory's blank handling (engine.py:113-119): a
+    // set-but-blank selector cannot pin the legacy engine -- only an explicit
+    // "celjs"/"cel-js" selects the rollback.
+    for (const blank of ["", "   ", "\t\n"]) {
+      const ev = makeCelEvaluator({ engine: blank });
+      try {
+        expect(ev).toBeInstanceOf(WasmCelBackend);
+      } finally {
+        await (ev as WasmCelBackend).dispose();
+      }
+    }
   });
 
-  test("constructing the unset-default evaluator does not load the wasm engine", () => {
-    // The default evaluator is the cel-js-backed RelayCelEvaluator. It binds
-    // cel-js at module import (evaluator.ts: `import { parse } from "cel-js"`)
-    // and spawns a cel-js worker lazily; it never loads the wasm engine. The
-    // wasm-loading surface is the `.mjs` RelayCel loader (relay-cel-wasm /
-    // RelayCel.load), which lives ONLY in wasm-evaluator.ts (WasmCelBackend).
-    // We prove the default's source carries NO wasm-loading surface; an
-    // incidental WasmCelBackend mention in a doc comment is not such a surface,
-    // so we assert on the load-bearing loader symbols, not the class name.
+  test("default engine is wasm AND it evaluates: a smoke eval through the unset-default path returns the right verdict", async () => {
+    // Loader-wiring proof (the flip is only real if the default backend LOADS):
+    // the unset default resolves the PACKAGED wasm + `.mjs` loader (WS-G package
+    // data; precedence explicit > CEL_WASM > packaged, wasm-evaluator.ts:1087,
+    // defaultLoaderPath). With CEL_WASM unset, both packaged artifacts must
+    // resolve and the default backend must actually EVALUATE through them.
+    const savedCelWasm = process.env.CEL_WASM;
+    delete process.env.CEL_WASM;
+    try {
+      expect(resolvePackagedWasmPath()).not.toBeNull();
+      expect(resolvePackagedLoaderPath()).not.toBeNull();
+
+      // ENGINE stays unset (that is the assertion under test); timeoutMs is
+      // MAX_TIMEOUT_MS (the 250ms Relay cap) because the budget covers Worker
+      // COLD START (spawn + .mjs import + wasm compile) and a 50ms budget
+      // spuriously times out under concurrent full-suite load -- the SAME
+      // jitter class the Python side swept in commit 7a2bc04. The result
+      // assertions are unchanged; only the budget grows.
+      const ev = makeCelEvaluator({
+        udfs: RELAY_UDFS,
+        timeoutMs: MAX_TIMEOUT_MS,
+      });
+      expect(ev).toBeInstanceOf(WasmCelBackend);
+      try {
+        // The wasm default's evaluate() is the ASYNC worker path (a Promise) --
+        // the exact inverse of the M2 fence's synchronous cel-js evidence.
+        const pending = ev.evaluate("1 + 1");
+        expect(pending).toBeInstanceOf(Promise);
+        expect(await pending).toBe(2);
+        // String concat + a comprehension exercise the wasm parse/eval path,
+        // not just integer fast-math.
+        expect(await ev.evaluate('"a" + "b"')).toBe("ab");
+        expect(await ev.evaluate("[1, 2, 3].exists(x, x == 2)")).toBe(true);
+      } finally {
+        await ev.dispose();
+      }
+    } finally {
+      if (savedCelWasm !== undefined) {
+        process.env.CEL_WASM = savedCelWasm;
+      }
+    }
+  });
+
+  test("explicit cel-js selection returns the legacy RelayCelEvaluator (rollback escape hatch)", () => {
+    // Both spellings of the legacy token select the cel-js evaluator, mirroring
+    // the Python factory's explicit `celpy` rollback (VAL-CWC-P5FLIP-010).
+    for (const token of ["celjs", "cel-js"] as const) {
+      const ev = makeCelEvaluator({ engine: token, udfs: RELAY_UDFS });
+      try {
+        expect(ev).toBeInstanceOf(RelayCelEvaluator);
+        expect(ev.constructor).toBe(RelayCelEvaluator);
+        expect(ev).not.toBeInstanceOf(WasmCelBackend);
+      } finally {
+        ev.dispose();
+      }
+    }
+  });
+
+  test("the rollback cel-js evaluator still ROUTES through cel-js (sync evaluate, no wasm-loading surface)", () => {
+    // cel-js stays intact as the rollback until M6: evaluator.ts still binds
+    // cel-js at module import and carries NO wasm-loading surface (the loader
+    // symbols live only in wasm-evaluator.ts).
     const evaluatorSrc = readFileSync(EVALUATOR_SRC, "utf8");
     expect(evaluatorSrc).toContain('from "cel-js"');
     expect(evaluatorSrc).not.toContain("relay-cel-wasm");
     expect(evaluatorSrc).not.toContain("RelayCel.load");
 
-    // Constructing the default with the production UDFs succeeds and yields a
-    // cel-js RelayCelEvaluator (not a wasm backend). This is the TS analogue of
-    // the Python `type(make_cel_evaluator(udfs=...)).__name__ ==
-    // 'RelayCelEvaluator'` assertion.
-    const defaultEvaluator = new RelayCelEvaluator({ udfs: RELAY_UDFS });
+    // Class identity alone could be satisfied by a composition wrapper that
+    // delegates to wasm at runtime. Prove the rollback actually ROUTES through
+    // cel-js by evaluating: RelayCelEvaluator.evaluate() is the SYNCHRONOUS
+    // cel-js path (it returns the value directly, not a Promise); the wasm
+    // backend's evaluate() returns a Promise. A synchronous numeric result here
+    // is positive evidence the cel-js engine evaluated it.
+    const rollback = makeCelEvaluator({ engine: "cel-js", udfs: RELAY_UDFS });
+    expect(rollback).toBeInstanceOf(RelayCelEvaluator);
     try {
-      expect(defaultEvaluator.constructor).toBe(RelayCelEvaluator);
-      expect(defaultEvaluator.constructor.name).toBe("RelayCelEvaluator");
-      expect(defaultEvaluator).not.toBeInstanceOf(WasmCelBackend);
-
-      // Identity/prototype checks alone could be satisfied by a composition
-      // wrapper that delegates to wasm at runtime. Prove the default actually
-      // ROUTES through cel-js by evaluating an expression: RelayCelEvaluator.
-      // evaluate() is the SYNCHRONOUS cel-js worker path (it returns the value
-      // directly, not a Promise). The wasm backend's evaluate() returns a
-      // Promise (worker_threads async loader). So a synchronous numeric result
-      // here is positive evidence the cel-js engine evaluated it -- a wasm-backed
-      // default would return a thenable, failing the `not Promise` assertion.
-      const sum = defaultEvaluator.evaluate("1 + 1");
+      const sum = rollback.evaluate("1 + 1");
       expect(sum).not.toBeInstanceOf(Promise);
       expect(sum).toBe(2);
-      // A second expression touching string concat exercises the cel-js parse +
-      // eval path, not just integer fast-math.
-      expect(defaultEvaluator.evaluate('"a" + "b"')).toBe("ab");
+      expect(rollback.evaluate('"a" + "b"')).toBe("ab");
     } finally {
-      defaultEvaluator.dispose();
+      rollback.dispose();
     }
   });
 
-  test("there is no TS env-var engine factory that flips the default to wasm at M2", () => {
-    // Engine selection (RELAY_CEL_ENGINE) is read ONLY in the Python
-    // packages/contracts factory (boundaries.md). The TS package must NOT carry
-    // its own RELAY_CEL_ENGINE read that could resolve the unset-env default to
-    // the wasm backend. If a future change adds such a factory, it MUST keep the
-    // unset default cel-js (M5 is where the default flips). This guard asserts
-    // the package does not currently expose a default-engine factory that
-    // returns the wasm backend -- the only exported evaluator constructors are
-    // RelayCelEvaluator (default, cel-js) and WasmCelBackend (opt-in, wasm), and
-    // the primary one is cel-js.
+  test("explicit wasm selection returns WasmCelBackend (same engine as the default)", async () => {
+    const ev = makeCelEvaluator({ engine: "wasm", udfs: RELAY_UDFS });
+    try {
+      expect(ev).toBeInstanceOf(WasmCelBackend);
+    } finally {
+      await ev.dispose();
+    }
+  });
+
+  test("an unknown engine token is rejected fail-closed (never a silent fallback)", () => {
+    // Mirrors the Python ValueError contract (engine.py:120-127): name the bad
+    // value AND the allowed set; matching is case-sensitive. "celpy" is the
+    // PYTHON rollback token -- it is NOT a TS engine and must not silently
+    // select anything here.
+    for (const bad of ["celpy", "WASM", "Cel-JS", "wasm2", "cel_js"]) {
+      expect(() => makeCelEvaluator({ engine: bad })).toThrow(
+        /not a recognized CEL engine/,
+      );
+      expect(() => makeCelEvaluator({ engine: bad })).toThrow(bad);
+      expect(() => makeCelEvaluator({ engine: bad })).toThrow(/case-sensitive/);
+    }
+    // A non-string runtime value (a JS caller bypassing the types) is a
+    // category error, rejected with a clear TypeError -- never coerced.
+    expect(() =>
+      makeCelEvaluator({ engine: 42 as unknown as string }),
+    ).toThrow(TypeError);
+  });
+
+  test("timeoutMs and udfs forward to the selected evaluator with identical semantics", async () => {
+    // An explicit (within-cap; MAX_TIMEOUT_MS is 250) timeout reaches
+    // whichever engine is selected.
+    const wasmEv = makeCelEvaluator({ timeoutMs: 100 });
+    try {
+      expect(wasmEv.timeoutMs).toBe(100);
+    } finally {
+      await wasmEv.dispose();
+    }
+    const celjsEv = makeCelEvaluator({ engine: "celjs", timeoutMs: 100 });
+    try {
+      expect(celjsEv.timeoutMs).toBe(100);
+    } finally {
+      celjsEv.dispose();
+    }
+    // An unspecified timeout defers to the evaluator's own DEFAULT_TIMEOUT_MS
+    // (identical to direct construction with no timeoutMs argument).
+    const defaulted = makeCelEvaluator({ engine: "celjs" });
+    try {
+      expect(defaulted.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
+    } finally {
+      defaulted.dispose();
+    }
+    // Out-of-bounds timeouts are rejected by the underlying constructor; the
+    // factory forwards, never masks. Zero/negative trips the positive-integer
+    // bound; an over-cap value trips the MAX_TIMEOUT_MS (250 ms) Relay cap.
+    expect(() => makeCelEvaluator({ timeoutMs: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => makeCelEvaluator({ engine: "celjs", timeoutMs: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => makeCelEvaluator({ timeoutMs: 1234 })).toThrow(
+      /exceeds Relay cap/,
+    );
+    expect(() =>
+      makeCelEvaluator({ engine: "celjs", timeoutMs: 1234 }),
+    ).toThrow(/exceeds Relay cap/);
+  });
+
+  test("a non-allowlist UDF through the unset-default (wasm) path is rejected fail-closed", () => {
+    // The TS half of the Python VAL-CWC-P5FLIP-014 contract: the now-default
+    // wasm engine exposes only the 3 native relay.* UDFs; a caller-supplied
+    // extra UDF is a structured RelayCelUnsupportedUdfError at construction,
+    // not a silent acceptance.
+    const extra = registerUdf({
+      name: "my_check",
+      fn: () => true,
+      pure: true,
+      arity: 0,
+    });
+    expect(() => makeCelEvaluator({ udfs: [extra] })).toThrow(
+      RelayCelUnsupportedUdfError,
+    );
+    // The SAME extra UDF is accepted by the explicit cel-js rollback (the
+    // legacy registry path), so the rejection above is engine-specific, not a
+    // registry regression.
+    const rollback = makeCelEvaluator({ engine: "celjs", udfs: [extra] });
+    try {
+      expect(rollback).toBeInstanceOf(RelayCelEvaluator);
+    } finally {
+      rollback.dispose();
+    }
+  });
+
+  test("the factory is the package's canonical evaluator entry (exported from index)", () => {
+    expect(contracts.makeCelEvaluator).toBe(makeCelEvaluator);
     const exportedNames = Object.keys(contracts);
+    expect(exportedNames).toContain("makeCelEvaluator");
+    // Both engine classes stay exported: WasmCelBackend (the default engine)
+    // and RelayCelEvaluator (the rollback class, removed at M6).
     expect(exportedNames).toContain("RelayCelEvaluator");
     expect(exportedNames).toContain("WasmCelBackend");
+    expect(contracts.RelayCelEvaluator).toBe(RelayCelEvaluator);
+    expect(contracts.WasmCelBackend).toBe(WasmCelBackend);
+  });
 
-    // Dynamic guard (NOT a hardcoded factory-name allowlist): a hardcoded list
-    // of candidate factory names (makeCelEvaluator/defaultCelEvaluator/...)
-    // would miss a differently-named factory that reads RELAY_CEL_ENGINE. The
-    // load-bearing boundary is "RELAY_CEL_ENGINE is read ONLY in the Python
-    // factory" -- so we scan the ENTIRE TS src/ tree for ANY appearance of the
-    // engine-selector name and fail if a production source NAMES it. See the
-    // threat model on `sourceNamesRelayCelEngine` below: a presence scan is
-    // SOUND for the real threat (an accidental production read), because every
-    // naturally written read of the selector ULTIMATELY names RELAY_CEL_ENGINE
-    // as an identifier or string literal in the parsed program.
+  test("engine selection stays config/param-based: no production TS src/ file names the engine-selector env var", () => {
+    // The flip did NOT introduce an environment read into production TS. The
+    // engine-selector env var is read ONLY in the Python packages/contracts
+    // factory (boundaries.md); the TS factory takes the engine as a CONFIG
+    // PARAMETER. This is the SAME presence scan the M2 fence ran -- kept verbatim
+    // so the flip cannot smuggle in an env-token read. See the threat model on
+    // `sourceNamesRelayCelEngine` below: a presence scan is SOUND for the real
+    // threat (an accidental production read), because every naturally written
+    // read of the selector ULTIMATELY names it as an identifier or string
+    // literal in the parsed program.
     const srcFiles = listSourceFiles(SRC_DIR);
     expect(srcFiles.length).toBeGreaterThan(0);
     const offenders: string[] = [];
