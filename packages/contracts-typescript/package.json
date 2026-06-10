@@ -2,7 +2,7 @@
   "name": "@epochly/relay-contracts",
   "version": "0.0.0",
   "private": true,
-  "description": "Relay-profile cel-js evaluator and RFC 8785 JCS canonical encoder. TypeScript mirror of packages/contracts/ (Python). VAL-W6-010..014.",
+  "description": "Relay-profile CEL evaluation for TypeScript: wasm-backed engine (default as of M5) plus the legacy cel-js evaluator (explicit rollback until M6), with the RFC 8785 JCS canonical encoder. TypeScript mirror of packages/contracts/ (Python).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
