@@ -46,23 +46,37 @@ from relay_gate_engine import GateAssertion, GateEvaluator
 class _PanicCelEvaluator:
     """A fake CEL evaluator that always raises a wasm RELAY-CEL-PANIC.
 
-    Satisfies ``CelEvaluatorProtocol`` structurally (``timeout_ms``, ``_env``,
-    ``compile``, ``evaluate``) so the gate engine can hold it through the
-    widened ``CelEvaluatorProtocol`` hint. ``evaluate`` raises the exact error
-    the wasm-backed evaluator produces for a reactor trap: a
-    ``RelayCelEngineError`` mapped from the ``RELAY-CEL-PANIC`` envelope
-    (code RELAY-CEL-009, subtype RELAY-CEL-ENGINE-PANIC).
+    Satisfies ``CelEvaluatorProtocol`` structurally (``timeout_ms``,
+    ``compile``, ``probe_compile``, ``evaluate``, ``evaluate_with_trace``) so
+    the gate engine can hold it through the widened ``CelEvaluatorProtocol``
+    hint. ``evaluate`` raises the exact error the wasm-backed evaluator
+    produces for a reactor trap: a ``RelayCelEngineError`` mapped from the
+    ``RELAY-CEL-PANIC`` envelope (code RELAY-CEL-009, subtype
+    RELAY-CEL-ENGINE-PANIC).
     """
 
     timeout_ms: int = 5000
-    _env: Any = None
 
     def compile(self, expression: str) -> Any:  # pragma: no cover - not reached
         # Compilation is fine; the panic happens at evaluation time, the
         # realistic wasm reactor-trap failure mode.
         return expression
 
+    def probe_compile(self, expression: str) -> None:  # pragma: no cover - not reached
+        # The probe defers everything but a compile-cause envelope; the panic
+        # under test fires at evaluation time.
+        return None
+
     def evaluate(self, expression: str, bindings: Any = None) -> Any:
+        raise RelayCelEngineError.from_wasm_envelope(
+            "RELAY-CEL-PANIC", f"wasm reactor trap evaluating {expression!r}"
+        )
+
+    def evaluate_with_trace(
+        self, expression: str, bindings: Any = None
+    ) -> tuple[Any, dict[str, list[Any]]]:  # pragma: no cover - not reached
+        # Same panic as evaluate; the trace surface exists only to satisfy the
+        # protocol facade.
         raise RelayCelEngineError.from_wasm_envelope(
             "RELAY-CEL-PANIC", f"wasm reactor trap evaluating {expression!r}"
         )

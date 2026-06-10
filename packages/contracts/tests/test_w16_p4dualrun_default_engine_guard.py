@@ -405,7 +405,6 @@ def test_default_engine_is_wasm_when_env_unset_post_m5_flip(
 
     from relay_contracts import RELAY_UDFS
     from relay_contracts.engine import _select_engine_name, make_cel_evaluator
-    from relay_contracts.evaluator import RelayCelEvaluator
     from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
     # Engine-name resolution: unset -> "wasm" (the M5 flip), never "celpy".
@@ -415,17 +414,13 @@ def test_default_engine_is_wasm_when_env_unset_post_m5_flip(
         f"{_select_engine_name()!r}"
     )
 
-    # Concrete type: the wasm evaluator, NOT the legacy celpy evaluator.
+    # Concrete type: the wasm evaluator (the only engine as of M6 WS-I).
     ev = make_cel_evaluator(udfs=RELAY_UDFS)
     assert isinstance(ev, WasmCelEvaluator), (
         "unset RELAY_CEL_ENGINE must construct the WasmCelEvaluator after the "
         f"M5 flip; got {type(ev).__name__}"
     )
-    assert not isinstance(ev, RelayCelEvaluator), (
-        "unset RELAY_CEL_ENGINE must NOT construct the legacy RelayCelEvaluator "
-        f"after the M5 flip (celpy is the explicit rollback only); got "
-        f"{type(ev).__name__}"
-    )
+    assert type(ev).__name__ == "WasmCelEvaluator"
 
 
 @pytest.mark.plumbing
@@ -435,13 +430,11 @@ def test_default_engine_is_wasm_when_env_blank_post_m5_flip(
 ) -> None:
     """A set-but-BLANK ``RELAY_CEL_ENGINE=""`` is the standard 'no selection'
     signal and MUST resolve to the post-flip default (wasm), same as unset -- so
-    the M5 flip cannot be bypassed (back to celpy) with an empty export. Only an
-    explicit ``RELAY_CEL_ENGINE=celpy`` reaches the legacy evaluator."""
+    the M5 flip cannot be bypassed with an empty export."""
     monkeypatch.setenv(_ENGINE_VAR, "")
 
     from relay_contracts import RELAY_UDFS
     from relay_contracts.engine import _select_engine_name, make_cel_evaluator
-    from relay_contracts.evaluator import RelayCelEvaluator
     from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
     assert _select_engine_name() == "wasm", (
@@ -450,32 +443,29 @@ def test_default_engine_is_wasm_when_env_blank_post_m5_flip(
     )
     ev = make_cel_evaluator(udfs=RELAY_UDFS)
     assert isinstance(ev, WasmCelEvaluator)
-    assert not isinstance(ev, RelayCelEvaluator)
 
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P4DUALRUN-007")
-def test_explicit_celpy_rollback_override_still_reaches_legacy_evaluator(
+def test_explicit_celpy_rollback_override_fails_closed_post_m6(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The M5 flip preserves the rollback escape hatch: an EXPLICIT
-    ``RELAY_CEL_ENGINE=celpy`` still resolves to celpy and constructs the legacy
-    cel-python ``RelayCelEvaluator`` (removed at M6). This is the only way to
-    reach the legacy engine post-flip; it guards the bake-window rollback path so
-    a future edit cannot silently sever it while the default is wasm."""
+    """M6 WS-I transition of the bake-window rollback pin: the M5 flip kept an
+    EXPLICIT ``RELAY_CEL_ENGINE=celpy`` as the one-release rollback override;
+    M6 removed the legacy engine, so the same selection now FAILS CLOSED at
+    the resolver with the structured unknown-engine ValueError naming the
+    (wasm-only) allowed set -- never a silent fallback to the default."""
     monkeypatch.setenv(_ENGINE_VAR, "celpy")
 
     from relay_contracts.engine import _select_engine_name, make_cel_evaluator
-    from relay_contracts.evaluator import RelayCelEvaluator
-    from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
-    assert _select_engine_name() == "celpy", (
-        "explicit RELAY_CEL_ENGINE=celpy must resolve to 'celpy' (the rollback "
-        f"override) even after the M5 default flip; got {_select_engine_name()!r}"
-    )
-    ev = make_cel_evaluator(udfs=())
-    assert isinstance(ev, RelayCelEvaluator)
-    assert not isinstance(ev, WasmCelEvaluator)
+    with pytest.raises(ValueError) as resolver_ctx:
+        _select_engine_name()
+    assert "wasm" in str(resolver_ctx.value)
+
+    with pytest.raises(ValueError) as factory_ctx:
+        make_cel_evaluator(udfs=())
+    assert "wasm" in str(factory_ctx.value)
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ from relay_contracts import (
     RELAY_TOOL_ARG_NAME,
     RELAY_UDFS,
     PureUdf,
-    RelayCelEvaluator,
+    WasmCelEvaluator,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -106,10 +106,10 @@ def test_relay_coverage_register_call_uses_pure_true_in_source() -> None:
 def test_relay_coverage_evaluator_accepts_registration() -> None:
     """The wired-up evaluator MUST accept RELAY_UDFS without error."""
 
-    evaluator = RelayCelEvaluator(udfs=RELAY_UDFS)
-    # Compile-only check; cel-python's dotted-identifier resolution is
-    # exercised by VAL-W6-029 -- here we only confirm registration is
-    # not rejected.
+    evaluator = WasmCelEvaluator(udfs=RELAY_UDFS)
+    # Construction-only check; the engine's dotted-identifier resolution is
+    # exercised by VAL-W6-029 -- here we only confirm the allowlist
+    # registration is not rejected.
     assert evaluator is not None
 
 

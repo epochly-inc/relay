@@ -35,8 +35,8 @@ from .errors import RelayCelNumericOutOfBoundsError
 # Python str sorts by codepoint; JS strings sort by UTF-16 code unit.
 # For Basic Multilingual Plane keys (< U+10000) these match. For
 # supplementary-plane keys (>= U+10000) the orderings diverge, which
-# silently produces DIFFERENT JCS bytes between cel-python and cel-js
-# for the same input -- breaking cross-runtime signature verification
+# silently produces DIFFERENT JCS bytes between the Python and TS
+# encoders for the same input -- breaking cross-runtime signature verification
 # (CLAUDE.md keystone invariant #11: trust anchor / cross-runtime byte
 # equality). Until both encoders implement the full UTF-16-code-unit
 # sort, we fail-closed on supplementary-plane KEYS. Values may still

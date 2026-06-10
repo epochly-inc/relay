@@ -152,16 +152,16 @@ class RelayCelRegexBackreferenceError(RelayCelProfileError):
 class RelayCelResourceExhaustedError(RelayCelError):
     """Evaluator orphan-thread cap reached (Round-3 P1 fix #4).
 
-    Cel-python evaluation is not interruptible from another thread, so a
-    wall-clock timeout leaves the worker thread alive until cel-python
-    finishes computing. Under adversarial inputs (loop of pathological
-    evaluations) orphans accumulate without bound -- a trivial DoS
-    vector. The evaluator bounds the live orphan count at
+    The CEL engine's eval primitive is not interruptible from another
+    thread, so a wall-clock timeout leaves the worker thread alive until
+    the engine finishes computing. Under adversarial inputs (loop of
+    pathological evaluations) orphans accumulate without bound -- a
+    trivial DoS vector. The evaluator bounds the live orphan count at
     ``MAX_ORPHAN_THREADS``; once reached, new evaluations raise this
     error instead of spawning yet another orphan.
 
-    The bound exists because cel-python lacks cancellation support; if
-    cel-python ever exposes a cancel handle the bound can be lifted.
+    The bound exists because the engine lacks cancellation support; if
+    it ever exposes a cancel handle the bound can be lifted.
     """
 
     code = RelayErrorCode.RELAY_CEL_008

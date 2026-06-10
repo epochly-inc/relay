@@ -1,30 +1,24 @@
 """WS-A engine factory tier-1 plumbing tests (M1 P1HOST, M5-flip transitioned).
 
 ``make_cel_evaluator()`` (``relay_contracts.engine``) is the SINGLE place the
-``RELAY_CEL_ENGINE`` environment variable is read in the whole codebase. It
-selects between the wasm-backed ``WasmCelEvaluator`` (the DEFAULT as of M5, and
-the value when ``RELAY_CEL_ENGINE`` is unset / blank) and the cel-python-backed
-``RelayCelEvaluator`` (``RELAY_CEL_ENGINE=celpy``, the rollback override),
-forwarding the ``udfs`` / ``timeout_ms`` keyword arguments with identical
-semantics, and rejects an unknown engine name with a clear ``ValueError``.
+``RELAY_CEL_ENGINE`` environment variable is read in the whole codebase. As of
+M6 (WS-I) the wasm-backed ``WasmCelEvaluator`` is the ONLY engine: it is the
+default (unset / blank env) and the only accepted explicit token (``wasm``);
+ANY other value -- including the removed legacy engine token -- fails closed
+with a clear ``ValueError`` naming the allowed set. The factory forwards the
+``udfs`` / ``timeout_ms`` keyword arguments with identical semantics.
 
 Covers:
   - VAL-CWC-P1HOST-009: ``make_cel_evaluator`` reads ``RELAY_CEL_ENGINE`` and
     returns the right class (factory-only env read); unknown value -> ValueError.
-    The explicit-engine selection (celpy vs wasm), the udf / timeout forwarding,
-    the case-sensitivity / whitespace-trim / unknown-value handling, and the
-    single-read-site determinism guard are engine-default-agnostic and hold both
-    before and after the M5 flip.
-  - VAL-CWC-P1HOST-010: the engine-DEFAULT assertion. M1-M4 EVIDENCE: with
-    ``RELAY_CEL_ENGINE`` unset the default was celpy. M5 (WS-H) DELIBERATELY
-    FLIPS the factory default to wasm (the cutover's most consequential change),
-    so this file's default-engine assertions are TRANSITIONED from the old
-    celpy-default to the new wasm-default reality: an unset / blank
-    ``RELAY_CEL_ENGINE`` now constructs the ``WasmCelEvaluator``, and the legacy
-    celpy evaluator is reachable ONLY via the explicit ``RELAY_CEL_ENGINE=celpy``
-    rollback override. Leaving the old celpy-default assertions here would be a
-    FALSE assertion post-flip; pinning the udf-forwarding test to its intended
-    engine keeps its coverage intact.
+    The udf / timeout forwarding, the case-sensitivity / whitespace-trim /
+    unknown-value handling, and the single-read-site determinism guard are
+    engine-default-agnostic.
+  - VAL-CWC-P1HOST-010: the engine-DEFAULT assertion. M5 (WS-H) flipped the
+    factory default to wasm; M6 (WS-I) removed the legacy engine entirely, so
+    the explicit legacy selection now FAILS CLOSED (the rollback hatch is
+    closed) -- pinned by test_explicit_legacy_engine_fails_closed and the
+    p6remove guard suite.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -91,14 +85,18 @@ def test_default_engine_is_wasm_returns_wasm_cel_evaluator_instance(
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P1HOST-009")
-def test_explicit_celpy_returns_relay_cel_evaluator(
+def test_explicit_legacy_engine_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """M6 WS-I: the legacy engine token is no longer an allowed selection --
+    it routes through the unknown-engine fail-closed ValueError (never a
+    silent fallback to wasm, never the deleted legacy class)."""
     monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
     from relay_contracts.engine import make_cel_evaluator
 
-    ev = make_cel_evaluator(udfs=())
-    assert type(ev).__name__ == "RelayCelEvaluator"
+    with pytest.raises(ValueError) as ctx:
+        make_cel_evaluator(udfs=())
+    assert "wasm" in str(ctx.value)
 
 
 @pytest.mark.plumbing
@@ -125,8 +123,9 @@ def test_unknown_engine_raises_clear_value_error(
         make_cel_evaluator(udfs=())
     msg = str(ctx.value)
     assert "bogus" in msg, f"error must name the bad value; got {msg!r}"
-    # The allowed engine names appear in the message so the caller can fix it.
-    assert "celpy" in msg and "wasm" in msg, (
+    # The allowed engine names appear in the message so the caller can fix it
+    # (wasm-only as of M6 WS-I).
+    assert "wasm" in msg, (
         f"error must name the allowed engines; got {msg!r}"
     )
 
@@ -136,23 +135,25 @@ def test_unknown_engine_raises_clear_value_error(
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P1HOST-009")
-def test_udfs_forwarded_to_celpy_evaluator(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The ``udfs`` keyword is forwarded to the selected evaluator: a custom
-    pure UDF registered through the factory is callable on the celpy path.
-
-    This test exercises CELPY's custom-UDF registration (a capability unique to
-    the legacy evaluator; the wasm engine has no registration slot and rejects
-    extra UDFs). After the M5 flip the factory default is wasm, so the engine is
-    pinned EXPLICITLY to celpy here -- the test means to test celpy udf
-    forwarding, not whatever the ambient default happens to be."""
-    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
+def test_custom_udf_forwarded_to_default_engine_rejected_structured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M6 WS-I port of the legacy custom-UDF forwarding case (ADR Revisions
+    section 4: the custom-UDF capability was a legacy-engine feature and is
+    DROPPED under the single wasm engine). The ``udfs`` keyword is still
+    forwarded verbatim -- proven by the structured fail-closed rejection the
+    wasm evaluator raises for a non-allowlist UDF at construction
+    (RELAY-CEL-004 / RELAY-CEL-UDF-UNREGISTERED), never a silent drop."""
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
     from relay_contracts.engine import make_cel_evaluator
+    from relay_contracts.errors import RelayCelUnsupportedUdfError
     from relay_contracts.udf import register_udf
 
     udf = register_udf("doubler", lambda x: x * 2, pure=True, arity=1)
-    ev = make_cel_evaluator(udfs=(udf,))
-    assert type(ev).__name__ == "RelayCelEvaluator"
-    assert int(ev.evaluate("doubler(21)")) == 42
+    with pytest.raises(RelayCelUnsupportedUdfError) as ctx:
+        make_cel_evaluator(udfs=(udf,))
+    assert ctx.value.code == "RELAY-CEL-004"
+    assert ctx.value.subtype == "RELAY-CEL-UDF-UNREGISTERED"
 
 
 @pytest.mark.plumbing
@@ -199,12 +200,12 @@ def test_extra_udf_rejected_on_wasm_via_factory(
 def test_timeout_ms_forwarded_and_bounds_enforced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``timeout_ms`` is forwarded with identical bound semantics on both
-    engines: a valid value is set on the evaluator; an out-of-bound value is
-    rejected with ``ValueError`` exactly as the underlying evaluator would."""
+    """``timeout_ms`` is forwarded with identical bound semantics: a valid
+    value is set on the evaluator; an out-of-bound value is rejected with
+    ``ValueError`` exactly as the underlying evaluator would."""
     from relay_contracts.engine import make_cel_evaluator
 
-    for engine in ("celpy", "wasm"):
+    for engine in ("wasm",):
         monkeypatch.setenv("RELAY_CEL_ENGINE", engine)
         ev = make_cel_evaluator(timeout_ms=42, udfs=())
         assert ev.timeout_ms == 42
@@ -218,17 +219,11 @@ def test_timeout_ms_forwarded_and_bounds_enforced(
 @pytest.mark.fulfills("VAL-CWC-P1HOST-009")
 def test_default_udfs_is_empty_tuple(monkeypatch: pytest.MonkeyPatch) -> None:
     """``make_cel_evaluator()`` with no ``udfs`` argument defaults to an empty
-    UDF set (constructs cleanly on both engines).
-
-    Engine selection: env unset is the M5 default (wasm); explicit celpy reaches
-    the legacy evaluator. Both construct cleanly with the empty default UDF set.
-    """
+    UDF set (constructs cleanly with the empty default UDF set)."""
     from relay_contracts.engine import make_cel_evaluator
 
     monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
     assert type(make_cel_evaluator()).__name__ == "WasmCelEvaluator"
-    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
-    assert type(make_cel_evaluator()).__name__ == "RelayCelEvaluator"
 
 
 # ---------------------------------------------------------------------------
@@ -241,9 +236,8 @@ def test_empty_string_env_treated_as_default(
 ) -> None:
     """An EMPTY ``RELAY_CEL_ENGINE`` (set but blank, e.g. ``RELAY_CEL_ENGINE=``)
     is treated as 'unset' -> the default. A blank env var is the standard 'no
-    selection' signal; it resolves to the default, which is wasm as of M5 (the
-    flip) -- an empty export cannot pin the legacy celpy engine, only an explicit
-    ``RELAY_CEL_ENGINE=celpy`` selects the rollback override."""
+    selection' signal; it resolves to the default (wasm, the only engine as of
+    M6)."""
     monkeypatch.setenv("RELAY_CEL_ENGINE", "")
     from relay_contracts.engine import make_cel_evaluator
 
@@ -262,7 +256,7 @@ def test_engine_value_is_case_sensitive(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("RELAY_CEL_ENGINE", "WASM")
     with pytest.raises(ValueError):
         make_cel_evaluator(udfs=())
-    monkeypatch.setenv("RELAY_CEL_ENGINE", "Celpy")
+    monkeypatch.setenv("RELAY_CEL_ENGINE", "Wasm")
     with pytest.raises(ValueError):
         make_cel_evaluator(udfs=())
 

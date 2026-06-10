@@ -1,4 +1,4 @@
-"""Codec between cel-python ``celtypes`` values and the wasm typed-canonical form.
+"""Codec between native Python values and the wasm typed-canonical form.
 
 This module is the canonical Python implementation of the wasm CEL reactor's
 typed-canonical value wire form -- the cross-host byte-parity contract
@@ -25,34 +25,37 @@ Wire form (lib.rs:22-31, verified file:line):
     duration  {"t":"duration","v":"<secs>.<09-nanos>"}       (lib.rs:1283)
     timestamp {"t":"timestamp","v":"<RFC3339-Z>"}            (lib.rs:1290)
 
-The ``type`` / ``duration`` / ``timestamp`` tags reach the host even under the
-Relay profile: ``type(x)`` is NOT a fenced constructor (it emits a type value),
-and ``duration`` / ``timestamp`` VALUES (distinct from the fenced ``duration(...)``
-/ ``timestamp(...)`` constructors) arrive via bindings echoed back out. The
-codec decodes them to the celpy ``TypeType`` / ``DurationType`` / ``TimestampType``
-and re-encodes them byte-faithfully (a ``TypeType`` carries the cel-go name; a
-``DurationType`` / ``TimestampType`` is microsecond-resolution, so sub-microsecond
-nanos are not representable -- the byte-faithful round-trip domain is the
-microsecond domain). The ``v`` field's JSON type is enforced STRICTLY on decode,
-mirroring the Rust request decoder (lib.rs:1352-1465): bool requires a JSON
-boolean, the string-encoded scalars require a JSON string, and the int / uint
-ENCODE side enforces the i64 / u64 wire range (lib.rs:1358 / 1366).
+THE WIRE FORM IS FROZEN. M6 WS-I changed only the HOST-SIDE TYPE LAYER: the
+decode targets are native Python classes (``int`` / ``float`` / ``str`` /
+``bool`` / ``bytes`` / ``list`` / ``dict`` / ``None`` /
+``datetime.timedelta`` / ``datetime.datetime``) plus the two minimal tagged
+wrappers this module owns for the tags Python natives cannot discriminate:
 
-Critical celtypes quirks (empirically confirmed):
-  - ``BoolType`` is an ``int`` subclass but NOT a ``bool`` subclass, so a CEL
-    boolean MUST be classified BEFORE int or it serialises as ``{"t":"int"}``
-    -- a P0 cross-host byte divergence. ``py_to_typed`` therefore tests
-    bool-ness FIRST (both Python ``bool`` and celtypes ``BoolType``).
-  - the cel-python unsigned class is ``celpy.celtypes.UintType`` (NOT
-    ``UIntType``); ``BoolType`` / ``IntType`` / ``UintType`` are three
-    INDEPENDENT ``int`` subclasses (no inheritance among them), so a generic
-    ``int`` branch would swallow a ``UintType`` -- it MUST be classified before
-    the int branch to preserve the distinct ``uint`` tag (lib.rs:1138).
+  - :class:`CelUint` -- an ``int`` subclass marking a CEL ``uint`` so the
+    round-trip re-emits the distinct ``uint`` tag (a bare ``int`` would
+    re-encode as ``int`` and change the engine-side bytes);
+  - :class:`CelTypeValue` -- carries a CEL type value's cel-go type name
+    verbatim (``type(1)`` evaluates to the type value ``int``).
 
-``typed_to_py`` returns the EXACT cel-python celtypes classes on decode
-(``IntType`` / ``UintType`` / ``DoubleType`` / ``StringType`` / ``BoolType`` /
-``BytesType`` / ``ListType`` / ``MapType``); the wasm ``Value::Null`` decodes to
-Python ``None`` (lib.rs:1286), the canonical CEL-null Python value.
+The ``type`` / ``duration`` / ``timestamp`` tags reach the host even under
+the Relay profile: ``type(x)`` is NOT a fenced constructor (it emits a type
+value), and ``duration`` / ``timestamp`` VALUES (distinct from the fenced
+``duration(...)`` / ``timestamp(...)`` constructors) arrive via bindings
+echoed back out. ``timedelta`` / ``datetime`` carry microsecond resolution,
+so sub-microsecond nanos are not representable host-side -- the byte-faithful
+round-trip domain is the microsecond domain (unchanged from the previous
+type layer, which had the same resolution). The ``v`` field's JSON type is
+enforced STRICTLY on decode, mirroring the Rust request decoder
+(lib.rs:1352-1465): bool requires a JSON boolean, the string-encoded scalars
+require a JSON string, and the int / uint ENCODE side enforces the i64 / u64
+wire range (lib.rs:1358 / 1366).
+
+Classification quirk that survives the type-layer move: ``bool`` is an
+``int`` subclass in Python, so a CEL boolean MUST be classified BEFORE int or
+it serialises as ``{"t":"int"}`` -- a P0 cross-host byte divergence.
+``py_to_typed`` therefore tests bool-ness FIRST; ``CelUint`` is likewise
+classified before the generic int branch to preserve the distinct ``uint``
+tag (lib.rs:1138).
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -63,8 +66,6 @@ import datetime
 import math
 from typing import Any
 
-import celpy.celtypes as celtypes
-
 # Absolute import (NOT ``from .errors``): this module is sometimes loaded
 # standalone via importlib.spec_from_file_location (the TS cross-host parity
 # goldens load wasm_codec.py directly, with no package context), where a
@@ -74,7 +75,7 @@ import celpy.celtypes as celtypes
 # work.
 from relay_contracts.errors import SUBTYPE_ENGINE_REQUEST, RelayCelEngineError
 
-__all__ = ["py_to_typed", "typed_to_py"]
+__all__ = ["CelTypeValue", "CelUint", "py_to_typed", "typed_to_py"]
 
 # Wire integer bounds (lib.rs:1358 / 1366): the wasm request decoder parses int
 # as i64 and uint as u64, so an out-of-range Python int produces JSON the wasm
@@ -84,6 +85,57 @@ __all__ = ["py_to_typed", "typed_to_py"]
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
 _U64_MAX = 2**64 - 1
+
+
+class CelUint(int):
+    """A CEL ``uint`` value: an ``int`` subclass carrying the wire-tag intent.
+
+    Python has one integer type, so without a marker the decode of
+    ``{"t":"uint",...}`` would re-encode as ``{"t":"int",...}`` and change
+    the engine-side bytes. ``CelUint`` is the minimal discriminator: it
+    behaves as its integer value everywhere (arithmetic, equality, dict
+    keys) and only the codec's classification reads the class.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover -- diagnostic only
+        return f"CelUint({int(self)})"
+
+
+class CelTypeValue:
+    """A CEL ``type`` value carrying the cel-go type name verbatim.
+
+    Mirrors Rust ``Value::Type(Arc<str>)`` (lib.rs:1406): a type value is
+    just a name string (``type(1)`` -> the type value named ``int``). The
+    name round-trips byte-identically through ``{"t":"type","v":<name>}``.
+
+    Deliberately a PLAIN immutable class, NOT a dataclass: this module is
+    documented to load STANDALONE via ``spec_from_file_location`` (the TS
+    cross-host parity goldens execute it without registering the module in
+    ``sys.modules``), and the dataclass machinery's annotation resolution
+    requires a registered module -- a frozen dataclass here broke the
+    standalone load.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        object.__setattr__(self, "name", name)
+
+    def __setattr__(self, attr: str, value: Any) -> None:
+        raise AttributeError(
+            f"CelTypeValue is immutable; cannot set {attr!r}"
+        )
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, CelTypeValue) and other.name == self.name
+
+    def __hash__(self) -> int:
+        return hash(("CelTypeValue", self.name))
+
+    def __repr__(self) -> str:  # pragma: no cover -- diagnostic only
+        return f"CelTypeValue({self.name!r})"
 
 
 # ---------------------------------------------------------------------------
@@ -227,81 +279,66 @@ def _key_sort_string(typed_key: dict[str, Any]) -> str:
     raise ValueError(f"invalid map key type: {t!r}")
 
 
-def _is_celtype(value: Any, name: str) -> bool:
-    """True when ``value`` is exactly the named celtypes class (by class name).
-
-    BoolType / IntType / UintType are independent int subclasses, so a plain
-    ``isinstance`` against ``int`` cannot distinguish them; class-name identity
-    is the unambiguous discriminator the encode side needs.
-    """
-    return type(value).__name__ == name
-
-
 # ---------------------------------------------------------------------------
-# encode: cel-python value -> typed-canonical {"t","v"} (or {"t":"null"})
+# encode: native Python value -> typed-canonical {"t","v"} (or {"t":"null"})
 # ---------------------------------------------------------------------------
 def py_to_typed(value: Any) -> dict[str, Any]:
-    """Encode a cel-python ``celtypes`` value (or the equivalent plain Python
-    value) to the wasm typed-canonical form.
+    """Encode a native Python value (or one of this module's tagged wrappers)
+    to the wasm typed-canonical form.
 
-    Classification order is load-bearing: bool BEFORE int (BoolType is an int
-    subclass), and UintType BEFORE the generic int branch (UintType is an
-    independent int subclass), so the distinct ``bool`` / ``uint`` tags survive.
+    Classification order is load-bearing: bool BEFORE int (``bool`` is an
+    ``int`` subclass), and ``CelUint`` BEFORE the generic int branch (it is
+    an ``int`` subclass too), so the distinct ``bool`` / ``uint`` tags
+    survive the round-trip.
     """
-    # bool FIRST -- plain bool OR celtypes BoolType (an int subclass that is NOT
-    # a bool subclass; lib.rs:1141 emits a JSON boolean for v).
-    if isinstance(value, bool) or _is_celtype(value, "BoolType"):
+    # bool FIRST -- an int subclass; lib.rs:1141 emits a JSON boolean for v.
+    if isinstance(value, bool):
         return {"t": "bool", "v": bool(value)}
 
-    # null -- Python None OR celtypes NullType (lib.rs:1142: no "v" key).
-    if value is None or _is_celtype(value, "NullType"):
+    # null (lib.rs:1142: no "v" key).
+    if value is None:
         return {"t": "null"}
 
-    # type -- celtypes TypeType carrying the cel-go type name (lib.rs:1295:
+    # type -- CelTypeValue carrying the cel-go type name (lib.rs:1295:
     # json!({"t":"type","v": name}); the faithful mirror of Value::Type(Arc<str>)).
-    # Classified before the generic branches: a TypeType is a `type` subclass and
-    # would not match int/str/etc., but the explicit branch keeps the intent and
-    # the cel-go name (its __name__) is emitted verbatim so the round-trip is
-    # byte-identical.
-    if _is_celtype(value, "TypeType"):
-        return {"t": "type", "v": value.__name__}
+    if isinstance(value, CelTypeValue):
+        return {"t": "type", "v": value.name}
 
-    # duration -- celtypes DurationType (a timedelta) -> "<secs>.<09-nanos>"
-    # (lib.rs:1278-1283). Classified before the numeric/collection branches.
-    if _is_celtype(value, "DurationType"):
+    # duration -- datetime.timedelta -> "<secs>.<09-nanos>" (lib.rs:1278-1283).
+    # Classified before the numeric/collection branches.
+    if isinstance(value, datetime.timedelta):
         return {"t": "duration", "v": _encode_duration(value)}
 
-    # timestamp -- celtypes TimestampType (a datetime) -> RFC3339-Z
-    # (lib.rs:1285-1290 via rfc3339_utc_z). Classified before the numeric/
-    # collection branches.
-    if _is_celtype(value, "TimestampType"):
+    # timestamp -- datetime.datetime -> RFC3339-Z (lib.rs:1285-1290 via
+    # rfc3339_utc_z). Classified before the numeric/collection branches.
+    if isinstance(value, datetime.datetime):
         return {"t": "timestamp", "v": _encode_timestamp(value)}
 
-    # uint BEFORE int -- UintType is an independent int subclass (lib.rs:1138).
-    if _is_celtype(value, "UintType"):
+    # uint BEFORE int -- CelUint is an int subclass (lib.rs:1138).
+    if isinstance(value, CelUint):
         return {"t": "uint", "v": _encode_uint(value)}
 
-    # int -- celtypes IntType or a plain Python int (lib.rs:1137, string-encoded).
-    if _is_celtype(value, "IntType") or isinstance(value, int):
+    # int (lib.rs:1137, string-encoded).
+    if isinstance(value, int):
         return {"t": "int", "v": _encode_int(value)}
 
-    # double -- celtypes DoubleType or a plain float (lib.rs:1139, canonical-g).
-    if _is_celtype(value, "DoubleType") or isinstance(value, float):
+    # double (lib.rs:1139, canonical-g).
+    if isinstance(value, float):
         return {"t": "double", "v": _canonical_double(float(value))}
 
-    # bytes -- celtypes BytesType or plain bytes (lib.rs:1143-1145, lowercase hex).
+    # bytes (lib.rs:1143-1145, lowercase hex).
     if isinstance(value, bytes | bytearray):
         return {"t": "bytes", "v": bytes(value).hex()}
 
-    # string -- celtypes StringType or a plain str (lib.rs:1140).
+    # string (lib.rs:1140).
     if isinstance(value, str):
         return {"t": "string", "v": str(value)}
 
-    # list -- celtypes ListType or a plain list/tuple (lib.rs:1147-1150, order kept).
+    # list (lib.rs:1147-1150, order kept).
     if isinstance(value, list | tuple):
         return {"t": "list", "v": [py_to_typed(item) for item in value]}
 
-    # map -- celtypes MapType or a plain dict (lib.rs:1151-1162, sorted pairs).
+    # map (lib.rs:1151-1162, sorted pairs).
     if isinstance(value, dict):
         entries = []
         for k, val in value.items():
@@ -317,8 +354,8 @@ def py_to_typed(value: Any) -> dict[str, Any]:
 
 
 def _encode_int(value: Any) -> str:
-    """Encode an int (celtypes IntType or plain Python int) as the wire decimal
-    string, enforcing the i64 wire range (lib.rs:1358 ``s.parse::<i64>()``).
+    """Encode an int as the wire decimal string, enforcing the i64 wire range
+    (lib.rs:1358 ``s.parse::<i64>()``).
 
     An out-of-range Python int would serialise to JSON the wasm CANNOT
     deserialize and would break ``_key_sort_string`` (which assumes the i64
@@ -335,8 +372,8 @@ def _encode_int(value: Any) -> str:
 
 
 def _encode_uint(value: Any) -> str:
-    """Encode a uint (celtypes UintType) as the wire decimal string, enforcing
-    the u64 wire range (lib.rs:1366 ``s.parse::<u64>()``)."""
+    """Encode a uint (CelUint) as the wire decimal string, enforcing the u64
+    wire range (lib.rs:1366 ``s.parse::<u64>()``)."""
     u = int(value)
     if u < 0 or u > _U64_MAX:
         raise ValueError(
@@ -346,9 +383,9 @@ def _encode_uint(value: Any) -> str:
     return str(u)
 
 
-def _encode_duration(value: Any) -> str:
-    """Encode a celtypes ``DurationType`` (a ``datetime.timedelta``) as the
-    wasm wire form ``"<secs>.<09-nanos>"`` (lib.rs:1278-1283).
+def _encode_duration(value: datetime.timedelta) -> str:
+    """Encode a ``datetime.timedelta`` as the wasm wire form
+    ``"<secs>.<09-nanos>"`` (lib.rs:1278-1283).
 
     Faithful port of the Rust serializer:
     ``secs = d.num_seconds()`` (truncates TOWARD ZERO),
@@ -373,9 +410,8 @@ def _encode_duration(value: Any) -> str:
     and TS stay byte-symmetric (both reject the same inputs).
 
     ``timedelta`` stores microsecond resolution, so a sub-microsecond duration
-    is not representable in the celtypes value (the decode already truncates
-    nanos to microseconds via DurationType); within the representable
-    (microsecond) domain this is the byte-faithful round-trip of the wasm form.
+    is not representable host-side; within the representable (microsecond)
+    domain this is the byte-faithful round-trip of the wasm form.
     """
     total_ns = _timedelta_total_nanos(value)
     # num_seconds() truncates TOWARD ZERO (Rust chrono::Duration::num_seconds).
@@ -405,7 +441,7 @@ def _encode_duration(value: Any) -> str:
     return f"{secs}.{abs(rem_ns):09d}"
 
 
-def _timedelta_total_nanos(td: Any) -> int:
+def _timedelta_total_nanos(td: datetime.timedelta) -> int:
     """Total nanoseconds of a ``datetime.timedelta`` as an exact integer.
 
     ``timedelta`` carries days/seconds/microseconds, so the value is exact at
@@ -416,18 +452,31 @@ def _timedelta_total_nanos(td: Any) -> int:
     return total_us * 1000
 
 
-def _encode_timestamp(value: Any) -> str:
-    """Encode a celtypes ``TimestampType`` (a ``datetime.datetime``) as the wasm
-    wire form: RFC3339 in UTC with a 'Z' suffix (lib.rs:1285-1290 / rfc3339_utc_z).
+def _encode_timestamp(value: datetime.datetime) -> str:
+    """Encode a timezone-aware ``datetime.datetime`` as the wasm wire form:
+    RFC3339 in UTC with a 'Z' suffix (lib.rs:1285-1290 / rfc3339_utc_z).
 
     Faithful port of chrono's ``to_rfc3339_opts(SecondsFormat::AutoSi, true)``
     with UTC conversion: convert to UTC, then emit the sub-second part ONLY when
     nonzero, grouped in multiples of 3 fractional digits (milli/micro/nano), and
     suffix 'Z'. ``datetime`` carries microsecond resolution, so the fractional
     part is 0, 3, or 6 digits (the 9-digit nanosecond group is not representable
-    in the celtypes value); within that representable domain this reproduces the
-    wasm form byte-for-byte.
+    host-side); within that representable domain this reproduces the wasm form
+    byte-for-byte.
+
+    A NAIVE datetime is rejected fail-closed (RELAY-CEL-009 / ENGINE-REQUEST):
+    ``astimezone`` would interpret it in the MACHINE-LOCAL zone, making the
+    encoded bytes depend on host configuration -- a determinism violation, not
+    a representable value.
     """
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        raise RelayCelEngineError(
+            "timestamp binding must be timezone-aware: a naive datetime "
+            "would be interpreted in the machine-local zone and the encoded "
+            "bytes would depend on host configuration (refusing the "
+            "nondeterministic encode).",
+            subtype=SUBTYPE_ENGINE_REQUEST,
+        )
     utc = value.astimezone(datetime.UTC)
     base = utc.strftime("%Y-%m-%dT%H:%M:%S")
     micros = utc.microsecond
@@ -441,21 +490,22 @@ def _encode_timestamp(value: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# decode: typed-canonical {"t","v"} -> EXACT cel-python celtypes value
+# decode: typed-canonical {"t","v"} -> native Python value
 # ---------------------------------------------------------------------------
 def typed_to_py(typed: Any) -> Any:
-    """Decode a wasm typed-canonical value into the EXACT cel-python celtypes
-    class (lib.rs:1346-1465 inverse): int -> IntType, uint -> UintType,
-    double -> DoubleType, string -> StringType, bool -> BoolType,
-    bytes -> BytesType, list -> ListType, map -> MapType, null -> Python None,
-    type -> TypeType, duration -> DurationType, timestamp -> TimestampType.
+    """Decode a wasm typed-canonical value into the native Python type
+    (lib.rs:1346-1465 inverse): int -> ``int``, uint -> :class:`CelUint`,
+    double -> ``float``, string -> ``str``, bool -> ``bool``,
+    bytes -> ``bytes``, list -> ``list``, map -> ``dict`` (wire pair order
+    preserved as insertion order), null -> ``None``,
+    type -> :class:`CelTypeValue`, duration -> ``datetime.timedelta``,
+    timestamp -> ``datetime.datetime`` (timezone-aware).
 
     The ``v`` field's JSON type is enforced strictly, mirroring the Rust request
     decoder (lib.rs:1352-1465): bool requires a JSON boolean; string / int /
     uint / bytes / type / duration / timestamp require a JSON string. A
-    mismatched ``v`` is a hard ``ValueError`` (FINDING B) -- the lenient
-    coercion that turned ``{"t":"bool","v":"false"}`` into ``BoolType(True)`` is
-    gone. VALID inputs are unchanged.
+    mismatched ``v`` is a hard ``ValueError`` (FINDING B) -- never a lenient
+    coercion. VALID inputs are unchanged.
     """
     if not isinstance(typed, dict):
         raise TypeError(f"typed_to_py: expected a typed object, got {type(typed).__name__!r}")
@@ -466,49 +516,49 @@ def typed_to_py(typed: Any) -> Any:
 
     if t == "int":
         # lib.rs:1353-1359: as_str() then i64 parse -- v MUST be a JSON string.
-        return celtypes.IntType(int(_require_str_v(typed)))
+        return int(_require_str_v(typed))
     if t == "uint":
         # lib.rs:1361-1367: as_str() then u64 parse.
-        return celtypes.UintType(int(_require_str_v(typed)))
+        return CelUint(int(_require_str_v(typed)))
     if t == "double":
         # lib.rs:1369-1384 accepts a string sentinel/decimal OR a raw JSON number.
-        return celtypes.DoubleType(_decode_double(_require_v(typed)))
+        return _decode_double(_require_v(typed))
     if t == "string":
         # lib.rs:1385-1390: as_str() -- v MUST be a JSON string (no stringify).
-        return celtypes.StringType(_require_str_v(typed))
+        return _require_str_v(typed)
     if t == "bool":
         # lib.rs:1392-1397: as_bool() -- v MUST be a JSON boolean.
-        return celtypes.BoolType(_require_bool_v(typed))
+        return _require_bool_v(typed)
     if t == "null":
         # lib.rs:1399 decodes null to Value::Null; Python None is the canonical
-        # CEL-null value cel-python uses.
+        # CEL-null host value.
         return None
     if t == "type":
         # lib.rs:1401-1407: as_str() -> Value::Type(Arc::from(s)). The host
-        # mirror is a celpy TypeType carrying the cel-go type name verbatim
-        # (FINDING A): `type(1)` yields {"t":"type","v":"int"} from the wasm.
-        return _decode_type(_require_str_v(typed))
+        # mirror is a CelTypeValue carrying the cel-go type name verbatim:
+        # `type(1)` yields {"t":"type","v":"int"} from the wasm.
+        return CelTypeValue(_require_str_v(typed))
     if t == "bytes":
         # lib.rs:1408-1414: as_str() then hex-decode.
-        return celtypes.BytesType(bytes.fromhex(_require_str_v(typed)))
+        return bytes.fromhex(_require_str_v(typed))
     if t == "duration":
         # lib.rs:1442-1452: as_str() then split_secs_nanos -> chrono Duration.
-        # The host mirror is a celpy DurationType (FINDING A).
+        # The host mirror is a datetime.timedelta.
         return _decode_duration(_require_str_v(typed))
     if t == "timestamp":
-        # lib.rs:1454-1462: as_str() then parse_from_rfc3339. The host mirror is
-        # a celpy TimestampType (FINDING A).
+        # lib.rs:1454-1462: as_str() then parse_from_rfc3339. The host mirror
+        # is a timezone-aware datetime.datetime.
         return _decode_timestamp(_require_str_v(typed))
     if t == "list":
         v = _require_v(typed)
         if not isinstance(v, list):
             raise ValueError("typed_to_py: list 'v' must be an array")
-        return celtypes.ListType([typed_to_py(item) for item in v])
+        return [typed_to_py(item) for item in v]
     if t == "map":
         v = _require_v(typed)
         if not isinstance(v, list):
             raise ValueError("typed_to_py: map 'v' must be an array of [k,v] pairs")
-        result = celtypes.MapType()
+        result: dict[Any, Any] = {}
         for pair in v:
             if not isinstance(pair, list | tuple) or len(pair) != 2:
                 raise ValueError("typed_to_py: map entry must be a [k,v] pair")
@@ -546,10 +596,9 @@ def _require_bool_v(typed: dict[str, Any]) -> bool:
     """Return ``typed['v']`` requiring it to be a JSON boolean (FINDING B).
 
     Mirrors the Rust ``obj.get("v").and_then(|v| v.as_bool())`` strictness
-    (lib.rs:1392-1397). The lenient ``bool(v)`` coercion is gone -- a string
-    ``"false"`` (which is truthy) or a number no longer decodes to the wrong
-    BoolType. ``bool`` is checked explicitly (not ``int``) so ``0`` / ``1`` are
-    rejected as non-bool, matching ``as_bool()``.
+    (lib.rs:1392-1397). A string ``"false"`` (which is truthy) or a number
+    never decodes to the wrong boolean. ``bool`` is checked explicitly (not
+    ``int``) so ``0`` / ``1`` are rejected as non-bool, matching ``as_bool()``.
     """
     v = _require_v(typed)
     if not isinstance(v, bool):
@@ -560,32 +609,16 @@ def _require_bool_v(typed: dict[str, Any]) -> bool:
     return v
 
 
-def _decode_type(name: str) -> Any:
-    """Decode a ``type`` tag's cel-go type name into a celpy ``TypeType`` value
-    carrying that name (FINDING A).
-
-    Mirrors Rust ``Value::Type(Arc::from(s))`` (lib.rs:1406): a type value is
-    just a name string. cel-python's ``TypeType`` is a ``type`` metaclass whose
-    stock constructor is a type-extractor (not a value carrier), so the value is
-    built via ``type.__new__(TypeType, name, (), {})`` -- a genuine
-    ``TypeType`` instance whose ``__name__`` is the cel-go name verbatim, so
-    ``py_to_typed`` re-emits the IDENTICAL ``{"t":"type","v":<name>}``.
-    """
-    obj = type.__new__(celtypes.TypeType, name, (), {})
-    type.__init__(obj, name, (), {})
-    return obj
-
-
-def _decode_duration(v: str) -> Any:
-    """Decode a ``duration`` tag's ``"<secs>.<nanos>"`` wire string into a celpy
-    ``DurationType`` (FINDING A).
+def _decode_duration(v: str) -> datetime.timedelta:
+    """Decode a ``duration`` tag's ``"<secs>.<nanos>"`` wire string into a
+    ``datetime.timedelta``.
 
     Faithful port of Rust ``split_secs_nanos`` (lib.rs:1468-1485): split on the
     first '.', parse the integer seconds, pad/truncate the fractional part to 9
     digits for nanoseconds, and apply the seconds' sign to the nanos. The
-    resulting ``DurationType`` (a ``datetime.timedelta``) holds microsecond
-    resolution, so sub-microsecond nanos are truncated by celtypes -- the same
-    representable-domain limit the encode side documents.
+    resulting ``timedelta`` holds microsecond resolution, so sub-microsecond
+    nanos are truncated (toward zero) -- the same representable-domain limit
+    the encode side documents.
     """
     sec_str, _, nano_str = v.partition(".")
     try:
@@ -599,21 +632,31 @@ def _decode_duration(v: str) -> Any:
         raise ValueError(f"typed_to_py: bad duration nanos in {v!r}") from exc
     if secs < 0:
         nanos = -nanos
-    return celtypes.DurationType(seconds=secs, nanos=nanos)
+    # Truncate nanos toward zero into the microsecond domain (timedelta
+    # resolution); exact for every wire value in the microsecond domain.
+    micros = nanos // 1000 if nanos >= 0 else -((-nanos) // 1000)
+    return datetime.timedelta(seconds=secs, microseconds=micros)
 
 
-def _decode_timestamp(v: str) -> Any:
-    """Decode a ``timestamp`` tag's RFC3339 wire string into a celpy
-    ``TimestampType`` (FINDING A).
+def _decode_timestamp(v: str) -> datetime.datetime:
+    """Decode a ``timestamp`` tag's RFC3339 wire string into a timezone-aware
+    ``datetime.datetime``.
 
-    Mirrors Rust ``parse_from_rfc3339`` (lib.rs:1459): the ``TimestampType``
-    constructor parses the RFC3339 string directly. An unparseable string raises
-    a ``ValueError`` rather than silently mis-decoding.
+    Mirrors Rust ``parse_from_rfc3339`` (lib.rs:1459). An unparseable string
+    -- or one WITHOUT an offset (RFC3339 requires one; a naive datetime would
+    poison the deterministic re-encode) -- raises ``ValueError`` rather than
+    silently mis-decoding.
     """
     try:
-        return celtypes.TimestampType(v)
-    except Exception as exc:  # noqa: BLE001 -- normalize any parse failure
+        parsed = datetime.datetime.fromisoformat(v)
+    except ValueError as exc:
         raise ValueError(f"typed_to_py: bad timestamp {v!r}: {exc}") from exc
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        raise ValueError(
+            f"typed_to_py: bad timestamp {v!r}: missing UTC offset "
+            "(RFC3339 requires one)"
+        )
+    return parsed
 
 
 def _decode_double(v: Any) -> float:

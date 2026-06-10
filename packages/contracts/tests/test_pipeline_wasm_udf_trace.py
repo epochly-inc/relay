@@ -5,18 +5,15 @@ On the wasm engine path ``evaluate_assertion`` MUST:
 
   - reconstruct ``udf_outputs_jcs`` from the wasm ``udf_trace`` response field
     (a per-UDF-name list of typed-canonical values in CALL ORDER), NOT from a
-    cel-python wrapper-capture;
-  - derive ``udfs_invoked`` from the ``udf_trace`` keys, with NO cel-python
-    ``_env`` AST walk on the wasm hot path (the wasm engine carries no celpy
-    Environment to walk);
+    host wrapper-capture;
+  - derive ``udfs_invoked`` from the ``udf_trace`` keys, with NO host-side
+    CEL AST walk on the hot path (VAL-CWC-P6REMOVE-003);
   - still bind ALL SIX required outcome-envelope keys (assertion_id,
     expression_digest, udfs_invoked, udf_outputs_jcs, wall_time_ms, outcome)
     and raise :class:`RelayContractOutcomeError` if any is missing.
 
-These tests run ONLY under ``RELAY_CEL_ENGINE=wasm`` (the contracts factory
-selects the wasm evaluator); they are skipped on the default celpy engine so
-the suite is green under either selection. The evidence command sets the env:
-``RELAY_CEL_ENGINE=wasm uv run pytest ... -m plumbing -q``.
+M6 WS-I: the wasm engine is the ONLY backend, so these tests run
+unconditionally (the M1-M5 RELAY_CEL_ENGINE=wasm skip gate is gone).
 
 Spec anchors: D, B.4. CLAUDE.md keystone invariant 2 (pass without evidence is
 not a pass) + invariant 16 (typed-canonical cross-host byte parity).
@@ -27,7 +24,6 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 from relay_contracts import RELAY_COVERAGE_NAME, RELAY_UDFS
@@ -35,17 +31,6 @@ from relay_contracts.dsl_parser import parse_contract
 from relay_contracts.pipeline import (
     _REQUIRED_OUTCOME_KEYS,
     evaluate_assertion,
-)
-
-# Only meaningful when the contracts factory is selecting the wasm engine.
-# The factory reads RELAY_CEL_ENGINE (engine.py is the ONLY env read site);
-# this test reads the env solely to SKIP on the celpy default, never to drive
-# engine selection inside pipeline.py.
-_WASM_SELECTED = os.environ.get("RELAY_CEL_ENGINE", "").strip() == "wasm"
-
-pytestmark = pytest.mark.skipif(
-    not _WASM_SELECTED,
-    reason="wasm-path test; runs only under RELAY_CEL_ENGINE=wasm",
 )
 
 

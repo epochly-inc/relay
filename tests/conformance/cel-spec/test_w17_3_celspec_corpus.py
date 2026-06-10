@@ -1,7 +1,7 @@
 """W17.3 cel-spec conformance corpus tests.
 
 Pinned-vector conformance suite that exercises both the Python CEL
-evaluator (cel-python / celpy) and the TypeScript CEL evaluator
+evaluator (the single wasm engine) and the TypeScript CEL evaluator
 (cel-js, invoked via Node subprocess) against a Relay-profile-filtered
 subset of the google/cel-spec conformance vector set.
 
@@ -434,54 +434,35 @@ def test_celpy_evaluates_included_vector(vector: dict[str, Any]) -> None:
             "VAL-W17-011: no included vectors in profile filter; corpus has not "
             "been populated yet."
         )
-    import celpy.celtypes as celtypes
     from relay_contracts import RELAY_UDFS, make_cel_evaluator
 
-    def _to_celtypes(value: Any) -> Any:
+    def _to_python(value: Any) -> Any:
+        """Collapse evaluator results to JSON-roundtrippable Python. The wasm
+        codec decodes to native classes; the int branch also covers the
+        CelUint marker subclass."""
         if value is None:
             return None
         if isinstance(value, bool):
-            return celtypes.BoolType(value)
-        if isinstance(value, int):
-            return celtypes.IntType(value)
-        if isinstance(value, float):
-            return celtypes.DoubleType(value)
-        if isinstance(value, str):
-            return celtypes.StringType(value)
-        if isinstance(value, list | tuple):
-            return celtypes.ListType([_to_celtypes(x) for x in value])
-        if isinstance(value, dict):
-            return celtypes.MapType(
-                {celtypes.StringType(k): _to_celtypes(v) for k, v in value.items()}
-            )
-        return value
-
-    def _to_python(value: Any) -> Any:
-        if value is None:
-            return None
-        if isinstance(value, celtypes.BoolType):
-            return bool(value)
-        if isinstance(value, celtypes.IntType):
-            return int(value)
-        if isinstance(value, celtypes.DoubleType):
-            return float(value)
-        if isinstance(value, celtypes.StringType):
-            return str(value)
-        if isinstance(value, celtypes.ListType | list | tuple):
-            return [_to_python(v) for v in value]
-        if isinstance(value, celtypes.MapType | dict):
-            return {str(k): _to_python(v) for k, v in value.items()}
-        if isinstance(value, bool | int | float | str):
             return value
-        raise TypeError(f"unsupported celpy result type: {type(value).__name__}")
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float):
+            return float(value)
+        if isinstance(value, str):
+            return str(value)
+        if isinstance(value, list | tuple):
+            return [_to_python(v) for v in value]
+        if isinstance(value, dict):
+            return {str(k): _to_python(v) for k, v in value.items()}
+        raise TypeError(f"unsupported evaluator result type: {type(value).__name__}")
 
     # Construct via the make_cel_evaluator factory (the ONLY RELAY_CEL_ENGINE
-    # read site, engine.py) so this cel-spec conformance test HONORS the
-    # RELAY_CEL_ENGINE selector: under the CI [celpy, wasm] engine matrix the
-    # wasm row now actually conformance-tests the WasmCelEvaluator (FINDING-2).
-    # RELAY_UDFS (the 3 native relay.* UDFs) is accepted on both engines.
+    # read site, engine.py) so this cel-spec conformance test exercises the
+    # production single-engine path. RELAY_UDFS (the 3 native relay.* UDFs) is
+    # the accepted allowlist. Bindings are plain JSON-native values; the wasm
+    # codec encodes natives onto the typed-canonical wire form directly.
     ev = make_cel_evaluator(udfs=RELAY_UDFS)
-    bindings = {k: _to_celtypes(v) for k, v in (vector.get("bindings") or {}).items()}
+    bindings = dict(vector.get("bindings") or {})
     raw = ev.evaluate(vector["expression"], bindings)
     actual = _to_python(raw)
     expected = vector["expected_value"]
@@ -654,61 +635,39 @@ def test_parity_celpy_vs_celjs_per_vector() -> None:
             "has not been populated yet."
         )
 
-    import celpy.celtypes as celtypes
     from relay_contracts import RELAY_UDFS, make_cel_evaluator
 
-    def _to_celtypes(value: Any) -> Any:
+    def _to_python(value: Any) -> Any:
+        """Collapse evaluator results to JSON-roundtrippable Python. The wasm
+        codec decodes to native classes; the int branch also covers the
+        CelUint marker subclass."""
         if value is None:
             return None
         if isinstance(value, bool):
-            return celtypes.BoolType(value)
-        if isinstance(value, int):
-            return celtypes.IntType(value)
-        if isinstance(value, float):
-            return celtypes.DoubleType(value)
-        if isinstance(value, str):
-            return celtypes.StringType(value)
-        if isinstance(value, list | tuple):
-            return celtypes.ListType([_to_celtypes(x) for x in value])
-        if isinstance(value, dict):
-            return celtypes.MapType(
-                {celtypes.StringType(k): _to_celtypes(v) for k, v in value.items()}
-            )
-        return value
-
-    def _to_python(value: Any) -> Any:
-        if value is None:
-            return None
-        if isinstance(value, celtypes.BoolType):
-            return bool(value)
-        if isinstance(value, celtypes.IntType):
-            return int(value)
-        if isinstance(value, celtypes.DoubleType):
-            return float(value)
-        if isinstance(value, celtypes.StringType):
-            return str(value)
-        if isinstance(value, celtypes.ListType | list | tuple):
-            return [_to_python(v) for v in value]
-        if isinstance(value, celtypes.MapType | dict):
-            return {str(k): _to_python(v) for k, v in value.items()}
-        if isinstance(value, bool | int | float | str):
             return value
-        raise TypeError(f"unsupported celpy result type: {type(value).__name__}")
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float):
+            return float(value)
+        if isinstance(value, str):
+            return str(value)
+        if isinstance(value, list | tuple):
+            return [_to_python(v) for v in value]
+        if isinstance(value, dict):
+            return {str(k): _to_python(v) for k, v in value.items()}
+        raise TypeError(f"unsupported evaluator result type: {type(value).__name__}")
 
     # Construct via the make_cel_evaluator factory (the ONLY RELAY_CEL_ENGINE
-    # read site, engine.py) so this cel-spec parity test HONORS the
-    # RELAY_CEL_ENGINE selector under the CI [celpy, wasm] engine matrix
-    # (FINDING-2: the wasm row must actually exercise the WasmCelEvaluator,
-    # not silently fall back to celpy). RELAY_UDFS is accepted on both engines.
+    # read site, engine.py) so this cel-spec parity test exercises the
+    # production single-engine path. RELAY_UDFS is the accepted allowlist.
+    # Bindings are plain JSON-native values (the wasm codec encodes them).
     ev = make_cel_evaluator(udfs=RELAY_UDFS)
     py_results: dict[str, Any] = {}
     py_errors: dict[str, str] = {}
     for vec in _INCLUDED_VECTORS_FOR_PARAM:
         vid = vec["vector_id"]
         try:
-            bindings = {
-                k: _to_celtypes(v) for k, v in (vec.get("bindings") or {}).items()
-            }
+            bindings = dict(vec.get("bindings") or {})
             raw = ev.evaluate(vec["expression"], bindings)
             py_results[vid] = _to_python(raw)
         except Exception as e:  # noqa: BLE001 - we want every error captured

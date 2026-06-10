@@ -1,36 +1,28 @@
 """VAL-CWC-P1HOST-015: typed-canonical is the SINGLE contract for
-udf_outputs_jcs -- both engines emit byte-identical bytes for the same logical
-UDF outputs.
+udf_outputs_jcs -- the pipeline emits byte-identical bytes to the direct
+typed-canonical encoding of the same logical UDF outputs.
 
 The ``udf_outputs_jcs`` field feeds a cryptographic digest, so its BYTES (not
-just its structure) must match across engines. The unification makes
-typed-canonical (``{"t":...,"v":...}``) the single encoding both paths feed into
-the JCS canonicalizer, eliminating the prior celpy-raw-objects vs
-wasm-typed-canonical digest divergence.
+just its structure) must match across hosts. Typed-canonical
+(``{"t":...,"v":...}``) is the single encoding the pipeline feeds into the
+JCS canonicalizer -- the M1 unification that eliminated the raw-objects vs
+typed-canonical digest divergence, preserved unchanged by the M6 WS-I
+type-layer move (the codec now decodes to native Python classes, but the
+WIRE/encoding bytes are identical).
 
 Two complementary assertions:
 
-  1. The wasm pipeline path (driven end-to-end via the contracts factory under
-     ``RELAY_CEL_ENGINE=wasm``) produces ``udf_outputs_jcs`` whose bytes equal
-     the bytes the SAME logical UDF outputs serialize to via the celpy-side
-     typed-canonical codec (``py_to_typed`` of the direct relay.* UDF results,
-     run through the SAME ``jcs_canonicalize``). This proves the two engines
-     feed IDENTICAL typed-canonical structures into one JCS encoder.
+  1. The pipeline path (driven end-to-end via the contracts factory in a
+     fresh subprocess with the default engine) produces ``udf_outputs_jcs``
+     whose bytes equal the bytes the SAME logical UDF outputs serialize to
+     via the host codec (``py_to_typed`` of the direct relay.* UDF results,
+     run through the SAME ``jcs_canonicalize``). This proves the engine
+     ``udf_trace`` and the host codec feed IDENTICAL typed-canonical
+     structures into one JCS encoder.
 
-  2. The celpy pipeline path emits typed-canonical bytes for a bare-name UDF
-     (the only UDF form cel-python can evaluate through CEL), byte-identical to
-     the typed-canonical encoding of the SAME logical output. This proves the
-     celpy path was migrated OFF raw-celpy-object JСS onto the single
-     typed-canonical contract.
-
-Why not run the SAME dotted relay.* expression through BOTH engines? cel-python
-cannot evaluate a dotted ``relay.coverage(...)`` call through CEL -- it parses
-it as a member-method call needing ``relay`` bound as a variable, and any
-method-leaf adapter diverges on short-circuit and chained logical ops. That is
-the provably-unbounded two-engine gap the single-wasm-engine cutover exists to
-eliminate (the same gap the known-failing ``test_w17_4_*`` tests track). The
-byte-parity CONTRACT is the typed-canonical ENCODING; this test proves that
-encoding is byte-identical for identical logical outputs across the engines.
+  2. The emitted form is the typed-canonical per-name call-order list of
+     ``{"t","v"}`` entries -- NEVER the raw-object form
+     (``{"name":[true,false]}``) whose digest diverged pre-unification.
 
 CLAUDE.md keystone invariant 16 (typed-canonical cross-host byte parity, a P0).
 
@@ -45,22 +37,18 @@ import subprocess
 import sys
 
 import pytest
-from relay_contracts import (
-    RELAY_COVERAGE_NAME,
-    register_udf,
-)
+from relay_contracts import RELAY_COVERAGE_NAME
 from relay_contracts.canonical import jcs_canonicalize
-from relay_contracts.dsl_parser import parse_contract
-from relay_contracts.pipeline import evaluate_assertion
 from relay_contracts.udfs import relay_coverage
 from relay_contracts.wasm_codec import py_to_typed
 
-# --- worker that drives the WASM pipeline path end-to-end ------------------
+# --- worker that drives the pipeline path end-to-end ------------------------
 
-# Run the relay.coverage assertion through the contracts factory under
-# RELAY_CEL_ENGINE=wasm (the factory reads the env once at construction;
-# pipeline.py never reads it). Print the envelope udf_outputs_jcs string.
-_WASM_WORKER = r"""
+# Run the relay.coverage assertion through the contracts factory in a FRESH
+# subprocess (default engine; the factory reads RELAY_CEL_ENGINE once at
+# construction; pipeline.py never reads it). Print the envelope
+# udf_outputs_jcs string.
+_PIPELINE_WORKER = r"""
 import json
 from relay_contracts import RELAY_UDFS
 from relay_contracts.dsl_parser import parse_contract
@@ -85,11 +73,13 @@ print(json.dumps({
 """
 
 
-def _run_wasm_pipeline() -> dict[str, object]:
+def _run_pipeline_subprocess() -> dict[str, object]:
     env = dict(os.environ)
-    env["RELAY_CEL_ENGINE"] = "wasm"
+    # The default engine (env unset) IS the wasm engine as of M5/M6; assert
+    # the production default path, not an explicit override.
+    env.pop("RELAY_CEL_ENGINE", None)
     proc = subprocess.run(
-        [sys.executable, "-c", _WASM_WORKER],
+        [sys.executable, "-c", _PIPELINE_WORKER],
         capture_output=True,
         text=True,
         env=env,
@@ -97,105 +87,66 @@ def _run_wasm_pipeline() -> dict[str, object]:
         check=False,
     )
     assert proc.returncode == 0, (
-        f"wasm pipeline worker failed (rc={proc.returncode}):\n"
+        f"pipeline worker failed (rc={proc.returncode}):\n"
         f"stdout={proc.stdout}\nstderr={proc.stderr}"
     )
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def _celpy_side_typed_canonical_jcs() -> bytes:
-    """The typed-canonical JCS bytes the celpy SIDE produces for the SAME
+def _direct_typed_canonical_jcs() -> bytes:
+    """The typed-canonical JCS bytes the host codec produces for the SAME
     logical relay.coverage outputs.
 
-    The pipeline's celpy path encodes captured UDF results via ``py_to_typed``
-    then ``jcs_canonicalize`` -- exactly this sequence. We compute the same
-    bytes from the direct relay.coverage results (the celtypes-equivalent
-    logical values) to assert the wasm pipeline bytes equal the celpy-side
-    encoding of identical logical outputs.
+    The pipeline encodes the engine's ``udf_trace`` entries (already
+    typed-canonical) via ``jcs_canonicalize``; the direct side computes
+    ``py_to_typed`` of the direct relay.coverage results (native Python
+    logical values) through the SAME canonicalizer.
     """
-    import celpy.celtypes as celtypes
-
-    trace = celtypes.MapType({
-        celtypes.StringType("steps"): celtypes.ListType([
-            celtypes.MapType({celtypes.StringType("name"): celtypes.StringType("step1")})
-        ])
-    })
+    trace = {"steps": [{"name": "step1"}]}
     # Two calls in expression order: match (step1) -> True, miss (missing) -> False.
-    r1 = relay_coverage(trace, celtypes.StringType("step1"))
-    r2 = relay_coverage(trace, celtypes.StringType("missing"))
+    r1 = relay_coverage(trace, "step1")
+    r2 = relay_coverage(trace, "missing")
     udf_outputs = {RELAY_COVERAGE_NAME: [py_to_typed(r1), py_to_typed(r2)]}
     return jcs_canonicalize(udf_outputs)
 
 
 @pytest.mark.plumbing
-def test_wasm_pipeline_udf_outputs_jcs_matches_typed_canonical_encoding() -> None:
-    """The wasm pipeline's udf_outputs_jcs bytes equal the celpy-side
+def test_pipeline_udf_outputs_jcs_matches_typed_canonical_encoding() -> None:
+    """The pipeline's udf_outputs_jcs bytes equal the host-codec
     typed-canonical encoding of the SAME logical relay.coverage outputs."""
-    wasm = _run_wasm_pipeline()
-    wasm_bytes = wasm["udf_outputs_jcs"].encode("utf-8")  # type: ignore[union-attr]
-    celpy_side_bytes = _celpy_side_typed_canonical_jcs()
+    result = _run_pipeline_subprocess()
+    pipeline_bytes = result["udf_outputs_jcs"].encode("utf-8")  # type: ignore[union-attr]
+    direct_bytes = _direct_typed_canonical_jcs()
 
-    assert wasm_bytes == celpy_side_bytes, (
+    assert pipeline_bytes == direct_bytes, (
         "typed-canonical udf_outputs_jcs byte divergence:\n"
-        f"  wasm pipeline : {wasm['udf_outputs_jcs']!r}\n"
-        f"  celpy codec   : {celpy_side_bytes.decode('utf-8')!r}"
+        f"  pipeline    : {result['udf_outputs_jcs']!r}\n"
+        f"  host codec  : {direct_bytes.decode('utf-8')!r}"
     )
     # The single typed-canonical contract: per-name call-order list of {t,v}.
-    assert json.loads(wasm["udf_outputs_jcs"]) == {  # type: ignore[arg-type]
+    assert json.loads(result["udf_outputs_jcs"]) == {  # type: ignore[arg-type]
         "relay.coverage": [
             {"t": "bool", "v": True},
             {"t": "bool", "v": False},
         ]
     }
-    assert wasm["udfs_invoked"] == ["relay.coverage"], wasm["udfs_invoked"]
+    assert result["udfs_invoked"] == ["relay.coverage"], result["udfs_invoked"]
 
 
 @pytest.mark.plumbing
-def test_celpy_pipeline_emits_typed_canonical_not_raw(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The celpy pipeline path emits TYPED-CANONICAL udf_outputs_jcs (the single
-    contract), not raw cel-python objects.
-
-    Uses a bare-name UDF (the only UDF form cel-python can evaluate through
-    CEL). The emitted bytes MUST equal the typed-canonical encoding of the same
-    logical outputs -- proving the celpy path was migrated off raw-object JCS.
-
-    This asserts the CELPY-path encoding (the wasm engine rejects the
-    non-allowlist ``is_pos`` UDF). After the M5 default flip the engine is PINNED
-    to celpy here so the celpy encoding is exercised regardless of the now-wasm
-    ambient default.
-    """
-    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
-
-    def is_pos(n: int) -> bool:
-        return n > 0
-
-    udf = register_udf("is_pos", is_pos, pure=True, arity=1)
-    doc = {
-        "schema_version": "relay.assertion.behavioral.v1",
-        "assertion_id": "VAL-RT-CELPY-TYPED",
-        "kind": "behavioral",
-        "expression": "is_pos(x) && !is_pos(y)",
-        "severity": "p0",
-        "owner_email": "test@example.com",
-        "lifecycle_state": "active",
-    }
-    parsed = parse_contract(doc)
-    envelope = evaluate_assertion(
-        parsed, bindings={"x": 5, "y": -3}, extra_udfs=[udf]
+def test_pipeline_emits_typed_canonical_not_raw() -> None:
+    """The pipeline emits TYPED-CANONICAL udf_outputs_jcs (the single
+    contract), never the raw-object form whose digest diverged
+    pre-unification (``{"relay.coverage":[true,false]}``)."""
+    result = _run_pipeline_subprocess()
+    raw_form = jcs_canonicalize(
+        {RELAY_COVERAGE_NAME: [True, False]}
+    ).decode("utf-8")
+    assert result["udf_outputs_jcs"] != raw_form, (
+        "pipeline emitted the RAW-object encoding the typed-canonical "
+        "unification eliminated"
     )
-
-    # is_pos(5)=True, is_pos(-3)=False -> captured [True, False].
-    expected = jcs_canonicalize({"is_pos": [py_to_typed(True), py_to_typed(False)]})
-    assert envelope["udf_outputs_jcs"].encode("utf-8") == expected, (
-        f"celpy path did not emit typed-canonical bytes:\n"
-        f"  got     : {envelope['udf_outputs_jcs']!r}\n"
-        f"  expected: {expected.decode('utf-8')!r}"
-    )
-    # Raw-object form would have been {"is_pos":[true,false]} -- assert we are
-    # NOT emitting that (the divergence the unification eliminates).
-    assert envelope["udf_outputs_jcs"] != '{"is_pos":[true,false]}'
-    assert json.loads(envelope["udf_outputs_jcs"]) == {
-        "is_pos": [{"t": "bool", "v": True}, {"t": "bool", "v": False}]
-    }
+    decoded = json.loads(result["udf_outputs_jcs"])  # type: ignore[arg-type]
+    for entry in decoded[RELAY_COVERAGE_NAME]:
+        assert set(entry.keys()) == {"t", "v"}, entry
+        assert entry["t"] == "bool", entry

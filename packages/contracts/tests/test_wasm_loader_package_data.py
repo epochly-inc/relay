@@ -58,7 +58,6 @@ import importlib.resources
 import importlib.util
 from typing import Any
 
-import celpy.celtypes as celtypes
 import pytest
 
 pytestmark = pytest.mark.plumbing
@@ -128,8 +127,9 @@ def test_wasm_loader_package_data_constructs_engine_wheel_only(
 
     ev = wbe.WasmCelEvaluator(timeout_ms=250)
     result = ev.evaluate("1 + 2")
-    assert isinstance(result, celtypes.IntType)
-    assert int(result) == 3
+    # Native decode target (M6 type layer): an exact Python int.
+    assert type(result) is int
+    assert result == 3
 
 
 def test_wasm_loader_package_data_used_when_repo_path_absent(
@@ -282,18 +282,15 @@ def test_wasm_loader_missing_structured_error(
     )
 
 
-def test_wasm_loader_missing_celpy_engine_unaffected(
+def test_wasm_loader_missing_no_legacy_fallback_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The celpy engine constructs + evaluates with the wasm loader absent.
-
-    A missing loader package data must NOT break the celpy engine: the celpy
-    evaluator carries no wasm dependency, so the factory under
-    RELAY_CEL_ENGINE=celpy returns a working RelayCelEvaluator even with the
-    loader gone. After the M5 default flip the engine is PINNED to celpy (the
-    unset default is now wasm); the invariant under test -- celpy is independent
-    of the wasm artifact -- is unchanged, only the way to reach celpy is now the
-    explicit rollback selector rather than the default.
+    """M6 WS-I port of the legacy-engine-unaffected case: there is NO legacy
+    engine to fall back to when the loader package data is absent. An explicit
+    legacy-engine selection fails closed at the factory with the structured
+    unknown-engine ValueError, so a missing loader can never be papered over
+    by silently routing to a removed engine -- the structured RELAY-CEL-009
+    load error (asserted above) IS the contract.
     """
     import relay_contracts.wasm_backed_evaluator as wbe
     from relay_contracts.engine import make_cel_evaluator
@@ -303,15 +300,11 @@ def test_wasm_loader_missing_celpy_engine_unaffected(
         wbe, "resolve_packaged_wasm_loader_path", lambda: None, raising=True
     )
 
-    # Pin the legacy celpy engine explicitly: this test asserts celpy is
-    # independent of the wasm loader. Post-M5-flip an unset env builds the wasm
-    # evaluator (which WOULD depend on the loader), so celpy is selected by the
-    # rollback override.
     monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
-    ev = make_cel_evaluator(udfs=())
-    assert type(ev).__name__ == "RelayCelEvaluator"
-    result = ev.evaluate("1 + 2")
-    assert int(result) == 3
+    with pytest.raises(ValueError) as excinfo:
+        make_cel_evaluator(udfs=())
+    msg = str(excinfo.value)
+    assert "wasm" in msg and "RELAY_CEL_ENGINE" in msg
 
 
 # --- helpers -----------------------------------------------------------------

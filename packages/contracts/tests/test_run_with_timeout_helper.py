@@ -1,16 +1,17 @@
-"""VAL-CWC-P1HOST-002: the timeout + orphan-thread-cap block is lifted
-into a reusable host-side ``_run_with_timeout`` helper.
+"""VAL-CWC-P1HOST-002: the timeout + orphan-thread-cap block is the reusable
+host-side ``run_with_timeout`` helper.
 
-The block formerly inlined in ``RelayCelEvaluator.evaluate`` (atomic
+M6 WS-I home: the helper is a MODULE-LEVEL function in
+``relay_contracts.evaluator`` (the engine-agnostic host-guards module) with a
+module-level process-wide orphan tracker -- the same atomic
 prune+check+spawn under ``_orphan_tracker_lock``, ``join(timeout)``,
 ``RelayCelTimeoutError`` on ``is_alive``, ``RelayCelResourceExhaustedError``
-at ``MAX_ORPHAN_THREADS``) is extracted into an engine-agnostic helper that
-BOTH ``RelayCelEvaluator`` and the future ``WasmCelEvaluator`` call. The
-helper takes a 0-arg callable to run under the wall-clock budget + orphan
-cap and returns its result (or raises the structured errors).
+at ``MAX_ORPHAN_THREADS`` semantics it had as the legacy evaluator's bound
+helper. The wasm-backed evaluator routes EVERY evaluation through it.
 
 These tests pin:
-  - the helper EXISTS and ``evaluate()`` DELEGATES to it (single code path)
+  - the helper EXISTS and ``WasmCelEvaluator.evaluate()`` DELEGATES to it
+    (single code path)
   - normal return (including falsy / None values returned faithfully)
   - timeout -> RelayCelTimeoutError
   - at-cap -> RelayCelResourceExhaustedError
@@ -29,12 +30,17 @@ import threading
 import time
 
 import pytest
-from relay_contracts.evaluator import (
-    MAX_ORPHAN_THREADS,
-    RelayCelEvaluator,
+import relay_contracts.evaluator as evaluator_module
+import relay_contracts.wasm_backed_evaluator as wbe_module
+from relay_contracts.errors import (
     RelayCelResourceExhaustedError,
     RelayCelTimeoutError,
 )
+from relay_contracts.evaluator import (
+    MAX_ORPHAN_THREADS,
+    run_with_timeout,
+)
+from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
 # Tier-1 plumbing: offline, every commit (CLAUDE.md AM.6). Marked file-wide so
 # the VAL-CWC-P1HOST-002 evidence command (`pytest ... -m plumbing`) collects
@@ -46,16 +52,16 @@ pytestmark = pytest.mark.plumbing
 def _clear_orphan_tracker() -> None:
     """Isolate the PROCESS-WIDE orphan tracker before each test.
 
-    ``_orphaned_thread_tracker`` is class-level state shared by every
-    ``RelayCelEvaluator`` instance in the process, so a leftover live
-    orphan from a sibling test would corrupt the at-cap boundary count.
-    We do not kill threads (they are daemon orphans that terminate on
-    their own); we only drop the tracker's references so the live-count
-    measured by these tests starts from a known-empty baseline.
+    ``_orphaned_thread_tracker`` is module-level state shared by every
+    evaluator instance in the process, so a leftover live orphan from a
+    sibling test would corrupt the at-cap boundary count. We do not kill
+    threads (they are daemon orphans that terminate on their own); we only
+    drop the tracker's references so the live-count measured by these tests
+    starts from a known-empty baseline.
     """
 
-    with RelayCelEvaluator._orphan_tracker_lock:  # noqa: SLF001
-        RelayCelEvaluator._orphaned_thread_tracker.clear()  # noqa: SLF001
+    with evaluator_module._orphan_tracker_lock:  # noqa: SLF001
+        evaluator_module._orphaned_thread_tracker.clear()  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------
@@ -66,31 +72,33 @@ def _clear_orphan_tracker() -> None:
 def test_run_with_timeout_helper_exists() -> None:
     """The shared host-side helper exists and is callable."""
 
-    evaluator = RelayCelEvaluator()
-    assert hasattr(evaluator, "_run_with_timeout")
-    assert callable(evaluator._run_with_timeout)  # noqa: SLF001
+    assert callable(run_with_timeout)
+    # And it is the module-level engine-agnostic home (no evaluator class
+    # binding required).
+    assert run_with_timeout is evaluator_module.run_with_timeout
 
 
 def test_evaluate_delegates_to_run_with_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``evaluate()`` routes the celpy run THROUGH ``_run_with_timeout``.
+    """``WasmCelEvaluator.evaluate()`` routes the engine run THROUGH
+    ``run_with_timeout``.
 
-    We replace the helper with a spy that records its invocation and runs
-    the supplied callable. If ``evaluate`` ran the worker thread itself
-    (not via the helper), the spy would never fire.
+    We replace the helper (at the wasm-backed evaluator's import site) with a
+    spy that records its invocation and runs the supplied callable. If
+    ``evaluate`` ran the worker thread itself (not via the helper), the spy
+    would never fire.
     """
 
-    evaluator = RelayCelEvaluator()
+    evaluator = WasmCelEvaluator()
     calls: list[float] = []
-    original = evaluator._run_with_timeout  # noqa: SLF001
 
     def _spy(run, timeout_seconds):  # type: ignore[no-untyped-def]
         calls.append(timeout_seconds)
-        return original(run, timeout_seconds)
+        return run_with_timeout(run, timeout_seconds)
 
-    monkeypatch.setattr(evaluator, "_run_with_timeout", _spy)
+    monkeypatch.setattr(wbe_module, "run_with_timeout", _spy)
     result = evaluator.evaluate("1 + 2 * 3")
-    assert int(result) == 7
-    assert len(calls) == 1, "evaluate() must delegate exactly once to _run_with_timeout"
+    assert result == 7
+    assert len(calls) == 1, "evaluate() must delegate exactly once to run_with_timeout"
     # The delegated budget is the evaluator's configured timeout in seconds.
     assert calls[0] == pytest.approx(evaluator.timeout_ms / 1000.0)
 
@@ -101,8 +109,7 @@ def test_evaluate_delegates_to_run_with_timeout(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_run_with_timeout_returns_callable_result() -> None:
-    evaluator = RelayCelEvaluator()
-    out = evaluator._run_with_timeout(lambda: 42, 5.0)  # noqa: SLF001
+    out = run_with_timeout(lambda: 42, 5.0)
     assert out == 42
 
 
@@ -111,8 +118,7 @@ def test_run_with_timeout_returns_falsy_faithfully(sentinel: object) -> None:
     """A falsy / None result is returned unchanged (no truthiness coercion,
     no 'missing value' confusion)."""
 
-    evaluator = RelayCelEvaluator()
-    out = evaluator._run_with_timeout(lambda: sentinel, 5.0)  # noqa: SLF001
+    out = run_with_timeout(lambda: sentinel, 5.0)
     assert out is sentinel or out == sentinel
 
 
@@ -122,14 +128,12 @@ def test_run_with_timeout_returns_falsy_faithfully(sentinel: object) -> None:
 
 
 def test_run_with_timeout_raises_timeout_on_slow_callable() -> None:
-    evaluator = RelayCelEvaluator()
-
     def _slow() -> int:
         time.sleep(0.250)
         return 1
 
     with pytest.raises(RelayCelTimeoutError) as ctx:
-        evaluator._run_with_timeout(_slow, 0.001)  # noqa: SLF001
+        run_with_timeout(_slow, 0.001)
     assert ctx.value.code == "RELAY-CEL-003"
 
 
@@ -152,8 +156,6 @@ def test_run_with_timeout_raises_resource_exhausted_at_cap() -> None:
     guaranteed live the entire time -- the cap is reached deterministically.
     """
 
-    evaluator = RelayCelEvaluator()
-
     # Released ONLY in the finally cleanup, so every worker stays a live orphan
     # until the cap assertion has fired (no wall-clock dependence).
     release = threading.Event()
@@ -168,7 +170,7 @@ def test_run_with_timeout_raises_resource_exhausted_at_cap() -> None:
     try:
         for i in range(MAX_ORPHAN_THREADS + 1):
             try:
-                evaluator._run_with_timeout(_slow, 0.001)  # noqa: SLF001
+                run_with_timeout(_slow, 0.001)
             except RelayCelResourceExhaustedError as exc:
                 raised = exc
                 assert i == MAX_ORPHAN_THREADS, (
@@ -197,22 +199,20 @@ def test_run_with_timeout_propagates_callable_exception_and_frees_slot() -> None
     """A non-Relay exception raised by the callable propagates unchanged,
     and the worker thread is deregistered (no orphan-slot leak)."""
 
-    evaluator = RelayCelEvaluator()
-
     class _Boom(RuntimeError):
         pass
 
     def _boom() -> int:
         raise _Boom("kaboom")
 
-    with RelayCelEvaluator._orphan_tracker_lock:  # noqa: SLF001
-        live_before = len(RelayCelEvaluator._orphaned_thread_tracker)  # noqa: SLF001
+    with evaluator_module._orphan_tracker_lock:  # noqa: SLF001
+        live_before = len(evaluator_module._orphaned_thread_tracker)  # noqa: SLF001
 
     with pytest.raises(_Boom):
-        evaluator._run_with_timeout(_boom, 5.0)  # noqa: SLF001
+        run_with_timeout(_boom, 5.0)
 
-    with RelayCelEvaluator._orphan_tracker_lock:  # noqa: SLF001
-        live_after = len(RelayCelEvaluator._orphaned_thread_tracker)  # noqa: SLF001
+    with evaluator_module._orphan_tracker_lock:  # noqa: SLF001
+        live_after = len(evaluator_module._orphaned_thread_tracker)  # noqa: SLF001
     assert live_after == live_before, (
         "a callable that raises must not leak an orphan-tracker slot"
     )
@@ -246,9 +246,11 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
     thread's acquire and only then is the competitor allowed to attempt the
     (still-held) lock, so it necessarily blocks until the main thread
     releases AFTER registering the orphan.
-    """
 
-    evaluator = RelayCelEvaluator()
+    The helper reads ``_orphan_tracker_lock`` as a MODULE global at call
+    time, so swapping ``relay_contracts.evaluator._orphan_tracker_lock``
+    instruments the genuine critical section.
+    """
 
     observed_counts: list[int] = []
     inside_critical_section = threading.Event()
@@ -275,7 +277,7 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
         time.sleep(0.25)
         return 1
 
-    real_lock = RelayCelEvaluator._orphan_tracker_lock  # noqa: SLF001
+    real_lock = evaluator_module._orphan_tracker_lock  # noqa: SLF001
     main_thread = threading.current_thread()
 
     class _SignallingLock:
@@ -337,10 +339,10 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
             if is_main:
                 self._main_release_handoff()
 
-        # Support the helper's `with type(self)._orphan_tracker_lock:` AND
-        # any direct acquire/release callers symmetrically. The signature
-        # mirrors threading.Lock.acquire exactly (blocking + timeout) so the
-        # proxy is a transparent substitute.
+        # Support the helper's `with _orphan_tracker_lock:` AND any direct
+        # acquire/release callers symmetrically. The signature mirrors
+        # threading.Lock.acquire exactly (blocking + timeout) so the proxy is
+        # a transparent substitute.
         def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
             acquired = real_lock.acquire(blocking, timeout)
             if acquired and threading.current_thread() is main_thread:
@@ -354,7 +356,7 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
                 self._main_release_handoff()
 
     def _competitor() -> None:
-        # Wait until the MAIN thread is inside _run_with_timeout's critical
+        # Wait until the MAIN thread is inside run_with_timeout's critical
         # section (it has acquired the tracker lock for check+spawn).
         inside_critical_section.wait(timeout=2.0)
         # Finding-J handshake: signal that we have REACHED the lock-acquisition
@@ -363,9 +365,9 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
         # registration provably happens while we are genuinely racing the
         # critical section -- not before we ever got here.
         competitor_reached_lock.set()
-        with RelayCelEvaluator._orphan_tracker_lock:  # noqa: SLF001
+        with evaluator_module._orphan_tracker_lock:  # noqa: SLF001
             observed_counts.append(
-                len(RelayCelEvaluator._orphaned_thread_tracker)  # noqa: SLF001
+                len(evaluator_module._orphaned_thread_tracker)  # noqa: SLF001
             )
         # The observation is recorded and the lock released: release the main
         # thread's deterministic handoff (it blocked after its own release until
@@ -373,17 +375,17 @@ def test_check_and_spawn_are_atomic_under_one_lock_acquisition() -> None:
         competitor_observed.set()
 
     signalling_lock = _SignallingLock()
-    RelayCelEvaluator._orphan_tracker_lock = signalling_lock  # type: ignore[assignment]  # noqa: SLF001
+    evaluator_module._orphan_tracker_lock = signalling_lock  # type: ignore[assignment]  # noqa: SLF001
     try:
         t = threading.Thread(target=_competitor, daemon=True)
         t.start()
 
         with pytest.raises(RelayCelTimeoutError):
-            evaluator._run_with_timeout(_slow, 0.001)  # noqa: SLF001
+            run_with_timeout(_slow, 0.001)
 
         t.join(timeout=2.0)
     finally:
-        RelayCelEvaluator._orphan_tracker_lock = real_lock  # type: ignore[assignment]  # noqa: SLF001
+        evaluator_module._orphan_tracker_lock = real_lock  # type: ignore[assignment]  # noqa: SLF001
 
     # The handshake MUST have occurred: the main thread blocked inside its held
     # critical section until the competitor reached the lock attempt. If it did

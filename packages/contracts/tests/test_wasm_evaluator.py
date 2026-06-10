@@ -1,18 +1,21 @@
-"""WasmCelEvaluator host facade -- the WS-A central facade (M1 P1HOST).
+"""WasmCelEvaluator host facade -- the central evaluator facade (M1 P1HOST).
 
-The wasm-backed CEL evaluator mirrors ``RelayCelEvaluator`` EXACTLY so it is a
-drop-in substitute behind ``CelEvaluatorProtocol``: same ``__init__(*,
-timeout_ms, udfs)`` signature + bounds, same ``compile`` / ``evaluate`` /
-``_env`` surface. It routes the expression through the single wasm CEL engine
+The wasm-backed CEL evaluator is the SINGLE Python CEL evaluator behind
+``CelEvaluatorProtocol`` (M6 WS-I removed the legacy engine): ``__init__(*,
+timeout_ms, udfs)`` with the canonical bounds, plus the ``compile`` /
+``probe_compile`` / ``evaluate`` / ``evaluate_with_trace`` surface. It routes
+the expression through the single wasm CEL engine
 (``RelayCel.eval(..., relay_profile=True)``) but keeps the engine-agnostic host
 guards host-side:
 
   - regex-backreference pre-screen (RELAY-CEL-007) runs BEFORE the wasm call
+  - the static callee-set profile screen (RELAY-CEL-002) rejects disabled
+    builtins at compile time
   - extra-UDF rejection (RELAY-CEL-004 / UNREGISTERED) is fail-closed BEFORE eval
   - ``_check_finite`` (RELAY-CEL-006 / NUMERIC-OOB) runs host-side on the
     ``typed_to_py``-converted result
-  - the wall-clock timeout + orphan-thread cap reuse the shared
-    ``_run_with_timeout`` helper
+  - the wall-clock timeout + orphan-thread cap use the engine-agnostic
+    ``run_with_timeout`` helper
 
 A wasm ``{"ok": false}`` engine envelope (the wasm's OWN 001 compile / 004 exec
 / 006 request codes + the RELAY-CEL-PANIC trap marker) is translated to the
@@ -33,7 +36,6 @@ import threading
 import time
 from typing import Any
 
-import celpy.celtypes as celtypes
 import pytest
 from relay_contracts.errors import (
     SUBTYPE_ENGINE_COMPILE,
@@ -53,26 +55,26 @@ from relay_contracts.errors import (
     RelayCelRegexBackreferenceError,
     RelayCelUnsupportedUdfError,
 )
-from relay_contracts.evaluator import MAX_TIMEOUT_MS, RelayCelEvaluator
+from relay_contracts.evaluator import MAX_TIMEOUT_MS
 from relay_contracts.udf import register_udf
 from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
 
 # ---------------------------------------------------------------------------
-# VAL-CWC-P1HOST-003: exact RelayCelEvaluator facade + identical timeout bounds
+# VAL-CWC-P1HOST-003: the single-evaluator facade + canonical timeout bounds
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
-def test_facade_matches_relay_cel_evaluator():
+def test_facade_exposes_single_evaluator_surface():
     ev = WasmCelEvaluator(timeout_ms=50, udfs=())
-    # Public facade is a drop-in for RelayCelEvaluator.
+    # The CelEvaluatorProtocol facade (M6: probe_compile + evaluate_with_trace
+    # replace the removed legacy _env attribute).
     assert callable(ev.compile)
+    assert callable(ev.probe_compile)
     assert callable(ev.evaluate)
-    assert hasattr(ev, "_env")
+    assert callable(ev.evaluate_with_trace)
     assert ev.timeout_ms == 50
-    # The same three public method/attr names exist on both classes.
-    for name in ("compile", "evaluate", "_env"):
-        assert hasattr(ev, name)
-        assert hasattr(RelayCelEvaluator(timeout_ms=50, udfs=()), name)
+    # The legacy AST environment attribute is GONE (no host-side CEL AST).
+    assert not hasattr(ev, "_env")
 
 
 @pytest.mark.plumbing
@@ -82,18 +84,16 @@ def test_default_construction_accepts_udfs_keyword():
     # jitter under concurrent load; production 50 ms default (CQ1) unchanged;
     # root cause resolved by M7 P7EDGE fuel metering.
     ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
-    assert hasattr(ev, "_env")
     assert ev.evaluate("1 + 2") == 3
 
 
 @pytest.mark.plumbing
 @pytest.mark.parametrize("bad_timeout", [0, -1, MAX_TIMEOUT_MS + 1, 10000])
-def test_timeout_bounds_rejected_like_relay_cel_evaluator(bad_timeout):
+def test_timeout_bounds_rejected_canonical(bad_timeout):
+    # The canonical bounds (positive int <= MAX_TIMEOUT_MS) are enforced by the
+    # shared validate_timeout_ms host helper.
     with pytest.raises(ValueError):
         WasmCelEvaluator(timeout_ms=bad_timeout)
-    # Identical rejection on the celpy facade -- proving byte-identical bounds.
-    with pytest.raises(ValueError):
-        RelayCelEvaluator(timeout_ms=bad_timeout)
 
 
 @pytest.mark.plumbing
@@ -114,8 +114,8 @@ def test_baseline_arithmetic_through_wasm():
     ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     result = ev.evaluate("1 + 2")
     assert result == 3
-    # typed_to_py returns the exact cel-python IntType.
-    assert isinstance(result, celtypes.IntType)
+    # typed_to_py returns the native Python int (M6 type layer).
+    assert type(result) is int
 
 
 @pytest.mark.plumbing
@@ -124,9 +124,9 @@ def test_baseline_with_bindings():
     # jitter under concurrent load; production 50 ms default (CQ1) unchanged;
     # root cause resolved by M7 P7EDGE fuel metering.
     ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
-    out = ev.evaluate("x + y", {"x": celtypes.IntType(5), "y": celtypes.IntType(7)})
+    out = ev.evaluate("x + y", {"x": 5, "y": 7})
     assert out == 12
-    assert isinstance(out, celtypes.IntType)
+    assert type(out) is int
 
 
 @pytest.mark.plumbing
@@ -193,17 +193,20 @@ def test_profile_disabled_call_rejected_at_compile_not_only_evaluate(expr, subty
         ('duration("1s")', SUBTYPE_PROFILE_DUR_DISABLED),
     ],
 )
-def test_wasm_compile_profile_rejection_matches_celpy_compile(expr, subtype):
-    # The wasm compile() profile rejection MUST match RelayCelEvaluator.compile()
-    # (same code + subtype), so publish-time rejection is engine-invariant.
-    wasm_ev = WasmCelEvaluator()
-    celpy_ev = RelayCelEvaluator()
-    with pytest.raises(RelayCelProfileError) as wasm_exc:
-        wasm_ev.compile(expr)
-    with pytest.raises(RelayCelProfileError) as celpy_exc:
-        celpy_ev.compile(expr)
-    assert wasm_exc.value.code == celpy_exc.value.code == "RELAY-CEL-002"
-    assert wasm_exc.value.subtype == celpy_exc.value.subtype == subtype
+def test_wasm_compile_profile_rejection_matches_engine_eval_rejection(expr, subtype):
+    # M6 WS-I port of the legacy engine-invariance arm: the host compile()
+    # STATIC profile rejection MUST carry the SAME code + subtype the wasm
+    # engine itself emits for the same expression at eval (the structured
+    # RELAY-CEL-002 envelope), so publish-time rejection is consistent with
+    # the engine's own profile fence.
+    compile_ev = WasmCelEvaluator()
+    eval_ev = WasmCelEvaluator()
+    with pytest.raises(RelayCelProfileError) as compile_exc:
+        compile_ev.compile(expr)
+    with pytest.raises(RelayCelProfileError) as eval_exc:
+        eval_ev.evaluate(expr)
+    assert compile_exc.value.code == eval_exc.value.code == "RELAY-CEL-002"
+    assert compile_exc.value.subtype == eval_exc.value.subtype == subtype
 
 
 @pytest.mark.plumbing

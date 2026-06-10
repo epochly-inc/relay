@@ -1,20 +1,20 @@
 """W6.5 Relay CEL Conformance Corpus generator.
 
 Produces ``tests/conformance/cel/relay_cel_corpus.json`` -- the ~200-case
-golden corpus exercised by both ``cel-python`` (Python) and ``cel-js``
-(TypeScript). Every case carries enough metadata for the per-runtime
-test runners (Python: ``packages/contracts/tests/test_w6_5_corpus.py``;
-TypeScript: ``packages/contracts-typescript/test/w6_5_corpus.test.ts``)
-to assert byte-for-byte parity after RFC 8785 JCS canonicalisation
-(VAL-W6-051) and to verify the per-UDF floor + idiom-matrix coverage
-(VAL-W6-052, VAL-W6-053).
+golden corpus exercised by the Python and TypeScript hosts. Every case
+carries enough metadata for the per-runtime test runners (Python:
+``packages/contracts/tests/test_w6_5_corpus.py``; TypeScript:
+``packages/contracts-typescript/test/w6_5_corpus.test.ts``) to assert
+byte-for-byte parity after RFC 8785 JCS canonicalisation (VAL-W6-051) and
+to verify the per-UDF floor + idiom-matrix coverage (VAL-W6-052,
+VAL-W6-053).
 
 Case kinds:
 
   - ``eval_value``: a CEL expression that BOTH runtimes evaluate to the
     same value. ``py_jcs_b64`` is the base64 of the JCS-canonical bytes
-    of the cel-python result. The TS runner asserts cel-js produces a
-    value whose JCS bytes equal ``py_jcs_b64``.
+    of the Python-host result. The TS runner asserts the TS host produces
+    a value whose JCS bytes equal ``py_jcs_b64``.
 
   - ``eval_error``: a CEL expression that BOTH runtimes refuse to
     evaluate (e.g. profile-rejected idioms, division by zero, parse
@@ -25,12 +25,24 @@ Case kinds:
   - ``udf_value``: a direct UDF invocation that bypasses the CEL parser
     entirely (mirrors W6.3 ``relay_udfs_parity.json``). Used to meet
     the per-UDF case-count floor (VAL-W6-052) without depending on
-    cel-js exposing UDF binding semantics.
+    the legacy TS engine exposing UDF binding semantics.
 
-This generator is **deterministic**: running it twice on the same
-``cel-python`` version produces byte-identical output. The drift check
+This generator is **deterministic**: running it twice on the same engine
+build produces byte-identical output. The drift check
 (``scripts/check-cel-spec-drift.py``) compares the on-disk corpus to a
 freshly-computed run.
+
+M6 WS-I: the goldens are computed through the SINGLE wasm CEL engine (the
+legacy Python CEL engine was removed). The M1-M4 dual-run matrix proved the
+recorded goldens byte-identical under both engines for every reachable case
+EXCEPT the two user-adjudicated legacy-lexer non-conformance cases (see
+``_ADJUDICATED_LEGACY_LENIENT_GOLDENS``): for those, the FROZEN corpus
+records the legacy engine's lenient (spec-INCORRECT) value, while the wasm
+correctly raises a compile error. The corpus is a FROZEN artifact, so the
+generator carries those two recorded goldens verbatim under a STRONG guard
+(pinned expressions + the wasm compile-error assertion); their
+reclassification to ``eval_error`` is a future corpus-revision decision,
+not this generator's.
 
 ASCII-only per CLAUDE.md.
 """
@@ -50,15 +62,48 @@ sys.path.insert(0, str(REPO_ROOT / "packages" / "contracts" / "src"))
 
 from relay_contracts import (  # noqa: E402  -- after sys.path adjustment
     RELAY_UDFS,
-    RelayCelEvaluator,
+    WasmCelEvaluator,
     jcs_canonicalize,
     relay_coverage,
     relay_schema_match,
     relay_tool_arg,
 )
+from relay_contracts.errors import (  # noqa: E402  -- after sys.path adjustment
+    SUBTYPE_ENGINE_COMPILE,
+    RelayCelEngineError,
+)
+from relay_contracts.evaluator import MAX_TIMEOUT_MS  # noqa: E402
 
 CORPUS_PATH = REPO_ROOT / "tests" / "conformance" / "cel" / "relay_cel_corpus.json"
 SCHEMA_VERSION = 1
+
+# ---------------------------------------------------------------------------
+# User-adjudicated legacy-lexer non-conformance carve-out (M6 WS-I).
+#
+# EXACTLY TWO corpus cases record the REMOVED legacy Python engine's lenient
+# (spec-INCORRECT) lexing of a double-quoted CEL string literal containing a
+# backslash followed by a non-ASCII digit (not a recognized escape). Per the
+# CEL spec (langdef.md:115, 318-320) that is a LEXICAL ERROR; the wasm engine
+# correctly raises RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE. The corpus is a
+# FROZEN artifact, so the generator emits the recorded goldens verbatim for
+# these two ids -- under a STRONG guard: the expression must match the pinned
+# adjudicated form AND the wasm must still raise the documented compile error
+# (so a wasm regression or a corpus edit cannot hide behind the carve-out).
+# ---------------------------------------------------------------------------
+_ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS: dict[str, str] = {
+    # '"' + one literal backslash + the non-ASCII digit + '"', built with
+    # backslash-u escapes so this source stays pure ASCII (U+FF10 FULLWIDTH
+    # DIGIT ZERO / U+0660 ARABIC-INDIC DIGIT ZERO).
+    "regex_backslash_fullwidth_digit_accepted": '"\\\uff10"',
+    "regex_backslash_arabic_digit_accepted": '"\\\u0660"',
+}
+_ADJUDICATED_LEGACY_LENIENT_GOLDENS: dict[str, str] = {
+    # The frozen relay_cel_corpus.json py_jcs_b64 values, recorded from the
+    # legacy engine before its removal (the JCS bytes of the lenient
+    # 2-character string).
+    "regex_backslash_fullwidth_digit_accepted": "Ilxc77yQIg==",
+    "regex_backslash_arabic_digit_accepted": "Ilxc2aAi",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -854,65 +899,47 @@ def _b64_jcs(value: Any) -> str:
 
 
 def _to_python(value: Any) -> Any:
-    """Coerce a celpy result into JSON-roundtrippable Python so JCS
-    can serialise it. celpy returns wrapped types
-    (``IntType``/``DoubleType``/``BoolType``/``StringType``/
-    ``ListType``/``MapType``); their underlying Python representation
-    is what JCS expects."""
-
-    import celpy.celtypes as celtypes
+    """Coerce an evaluator result into JSON-roundtrippable Python so JCS
+    can serialise it. The wasm codec already decodes to native Python
+    classes (``bool``/``int``/``float``/``str``/``list``/``dict``, with
+    ``CelUint`` as the int-subclass uint marker), so this collapses the
+    marker subclasses onto their base values."""
 
     if value is None:
         return None
-    if isinstance(value, celtypes.BoolType):
-        return bool(value)
-    if isinstance(value, celtypes.IntType):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        # Covers CelUint too (an int subclass); JCS serialises the value.
         return int(value)
-    if isinstance(value, celtypes.DoubleType):
+    if isinstance(value, float):
         return float(value)
-    if isinstance(value, celtypes.StringType):
+    if isinstance(value, str):
         return str(value)
-    if isinstance(value, celtypes.ListType | list | tuple):
+    if isinstance(value, list | tuple):
         return [_to_python(v) for v in value]
-    if isinstance(value, celtypes.MapType | dict):
+    if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
             kk = str(k) if not isinstance(k, str) else k
             out[kk] = _to_python(v)
         return out
-    if isinstance(value, bool | int | float | str):
-        return value
-    raise TypeError(f"unsupported celpy result type: {type(value).__name__}")
+    raise TypeError(f"unsupported evaluator result type: {type(value).__name__}")
 
 
 def _eval_python(expression: str, bindings: dict[str, Any]) -> Any:
-    """Evaluate ``expression`` via the Relay-profile cel-python
-    evaluator. Returns the JSON-roundtrippable Python value."""
+    """Evaluate ``expression`` via the Relay-profile wasm evaluator.
+    Returns the JSON-roundtrippable Python value.
 
-    ev = RelayCelEvaluator(udfs=RELAY_UDFS)
-    # cel-python accepts plain Python values for bindings; convert
-    # using its own type adapters.
-    import celpy.celtypes as celtypes
+    The spec-max budget (MAX_TIMEOUT_MS, the CQ1 per-tenant cap) decouples
+    golden generation from host-thread scheduling jitter; the production
+    50 ms default is unchanged.
+    """
 
-    def conv(v: Any) -> Any:
-        if v is None:
-            return None
-        if isinstance(v, bool):
-            return celtypes.BoolType(v)
-        if isinstance(v, int):
-            return celtypes.IntType(v)
-        if isinstance(v, float):
-            return celtypes.DoubleType(v)
-        if isinstance(v, str):
-            return celtypes.StringType(v)
-        if isinstance(v, list | tuple):
-            return celtypes.ListType([conv(x) for x in v])
-        if isinstance(v, dict):
-            return celtypes.MapType({celtypes.StringType(k): conv(vv) for k, vv in v.items()})
-        return v
-
-    cel_bindings = {k: conv(v) for k, v in bindings.items()}
-    return ev.evaluate(expression, cel_bindings)
+    ev = WasmCelEvaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
+    # The wasm codec accepts plain Python values for bindings directly
+    # (py_to_typed encodes natives onto the typed-canonical wire form).
+    return ev.evaluate(expression, bindings)
 
 
 def _apply_udf(udf_name: str, args: list[Any]) -> Any:
@@ -947,20 +974,49 @@ def build_corpus() -> dict[str, Any]:
         if case_id in seen_ids:
             raise ValueError(f"duplicate case id: {case_id}")
         seen_ids.add(case_id)
-        try:
-            raw = _eval_python(expr, bindings)
-        except Exception as exc:
-            raise RuntimeError(
-                f"eval_value case {case_id!r} failed in cel-python: {exc!r}"
-            ) from exc
-        py_value = _to_python(raw)
+        if case_id in _ADJUDICATED_LEGACY_LENIENT_GOLDENS:
+            # The user-adjudicated legacy-lexer carve-out (see the module
+            # constants): the FROZEN golden is carried verbatim, under the
+            # STRONG guard that (a) the expression is the pinned adjudicated
+            # form and (b) the wasm STILL raises the documented compile error
+            # for it -- so neither a corpus edit nor a wasm regression can
+            # hide behind this branch.
+            pinned_expr = _ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS[case_id]
+            if expr != pinned_expr:
+                raise RuntimeError(
+                    f"adjudicated case {case_id!r} expression drifted from the "
+                    f"pinned form: {expr!r} != {pinned_expr!r}"
+                )
+            try:
+                _eval_python(expr, bindings)
+            except RelayCelEngineError as exc:
+                if exc.subtype != SUBTYPE_ENGINE_COMPILE:
+                    raise RuntimeError(
+                        f"adjudicated case {case_id!r} raised an unexpected "
+                        f"engine subtype {exc.subtype!r}; expected "
+                        f"{SUBTYPE_ENGINE_COMPILE!r}"
+                    ) from exc
+            else:
+                raise RuntimeError(
+                    f"adjudicated case {case_id!r} no longer raises the wasm "
+                    "compile error -- the carve-out is stale; re-adjudicate."
+                )
+            py_jcs_b64 = _ADJUDICATED_LEGACY_LENIENT_GOLDENS[case_id]
+        else:
+            try:
+                raw = _eval_python(expr, bindings)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"eval_value case {case_id!r} failed in the wasm engine: {exc!r}"
+                ) from exc
+            py_jcs_b64 = _b64_jcs(_to_python(raw))
         case: dict[str, Any] = {
             "id": case_id,
             "kind": "eval_value",
             "idiom": idiom,
             "expression": expr,
             "bindings": bindings,
-            "py_jcs_b64": _b64_jcs(py_value),
+            "py_jcs_b64": py_jcs_b64,
         }
         if edge_cat is not None:
             case["edge_category"] = edge_cat
@@ -983,7 +1039,7 @@ def build_corpus() -> dict[str, Any]:
             raised = True
         if not raised:
             raise RuntimeError(
-                f"eval_error case {case_id!r} did NOT raise in cel-python; "
+                f"eval_error case {case_id!r} did NOT raise on the Python host; "
                 "reclassify as eval_value or remove."
             )
         cases.append(

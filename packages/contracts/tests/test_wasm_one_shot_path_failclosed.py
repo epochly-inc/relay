@@ -30,7 +30,6 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
 from __future__ import annotations
 
-import celpy.celtypes as celtypes
 import pytest
 import wasmtime
 from relay_contracts.errors import (
@@ -139,16 +138,18 @@ def test_one_shot_wasm_path_happy_path_real_artifact_unchanged() -> None:
 
     ev = WasmCelEvaluator(timeout_ms=250)
     result = ev.evaluate_with_wasm_path("1 + 2", wasm_path=str(packaged))
-    assert isinstance(result, celtypes.IntType)
-    assert int(result) == 3
+    # Native decode target (M6 type layer): an exact Python int.
+    assert type(result) is int
+    assert result == 3
 
-    # A binding-carrying expression also flows through unchanged.
+    # A binding-carrying expression also flows through unchanged (native
+    # Python ints encode as the typed-canonical int tag).
     out = ev.evaluate_with_wasm_path(
         "x + y",
         wasm_path=str(packaged),
-        bindings={"x": celtypes.IntType(5), "y": celtypes.IntType(7)},
+        bindings={"x": 5, "y": 7},
     )
-    assert int(out) == 12
+    assert out == 12
 
 
 def test_shared_path_corrupt_load_wrap_is_unchanged(

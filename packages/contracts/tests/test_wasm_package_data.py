@@ -10,8 +10,10 @@ Covers VAL-CWC-P3CORPUS-008 / -010 / -012 (M3 P3CORPUS, WS-G):
   - 010: when the packaged wasm cannot be resolved, constructing/using the wasm
     engine raises a CLEAR STRUCTURED error (a ``RelayCelError``-family error with
     a WS-A engine-error code -- RELAY-CEL-009 ENGINE subtype -- NOT a bare
-    ``FileNotFoundError`` / generic exception); the celpy default path is
-    UNAFFECTED by a missing wasm artifact.
+    ``FileNotFoundError`` / generic exception). M6 WS-I removed the legacy
+    engine, so a missing artifact has no fallback path: the structured error IS
+    the contract, and an explicit legacy-engine selection fails closed at the
+    factory.
   - 012: the shipped wasm's sha256 is PINNED in a checked-in constant equal to
     the sha256 of the build.sh deterministic-recipe artifact (repro holds); a
     guard test asserts the packaged wasm's on-disk sha256 == the pinned value
@@ -30,7 +32,6 @@ from __future__ import annotations
 import hashlib
 import importlib.resources
 
-import celpy.celtypes as celtypes
 import pytest
 
 pytestmark = pytest.mark.plumbing
@@ -89,8 +90,9 @@ def test_wasm_package_data_constructs_engine_from_importlib_resource() -> None:
 
     ev = WasmCelEvaluator(timeout_ms=250)
     result = ev.evaluate("1 + 2")
-    assert isinstance(result, celtypes.IntType)
-    assert int(result) == 3
+    # The codec decodes a CEL int to a NATIVE Python int (M6 type layer).
+    assert type(result) is int
+    assert result == 3
 
 
 # --- VAL-CWC-P3CORPUS-010: missing-artifact structured error -----------------
@@ -117,28 +119,22 @@ def test_wasm_missing_artifact_structured_error() -> None:
     )
 
 
-def test_wasm_missing_artifact_structured_error_celpy_engine_unaffected(
+def test_wasm_missing_artifact_no_legacy_fallback_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The celpy engine still constructs + evaluates with the wasm absent.
-
-    A missing wasm artifact must NOT break the celpy engine: the celpy evaluator
-    carries no wasm dependency, so the factory under RELAY_CEL_ENGINE=celpy
-    returns a working RelayCelEvaluator even with the artifact gone. After the M5
-    default flip the engine is PINNED to celpy (the unset default is now wasm);
-    the invariant under test -- celpy is independent of the wasm artifact -- is
-    unchanged, only the way to reach celpy is now the explicit rollback selector.
+    """M6 WS-I port of the legacy-engine-unaffected case: there is NO legacy
+    engine to fall back to. An explicit legacy-engine selection fails closed
+    at the factory with the structured unknown-engine ValueError (the wasm
+    engine is the only Python CEL backend), so a missing wasm artifact can
+    never be papered over by silently routing to a removed engine.
     """
     from relay_contracts.engine import make_cel_evaluator
 
-    # Pin the legacy celpy engine explicitly: this test asserts celpy is
-    # independent of the wasm artifact. Post-M5-flip an unset env builds the wasm
-    # evaluator, so celpy is selected by the rollback override.
     monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
-    ev = make_cel_evaluator(udfs=())
-    assert type(ev).__name__ == "RelayCelEvaluator"
-    result = ev.evaluate("1 + 2")
-    assert int(result) == 3
+    with pytest.raises(ValueError) as excinfo:
+        make_cel_evaluator(udfs=())
+    msg = str(excinfo.value)
+    assert "wasm" in msg and "RELAY_CEL_ENGINE" in msg
 
 
 # --- VAL-CWC-P3CORPUS-012: pinned sha == packaged sha == repro sha -----------

@@ -501,29 +501,38 @@ def test_cel_engine_udf_probe_non_boolean_result_is_wrong_verdict(
 
 
 @pytest.mark.fulfills("VAL-CWC-P5FLIP-002")
-def test_cel_engine_udf_probe_accepts_cel_booltype(
+def test_cel_engine_udf_probe_accepts_legacy_booltype_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A genuine CEL ``BoolType`` result (the type the wasm codec returns) is
-    accepted by the strict boolean-type check -- the fix must NOT regress the
-    healthy path that returns ``celtypes.BoolType`` (an int subclass that is NOT
-    a Python ``bool``).
+    """A boolean-TYPED result that is not a Python ``bool`` singleton -- the
+    legacy codec returned a ``BoolType`` int subclass for a CEL boolean -- is
+    accepted by the boolean-type check via its type-NAME branch.
 
-    Guards against an over-strict ``isinstance(value, bool)``-only check that
-    would falsely reject every healthy wasm verdict (``typed_to_py`` returns
-    ``celtypes.BoolType`` for a CEL boolean)."""
-    from celpy import celtypes
+    M6 WS-I note: the live wasm codec now decodes a CEL boolean to a native
+    Python ``bool`` (covered by the healthy-path probe tests above), but the
+    classifier's type-name acceptance branch (``_decoded_is_boolean``) remains
+    a deliberate compatibility surface; this guard keeps it non-vacuous using
+    a local BoolType-shaped stand-in (an int subclass that is NOT a ``bool``,
+    exactly the legacy shape).
+    """
+
+    class BoolType(int):
+        """Legacy-shaped boolean: an int subclass named BoolType."""
+
+        __slots__ = ()
+
+    assert not isinstance(BoolType(1), bool)
 
     class _BoolTypeEvaluator:
         def __init__(self, **_kwargs: object) -> None:
             pass
 
         def evaluate(self, expression: str, bindings: object = None) -> object:
-            # Return the CORRECT verdict for each probe as a CEL BoolType (the
-            # real wasm codec's type), so a healthy-but-BoolType engine passes.
+            # Return the CORRECT verdict for each probe as a BoolType-shaped
+            # value, so a healthy-but-BoolType engine passes.
             for probe in cel_engine._UDF_PROBES:
                 if probe.expression == expression:
-                    return celtypes.BoolType(probe.expected)
+                    return BoolType(probe.expected)
             raise AssertionError(f"unexpected probe expression {expression!r}")
 
     monkeypatch.setattr(

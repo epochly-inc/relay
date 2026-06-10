@@ -2,7 +2,7 @@
 
 This is the ADR-acceptance-gate-named guard ('a test asserts default == wasm'):
 it encodes the M5 FLIP ITSELF as a guarded invariant, so a future accidental
-revert of the factory default back to celpy is caught by name. The TS half of
+revert of the factory default is caught by name. The TS half of
 the cross-host pair lives in
 ``packages/contracts-typescript/test/default-equals-wasm-guard.test.ts``
 (vitest ``-t "default equals wasm"``); this file is the pytest
@@ -15,8 +15,11 @@ not a duplicate import): ``test_p5flip_default_engine_wasm.py``
 already pin the wasm default behaviorally. THIS file is the explicitly-named
 acceptance-gate guard with its own REAL assertions (resolver token AND
 constructed instance) plus a NON-VACUITY companion that simulates a revert
-(``_DEFAULT_ENGINE`` monkeypatched back to celpy) and proves the guard's
-discriminators actually flip -- so the guard can never rot into a tautology.
+(``_DEFAULT_ENGINE`` monkeypatched to a non-wasm token) and proves the
+guard's discriminators actually flip -- so the guard can never rot into a
+tautology. M6 WS-I transition: the legacy engine no longer exists, so under
+a simulated revert the factory FAILS CLOSED (the unhandled-token guard)
+instead of constructing a legacy class -- still a loud, named failure.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -37,27 +40,25 @@ def test_default_equals_wasm_guard_python_default_resolves_to_wasm(
     Python factory's default-engine selection MUST be wasm:
 
       1. resolver level: ``_select_engine_name() == "wasm"`` -- the unset env
-         resolves to the wasm token, never celpy;
+         resolves to the wasm token;
       2. instance level: ``make_cel_evaluator()`` (bare, no args) constructs a
-         :class:`WasmCelEvaluator`, and NOT the legacy celpy
-         :class:`RelayCelEvaluator`.
+         :class:`WasmCelEvaluator`.
 
-    If a future change reverts the default to celpy (engine.py
-    ``_DEFAULT_ENGINE``), BOTH assertions fail loudly by name
-    (``-k default_equals_wasm_guard``). The companion test below proves this
-    guard is non-vacuous (its discriminators flip under a simulated revert).
+    If a future change reverts the default (engine.py ``_DEFAULT_ENGINE``),
+    BOTH assertions fail loudly by name (``-k default_equals_wasm_guard``).
+    The companion test below proves this guard is non-vacuous (its
+    discriminators flip under a simulated revert).
     """
     monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
 
     from relay_contracts.engine import _select_engine_name, make_cel_evaluator
-    from relay_contracts.evaluator import RelayCelEvaluator
     from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
     resolved = _select_engine_name()
     assert resolved == "wasm", (
         "M5 flip invariant violated: with RELAY_CEL_ENGINE unset the factory "
         f"default MUST resolve to 'wasm'; got {resolved!r}. A revert of "
-        "engine.py _DEFAULT_ENGINE back to celpy is a P5FLIP contract breach "
+        "engine.py _DEFAULT_ENGINE is a P5FLIP contract breach "
         "(VAL-CWC-P5FLIP-012)."
     )
 
@@ -67,10 +68,7 @@ def test_default_equals_wasm_guard_python_default_resolves_to_wasm(
         "RELAY_CEL_ENGINE unset MUST construct the wasm-backed "
         f"WasmCelEvaluator; got {type(ev).__name__}."
     )
-    assert not isinstance(ev, RelayCelEvaluator), (
-        "M5 flip invariant violated: the unset-env default constructed the "
-        "legacy celpy RelayCelEvaluator -- the default was reverted."
-    )
+    assert type(ev).__name__ == "WasmCelEvaluator"
 
 
 @pytest.mark.plumbing
@@ -80,12 +78,14 @@ def test_default_equals_wasm_guard_non_vacuous_under_simulated_revert(
 ) -> None:
     """NON-VACUITY: a simulated revert flips BOTH of the guard's discriminators.
 
-    Monkeypatches ``engine._DEFAULT_ENGINE`` back to the celpy token (the
+    Monkeypatches ``engine._DEFAULT_ENGINE`` to the removed legacy token (the
     exact one-line accidental revert the guard exists to catch) with the env
     still UNSET, and asserts the observable behavior the guard checks really
-    does change: the resolver returns ``"celpy"`` (not ``"wasm"``) and the
-    bare factory constructs the legacy :class:`RelayCelEvaluator` (not a
-    :class:`WasmCelEvaluator`). Therefore the guard above CANNOT pass
+    does change: the resolver returns the non-wasm token (the unset-env path
+    returns ``_DEFAULT_ENGINE`` verbatim), and the bare factory FAILS CLOSED
+    with the unhandled-token ``ValueError`` (M6 WS-I: there is no legacy
+    class left to construct -- the defensive factory guard catches the
+    unreachable token loudly). Therefore the guard above CANNOT pass
     vacuously -- under a real revert its ``== "wasm"`` and
     ``isinstance(..., WasmCelEvaluator)`` assertions both fail.
 
@@ -95,16 +95,13 @@ def test_default_equals_wasm_guard_non_vacuous_under_simulated_revert(
     monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
 
     from relay_contracts import engine as engine_module
-    from relay_contracts.evaluator import RelayCelEvaluator
-    from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
     # Sanity before the simulation: the real module default is the wasm token.
     assert engine_module._DEFAULT_ENGINE == engine_module._ENGINE_WASM
 
-    # Simulate the accidental revert: default back to celpy, env still unset.
-    monkeypatch.setattr(
-        engine_module, "_DEFAULT_ENGINE", engine_module._ENGINE_CELPY
-    )
+    # Simulate the accidental revert: default to the removed legacy token,
+    # env still unset.
+    monkeypatch.setattr(engine_module, "_DEFAULT_ENGINE", "celpy")
 
     reverted = engine_module._select_engine_name()
     assert reverted == "celpy", (
@@ -114,14 +111,10 @@ def test_default_equals_wasm_guard_non_vacuous_under_simulated_revert(
     )
     assert reverted != "wasm"
 
-    ev = engine_module.make_cel_evaluator()
-    assert isinstance(ev, RelayCelEvaluator), (
-        "non-vacuity broken: under the simulated revert the bare factory did "
-        f"not construct the celpy RelayCelEvaluator (got {type(ev).__name__})"
-        " -- the guard's isinstance assertion would not catch a real revert."
-    )
-    assert not isinstance(ev, WasmCelEvaluator), (
-        "non-vacuity broken: the simulated revert still constructed a "
-        "WasmCelEvaluator, so the guard's isinstance check does not "
-        "discriminate between the engines."
+    with pytest.raises(ValueError) as ctx:
+        engine_module.make_cel_evaluator()
+    assert "wasm" in str(ctx.value), (
+        "non-vacuity broken: under the simulated revert the bare factory "
+        "did not fail closed with the structured unhandled-token ValueError "
+        f"naming the allowed set; got {ctx.value!r}."
     )

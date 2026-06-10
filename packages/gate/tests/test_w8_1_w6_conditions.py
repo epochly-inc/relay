@@ -1,7 +1,7 @@
 """W8.1 plumbing tests: VAL-W8-002 conditions evaluated by W6 contract engine.
 
 Verifies that gate_policies.conditions are evaluated through the
-relay_contracts.RelayCelEvaluator (the W6 single source of truth) and
+the relay_contracts W6 evaluator (the single source of truth) and
 NOT via an inlined CEL implementation. A known-false condition produces
 an unmet_conditions[] entry whose expression matches the policy text
 exactly.
@@ -80,10 +80,9 @@ def test_evaluator_uses_w6_contracts_cel_backend(evaluator) -> None:
     banned pattern 16 + eng plan CQ1 line 145 require single-source CEL
     evaluation per language.
 
-    The gate now builds its backend via ``relay_contracts.make_cel_evaluator``
-    (the single engine-selection read site), which returns EITHER a
-    ``RelayCelEvaluator`` (celpy default) OR a ``WasmCelEvaluator`` (when
-    ``RELAY_CEL_ENGINE=wasm``). So the structural guard is engine-AGNOSTIC: the
+    The gate builds its backend via ``relay_contracts.make_cel_evaluator``
+    (the single engine-selection read site), which returns the single
+    ``WasmCelEvaluator`` backend (M6 WS-I). The structural guard stays the
     backend must (a) satisfy the W6 ``CelEvaluatorProtocol`` capability facade
     (``compile`` + ``evaluate``), AND (b) be one of the concrete classes the
     ``relay_contracts`` factory produces -- it must live in the
@@ -125,10 +124,9 @@ def test_evaluator_default_backend_is_wasm_when_env_unset(
     Pins the post-M5-flip default from the gate's vantage point: the gate stays
     engine-agnostic (it never reads ``RELAY_CEL_ENGINE`` -- that would trip the
     VAL-W8-005 determinism grep) and follows the contracts factory default. M1-M4
-    that default was celpy; the M5 (WS-H) flip makes it wasm, so a gate built on
-    the unset-env default now holds a ``WasmCelEvaluator`` backend. (Under
-    ``RELAY_CEL_ENGINE=celpy`` the rollback override yields the legacy backend;
-    the engine-agnostic guard above covers either selection.)
+    that default was the legacy engine; the M5 (WS-H) flip made it wasm, and M6
+    (WS-I) removed the legacy engine, so a gate built on the unset-env default
+    holds a ``WasmCelEvaluator`` backend -- the only backend.
     """
     from _w8_1_helpers import (
         InMemoryEvidenceProvider,

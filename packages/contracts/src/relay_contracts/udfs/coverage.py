@@ -38,8 +38,8 @@ from ._compat import field
 # Canonical CEL identifier the contract author writes:
 # ``relay.coverage(trace, "step")``. Registered as a single dotted name
 # string in the evaluator's UDF map; the CEL parser treats the dotted
-# form per the runtime's resolution rules (cel-python: function map
-# keyed by exact name; cel-js: same).
+# form per the runtime's resolution rules (function map keyed by exact
+# name on both hosts).
 RELAY_COVERAGE_NAME: str = "relay.coverage"
 
 # Fixed positional arity (trace, step_name).
@@ -52,20 +52,20 @@ def relay_coverage(trace: Any, step_name: Any) -> bool:
     Purity-preserving lookups only:
       - reject non-mapping ``trace`` -> False
       - reject non-string ``step_name`` -> False (CEL strings arrive as
-        ``str``; cel-python ``celtypes.StringType`` is a ``str`` subclass)
+        ``str``)
       - reject non-iterable / non-list ``trace["steps"]`` -> False
       - reject non-mapping step entry -> skip (does not match)
       - skip step entries whose ``name`` is not exactly equal (==) to
         ``step_name`` (no case folding, no locale-aware compare)
     """
 
-    # Defensive: cel-python sometimes passes celtypes.MapType which is a
-    # Mapping subclass; cel-js passes a plain JS object decoded as dict.
+    # Defensive: the legacy engine sometimes passed a MapType (a Mapping
+    # subclass); the TS host passes a plain JS object decoded as dict.
     if not isinstance(trace, Mapping):
         return False
     if not isinstance(step_name, str):
         return False
-    # Total field access: cel-python MapType.get raises on a missing key, so use
+    # Total field access: a legacy MapType.get raises on a missing key, so use
     # the membership-guarded `field` helper (a missing "steps" -> None -> False).
     steps = field(trace, "steps")
     # Reject str / bytes which are iterable but not "lists of step
@@ -78,8 +78,7 @@ def relay_coverage(trace: Any, step_name: Any) -> bool:
             continue
         name = field(entry, "name")
         # Strict ``==`` on Python ``str`` values is byte-wise (not
-        # locale-aware). cel-python ``StringType`` is ``str`` subclass
-        # so this comparison is identical across runtimes.
+        # locale-aware), so this comparison is identical across runtimes.
         if isinstance(name, str) and name == step_name:
             return True
     return False

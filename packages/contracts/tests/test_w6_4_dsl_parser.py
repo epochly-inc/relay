@@ -226,19 +226,14 @@ def test_publish_accepts_structured_op_expression_without_cel() -> None:
 
 
 # ---------------------------------------------------------------------------
-# VAL-W6-042: publish-time MALFORMED-SYNTAX rejection is ENGINE-INVARIANT.
+# VAL-W6-042: publish-time MALFORMED-SYNTAX rejection is STRUCTURED.
 #
-# Regression guard for the M5 keystone flip (bf4572c). Once the factory
-# default is wasm, ``publish_contract`` routes through
-# ``WasmCelEvaluator.compile``, whose host pre-screens (regex-backref +
-# profile AST) do NOT full-parse, so a MALFORMED-SYNTAX expression passes
-# ``compile()``. ``publish_contract`` then reparses via ``_env.compile`` for
-# the unregistered-UDF callee walk. Before the fix that reparse leaked a RAW
-# ``celpy.celparser.CELParseError`` (not a Relay-structured error) under the
-# wasm default, diverging from the celpy path that emits
-# ``ContractParseError`` / RELAY-CONTRACT-004. Publish-time syntax rejection
-# MUST be engine-invariant: the same malformed contract MUST raise the
-# IDENTICAL structured error class + code under BOTH engines.
+# Regression guard for the M5 keystone flip (bf4572c), carried through the
+# M6 WS-I removal: ``publish_contract`` routes malformed-syntax detection
+# through the wasm engine's AUTHORITATIVE compiler (``probe_compile``); a
+# compile-cause engine envelope is translated into the structured
+# ``ContractParseError`` / RELAY-CONTRACT-004 (cel_token RELAY-CEL-SYNTAX) --
+# never a raw parser exception leaking out of publish.
 # ---------------------------------------------------------------------------
 
 _MALFORMED_CEL_EXPRESSIONS = [
@@ -284,47 +279,24 @@ def test_publish_rejects_malformed_cel_under_wasm_default(
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W6-042")
 @pytest.mark.parametrize("expression", _MALFORMED_CEL_EXPRESSIONS)
-def test_publish_rejects_malformed_cel_under_celpy(
+def test_publish_rejects_malformed_cel_structured_payload(
     monkeypatch: pytest.MonkeyPatch, expression: str
 ) -> None:
-    """The celpy path (RELAY_CEL_ENGINE=celpy) already rejects malformed
-    syntax at publish with the same structured error; this pins that the
-    rollback engine's publish behavior is unchanged by the fix."""
-    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
+    """M6 WS-I port of the legacy-engine invariance arm: the SAME structured
+    rejection the M5 flip locked in is pinned in FULL on the single engine --
+    error class, code, assertion_id, AND the syntax-rejection payload tokens
+    (cel_token RELAY-CEL-SYNTAX / reason cel-parse-error) the publish path
+    emits when the wasm engine's authoritative compiler (probe_compile)
+    reports the compile-cause envelope."""
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
     parsed = parse_contract(_malformed_behavioral_doc(expression))
     with pytest.raises(ContractParseError) as ctx:
         publish_contract(parsed)
+    assert type(ctx.value) is ContractParseError
     assert ctx.value.code == "RELAY-CONTRACT-004"
     assert ctx.value.payload["assertion_id"] == "VAL-BAD-SYNTAX"
-
-
-@pytest.mark.plumbing
-@pytest.mark.fulfills("VAL-W6-042")
-def test_publish_malformed_cel_engine_invariant_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The SAME malformed contract MUST raise the IDENTICAL structured
-    error class + code under BOTH engines (engine-invariant rejection)."""
-    expression = "foo(("
-
-    def _publish_and_capture() -> ContractParseError:
-        parsed = parse_contract(_malformed_behavioral_doc(expression))
-        with pytest.raises(ContractParseError) as ctx:
-            publish_contract(parsed)
-        return ctx.value
-
-    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
-    wasm_err = _publish_and_capture()
-    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
-    celpy_err = _publish_and_capture()
-
-    assert type(wasm_err) is type(celpy_err) is ContractParseError
-    assert wasm_err.code == celpy_err.code == "RELAY-CONTRACT-004"
-    assert (
-        wasm_err.payload["assertion_id"]
-        == celpy_err.payload["assertion_id"]
-        == "VAL-BAD-SYNTAX"
-    )
+    assert ctx.value.payload["cel_token"] == "RELAY-CEL-SYNTAX"
+    assert ctx.value.payload["reason"] == "cel-parse-error"
 
 
 @pytest.mark.plumbing
@@ -573,46 +545,36 @@ def test_runtime_outcome_envelope_pass_fail_error() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W6-045")
-def test_runtime_invokes_application_udf_and_records_in_envelope(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_runtime_invokes_application_udf_and_records_in_envelope() -> None:
     """A CEL expression that calls a registered UDF MUST surface the UDF
     name in udfs_invoked and the JCS-canonical output bytes.
 
-    The Relay production UDFs ship with dotted identifiers
-    (relay.coverage / relay.tool_arg / relay.schema_match) which the
-    cel-python wrapper at this revision treats as field access on a
-    'relay' identifier rather than function-call resolution. w6.4 ships
-    the pipeline plumbing; the call-site rewrite to dotted form is
-    tracked separately. Here we exercise the binding contract with a
-    plain-identifier pure UDF registered alongside the parser pipeline.
-
-    This is a CELPY-path test (the wasm engine has no registration slot for the
-    bare-name custom ``my_check`` UDF -- RELAY-CEL-004 / UDF-UNREGISTERED). After
-    the M5 default flip the engine is PINNED to celpy here so the celpy binding
-    contract is exercised regardless of the now-wasm ambient default.
+    M6 WS-I port: the legacy bare-name custom-UDF binding (a legacy-engine
+    capability; the wasm has no registration slot -- see
+    test_pipeline_udf_capture_multi_call for the structured rejection) is
+    ported onto the production dotted relay.* UDF, which the single wasm
+    engine resolves natively through CEL. The envelope binding contract under
+    test is unchanged: udfs_invoked carries the invoked name, and
+    udf_outputs_jcs carries the per-call typed-canonical list.
     """
-    monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
-    from relay_contracts import register_udf
+    from relay_contracts import RELAY_UDFS
 
-    def my_check(trace: list, step: str) -> bool:
-        return any(item.get("step") == step for item in trace)
-
-    udf = register_udf("my_check", my_check, pure=True, arity=2)
     doc = {
         "schema_version": "relay.assertion.behavioral.v1",
         "assertion_id": "VAL-RT-UDF",
         "kind": "behavioral",
         "severity": "p0",
-        "expression": 'my_check(trace, "step1")',
+        "expression": 'relay.coverage(trace, "step1")',
         "owner_email": "a@b.example",
         "lifecycle_state": "active",
     }
     parsed = parse_contract(doc)
-    publish_contract(parsed, extra_udfs=[udf])
-    bindings = {"trace": [{"step": "step1"}, {"step": "step2"}]}
-    envelope = evaluate_assertion(parsed, bindings=bindings, extra_udfs=[udf])
-    assert "my_check" in envelope["udfs_invoked"]
+    publish_contract(parsed, extra_udfs=RELAY_UDFS)
+    bindings = {"trace": {"steps": [{"name": "step1"}, {"name": "step2"}]}}
+    envelope = evaluate_assertion(
+        parsed, bindings=bindings, extra_udfs=RELAY_UDFS
+    )
+    assert "relay.coverage" in envelope["udfs_invoked"]
     assert envelope["outcome"] == "pass"
     # JCS-canonical UDF outputs MUST be bytes-stringifiable.
     # Round-3 P1 fix #3: captures are list-valued so a multi-call CEL
@@ -620,13 +582,13 @@ def test_runtime_invokes_application_udf_and_records_in_envelope(
     # invariant 2). A single-call invocation is therefore a one-element
     # list, not a bare scalar.
     #
-    # VAL-CWC-P1HOST-015: udf_outputs_jcs is now the SINGLE typed-canonical
-    # contract shared by both CEL engines, so each captured value is the
-    # ``{"t":...,"v":...}`` form. Decode to assert the logical value [True].
+    # VAL-CWC-P1HOST-015: udf_outputs_jcs is the SINGLE typed-canonical
+    # contract, so each captured value is the ``{"t":...,"v":...}`` form.
+    # Decode to assert the logical value [True].
     from relay_contracts.wasm_codec import typed_to_py
 
     udf_outputs = json.loads(envelope["udf_outputs_jcs"])
-    captured = udf_outputs.get("my_check")
+    captured = udf_outputs.get("relay.coverage")
     assert isinstance(captured, list), captured
     assert [typed_to_py(entry) for entry in captured] == [True]
 

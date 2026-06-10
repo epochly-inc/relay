@@ -14,13 +14,12 @@ function names):
 
   - VAL-CWC-P5FLIP-009 (``default_engine_is_wasm``): with ``RELAY_CEL_ENGINE``
     UNSET (``monkeypatch.delenv``) -- and also set-but-BLANK -- the factory
-    returns a wasm-backed :class:`WasmCelEvaluator`, NOT the celpy
-    ``RelayCelEvaluator``. The default flipped.
-  - VAL-CWC-P5FLIP-010 (``explicit_celpy_rollback``): with the default now wasm,
-    an explicit ``RELAY_CEL_ENGINE=celpy`` (``monkeypatch.setenv``) still returns
-    the legacy cel-python ``RelayCelEvaluator`` (the rollback escape hatch is
-    intact during the one-release bake); ``RELAY_CEL_ENGINE=wasm`` returns the
-    wasm class.
+    returns a wasm-backed :class:`WasmCelEvaluator`. The default flipped.
+  - VAL-CWC-P5FLIP-010 (``explicit_celpy_rollback``): TRANSITIONED at M6 WS-I.
+    Through the M5 bake an explicit ``RELAY_CEL_ENGINE=celpy`` selected the
+    legacy engine (the one-release rollback hatch); M6 removed that engine,
+    so the same selection now FAILS CLOSED with the structured unknown-engine
+    ValueError; ``RELAY_CEL_ENGINE=wasm`` returns the wasm class.
   - VAL-CWC-P5FLIP-014 (``unsupported_udf_rejected_on_default``): on the
     now-default wasm path (env unset), a caller passing a non-allowlist (extra)
     UDF is rejected fail-closed with the structured
@@ -59,9 +58,9 @@ def test_default_engine_is_wasm_when_env_unset(
     """
     monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
 
+    import relay_contracts
     from relay_contracts import RELAY_UDFS
     from relay_contracts.engine import _select_engine_name, make_cel_evaluator
-    from relay_contracts.evaluator import RelayCelEvaluator
     from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
     # Engine-name resolution: unset -> "wasm" (the M5 flip), never "celpy".
@@ -77,9 +76,10 @@ def test_default_engine_is_wasm_when_env_unset(
         f"the M5 flip; got {type(ev).__name__}"
     )
     assert isinstance(ev, WasmCelEvaluator)
-    assert not isinstance(ev, RelayCelEvaluator), (
-        "unset RELAY_CEL_ENGINE must NOT construct the celpy RelayCelEvaluator "
-        f"after the M5 flip; got {type(ev).__name__}"
+    # M6 WS-I: the legacy evaluator class no longer exists to be constructed.
+    assert not hasattr(relay_contracts, "RelayCelEvaluator"), (
+        "the legacy evaluator class must be GONE from the public surface "
+        "after M6 WS-I"
     )
 
 
@@ -106,31 +106,29 @@ def test_default_engine_is_wasm_when_env_blank(
 
 
 # ---------------------------------------------------------------------------
-# VAL-CWC-P5FLIP-010: explicit RELAY_CEL_ENGINE=celpy rollback escape hatch
+# VAL-CWC-P5FLIP-010: the M5 rollback escape hatch is CLOSED at M6 (WS-I)
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P5FLIP-010")
-def test_explicit_celpy_rollback_returns_celpy_evaluator(
+def test_explicit_celpy_rollback_fails_closed_post_m6(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Contract Evidence: with the default now wasm, an explicit
-    ``RELAY_CEL_ENGINE=celpy`` still returns the legacy cel-python
-    ``RelayCelEvaluator`` (the rollback escape hatch is intact during the
-    one-release bake), and ``RELAY_CEL_ENGINE=wasm`` returns the wasm class."""
+    """M6 WS-I transition of the P5FLIP rollback pin: through the M5 bake
+    window an explicit ``RELAY_CEL_ENGINE=celpy`` selected the legacy engine;
+    at M6 the legacy engine is REMOVED, so the same selection now FAILS
+    CLOSED with the factory's structured unknown-engine ValueError naming the
+    (wasm-only) allowed set -- never a silent fallback. Explicit
+    ``RELAY_CEL_ENGINE=wasm`` still returns the wasm class."""
     from relay_contracts import RELAY_UDFS
     from relay_contracts.engine import make_cel_evaluator
-    from relay_contracts.evaluator import RelayCelEvaluator
     from relay_contracts.wasm_backed_evaluator import WasmCelEvaluator
 
-    # Rollback escape hatch: explicit celpy still yields the legacy evaluator.
+    # The rollback hatch is closed: explicit legacy selection fails closed.
     monkeypatch.setenv("RELAY_CEL_ENGINE", "celpy")
-    ev_celpy = make_cel_evaluator(udfs=RELAY_UDFS)
-    assert type(ev_celpy).__name__ == "RelayCelEvaluator", (
-        "explicit RELAY_CEL_ENGINE=celpy must still return the legacy "
-        f"RelayCelEvaluator (rollback hatch); got {type(ev_celpy).__name__}"
-    )
-    assert isinstance(ev_celpy, RelayCelEvaluator)
-    assert not isinstance(ev_celpy, WasmCelEvaluator)
+    with pytest.raises(ValueError) as ctx:
+        make_cel_evaluator(udfs=RELAY_UDFS)
+    assert "wasm" in str(ctx.value)
+    assert "RELAY_CEL_ENGINE" in str(ctx.value)
 
     # And explicit wasm still selects the wasm class.
     monkeypatch.setenv("RELAY_CEL_ENGINE", "wasm")

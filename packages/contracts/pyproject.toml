@@ -1,9 +1,10 @@
 # epochly-relay-contracts (Python contract DSL evaluator package).
 #
-# Houses the Python side of the Relay contract DSL (spec D): the cel-python
-# evaluator wrapper bound to the Relay CEL profile, the pure-only UDF
-# registry, the RFC 8785 JCS canonicalizer, and the structured error
-# envelope. The TypeScript mirror (cel-js) ships in W6.2.
+# Houses the Python side of the Relay contract DSL (spec D): the wasm-backed
+# CEL evaluator bound to the Relay CEL profile (the single CEL engine as of
+# the M6 cutover), the pure-only UDF registry, the RFC 8785 JCS
+# canonicalizer, and the structured error envelope. The TypeScript mirror
+# ships in packages/contracts-typescript.
 #
 # Spec anchors:
 #   D                       contract DSL surface
@@ -26,7 +27,7 @@ build-backend = "hatchling.build"
 [project]
 name = "epochly-relay-contracts"
 version = "0.0.0"
-description = "Relay contract DSL evaluator (Python; cel-python wrapper, JCS canonicalizer, pure UDF registry)."
+description = "Relay contract DSL evaluator (Python; wasm-backed single CEL engine, JCS canonicalizer, pure UDF registry)."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
@@ -34,9 +35,9 @@ authors = [
   { name = "Epochly, Inc.", email = "engineering@epochly.com" },
 ]
 dependencies = [
-  # CQ1 line 145: cel-python is the single Python CEL evaluator.
-  # Pinned to a tested minor; bumped via the W6 release process only.
-  "cel-python>=0.5.0,<0.6",
+  # CQ1 line 145 (as revised by the cel-wasm cutover): the single Python CEL
+  # evaluator is the wasm engine loaded via wasmtime below. The legacy Python
+  # CEL dependency was REMOVED at M6 WS-I (VAL-CWC-P6REMOVE-001).
   # Generated RelayErrorCode constants live here. Workspace dependency;
   # uv resolves from the workspace tree, never from a published index
   # (CLAUDE.md import-boundary rule).

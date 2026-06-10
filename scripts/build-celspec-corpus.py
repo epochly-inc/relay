@@ -556,35 +556,38 @@ def _validate_excluded(files_text: dict[str, str]) -> None:
         )
 
 
-def _to_python(value: Any, celtypes: Any) -> Any:
+def _to_python(value: Any) -> Any:
+    """Collapse evaluator results to JSON-roundtrippable Python (the wasm
+    codec decodes to native classes; the int branch covers CelUint too)."""
     if value is None:
         return None
-    if isinstance(value, celtypes.BoolType):
-        return bool(value)
-    if isinstance(value, celtypes.IntType):
-        return int(value)
-    if isinstance(value, celtypes.DoubleType):
-        return float(value)
-    if isinstance(value, celtypes.StringType):
-        return str(value)
-    if isinstance(value, celtypes.ListType | list | tuple):
-        return [_to_python(v, celtypes) for v in value]
-    if isinstance(value, celtypes.MapType | dict):
-        return {str(k): _to_python(v, celtypes) for k, v in value.items()}
-    if isinstance(value, bool | int | float | str):
+    if isinstance(value, bool):
         return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, list | tuple):
+        return [_to_python(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _to_python(v) for k, v in value.items()}
     raise TypeError(type(value).__name__)
 
 
 def _verify(cands: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    import celpy.celtypes as celtypes
-    from relay_contracts import RELAY_UDFS, RelayCelEvaluator
+    from relay_contracts import RELAY_UDFS, WasmCelEvaluator
+    from relay_contracts.evaluator import MAX_TIMEOUT_MS
 
-    ev = RelayCelEvaluator(udfs=RELAY_UDFS)
+    # M6 WS-I: the single wasm engine is the Python-side verifier (the legacy
+    # engine was removed). The spec-max budget decouples corpus building from
+    # host-thread scheduling jitter.
+    ev = WasmCelEvaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
     py: dict[int, Any] = {}
     for i, c in enumerate(cands):
         try:
-            py[i] = _to_python(ev.evaluate(c["expr"], {}), celtypes)
+            py[i] = _to_python(ev.evaluate(c["expr"], {}))
         except Exception:  # noqa: BLE001
             py[i] = _SENTINEL
     # cel-js batch.

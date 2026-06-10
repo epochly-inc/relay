@@ -1,25 +1,28 @@
-"""WASM-backed Relay CEL evaluator -- the WS-A central host facade.
+"""WASM-backed Relay CEL evaluator -- the central host facade.
 
-``WasmCelEvaluator`` is a drop-in substitute for :class:`RelayCelEvaluator`
-(same ``__init__(*, timeout_ms, udfs)`` signature + identical ``timeout_ms``
-bounds, same ``compile`` / ``evaluate`` / ``_env`` surface) so the contracts
-engine factory (a later feature) can select it behind ``CelEvaluatorProtocol``
-without any caller change. It routes the expression through the SINGLE wasm CEL
-engine (``RelayCel.eval(..., relay_profile=True)``; see
-``packages/cel-wasm/python/relay_cel_wasm.py``) instead of cel-python, but keeps
-the engine-agnostic host guards HOST-SIDE so the wasm path enforces the same
-invariants as the celpy path:
+``WasmCelEvaluator`` is the SINGLE Python CEL evaluator (M6 WS-I removed the
+legacy engine; the contracts engine factory selects this class behind
+``CelEvaluatorProtocol``). It routes the expression through the single wasm
+CEL engine (``RelayCel.eval(..., relay_profile=True)``; see
+``packages/cel-wasm/python/relay_cel_wasm.py``) and keeps the engine-agnostic
+host guards HOST-SIDE (locked decision #4):
 
   - the whole-expression regex-backreference pre-screen (RELAY-CEL-007 /
     RELAY-CEL-PROFILE-REGEX-BACKREF) runs at ``compile`` BEFORE the wasm call;
+  - the compile-time Relay-profile screen runs over the STATICALLY-referenced
+    bare callee set (``callee_parser.extract_bare_callees``), so a disabled
+    ``dyn(...)`` / ``timestamp(...)`` / ``duration(...)`` call -- including one
+    in a short-circuited branch -- is rejected at COMPILE/publish time
+    (RELAY-CEL-002 with the structured subtype), not deferred to evaluation;
   - any caller-supplied extra UDF is rejected fail-closed BEFORE evaluation
     (the wasm exposes only the 3 hardcoded ``relay.*`` UDFs and has no
     registration slot): RELAY-CEL-004 / RELAY-CEL-UDF-UNREGISTERED;
   - ``_check_finite`` runs host-side on the ``typed_to_py``-converted result so
     a NaN / +-Inf or an out-of-safe-range integer / whole double is rejected
     with RELAY-CEL-006 / RELAY-CEL-NUMERIC-OOB;
-  - the wall-clock timeout + orphan-thread cap reuse the SHARED
-    :meth:`RelayCelEvaluator._run_with_timeout` host helper.
+  - the wall-clock timeout + orphan-thread cap use the engine-agnostic
+    :func:`relay_contracts.evaluator.run_with_timeout` host helper (the
+    process-wide orphan budget lives in that module).
 
 A wasm ``{"ok": false}`` engine envelope is translated by cause:
 
@@ -34,6 +37,13 @@ A wasm ``{"ok": false}`` engine envelope is translated by cause:
     (006) failure NEVER surfaces as the host UDF-impurity (004) /
     numeric-out-of-bounds (006) classification, which would poison the gate's
     signed per-condition ``error_code``.
+
+Publish-time malformed-syntax detection routes through the WASM ENGINE ITSELF
+(the authoritative compiler) via :meth:`WasmCelEvaluator.probe_compile`: a
+compile-cause engine envelope (the wasm's own 001) raises the structured
+RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE error, which ``pipeline.publish_contract``
+maps to ``ContractParseError`` / RELAY-CONTRACT-004 -- preserving the
+engine-invariant publish rejection the M5 flip locked in.
 
 Threading model (RelayCel's Store is NOT thread-safe -- it bundles one wasmtime
 ``Store``): a per-thread ``RelayCel`` handle (:class:`threading.local`) over a
@@ -61,19 +71,22 @@ from typing import Any
 
 from relay_schemas.error_codes import RelayErrorCode
 
+from .callee_parser import extract_bare_callees
 from .errors import (
     RelayCelEngineError,
     RelayCelError,
     RelayCelProfileError,
+    RelayCelResourceExhaustedError,
+    RelayCelTimeoutError,
     RelayCelUnsupportedUdfError,
 )
 from .evaluator import (
     DEFAULT_TIMEOUT_MS,
-    MAX_TIMEOUT_MS,
-    RelayCelEvaluator,
     _check_finite,
-    _check_profile,
     _check_regex_backref,
+    check_profile_callees,
+    run_with_timeout,
+    validate_timeout_ms,
 )
 from .udf import PureUdf
 from .udfs import (
@@ -98,6 +111,12 @@ _NATIVE_UDF_NAMES: frozenset[str] = frozenset(
 # a structured ``subtype`` (DYN/TS/DUR/STRUCT-DISABLED) which the host maps
 # verbatim onto RelayCelProfileError -- NEVER by parsing the message string.
 _WASM_PROFILE_CODE: str = RelayErrorCode.RELAY_CEL_002
+
+# The wasm engine's OWN compile-failure code (the crate `codes` module emits
+# RELAY-CEL-001 for a parse/compile failure inside the engine). probe_compile
+# discriminates malformed syntax by THIS code; the host translation maps it to
+# RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE via from_wasm_envelope.
+_WASM_COMPILE_CODE: str = RelayErrorCode.RELAY_CEL_001
 
 
 def _load_relay_cel_class() -> type:
@@ -263,8 +282,7 @@ def _resolve_wasm_path(override: str | None = None) -> str:
     When NONE of these resolve, raises a structured
     :class:`RelayCelEngineError` (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) so a
     missing artifact is a clear, catchable ``RelayCelError`` -- never a bare
-    ``FileNotFoundError`` / generic exception. The celpy default path does not
-    call this resolver, so a missing wasm never affects the celpy engine.
+    ``FileNotFoundError`` / generic exception.
     """
     if override is not None:
         if os.path.isfile(override):
@@ -315,7 +333,7 @@ def _resolve_wasm_path_or_none(override: str | None = None) -> str | None:
 
 
 class WasmCelEvaluator:
-    """Wasm-backed CEL evaluator with the exact :class:`RelayCelEvaluator` facade.
+    """Wasm-backed CEL evaluator -- the single Python CEL evaluator facade.
 
     Construction is cheap relative to evaluation: the shared wasm ``Engine`` +
     ``Module`` are compiled once on first construction of the underlying loader
@@ -330,19 +348,10 @@ class WasmCelEvaluator:
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
         udfs: Iterable[PureUdf] = (),
     ) -> None:
-        # Validate timeout_ms with the SAME bounds RelayCelEvaluator enforces
-        # (positive int, <= MAX_TIMEOUT_MS); bool is an int subclass so it is
-        # routed out explicitly (True/False are not valid timeouts).
-        if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms <= 0:
-            raise ValueError(
-                f"timeout_ms MUST be a positive int; got {timeout_ms!r}"
-            )
-        if timeout_ms > MAX_TIMEOUT_MS:
-            raise ValueError(
-                f"timeout_ms exceeds Relay cap ({MAX_TIMEOUT_MS} ms); "
-                f"got {timeout_ms}"
-            )
-        self.timeout_ms = timeout_ms
+        # Validate timeout_ms against the canonical bounds (positive int,
+        # <= MAX_TIMEOUT_MS; bool excluded) -- the shared host-guard helper so
+        # every construction path enforces IDENTICAL bounds.
+        self.timeout_ms = validate_timeout_ms(timeout_ms)
 
         # Reject any caller-supplied extra UDF fail-closed BEFORE evaluation:
         # the wasm has no registration slot for a custom callable, so an
@@ -361,23 +370,6 @@ class WasmCelEvaluator:
                     f"{udf.name!r}. Caller-supplied extra UDFs are rejected "
                     f"fail-closed before evaluation."
                 )
-
-        # A delegate RelayCelEvaluator supplies the ``_env`` facade attribute
-        # AND the shared host-side ``_run_with_timeout`` (the wall-clock timeout
-        # + process-wide orphan-thread cap, VAL-CWC-P1HOST-002). Reusing one
-        # bound helper keeps the orphan budget process-wide (the tracker is a
-        # RelayCelEvaluator class attribute, shared across all instances) and
-        # avoids re-deriving the mechanism here.
-        #
-        # The ``_env`` attribute is part of the RelayCelEvaluator facade
-        # (CelEvaluatorProtocol consumers and pipeline.py's udfs_invoked path
-        # read it). The wasm engine carries no celpy Environment, so the delegate
-        # exposes a celpy Environment WITHOUT the extra UDFs (their names are
-        # reserved native dotted identifiers in the wasm) -- a typed stand-in
-        # that keeps the facade total. The wasm hot path never evaluates through
-        # it.
-        self._timeout_host = RelayCelEvaluator(timeout_ms=timeout_ms)
-        self._env: Any = self._timeout_host._env
 
         # Lazily-built shared Engine+Module (compiled once on first handle), and
         # a per-thread RelayCel handle over that shared module. The loader class
@@ -478,50 +470,92 @@ class WasmCelEvaluator:
         """Validate ``expression`` against the host-side pre-screens.
 
         Returns the expression unchanged on success (the wasm compiles + checks
-        the AST itself; there is no host-side cel-python program to cache).
+        the AST itself; there is no host-side program object to cache).
 
-        Two host-side pre-screens run here, BOTH mirroring
-        :meth:`RelayCelEvaluator.compile` so publish-time rejection is
-        engine-invariant:
+        Two host-side STATIC pre-screens run here so publish-time rejection
+        happens before any evaluation:
 
           1. the regex-backreference pre-screen (RELAY-CEL-007 / REGEX-BACKREF)
              -- a backref in ANY string literal surfaces the structured host
              error BEFORE the wasm call; and
-          2. the Relay-profile AST check (RELAY-CEL-002 / PROFILE) -- a
-             ``dyn(...)`` / ``timestamp(...)`` / ``duration(...)`` disabled-builtin
-             call is rejected at COMPILE time, not deferred to EVAL. Without this
-             the wasm engine only rejected them at eval, so
-             :func:`pipeline.publish_contract` (which calls ``compile``) let those
-             expressions slip through PUBLISH under ``RELAY_CEL_ENGINE=wasm``,
-             diverging from the celpy path (FINDING D).
+          2. the Relay-profile screen (RELAY-CEL-002 / PROFILE) over the
+             statically-referenced BARE callee set
+             (:func:`callee_parser.extract_bare_callees`): a ``dyn(...)`` /
+             ``timestamp(...)`` / ``duration(...)`` disabled-builtin call --
+             including one in a short-circuited branch -- is rejected at
+             COMPILE time with the structured subtype, not deferred to EVAL
+             (FINDING D preserved without an AST: the callee parser replaces
+             the legacy compile-time AST walk per ADR Revisions section 3).
 
-        The profile check needs an AST. The delegate ``_timeout_host`` carries a
-        celpy :class:`celpy.Environment` (``self._env``); parse the expression
-        through it solely to obtain the AST for :func:`_check_profile`. The wasm
-        remains the AUTHORITATIVE compiler: a celpy PARSE failure (a syntax error
-        the wasm may classify differently) is SWALLOWED here so it is NOT
-        misreported as a profile error -- the real compile error then surfaces
-        from the wasm at eval as RELAY-CEL-009 / ENGINE-COMPILE (preserving the
-        documented engine-error taxonomy). A structured ``RelayCelError`` raised
-        during parse (already canonical) is propagated.
+        MALFORMED syntax is deliberately NOT detected here: the wasm is the
+        authoritative compiler. ``compile`` stays cheap and static (it runs on
+        every ``evaluate`` call); the engine's own compile failure surfaces at
+        eval as RELAY-CEL-009 / ENGINE-COMPILE, and the publish path probes it
+        eagerly via :meth:`probe_compile`.
         """
         _check_regex_backref(expression)
-        try:
-            ast = self._env.compile(expression)
-        except RelayCelError:
-            # An already-structured Relay error (e.g. a host pre-screen the
-            # celpy env surfaces) is propagated verbatim.
-            raise
-        except Exception:  # noqa: BLE001 -- celpy parse failure
-            # The wasm is the authoritative compiler; a celpy-only parse failure
-            # is NOT a profile violation. Skip the host profile check and let the
-            # wasm surface the real compile error at eval (RELAY-CEL-009).
-            return expression
-        # The profile AST check raises RelayCelProfileError (RELAY-CEL-002) on a
-        # disabled-builtin call -- the SAME rejection the celpy path emits at
-        # compile, so publish-time behavior matches across engines.
-        _check_profile(ast)
+        # The profile callee check raises RelayCelProfileError (RELAY-CEL-002)
+        # on a disabled-builtin bare call, with first-in-source-order
+        # determinism (the parser yields callees in source order).
+        check_profile_callees(extract_bare_callees(expression))
         return expression
+
+    def probe_compile(self, expression: str) -> None:
+        """Probe the wasm engine's AUTHORITATIVE compiler for this expression.
+
+        Used by ``pipeline.publish_contract`` for publish-time malformed-syntax
+        rejection (engine-invariant publish behavior; the M5 regression guard).
+        The frozen crate has no parse-only entry point, so the probe issues a
+        normal ``eval`` with NO bindings under the standard wall-clock guard
+        and discriminates the response envelope by cause:
+
+          - a COMPILE-cause envelope (the wasm's own RELAY-CEL-001) raises the
+            structured :class:`RelayCelEngineError` (RELAY-CEL-009 /
+            RELAY-CEL-ENGINE-COMPILE) -- malformed syntax, reject at publish;
+          - a PROFILE-cause envelope (RELAY-CEL-002 with a structured subtype)
+            raises :class:`RelayCelProfileError` -- defense in depth behind the
+            static callee screen in :meth:`compile`;
+          - EVERY other outcome is deferred to evaluation and the probe
+            returns ``None``: success, an exec/request-cause envelope (an
+            expression referencing unbound variables legitimately fails exec
+            under the empty probe bindings -- that is NOT a publish error), a
+            panic marker, a wall-clock timeout (the worker is quarantined
+            exactly like :meth:`evaluate`), or the orphan cap. Publish must
+            never reject a contract for a non-compile cause the probe's empty
+            bindings induced.
+        """
+        self.compile(expression)
+        handle = self._thread_handle()
+
+        def _run() -> dict[str, Any]:
+            return handle.eval(expression, None, relay_profile=True)
+
+        try:
+            envelope = run_with_timeout(_run, self.timeout_ms / 1000.0)
+        except RelayCelTimeoutError:
+            # The orphaned worker is still inside this thread's Store --
+            # quarantine it (same containment as evaluate); the timeout itself
+            # is not a compile verdict, so defer to eval.
+            self._quarantine_thread_handle()
+            return
+        except RelayCelResourceExhaustedError:
+            # Orphan cap: no verdict obtainable; defer to eval.
+            return
+
+        if not isinstance(envelope, dict) or envelope.get("ok") is True:
+            return
+        code = envelope.get("code", "")
+        message = envelope.get("error", "wasm engine error")
+        if code == _WASM_PROFILE_CODE:
+            subtype = envelope.get("subtype")
+            if isinstance(subtype, str) and subtype:
+                raise RelayCelProfileError(message, subtype=subtype)
+            # A profile envelope without its structured subtype is an engine
+            # anomaly; defer to eval, which surfaces it as ENGINE-REQUEST.
+            return
+        if code == _WASM_COMPILE_CODE:
+            raise RelayCelEngineError.from_wasm_envelope(code, message)
+        return
 
     # --- evaluation --------------------------------------------------
 
@@ -549,17 +583,12 @@ class WasmCelEvaluator:
             )
 
         try:
-            envelope = self._timeout_host._run_with_timeout(
-                _run, self.timeout_ms / 1000.0
-            )
-        except RelayCelError as err:
-            # A wall-clock timeout (or resource-exhausted) leaves the worker
-            # orphaned inside this thread's Store -- quarantine it so the next
-            # evaluate on this thread starts clean.
-            from .errors import RelayCelTimeoutError
-
-            if isinstance(err, RelayCelTimeoutError):
-                self._quarantine_thread_handle()
+            envelope = run_with_timeout(_run, self.timeout_ms / 1000.0)
+        except RelayCelTimeoutError:
+            # A wall-clock timeout leaves the worker orphaned inside this
+            # thread's Store -- quarantine it so the next evaluate on this
+            # thread starts clean.
+            self._quarantine_thread_handle()
             raise
 
         return self._decode_envelope(envelope)
@@ -630,9 +659,7 @@ class WasmCelEvaluator:
                 expression, typed_bindings or None, relay_profile=True
             )
 
-        envelope = self._timeout_host._run_with_timeout(
-            _run, self.timeout_ms / 1000.0
-        )
+        envelope = run_with_timeout(_run, self.timeout_ms / 1000.0)
         return self._decode_envelope(envelope)
 
     def evaluate_with_trace(
@@ -646,7 +673,7 @@ class WasmCelEvaluator:
         wall-clock timeout + Store quarantine, same ``{"ok": false}`` error
         mapping), but ALSO surfaces the wasm ``udf_trace`` response field so the
         M1 pipeline can reconstruct ``udf_outputs_jcs`` / ``udfs_invoked`` from
-        it on the wasm hot path WITHOUT a cel-python ``_env`` AST walk
+        it on the wasm hot path WITHOUT any host-side AST walk
         (VAL-CWC-P1HOST-014).
 
         ``udf_trace`` is the per-UDF-name list of typed-canonical
@@ -667,14 +694,9 @@ class WasmCelEvaluator:
             )
 
         try:
-            envelope = self._timeout_host._run_with_timeout(
-                _run, self.timeout_ms / 1000.0
-            )
-        except RelayCelError as err:
-            from .errors import RelayCelTimeoutError
-
-            if isinstance(err, RelayCelTimeoutError):
-                self._quarantine_thread_handle()
+            envelope = run_with_timeout(_run, self.timeout_ms / 1000.0)
+        except RelayCelTimeoutError:
+            self._quarantine_thread_handle()
             raise
 
         # Capture the udf_trace BEFORE decoding (decode may raise a structured

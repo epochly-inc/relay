@@ -1,10 +1,10 @@
 """Shared helpers so the Relay UDFs are TOTAL + correct for BOTH plain Python
-inputs (the direct-callable path) AND cel-python ``celtypes`` values (driven
-THROUGH the CEL evaluator).
+inputs (the direct-callable path) AND legacy celtypes-shaped values (driven
+THROUGH the legacy CEL evaluator before the single-engine wasm cutover).
 
-Empirically-confirmed cel-python quirks the UDFs must survive (these broke the
-UDFs' documented "never raises / shape-tolerant" contract when driven through
-CEL, which the single-engine wasm cutover standardizes on):
+Empirically-confirmed legacy-celtypes quirks the UDFs must survive (these
+broke the UDFs' documented "never raises / shape-tolerant" contract when
+driven through CEL, which the single-engine wasm cutover standardizes on):
 
   - ``MapType.get(key)`` RAISES ``KeyError`` on a missing key (and even the
     two-argument ``.get(key, default)`` form raises) -- it models CEL
@@ -15,10 +15,11 @@ CEL, which the single-engine wasm cutover standardizes on):
     ``isinstance(x, bool)`` is ``False`` for a CEL boolean. That broke JSON
     Schema's "booleans are not numbers/integers" rule
     (``relay.schema_match(true, {"type": "integer"})`` wrongly matched). Detect
-    a boolean by type name so the UDFs stay engine-agnostic (no celpy import).
+    a boolean by type name so the UDFs stay engine-agnostic (no engine import).
 
 These match the wasm port (``packages/cel-wasm`` ``relay_*``), which is the
-single source of truth: all three engines now agree on the intended contract.
+single source of truth: the direct-callable anchors agree with the engine's
+native implementations on the intended contract.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -31,7 +32,7 @@ from typing import Any
 
 def field(m: Any, key: str) -> Any:
     """Total map-field access: the value stored for ``key``, or ``None`` when the
-    key is absent. Works for a plain ``dict`` AND cel-python ``MapType`` (whose
+    key is absent. Works for a plain ``dict`` AND a legacy ``MapType`` (whose
     ``.get`` raises on a missing key). A present CEL null reads back as Python
     ``None``, so a missing-or-null schema field both yield ``None`` -- matching
     ``dict.get`` for schema-field reads."""
@@ -41,9 +42,9 @@ def field(m: Any, key: str) -> Any:
 
 
 def is_bool(x: Any) -> bool:
-    """True for a plain Python ``bool`` OR a cel-python ``BoolType`` (an ``int``
+    """True for a plain Python ``bool`` OR a legacy ``BoolType`` (an ``int``
     subclass that is NOT a ``bool`` subclass, so ``isinstance(x, bool)`` misses
-    it). Type-name check keeps the UDFs free of a celpy import."""
+    it). Type-name check keeps the UDFs free of any engine import."""
     return isinstance(x, bool) or type(x).__name__ == "BoolType"
 
 

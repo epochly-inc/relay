@@ -76,7 +76,7 @@ def _is_finite_number(payload: Any) -> bool:
     Python must too. Same input MUST yield the same boolean across both
     runtimes per the JCS byte-identity guarantee.
     """
-    # `is_bool` also catches cel-python BoolType (an int subclass that is NOT a
+    # `is_bool` also catches a legacy BoolType (an int subclass that is NOT a
     # bool subclass, so a bare isinstance(payload, bool) would miss it and wrongly
     # treat a CEL boolean as a number).
     if is_bool(payload):
@@ -100,11 +100,11 @@ def _is_integer(payload: Any) -> bool:
       - float NaN / +Inf / -Inf are NOT integers (Number.isInteger rejects
         them) -- screened out by ``_is_finite_number``
       - a finite float with an integral value (e.g. ``1.0``, produced by
-        cel-python typing a CEL double literal as ``DoubleType``) IS an
+        a CEL double literal typed as a float) IS an
         integer
 
-    Cross-runtime parity: cel-python types a CEL double ``1.0`` as a
-    ``float`` subclass, while cel-js represents it as the integral JS
+    Cross-runtime parity: the Python host types a CEL double ``1.0`` as a
+    ``float``, while the TS host represents it as the integral JS
     number ``1``. Without the ``float`` arm below, the same input yielded
     ``False`` in Python but ``True`` in TS -- breaking the byte-identical
     JCS parity guarantee. ``int`` values are integral by definition; a
@@ -114,9 +114,9 @@ def _is_integer(payload: Any) -> bool:
     if not _is_finite_number(payload):
         return False
     if isinstance(payload, float):
-        # ``float.is_integer()`` (inherited by cel-python DoubleType) is total on
+        # ``float.is_integer()`` (inherited by float subclasses) is total on
         # a finite float and avoids ``payload == int(payload)``, whose cross-type
-        # ``==`` / ``int()`` can misbehave on celtypes. Finiteness is already
+        # ``==`` / ``int()`` can misbehave on float subclasses. Finiteness is already
         # screened above, so ``int(nan)``/``int(inf)`` cannot be reached.
         return float(payload).is_integer()
     # Remaining case is a non-bool ``int`` (bools were screened out by
@@ -140,7 +140,7 @@ _VALID_TYPES: frozenset[str] = frozenset(
 def _matches_type(payload: Any, type_name: str) -> bool:
     # Booleans are a subclass of int in Python; route them out first
     # so ``"type": "integer"`` does not silently accept ``True``. `is_bool`
-    # also catches cel-python BoolType (not a Python bool subclass).
+    # also catches a legacy BoolType (not a Python bool subclass).
     if type_name == "boolean":
         return is_bool(payload)
     if type_name == "null":
@@ -150,9 +150,9 @@ def _matches_type(payload: Any, type_name: str) -> bool:
     if type_name == "integer":
         # Pinned cross-runtime definition (VAL-PARITY-002): a finite
         # number whose value is integral is an "integer", matching the
-        # TS mirror's ``Number.isInteger``. cel-python types a CEL double
+        # TS mirror's ``Number.isInteger``. The Python host types a CEL double
         # ``1.0`` as ``float``; without this, ``1.0`` was rejected here
-        # (Python False) while cel-js accepted it (TS True). Booleans and
+        # (Python False) while the TS host accepted it (TS True). Booleans and
         # NaN / +Inf / -Inf are excluded by ``_is_integer``.
         return _is_integer(payload)
     if type_name == "number":

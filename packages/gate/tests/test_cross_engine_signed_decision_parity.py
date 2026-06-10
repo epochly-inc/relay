@@ -1,64 +1,46 @@
-"""Cross-engine signed-decision byte parity (VAL-CWC-P2TSGATE-012, P0).
+"""Signed-decision byte determinism on the single wasm engine
+(VAL-CWC-P2TSGATE-012, P0 -- M6 WS-I port of the cross-engine parity gate).
 
-Keystone invariant #11 (Py<->wasm byte-parity) applied to the gate engine's
+Keystone invariant #11 (cross-host byte-parity) applied to the gate engine's
 signed decision: building the SAME ``GateDecisionDraft`` + ``GatePolicy`` and
 running it through ``GateEvaluator.evaluate`` then
-``signed_decision.canonical_decision_payload`` / ``canonical_json_bytes`` under
-BOTH CEL engines (``RELAY_CEL_ENGINE=celpy`` and ``RELAY_CEL_ENGINE=wasm``)
-MUST produce byte-identical canonical signing payloads -- and therefore
-identical signed bytes for a fixed Ed25519 key.
+``signed_decision.canonical_decision_payload`` / ``canonical_json_bytes``
+across INDEPENDENT evaluator constructions MUST produce byte-identical
+canonical signing payloads -- and therefore identical signed bytes for a
+fixed Ed25519 key.
 
-Why this matters
-----------------
-The control plane signs the canonical JSON of a gate_decision row before the
-transaction commits (signed_decision.sign_payload over canonical_json_bytes).
-The signing input is derived from the ``DraftOutcome`` the gate evaluator
-produces -- ``action``, ``failed_assertion_ids``, and ``unmet_conditions``
-(which carry the per-condition ``error_code`` / ``error_message`` for any
-condition that errored). If the celpy and wasm CEL engines disagreed on a
-condition verdict OR on a condition error_code, the canonical payload bytes
-would diverge and the SAME logical decision would carry DIFFERENT signatures
-under the two engines. During the M4 dual-run bake (both engines live) that is
-a P0: a verifier would see two different signatures for one decision.
+History: through M1-M5 this file asserted celpy-vs-wasm cross-engine byte
+parity (the M4 dual-run de-risk). M6 WS-I removed the legacy engine, so the
+cross-engine axis is resolved BY CONSTRUCTION; the surviving protected
+behavior is the determinism of the signed bytes across independent wasm
+evaluator instances (fresh Engine/Store state must never leak into the
+signing input) plus the per-condition ``error_code`` stability the signed
+payload binds (a condition_evaluation_error's code is part of the signed
+bytes -- ADR Revisions section 2).
 
 Design constraints honored (load-bearing)
 ------------------------------------------
-* PLAIN CEL conditions / assertions ONLY -- no dotted ``relay.*`` UDF calls.
-  cel-python cannot evaluate a dotted ``relay.coverage(...)`` through CEL (the
-  user-adjudicated VAL-CWC-P1HOST-015 gap this cutover exists to close), so a
-  relay.*-bearing condition would make the celpy path diverge/raise. Every
-  condition here is comparisons / boolean logic / arithmetic / ``in`` / string
-  ops / ternary -- evaluated IDENTICALLY by both engines.
-* The policy exercises a MIX so the parity covers the met / unmet / error_code
-  paths: a passing condition, a failing condition, an erroring condition (the
-  regex-backreference HOST guard, which fires host-side BEFORE the engine call
-  and produces the SAME RELAY-CEL-007 code+message on both engines), plus a
+* The policy exercises a MIX so the determinism covers the met / unmet /
+  error_code paths: a passing condition, a failing condition, an erroring
+  condition (the regex-backreference HOST guard, which fires host-side BEFORE
+  the engine call and produces the stable RELAY-CEL-007 code+message), plus a
   passing / failing / erroring assertion (all p2 so no p0 cascade short-
-  circuits any assertion -- both engines evaluate every assertion).
+  circuits any assertion).
 * The Ed25519 key is TEST-ONLY: minted from a FIXED 32-byte seed via
   ``Ed25519PrivateKey.from_private_bytes`` so the same private key is used for
-  both engines (signature bytes are then directly comparable). NO real / KMS /
+  both runs (signature bytes are then directly comparable). NO real / KMS /
   trust-anchor key material is committed (CLAUDE.md banned pattern #14).
-* The two runs differ ONLY in the engine. Same draft, same policy, same key,
-  same ``decided_*`` constants, same evidence. Each engine is constructed via
-  the contracts factory under its own ``RELAY_CEL_ENGINE`` setting and injected
-  through the ``GateEvaluator(cel_evaluator=...)`` param so engine selection is
-  the only difference -- and a non-vacuous guard asserts the two evaluators are
-  DIFFERENT classes (RelayCelEvaluator vs WasmCelEvaluator), so a no-op
-  double-celpy run can never pass this test.
-
-If the wasm and celpy paths produced different canonical bytes for this
-plain-CEL policy, that would be a REAL P0 cutover defect; this test surfaces it
-as a byte diff rather than masking it.
+* The two runs differ ONLY in evaluator instance identity. Same draft, same
+  policy, same key, same ``decided_*`` constants, same evidence. Each
+  evaluator is constructed via the contracts factory and injected through the
+  ``GateEvaluator(cel_evaluator=...)`` param.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping, Sequence
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -76,7 +58,6 @@ from _w8_1_helpers import (
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from relay_contracts import (
     RELAY_UDFS,
-    RelayCelEvaluator,
     WasmCelEvaluator,
     make_cel_evaluator,
 )
@@ -114,12 +95,10 @@ def _fixed_signing_key() -> SigningKey:
 # ---------------------------------------------------------------------------
 #
 # A host-side regex-backreference guard (RELAY-CEL-007) fires BEFORE the engine
-# evaluates, so its code AND message are identical across celpy and wasm. That
-# makes it the only error path that is byte-stable across engines (a runtime
-# engine error such as division-by-zero is NOT: celpy raises RELAY-CEL-002 and
-# the wasm raises RELAY-CEL-009, a real engine difference that is out of scope
-# for the plain-CEL parity contract). We therefore drive the error path through
-# the host guard, which both engines hit identically.
+# evaluates, so its code AND message are deterministic host-owned strings --
+# the byte-stable error path the signed payload binds (a runtime engine error
+# message could legitimately evolve with the engine build; the host guard
+# cannot).
 _REGEX_BACKREF_EXPR: str = '"x".matches("(a)\\1")'
 
 # A condition tuple mixing a PASS, a FAIL, and an ERROR (host-guard) verdict.
@@ -165,47 +144,25 @@ _EVIDENCE_BUNDLE_ID: str = "bundle-cwc-p2tsgate-012"
 _NOW: datetime = datetime(2026, 5, 14, 12, 0, 30, tzinfo=UTC)
 
 
-@contextmanager
-def _engine_env(engine: str):
-    """Temporarily set ``RELAY_CEL_ENGINE`` for the factory read, then restore.
+def _build_evaluator() -> GateEvaluator:
+    """Construct a fresh ``GateEvaluator`` over a factory-built CEL backend.
 
-    The contracts factory is the SINGLE site that reads ``RELAY_CEL_ENGINE``;
-    we set it only around the ``make_cel_evaluator`` call and restore the prior
-    value so the env does not leak between the two engine constructions.
-    """
-    sentinel = object()
-    prior: Any = os.environ.get("RELAY_CEL_ENGINE", sentinel)
-    os.environ["RELAY_CEL_ENGINE"] = engine
-    try:
-        yield
-    finally:
-        if prior is sentinel:
-            os.environ.pop("RELAY_CEL_ENGINE", None)
-        else:
-            os.environ["RELAY_CEL_ENGINE"] = prior  # type: ignore[assignment]
+    The CEL evaluator is built through the contracts factory (the single
+    ``RELAY_CEL_ENGINE`` read site; the default engine IS the wasm engine),
+    then injected via the ``cel_evaluator`` param so the gate src stays
+    env-free. All other gate collaborators (evidence provider, manifest
+    resolver) are identical across the two runs so the ONLY difference is the
+    evaluator INSTANCE (fresh wasm Engine/Module/Store state).
 
-
-def _build_evaluator(engine: str) -> GateEvaluator:
-    """Construct a ``GateEvaluator`` whose CEL backend is ``engine``.
-
-    The CEL evaluator is built through the contracts factory under the engine
-    env, then injected via the ``cel_evaluator`` param so the gate src stays
-    env-free (the only env read is inside the factory). All other gate
-    collaborators (evidence provider, manifest resolver) are identical across
-    the two engine runs so the ONLY difference is the CEL backend.
-
-    Both engines are built with ``timeout_ms=MAX_TIMEOUT_MS``: this is a
-    value/error-class PARITY assertion (byte-identical signed payload across
-    celpy and wasm), not a timeout-behavior test, so it is decoupled from the
+    Built with ``timeout_ms=MAX_TIMEOUT_MS``: this is a value/error-class
+    DETERMINISM assertion (byte-identical signed payload across independent
+    evaluations), not a timeout-behavior test, so it is decoupled from the
     50 ms wall-clock to avoid host-thread jitter under concurrent load (a
-    spurious RELAY-CEL-003 in ONE engine's outcome but not the other would break
-    the byte parity). The budget is identical for BOTH engines, so the result
-    -- and the signed bytes derived from it -- is unchanged; only the wall-clock
-    headroom grows. Production 50 ms default (CQ1) unchanged; root cause resolved
-    by M7 P7EDGE fuel metering.
+    spurious RELAY-CEL-003 in ONE run's outcome but not the other would break
+    the byte determinism). Production 50 ms default (CQ1) unchanged; root
+    cause resolved by M7 P7EDGE fuel metering.
     """
-    with _engine_env(engine):
-        cel = make_cel_evaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
+    cel = make_cel_evaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
     return GateEvaluator(
         evidence_provider=InMemoryEvidenceProvider(),
         manifest_resolver=InMemoryManifestResolver(
@@ -279,19 +236,19 @@ def _condition_error_codes(
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P2TSGATE-012")
-def test_two_engines_are_distinct_backend_classes() -> None:
-    """celpy and wasm resolve to DIFFERENT evaluator classes.
+def test_independent_evaluations_use_distinct_wasm_instances() -> None:
+    """The two runs use genuinely INDEPENDENT wasm evaluator instances.
 
-    Without this, a misconfigured factory could hand back two celpy
-    evaluators and the byte-parity assertion would pass vacuously (celpy ==
-    celpy). Asserting RelayCelEvaluator vs WasmCelEvaluator proves the parity
-    test below actually crosses the engine boundary.
+    Without this, a shared/cached evaluator could make the byte-determinism
+    assertion below vacuous (same object == same object). Both backends are
+    the single wasm engine class, but DIFFERENT instances (fresh per-run
+    Engine/Module/Store state).
     """
-    celpy_eval = _build_evaluator("celpy")
-    wasm_eval = _build_evaluator("wasm")
-    assert isinstance(celpy_eval._cel, RelayCelEvaluator)  # noqa: SLF001
-    assert isinstance(wasm_eval._cel, WasmCelEvaluator)  # noqa: SLF001
-    assert type(celpy_eval._cel) is not type(wasm_eval._cel)  # noqa: SLF001
+    eval_a = _build_evaluator()
+    eval_b = _build_evaluator()
+    assert isinstance(eval_a._cel, WasmCelEvaluator)  # noqa: SLF001
+    assert isinstance(eval_b._cel, WasmCelEvaluator)  # noqa: SLF001
+    assert eval_a._cel is not eval_b._cel  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------
@@ -306,10 +263,10 @@ def test_policy_exercises_pass_fail_and_error_paths() -> None:
 
     Guards against a future edit that accidentally makes every condition pass
     (which would still produce byte-equal payloads but stop testing the error
-    path that is the parity risk). Verified on the celpy reference engine.
+    path that is the determinism risk). Verified on the single wasm engine.
     """
     gate, draft = _make_policy_and_draft()
-    outcome = _build_evaluator("celpy").evaluate(gate=gate, draft=draft, now=_NOW)
+    outcome = _build_evaluator().evaluate(gate=gate, draft=draft, now=_NOW)
 
     # A FAIL condition surfaces as a plain unmet_condition.
     assert any(
@@ -336,58 +293,59 @@ def test_policy_exercises_pass_fail_and_error_paths() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CWC-P2TSGATE-012")
-def test_cross_engine_signed_decision_byte_parity() -> None:
-    """Same draft+gate -> byte-identical signed decision under celpy and wasm.
+def test_signed_decision_byte_determinism_across_independent_evaluations() -> None:
+    """Same draft+gate -> byte-identical signed decision across two
+    INDEPENDENT wasm evaluator instances (M6 WS-I port of the cross-engine
+    byte-parity keystone; the cross-engine axis is resolved by construction).
 
-    1. canonical_json_bytes(payload_celpy) == canonical_json_bytes(payload_wasm)
-    2. per-condition error_code lists are EQUAL (a divergence here would change
-       the signed bytes)
+    1. canonical_json_bytes(payload_a) == canonical_json_bytes(payload_b)
+    2. per-condition error_code lists are EQUAL and carry the expected
+       host-guard code (a divergence here would change the signed bytes)
     3. sign_payload(...) yields IDENTICAL signature bytes under a shared fixed
        Ed25519 key
 
-    Any difference is a REAL P0 cutover defect (a plain-CEL verdict / error_code
-    divergence between the two engines) and is surfaced as a byte diff, never
+    Any difference is a REAL P0 defect (nondeterministic engine/host state
+    leaking into the signing input) and is surfaced as a byte diff, never
     masked.
     """
     gate, draft = _make_policy_and_draft()
 
-    celpy_eval = _build_evaluator("celpy")
-    wasm_eval = _build_evaluator("wasm")
-    # Non-vacuous: the two evaluators are genuinely different engine backends.
-    assert isinstance(celpy_eval._cel, RelayCelEvaluator)  # noqa: SLF001
-    assert isinstance(wasm_eval._cel, WasmCelEvaluator)  # noqa: SLF001
+    eval_a = _build_evaluator()
+    eval_b = _build_evaluator()
+    # Non-vacuous: two genuinely independent evaluator instances.
+    assert eval_a._cel is not eval_b._cel  # noqa: SLF001
 
-    outcome_celpy = celpy_eval.evaluate(gate=gate, draft=draft, now=_NOW)
-    outcome_wasm = wasm_eval.evaluate(gate=gate, draft=draft, now=_NOW)
+    outcome_a = eval_a.evaluate(gate=gate, draft=draft, now=_NOW)
+    outcome_b = eval_b.evaluate(gate=gate, draft=draft, now=_NOW)
 
-    payload_celpy = _payload_for_engine_outcome(gate, outcome_celpy)
-    payload_wasm = _payload_for_engine_outcome(gate, outcome_wasm)
+    payload_a = _payload_for_engine_outcome(gate, outcome_a)
+    payload_b = _payload_for_engine_outcome(gate, outcome_b)
 
-    # (2) Per-condition error_code lists are equal across engines. Asserted
-    # FIRST so a divergence here reports the offending codes directly rather
-    # than as an opaque byte diff.
-    codes_celpy = _condition_error_codes(outcome_celpy.unmet_conditions)
-    codes_wasm = _condition_error_codes(outcome_wasm.unmet_conditions)
-    assert codes_celpy == codes_wasm, (
-        f"per-condition error_code divergence: celpy={codes_celpy!r} "
-        f"wasm={codes_wasm!r}"
+    # (2) Per-condition error_code lists are equal AND the expected stable
+    # host-guard code. Asserted FIRST so a divergence here reports the
+    # offending codes directly rather than as an opaque byte diff.
+    codes_a = _condition_error_codes(outcome_a.unmet_conditions)
+    codes_b = _condition_error_codes(outcome_b.unmet_conditions)
+    assert codes_a == codes_b == ["RELAY-CEL-007"], (
+        f"per-condition error_code divergence: a={codes_a!r} b={codes_b!r}"
     )
 
     # (1) Byte-identical canonical signing payload.
-    bytes_celpy = canonical_json_bytes(payload_celpy)
-    bytes_wasm = canonical_json_bytes(payload_wasm)
-    assert bytes_celpy == bytes_wasm, (
-        "canonical signing payload bytes diverge between celpy and wasm:\n"
-        f"  celpy = {bytes_celpy!r}\n"
-        f"  wasm  = {bytes_wasm!r}"
+    bytes_a = canonical_json_bytes(payload_a)
+    bytes_b = canonical_json_bytes(payload_b)
+    assert bytes_a == bytes_b, (
+        "canonical signing payload bytes diverge across independent "
+        "evaluations:\n"
+        f"  a = {bytes_a!r}\n"
+        f"  b = {bytes_b!r}"
     )
 
     # (3) Identical signature bytes under the SAME fixed Ed25519 key.
     key = _fixed_signing_key()
-    sig_celpy, kid_celpy = sign_payload(payload_celpy, key)
-    sig_wasm, kid_wasm = sign_payload(payload_wasm, key)
-    assert kid_celpy == kid_wasm == _FIXED_KID
-    assert sig_celpy == sig_wasm, (
-        "signature bytes diverge between celpy and wasm despite a shared "
-        f"fixed key: celpy={sig_celpy!r} wasm={sig_wasm!r}"
+    sig_a, kid_a = sign_payload(payload_a, key)
+    sig_b, kid_b = sign_payload(payload_b, key)
+    assert kid_a == kid_b == _FIXED_KID
+    assert sig_a == sig_b, (
+        "signature bytes diverge across independent evaluations despite a "
+        f"shared fixed key: a={sig_a!r} b={sig_b!r}"
     )
