@@ -169,6 +169,41 @@ relay.coverage(trace, "plan")
 Wrap that in a behavioral assertion and the gate engine will evaluate
 it on every run that flows through the matching gate.
 
+## CEL engine default: wasm (M5 bake window)
+
+As of milestone M5 the default CEL engine is a single reproducible wasm
+engine shared by BOTH hosts: the Python factory (`make_cel_evaluator` in
+the relay-contracts package) and the TypeScript factory
+(`makeCelEvaluator` in the TypeScript mirror) construct the wasm-backed
+evaluator when no engine is selected. The default was flipped only after
+the dual-run parity gates -- celpy-vs-wasm host parity and
+Py-wasm-vs-Node-wasm cross-host parity -- showed zero divergence
+(identical verdicts and identical JCS bytes), so the flip is
+behavior-preserving for contract evaluation.
+
+For exactly one release (the bake window) the legacy engines remain
+selectable as a rollback escape hatch:
+
+- Python: set the `RELAY_CEL_ENGINE` environment variable to `celpy`.
+  It is read only by the contracts engine factory; no other module
+  consults it.
+- TypeScript: pass `engine: "celjs"` to `makeCelEvaluator` (a config
+  parameter; the TS factory deliberately has no environment read, so
+  engine selection stays deterministic).
+
+After rolling back, verify the install is still healthy:
+`uv run rly verify-self --json` must still exit 0. The
+`cel-engine-single-wasm` invariant check validates the packaged wasm
+artifact (UDF verdict probes, fenced `dyn()`, pinned-sha match)
+regardless of which engine is currently selected. Report any rollback
+use -- it signals a wasm engine regression that must be fixed before
+M6, when cel-python and cel-js are removed and the rollback switches
+disappear with them.
+
+Both rollback switches are supported ONLY for the bake release; the
+canonical operational procedure lives in the relay-contracts package
+README (`packages/contracts/README.md`).
+
 ## Next
 
 - [UDF reference](udf-reference.md) -- full signatures, return types,
