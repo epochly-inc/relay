@@ -48,7 +48,9 @@ type layer, which had the same resolution). The ``v`` field's JSON type is
 enforced STRICTLY on decode, mirroring the Rust request decoder
 (lib.rs:1352-1465): bool requires a JSON boolean, the string-encoded scalars
 require a JSON string, and the int / uint ENCODE side enforces the i64 / u64
-wire range (lib.rs:1358 / 1366).
+wire range (lib.rs:1358 / 1366). Typed MAP KEYS take the SAME strict
+validation on BOTH the CelMap decode and encode paths
+(``_require_valid_map_key``, mirroring lib.rs ``typed_to_key``).
 
 Classification quirk that survives the type-layer move: ``bool`` is an
 ``int`` subclass in Python, so a CEL boolean MUST be classified BEFORE int or
@@ -336,6 +338,57 @@ def _key_sort_string(typed_key: dict[str, Any]) -> str:
     raise ValueError(f"invalid map key type: {t!r}")
 
 
+def _require_valid_map_key(typed_key: Any) -> str:
+    """Strictly validate a typed MAP KEY's wire shape, then return its
+    ``_key_sort_string``.
+
+    Faithful mirror of the crate's ``typed_to_key`` (lib.rs:1487-1496): a map
+    key decodes through the FULL strict scalar decoder (``typed_to_value``)
+    BEFORE the restriction to the legal key set Int / Uint / String / Bool,
+    so a map key carries EXACTLY the scalar path's strict ``v`` validation
+    (FINDING B) plus the wire integer bounds (lib.rs:1358 / 1366):
+
+      bool   -> ``v`` MUST be a JSON boolean            (_require_bool_v)
+      int    -> ``v`` MUST be a JSON string within i64  (_require_str_v + _encode_int)
+      uint   -> ``v`` MUST be a JSON string within u64  (_require_str_v + _encode_uint)
+      string -> ``v`` MUST be a JSON string             (_require_str_v)
+      other  -> invalid map key type                    (lib.rs:1494)
+
+    ROBOREV M6 round-2 (MED): the CelMap paths previously validated keys only
+    via ``_key_sort_string``, which checks SORTABILITY but never the ``v``
+    JSON shape -- a malformed key like ``{"t":"bool","v":"false"}`` (string,
+    truthy) was accepted into ``CelMap`` (and sorted as ``0:bool:true``)
+    while the scalar decode path and the wasm request decoder both reject
+    it. Both CelMap paths (decode storage, encode emit) route every key
+    through this validator; the call sites wrap any failure into the
+    structured RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST error, the same
+    fail-closed classification the collision check uses.
+
+    Raises ``TypeError`` / ``ValueError`` (the scalar validators' native
+    types); call sites convert to :class:`RelayCelEngineError`.
+    """
+    if not isinstance(typed_key, dict):
+        raise TypeError(
+            f"map key must be a typed object; got {type(typed_key).__name__!r}"
+        )
+    t = typed_key.get("t")
+    if t == "bool":
+        _require_bool_v(typed_key)
+    elif t == "int":
+        # Scalar strictness + the i64 wire bound in one step (the crate's
+        # s.parse::<i64>() enforces both at once, lib.rs:1358). _encode_int
+        # is the existing bounds helper; its string result is discarded.
+        _encode_int(int(_require_str_v(typed_key)))
+    elif t == "uint":
+        # u64 bound via the existing bounds helper (lib.rs:1366).
+        _encode_uint(int(_require_str_v(typed_key)))
+    elif t == "string":
+        _require_str_v(typed_key)
+    else:
+        raise ValueError(f"invalid map key type: {t!r}")
+    return _key_sort_string(typed_key)
+
+
 # ---------------------------------------------------------------------------
 # encode: native Python value -> typed-canonical {"t","v"} (or {"t":"null"})
 # ---------------------------------------------------------------------------
@@ -408,13 +461,23 @@ def py_to_typed(value: Any) -> dict[str, Any]:
         encode_seen_sort_keys: set[str] = set()
         for typed_key, val in value.pairs:
             try:
-                sort_key = _key_sort_string(typed_key)
+                # Strict wire-shape validation BEFORE emit (ROBOREV M6
+                # round-2 MED): a hand-built / round-tripped CelMap key must
+                # satisfy the SAME scalar-path validation the decode side
+                # enforces, or the emitted bytes would be a request the wasm
+                # decoder rejects.
+                sort_key = _require_valid_map_key(typed_key)
             except (KeyError, TypeError, ValueError) as exc:
                 raise RelayCelEngineError(
                     f"py_to_typed: CelMap contains an invalid CEL map key "
-                    f"{typed_key!r}: only bool/int/uint/string typed keys "
-                    "are orderable in the wasm key_sort_string form "
-                    "(matches the TS keySortString fail-closed throw).",
+                    f"{typed_key!r}: map keys take the SAME strict "
+                    "wire-shape validation as the scalar path (bool v must "
+                    "be a JSON boolean; int/uint v must be a string-encoded "
+                    "integer within the i64/u64 wire bounds; string v must "
+                    "be a JSON string; only bool/int/uint/string typed keys "
+                    "are orderable in the wasm key_sort_string form) -- "
+                    "rejected BEFORE emit (matches the TS keySortString "
+                    "fail-closed throw).",
                     subtype=SUBTYPE_ENGINE_REQUEST,
                 ) from exc
             if sort_key in encode_seen_sort_keys:
@@ -682,16 +745,34 @@ def typed_to_py(typed: Any) -> Any:
                 result[typed_to_py(raw_key)] = typed_to_py(raw_val)
             return result
         # Lossless decode: keep the ORIGINAL typed keys verbatim; values
-        # decode to natives. _key_sort_string validates each key tag
-        # (bool/int/uint/string only) and is the collision discriminant
-        # (int 1 != uint 1 != bool true). A true duplicate CEL key cannot
-        # exist (the wasm decoder's Rust HashMap would have silently
-        # dropped one entry), so fail CLOSED with the structured engine
-        # error -- matching the TS typedToNative decode path.
+        # decode to natives. _require_valid_map_key enforces the SAME strict
+        # wire-shape validation the scalar decode path applies (ROBOREV M6
+        # round-2 MED: bool v is a JSON boolean; int/uint v is a
+        # string-encoded integer within i64/u64; string v is a JSON string;
+        # only bool/int/uint/string tags are legal keys, lib.rs
+        # typed_to_key) and returns the sort string -- the collision
+        # discriminant (int 1 != uint 1 != bool true). A true duplicate CEL
+        # key cannot exist (the wasm decoder's Rust HashMap would have
+        # silently dropped one entry), so fail CLOSED with the structured
+        # engine error -- matching the TS typedToNative decode path.
         seen_sort_keys: set[str] = set()
         out_pairs: list[tuple[dict[str, Any], Any]] = []
         for raw_key, raw_val in raw_pairs:
-            sort_key = _key_sort_string(raw_key)
+            try:
+                sort_key = _require_valid_map_key(raw_key)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RelayCelEngineError(
+                    "typed_to_py: map contains an invalid CEL map key "
+                    f"{raw_key!r}: map keys take the SAME strict wire-shape "
+                    "validation as the scalar decode path (bool v must be a "
+                    "JSON boolean; int/uint v must be a string-encoded "
+                    "integer within the i64/u64 wire bounds; string v must "
+                    "be a JSON string; only bool/int/uint/string tags are "
+                    "legal map keys, lib.rs typed_to_key) -- failing closed "
+                    "like the wasm request decoder rather than admitting a "
+                    "key the scalar path rejects.",
+                    subtype=SUBTYPE_ENGINE_REQUEST,
+                ) from exc
             if sort_key in seen_sort_keys:
                 raise RelayCelEngineError(
                     "typed_to_py: wasm map contains a duplicate / colliding "

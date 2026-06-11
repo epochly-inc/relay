@@ -34,11 +34,22 @@ This suite pins the Python mirror (``wasm_codec.CelMap``):
 Py-vs-TS behavior parity note: for every VALID wasm-emitted map both hosts
 now decode losslessly and re-encode byte-identically (keystone #16); a
 colliding key raises the SAME structured classification on both hosts
-(RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST). On MALFORMED (non-wasm) key
-input each host fails closed with its module-conventional exception type
-(Python: ``ValueError`` from ``_key_sort_string``'s tag/parse validation;
-TS: the structured ``keySortString`` throw) -- both REJECT, the exception
-class differs, and no malformed form decodes successfully on either host.
+(RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST). On a MALFORMED (non-wasm) key
+the Python codec fails closed with the SAME structured error
+(RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST, roborev round-2 MED -- see the
+"strict wire-shape validation of typed MAP KEYS" section below), matching
+the TS ``keySortString`` structured throw for the shapes TS validates.
+
+ROBOREV round-2 MED (strict map-key wire shape): the CelMap paths
+previously validated keys only via ``_key_sort_string``, which never
+checks the typed key's ``v`` JSON shape -- a malformed key like
+``{"t":"bool","v":"false"}`` (string, truthy) was ACCEPTED into ``CelMap``
+and later treated as True, whereas the SCALAR decode path
+(``_require_bool_v`` / ``_require_str_v`` + i64/u64 bounds) and the wasm
+request decoder itself (lib.rs ``typed_to_key`` = full ``typed_to_value``
+strict decode THEN the Int/Uint/String/Bool restriction, lib.rs:1487-1496)
+both reject it. Map keys now take the SAME strict validation on BOTH the
+decode (before CelMap storage) and encode (before emit) paths.
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -236,6 +247,134 @@ def test_encode_rejects_invalid_key_tag_in_hand_built_celmap() -> None:
     with pytest.raises(RelayCelEngineError) as ctx:
         py_to_typed(bad)
     assert ctx.value.subtype == SUBTYPE_ENGINE_REQUEST
+
+
+# ---------------------------------------------------------------------------
+# ROBOREV round-2 MED: strict wire-shape validation of typed MAP KEYS.
+# The crate's typed_to_key (lib.rs:1487-1496) decodes a map key through the
+# FULL strict scalar decoder (typed_to_value) BEFORE restricting to the legal
+# key set Int/Uint/String/Bool, so a map key carries EXACTLY the scalar
+# path's v-shape validation (bool v: JSON boolean; int/uint v: string-encoded
+# integer within i64/u64; string v: JSON string). The CelMap paths previously
+# checked keys only via _key_sort_string (sortability, never v shape):
+# {"t":"bool","v":"false"} was ACCEPTED -- and sorted as 0:bool:true
+# (truthy) -- while the scalar path and the wasm decoder both reject it.
+# Malformed keys now fail CLOSED with the structured RELAY-CEL-009 /
+# RELAY-CEL-ENGINE-REQUEST error on BOTH paths.
+# ---------------------------------------------------------------------------
+
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+_U64_MAX = 2**64 - 1
+
+
+def _mixed_map_with_key(typed_key: dict[str, Any]) -> dict[str, Any]:
+    """A typed map routing through the CelMap (non-string-key) decode path.
+
+    The probe key under test is paired with a benign int key so even a
+    malformed STRING-tagged key exercises the lossless CelMap branch (an
+    all-string-key map takes the plain-dict fast path, whose keys already
+    decode through the strict scalar path).
+    """
+    return {
+        "t": "map",
+        "v": [
+            [{"t": "int", "v": "7"}, {"t": "string", "v": "anchor"}],
+            [typed_key, {"t": "string", "v": "probe"}],
+        ],
+    }
+
+
+_MALFORMED_TYPED_KEYS = [
+    # bool v MUST be a JSON boolean (lib.rs:1392-1397): a string "false" is
+    # truthy in Python -- the exact mis-decode class of the finding.
+    {"t": "bool", "v": "false"},
+    {"t": "bool", "v": "true"},
+    {"t": "bool", "v": 1},
+    # int v MUST be a JSON string (lib.rs:1353-1359), within i64 (lib.rs:1358).
+    {"t": "int", "v": 1},
+    {"t": "int", "v": True},
+    {"t": "int", "v": None},
+    {"t": "int", "v": str(_I64_MAX + 1)},
+    {"t": "int", "v": str(_I64_MIN - 1)},
+    {"t": "int", "v": "not-a-number"},
+    # uint v MUST be a JSON string (lib.rs:1361-1367), within u64 (lib.rs:1366).
+    {"t": "uint", "v": 7},
+    {"t": "uint", "v": str(_U64_MAX + 1)},
+    {"t": "uint", "v": "-1"},
+    # string v MUST be a JSON string (lib.rs:1385-1390).
+    {"t": "string", "v": 5},
+    {"t": "string", "v": None},
+    # missing v entirely (only the null tag omits v, and null is not a key).
+    {"t": "int"},
+    # tags OUTSIDE the legal Int/Uint/String/Bool key set (lib.rs:1490-1494).
+    {"t": "null"},
+    {"t": "double", "v": "1.5"},
+    {"t": "bytes", "v": "00"},
+]
+
+
+@pytest.mark.parametrize(
+    "bad_key", _MALFORMED_TYPED_KEYS, ids=lambda k: f"{k.get('t')}-{k.get('v')!r}"
+)
+def test_decode_rejects_malformed_typed_map_key(bad_key: dict[str, Any]) -> None:
+    # BEFORE the fix: typed_to_py ACCEPTED these into CelMap (observed:
+    # {"t":"bool","v":"false"} -> CelMap pair, sort string "0:bool:true").
+    # AFTER: the SAME strict rejection the scalar decode path applies,
+    # surfaced as the structured engine error.
+    with pytest.raises(RelayCelEngineError) as ctx:
+        typed_to_py(_mixed_map_with_key(bad_key))
+    assert ctx.value.code == "RELAY-CEL-009"
+    assert ctx.value.subtype == SUBTYPE_ENGINE_REQUEST
+
+
+@pytest.mark.parametrize(
+    "bad_key", _MALFORMED_TYPED_KEYS, ids=lambda k: f"{k.get('t')}-{k.get('v')!r}"
+)
+def test_encode_rejects_malformed_typed_map_key_before_emit(
+    bad_key: dict[str, Any],
+) -> None:
+    # BEFORE the fix: py_to_typed EMITTED a hand-built CelMap's malformed key
+    # VERBATIM onto the wire (observed: {"t":"bool","v":"false"} emitted) --
+    # bytes the wasm request decoder rejects. AFTER: rejected BEFORE emit
+    # with the structured engine error.
+    with pytest.raises(RelayCelEngineError) as ctx:
+        py_to_typed(CelMap([(bad_key, "x")]))
+    assert ctx.value.code == "RELAY-CEL-009"
+    assert ctx.value.subtype == SUBTYPE_ENGINE_REQUEST
+
+
+def test_valid_boundary_int_uint_keys_still_round_trip_byte_identically() -> None:
+    # Regression-keep: the i64/u64 ENDPOINTS are VALID wire keys and must
+    # keep decoding losslessly and re-encoding byte-identically (the bounds
+    # check is exclusive of nothing in-range).
+    typed = {
+        "t": "map",
+        "v": [
+            [{"t": "int", "v": str(_I64_MIN)}, {"t": "string", "v": "lo"}],
+            [{"t": "int", "v": str(_I64_MAX)}, {"t": "string", "v": "hi"}],
+            [{"t": "uint", "v": "0"}, {"t": "string", "v": "uzero"}],
+            [{"t": "uint", "v": str(_U64_MAX)}, {"t": "string", "v": "umax"}],
+        ],
+    }
+    decoded = typed_to_py(typed)
+    assert isinstance(decoded, CelMap)
+    assert len(decoded) == 4
+    assert _wire_bytes(py_to_typed(decoded)) == _wire_bytes(typed)
+
+
+def test_valid_bool_keys_still_round_trip_byte_identically() -> None:
+    # Regression-keep: REAL JSON-boolean keys are valid and unchanged.
+    typed = {
+        "t": "map",
+        "v": [
+            [{"t": "bool", "v": False}, {"t": "string", "v": "f"}],
+            [{"t": "bool", "v": True}, {"t": "string", "v": "t"}],
+        ],
+    }
+    decoded = typed_to_py(typed)
+    assert isinstance(decoded, CelMap)
+    assert _wire_bytes(py_to_typed(decoded)) == _wire_bytes(typed)
 
 
 # ---------------------------------------------------------------------------
