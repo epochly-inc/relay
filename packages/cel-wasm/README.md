@@ -137,7 +137,7 @@ packages/cel-wasm/
     oracle/         Go cel-spec textproto parser + cel-go oracle
     harness/        wasm driver, conformance comparator, byte-parity dumps
     build.sh        build wasm -> oracle -> run -> parity (FROM THE REPO)
-  python/           RelayCel Python loader (future cel-python replacement)
+  python/           RelayCel Python loader (replaced cel-python at M6)
   typescript/       RelayCel TS/edge loader (future @bufbuild/cel replacement)
   tests/            tier-1 plumbing tests (G1 fence + shims) over the wasm
   HARDENING.md      G1..G16 backlog: done / wrapper-feasible / needs-fork
@@ -243,9 +243,10 @@ Manifest command (declared in `.ops/manifest.yaml`):
 ## M4 P4DUALRUN: dual-run de-risk gate (WS-F)
 
 M4 added the CI engine-axis matrix and the host-integration parity test
-(`tests/conformance/cel/test_dual_run_host_parity.py`, VAL-CWC-P4DUALRUN-004)
-that asserts ZERO celpy-vs-wasm divergence on the cel-js-reachable flat-schema
-corpus subset (195 reachable cases, 0 divergences when landed).
+(`tests/conformance/cel/test_dual_run_host_parity.py`, VAL-CWC-P4DUALRUN-004;
+removed at M6 together with cel-python) that asserted ZERO celpy-vs-wasm
+divergence on the cel-js-reachable flat-schema corpus subset (195 reachable
+cases, 0 divergences when landed).
 
 ### Runtime-error error_code taxonomy (M4 disposition, NOT a defect)
 
@@ -287,6 +288,12 @@ RELAY_CEL_ENGINE=celpy   # Python host: revert to cel-python evaluator
 For the TypeScript host, set the equivalent engine-selection config to `cel-js`.
 The rollback escape hatch remains available for the full one-release bake window.
 
+M6 note (EXECUTED): the bake window is over. cel-python was removed at M6
+(commit bb7bc9b) and the Python escape hatch is CLOSED: setting
+`RELAY_CEL_ENGINE=celpy` now raises a ValueError from the contracts factory
+("not a recognized CEL engine"); `wasm` is the only accepted value (unset or
+blank also resolves to `wasm`).
+
 ### Runtime-error error_code policy at M5 (expected, not a regression)
 
 After the M5 default flip, gate decisions for RUNTIME-ERRORING conditions (e.g.
@@ -300,7 +307,8 @@ EXPECTED behavior for the bake, not a regression:
   between engines for any VALID expression; the runtime-error taxonomy difference
   does not affect valid-expression signing parity.
 - The error_code shift (from celpy-host-code to RELAY-CEL-009) is the defined
-  M4/M5 disposition documented in `test_dual_run_host_parity.py` and here.
+  M4/M5 disposition documented in `test_dual_run_host_parity.py` (removed at
+  M6 together with cel-python) and here.
 - The difference is eliminated BY CONSTRUCTION at M6 when cel-python is removed
   and RELAY-CEL-009 is the only error_code for engine-level faults.
 
@@ -332,19 +340,27 @@ lenient 2-character string to the spec-correct compile error. This is EXPECTED
 and is an IMPROVEMENT in conformance, not a regression. If an operator authored a
 contract relying on a bare backslash being silently accepted inside a string
 literal, that contract was depending on non-conformant cel-python behavior and
-must be corrected to use a valid CEL escape. The dual-run value-parity gate
-(`tests/conformance/cel/test_dual_run_host_parity.py`) documents and carves out
-exactly these two cases under a strong guard (`KNOWN_CELPY_NONCONFORMANCE`);
-EVERY OTHER valid expression remains byte-for-byte identical across engines.
+must be corrected to use a valid CEL escape. During the M5 bake window the
+dual-run value-parity gate (`tests/conformance/cel/test_dual_run_host_parity.py`)
+documented and carved out exactly these two cases under a strong guard
+(`KNOWN_CELPY_NONCONFORMANCE`); EVERY OTHER valid expression remained
+byte-for-byte identical across engines.
 
-M6 migration note: once cel-python is removed and the wasm engine is the only
-evaluator, reclassify these two corpus cases in
-`tests/conformance/cel/relay_cel_corpus.json` from `eval_value` to `eval_error`
-(the spec-correct compile-error form), and remove them from
-`KNOWN_CELPY_NONCONFORMANCE` in the dual-run test. The corpus is NOT mutated
-before M6: the legacy `test_w17_4_*` cross-runtime / release-block runners still
-expect cel-python's current lenient `eval_value` behavior, so the
-reclassification is M6 scope (cel-python-removal) by construction.
+M6 disposition (EXECUTED, commit bb7bc9b): cel-python was removed at M6 and the
+wasm engine is the only Python evaluator. The reclassification sketched above
+was NOT performed -- the corpus stays FROZEN (standing constraint), so the two
+adjudicated cases keep their recorded legacy `eval_value` goldens. They are
+instead carried as strongly-guarded carve-outs in the w6_5 corpus runner
+(`packages/contracts/tests/test_w6_5_corpus.py`,
+`_ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS`) and the corpus generator
+(`scripts/generate-relay-cel-corpus.py`): each guard pins the exact adjudicated
+expression AND asserts the wasm still raises the documented compile error, so
+neither a corpus edit nor a wasm regression can hide behind the carve-out. The
+celpy host-parity suite (`test_dual_run_host_parity.py`, with its
+`KNOWN_CELPY_NONCONFORMANCE` constant) was deleted together with cel-python;
+the surviving dual-run gate is the cross-host Py-wasm-vs-Node-wasm suite
+(`tests/conformance/cel/test_dual_run_cross_host_wasm_parity.py`), which needs
+no carve-out because both hosts run the same wasm.
 
 ## Notes on the build config (load-bearing)
 

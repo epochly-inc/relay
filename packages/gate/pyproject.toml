@@ -4,7 +4,8 @@
 # evaluator that consumes a gate_decision_drafts envelope, resolves
 # evidence_bundle ids through a pluggable provider, sorts assertions by
 # priority (P0 > P1 > P2 > P3), evaluates conditions through the W6
-# contract engine (cel-python), enforces three-gate ordering
+# contract engine (the wasm-backed Relay CEL evaluator constructed via
+# the relay_contracts factory), enforces three-gate ordering
 # (scrutiny -> structural-review -> testing), draft TTL, concurrent-draft
 # conflict, and the anti-bypass guard (W2.5 mirror).
 #

@@ -6,7 +6,8 @@ Surface:
     submitted :class:`GateDecisionDraft`. Loads evidence_bundle ids
     through a :class:`EvidenceBundleProvider` (VAL-W8-003), sorts
     assertions by ``priority`` (VAL-W8-004), evaluates conditions via
-    the W6 :class:`relay_contracts.RelayCelEvaluator` (VAL-W8-002), and
+    the W6 contract engine -- the wasm-backed evaluator constructed by
+    :func:`relay_contracts.make_cel_evaluator` (VAL-W8-002) -- and
     enforces draft TTL (VAL-W8-006), the anti-bypass guard
     (VAL-W8-041), and the deterministic input contract (VAL-W8-005).
 
@@ -535,12 +536,13 @@ class GateEvaluator:
         self._anti_bypass = anti_bypass or AntiBypassGuard()
         # Single shared CEL evaluator with the canonical Relay UDF set.
         # VAL-W8-002: gate policy conditions MUST be evaluated by the W6
-        # contract engine, never inlined. The engine backend (celpy default;
-        # wasm only when the contracts factory's selector says so) is chosen by
-        # the contracts factory -- the single engine-selection read site -- so
-        # gate src stays env-free and deterministic (VAL-W8-005 /
-        # VAL-CWC-P2TSGATE-010). The hint is the CelEvaluatorProtocol facade so
-        # the gate is engine-agnostic.
+        # contract engine, never inlined. The evaluator is constructed by
+        # the contracts factory -- the single engine-construction site,
+        # which returns the wasm-backed engine (the only CEL backend since
+        # the M6 single-engine cutover) -- so gate src stays env-free and
+        # deterministic (VAL-W8-005 / VAL-CWC-P2TSGATE-010). The hint is
+        # the CelEvaluatorProtocol facade so the gate stays decoupled from
+        # engine internals.
         self._cel: CelEvaluatorProtocol = cel_evaluator or make_cel_evaluator(
             udfs=RELAY_UDFS
         )
@@ -811,12 +813,14 @@ def _extract_bundle_id(ref: Any) -> str:
 def _coerce_bool(value: Any) -> bool:
     """Map a CEL evaluation result to a Python bool.
 
-    cel-python returns ``celpy.celtypes.BoolType`` (subclass of int, NOT
-    bool), so we accept both Python bool and the cel-python BoolType.
-    Detection is by class-name to avoid importing celtypes here -- the
-    evaluator is intentionally decoupled from the CEL implementation
-    internals (mirrors :func:`relay_contracts.pipeline._classify_outcome`).
-    Non-bool returns surface as a runtime error -- contract policies MUST
+    The wasm-backed evaluator returns plain Python ``bool``. The
+    ``BoolType`` class-name branch is a defensive tolerance for an
+    engine-internal bool wrapper (an ``int`` subclass that is NOT
+    ``bool``) handed back through a caller-supplied ``cel_evaluator``.
+    Detection is by class name so the gate engine stays decoupled from
+    CEL implementation internals (mirrors
+    :func:`relay_contracts.pipeline._classify_outcome`). Non-bool
+    returns surface as a runtime error -- contract policies MUST
     evaluate to bool; a non-bool result is a contract authoring bug.
     """
     if isinstance(value, bool):

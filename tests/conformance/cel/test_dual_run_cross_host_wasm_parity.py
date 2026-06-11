@@ -26,10 +26,16 @@ same-wasm asymmetry is possible ONLY through a HOST-MARSHALLING bug -- a binding
 encoder that classifies an int/uint/double/bool differently, a JCS encoder that
 sorts map keys differently, a duration/timestamp codec that fails open on one
 host, etc. This test is PRECISELY the guard for that host-marshalling codec. The
-celpy-vs-wasm backslash-lexer carve-out (``KNOWN_CELPY_NONCONFORMANCE`` in
-``test_dual_run_host_parity.py``) is celpy-ONLY and IRRELEVANT here: there is no
-celpy in this comparison. Expected Py-wasm-vs-Node-wasm divergence count is 0,
-full stop. A NON-zero count is a P0.
+legacy celpy host-parity suite (``test_dual_run_host_parity.py``, with its
+``KNOWN_CELPY_NONCONFORMANCE`` backslash-lexer carve-out) was REMOVED at M6
+together with cel-python itself; this cross-host Py-wasm-vs-Node-wasm suite is
+the SURVIVING dual-run gate. The two user-adjudicated legacy-lexer cases are
+carried as strongly-guarded carve-outs in the w6_5 corpus runner
+(``packages/contracts/tests/test_w6_5_corpus.py``) and the corpus generator
+(``scripts/generate-relay-cel-corpus.py``); they need NO carve-out here, because
+both hosts run the SAME wasm and raise the identical compile error for them.
+Expected Py-wasm-vs-Node-wasm divergence count is 0, full stop. A NON-zero
+count is a P0.
 
 Covered vs excluded cases (nothing is silently dropped)
 -------------------------------------------------------
