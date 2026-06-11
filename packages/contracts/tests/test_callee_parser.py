@@ -146,7 +146,8 @@ def test_division_is_not_a_comment() -> None:
 
 
 # ---------------------------------------------------------------------------
-# reserved words are never callees
+# reserved words are never callees -- ONLY the tokens the wasm engine itself
+# refuses to parse as call identifiers (ROBOREV M6 finding C)
 # ---------------------------------------------------------------------------
 
 
@@ -155,9 +156,116 @@ def test_in_operator_before_paren_is_not_a_callee() -> None:
     assert extract_bare_callees("a in (1, 2, 3)") == ()
 
 
-@pytest.mark.parametrize("word", ["true", "false", "null", "if", "for", "in"])
-def test_reserved_words_excluded(word: str) -> None:
+@pytest.mark.parametrize("word", ["true", "false", "null", "in"])
+def test_engine_compile_rejected_words_excluded(word: str) -> None:
+    # Empirically probed against the PINNED wasm engine: `true(1)`,
+    # `false(1)`, `null(1)`, and `in(1)` are COMPILE-rejected by the engine
+    # grammar (RELAY-CEL-001 parse error), so publish already rejects them
+    # via probe_compile; the parser may exclude exactly these.
     assert extract_bare_callees(f"{word} (x)") == ()
+
+
+@pytest.mark.parametrize(
+    "word",
+    [
+        "as", "break", "const", "continue", "else", "for", "function", "if",
+        "import", "let", "loop", "namespace", "package", "return", "var",
+        "void", "while",
+    ],
+)
+def test_future_reserved_words_surface_as_callees(word: str) -> None:
+    # ROBOREV M6 finding C: empirically probed against the PINNED wasm
+    # engine, every future-reserved word tokenizes as an ORDINARY identifier
+    # (`if(1)` compiles and fails only at exec with
+    # UndeclaredReference("if"), which probe_compile defers) -- so the parser
+    # MUST surface it as a callee or the publish-time unregistered-UDF
+    # screen is bypassed.
+    assert extract_bare_callees(f"{word}(x)") == (word,)
+
+
+# ---------------------------------------------------------------------------
+# leading-dot ROOT-QUALIFIED calls are bare callees (ROBOREV M6 finding B):
+# CEL permits `.ident(...)` (absolute / root-namespace reference). The
+# pinned engine compiles it and fails only at exec
+# (UndeclaredReference(".dyn")), which probe_compile defers -- so the parser
+# must normalize `.dyn` -> `dyn` or the publish-time profile and
+# unregistered-UDF screens are bypassed.
+# ---------------------------------------------------------------------------
+
+
+def test_leading_dot_dyn_at_start_of_expression_is_a_callee() -> None:
+    assert extract_bare_callees(".dyn(1)") == ("dyn",)
+
+
+def test_leading_dot_after_short_circuit_operator_is_a_callee() -> None:
+    assert extract_bare_callees("false && .dyn(1)") == ("dyn",)
+    assert extract_bare_callees("true || .timestamp('x')") == ("timestamp",)
+
+
+def test_leading_dot_unknown_udf_is_a_callee() -> None:
+    assert extract_bare_callees(".unknown(2)") == ("unknown",)
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        ("( .dyn(1) )", ("dyn",)),
+        ("[.dyn(1)]", ("dyn",)),
+        ("f(.dyn(1))", ("f", "dyn")),
+        ("1 + .dyn(2)", ("dyn",)),
+        ("x == .dyn(2)", ("dyn",)),
+        ("a ? .dyn(1) : .unknown(2)", ("dyn", "unknown")),
+        ("!.dyn(1)", ("dyn",)),
+        ("{1: .dyn(2)}", ("dyn",)),
+        (", .dyn(1)", ("dyn",)),
+    ],
+)
+def test_leading_dot_after_operators_is_root_qualified(
+    expression: str, expected: tuple[str, ...]
+) -> None:
+    # After an operator / opening bracket / comma the `.` has NO receiver:
+    # the call is root-qualified and its callee must surface (normalized
+    # WITHOUT the dot).
+    assert extract_bare_callees(expression) == expected
+
+
+def test_root_qualified_member_chain_is_still_a_member_call() -> None:
+    # `.a.b(1)`: `b` is a member call on the root-qualified `.a` receiver --
+    # the engine validates member calls at eval; not a bare callee.
+    assert extract_bare_callees(".a.b(1)") == ()
+
+
+def test_root_qualified_dedupes_with_bare_form() -> None:
+    assert extract_bare_callees(".dyn(1) && dyn(2)") == ("dyn",)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "a.b(1)",
+        '"a".matches("b")',
+        'relay.coverage(trace, "s")',
+        "x[0].f(1)",
+        "f(1).g(2)",
+        "(a).m(2)",
+        "{'k': 1}.size()",
+        "1.5.f(1)",
+        "a . method (1)",
+    ],
+)
+def test_member_access_with_receiver_does_not_regress(expression: str) -> None:
+    # The receiver-tracking fix must NOT turn genuine member access into a
+    # bare callee: previous significant token is an identifier / `)` / `]` /
+    # `}` / string literal / number -> the `.` is member access.
+    callees = extract_bare_callees(expression)
+    for name in ("b", "matches", "coverage", "m", "size", "method"):
+        assert name not in callees, (
+            f"member callee {name!r} falsely extracted from {expression!r}"
+        )
+
+
+def test_member_access_argument_callee_still_extracted_with_receiver() -> None:
+    assert extract_bare_callees("x[0].f(g(1))") == ("g",)
 
 
 # ---------------------------------------------------------------------------

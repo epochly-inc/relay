@@ -18,14 +18,24 @@ compiler; this tokenizer only feeds two host screens):
     bare ``dyn`` / ``timestamp`` / ``duration`` call is rejected with
     RELAY-CEL-002 BEFORE any evaluation, including short-circuited branches).
 
-Semantics match the legacy bare-call walk it replaces:
+Semantics match the legacy bare-call walk it replaces, PLUS the two
+ROBOREV M6 hardening fixes (findings B + C):
 
-  - only BARE calls are yielded; member calls (``x.method(...)``, including
-    the dotted ``relay.coverage(...)`` form) are NOT;
+  - only BARE calls are yielded; member calls WITH A RECEIVER
+    (``x.method(...)``, including the dotted ``relay.coverage(...)`` form)
+    are NOT -- but a LEADING-DOT root-qualified call (``.dyn(...)``, the CEL
+    absolute-reference form, where the ``.`` has NO receiver) IS a bare
+    call whose callee is the identifier normalized WITHOUT the dot
+    (finding B: the pinned engine compiles ``.dyn(1)`` and fails only at
+    exec, which probe_compile defers, so the publish screens must see it);
   - string literals (single / double / triple-quoted, with ``r`` / ``b``
     prefixes; raw strings do not honor backslash escapes) and ``//`` line
     comments never produce callees;
-  - CEL reserved words are excluded (``a in (1, 2)`` must not yield ``in``);
+  - ONLY the engine-compile-rejected words are excluded (``true`` /
+    ``false`` / ``null`` / ``in`` -- ``a in (1, 2)`` must not yield ``in``);
+    the cel-spec future-reserved words (``if``, ``for``, ...) tokenize as
+    ordinary identifiers in the pinned engine and DO surface as callees
+    (finding C: hiding them bypassed the unregistered-UDF screen);
   - extraction is total: malformed source yields a best-effort (possibly
     empty) callee set and NEVER raises -- the wasm compiler rejects malformed
     source with its own structured error at publish/eval.
@@ -39,32 +49,26 @@ import string
 
 __all__ = ["extract_bare_callees"]
 
-# CEL reserved words (cel-spec "Syntax" section): the boolean / null literals,
-# the `in` operator (the load-bearing exclusion: `a in (1, 2)` puts `in`
-# directly before `(`), and the reserved-for-future identifiers.
+# Tokens excluded from the callee set: ONLY the words the PINNED wasm engine
+# itself refuses to parse as call identifiers (ROBOREV M6 finding C). Probed
+# empirically against the pinned engine: `true(1)` / `false(1)` / `null(1)` /
+# `in(1)` are COMPILE-rejected by the engine grammar (RELAY-CEL-001 parse
+# error), so publish already rejects them via probe_compile and excluding
+# them here loses nothing (`in` is the load-bearing exclusion: `a in (1, 2)`
+# puts `in` directly before `(`). The cel-spec FUTURE-reserved words (`if`,
+# `for`, `while`, ...) are NOT excluded: the engine tokenizes them as
+# ORDINARY identifiers (`if(1)` compiles and fails only at exec with
+# UndeclaredReference("if"), an exec-cause envelope probe_compile defers), so
+# hiding them from the callee set would bypass the publish-time
+# unregistered-UDF screen. The division of labor is engine-matched: the
+# parser excludes EXACTLY what the engine compile-rejects; everything else
+# surfaces for the host screens.
 _RESERVED_WORDS: frozenset[str] = frozenset(
     {
         "true",
         "false",
         "null",
         "in",
-        "as",
-        "break",
-        "const",
-        "continue",
-        "else",
-        "for",
-        "function",
-        "if",
-        "import",
-        "let",
-        "loop",
-        "package",
-        "namespace",
-        "return",
-        "var",
-        "void",
-        "while",
     }
 )
 
@@ -74,6 +78,17 @@ _STRING_PREFIXES: frozenset[str] = frozenset({"r", "b", "rb", "br"})
 _IDENT_START: frozenset[str] = frozenset(string.ascii_letters + "_")
 _IDENT_CONT: frozenset[str] = frozenset(string.ascii_letters + string.digits + "_")
 _QUOTES: frozenset[str] = frozenset({"'", '"'})
+
+# Characters that END a receiver expression (ROBOREV M6 finding B): a `.`
+# whose previous significant character is one of these is MEMBER ACCESS
+# (`x.method(...)`, `f(1).g(2)`, `"a".matches(...)`, `[x][0].f(...)`,
+# `{...}.size()`); a `.` preceded by anything else (start of expression, an
+# operator, `(`, `[`, `{`, `,`, `:`, `&`, `|`, `!`, ...) is a ROOT-QUALIFIED
+# (absolute) reference -- CEL permits `.ident(...)` -- whose callee is the
+# identifier normalized WITHOUT the leading dot. Identifier and number runs
+# record their last character (always in _IDENT_CONT); string literals
+# record their closing quote.
+_RECEIVER_END_CHARS: frozenset[str] = _IDENT_CONT | {")", "]", "}"} | _QUOTES
 
 
 def _skip_string(source: str, start: int, *, raw: bool) -> int:
@@ -136,11 +151,15 @@ def extract_bare_callees(expression: str) -> tuple[str, ...]:
     """Identifiers in BARE function-call position, source order, deduplicated.
 
     A bare callee is an identifier that (a) is not part of a larger token,
-    (b) is not preceded -- ignoring whitespace and comments -- by ``.``
-    (member access), (c) is followed -- ignoring whitespace and comments --
-    by ``(``, and (d) is not a CEL reserved word. String-literal bodies and
-    ``//`` comments are skipped entirely. Total: never raises on malformed
-    source.
+    (b) is not preceded -- ignoring whitespace and comments -- by a ``.``
+    THAT HAS A RECEIVER (member access; a receiver ends with an identifier /
+    number character, ``)``, ``]``, ``}``, or a string literal -- a dot
+    WITHOUT one is the CEL root-qualified ``.ident(...)`` form and the
+    identifier IS a bare callee, normalized without the dot), (c) is
+    followed -- ignoring whitespace and comments -- by ``(``, and (d) is not
+    one of the engine-compile-rejected words (``true`` / ``false`` /
+    ``null`` / ``in``). String-literal bodies and ``//`` comments are
+    skipped entirely. Total: never raises on malformed source.
     """
     callees: list[str] = []
     seen: set[str] = set()
@@ -149,6 +168,13 @@ def extract_bare_callees(expression: str) -> tuple[str, ...]:
     # The last significant (non-whitespace, non-comment, non-literal-body)
     # character seen BEFORE the current scan position; "" at start of input.
     prev_significant = ""
+    # Whether the most recently seen "." had a RECEIVER before it (member
+    # access) or was a leading/root qualifier (ROBOREV M6 finding B: CEL
+    # permits `.ident(...)` absolute references; the pinned engine compiles
+    # them and fails only at exec, which probe_compile defers, so the host
+    # screens must see the normalized callee). Only meaningful while
+    # prev_significant == ".".
+    dot_had_receiver = False
     while i < n:
         c = expression[i]
         # Line comment: skip to end of line (or input).
@@ -164,6 +190,14 @@ def extract_bare_callees(expression: str) -> tuple[str, ...]:
             # A literal is an operand; mark with the closing quote so a
             # following identifier is not treated as member access.
             prev_significant = c
+            continue
+        # Dot: classify member access vs root qualifier BEFORE overwriting
+        # prev_significant (the receiver evidence lives in the character
+        # that precedes the dot).
+        if c == ".":
+            dot_had_receiver = prev_significant in _RECEIVER_END_CHARS
+            prev_significant = c
+            i += 1
             continue
         # Identifier (or a string-literal prefix like r"..." / b"...").
         if c in _IDENT_START:
@@ -181,7 +215,11 @@ def extract_bare_callees(expression: str) -> tuple[str, ...]:
                 i = _skip_string(expression, j, raw="r" in name.lower())
                 prev_significant = expression[j]
                 continue
-            is_member_access = prev_significant == "."
+            # Member access ONLY when the dot had a receiver; a leading /
+            # root-qualified dot (start of expression or after an operator,
+            # `(`, `[`, `{`, `,`, ...) makes this a BARE call whose callee
+            # is the identifier WITHOUT the dot.
+            is_member_access = prev_significant == "." and dot_had_receiver
             k = _next_significant(expression, j)
             if (
                 not is_member_access

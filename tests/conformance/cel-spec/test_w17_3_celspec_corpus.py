@@ -797,10 +797,15 @@ def test_nightly_drift_workflow_present() -> None:
 @pytest.mark.fulfills("VAL-W17-014")
 def test_nightly_drift_workflow_has_required_shape() -> None:
     """The workflow MUST: (a) run on a cron schedule, (b) install the
-    LATEST cel-python and cel-js (not the pinned versions), (c) execute
-    the same pytest plumbing entry that this file is part of,
-    (d) include an alerting path that opens a GitHub issue tagged
-    `area:conformance-drift` when drift is detected."""
+    LATEST cel-js (not the pinned version) -- cel-js is still the TS
+    legacy/rollback evaluator the TS corpus mirror drives, (c) record the
+    PINNED wasm engine inputs (the relay_cel_wasm artifact identity and
+    the wasmtime host runtime version) for the Python axis -- cel-python
+    was REMOVED in M6 WS-I, so any reference to it would fail the job
+    with PackageNotFoundError before the corpus ran (ROBOREV M6 finding
+    D), (d) execute the same pytest plumbing entry that this file is
+    part of, and (e) include an alerting path that opens a GitHub issue
+    tagged `area:conformance-drift` when drift is detected."""
 
     if not NIGHTLY_WORKFLOW_PATH.exists():
         pytest.skip("workflow missing -- covered by sibling test")
@@ -809,14 +814,22 @@ def test_nightly_drift_workflow_has_required_shape() -> None:
         # cron trigger
         ("schedule:", "VAL-W17-014: workflow must run on a schedule (cron)"),
         ("cron:", "VAL-W17-014: workflow must declare a cron expression"),
-        # install latest (not pinned)
-        (
-            "pip install --upgrade cel-python",
-            "VAL-W17-014: workflow must install --upgrade cel-python",
-        ),
+        # install latest cel-js (not pinned) -- the surviving upstream axis
         (
             "npm install cel-js@latest",
             "VAL-W17-014: workflow must install cel-js@latest",
+        ),
+        # the Python axis is the single wasm engine: record its pinned
+        # artifact identity + the wasmtime host runtime version
+        (
+            "relay_cel_wasm",
+            "VAL-W17-014: workflow must record the wasm engine artifact "
+            "identity (the Python CEL axis after M6 cel-python removal)",
+        ),
+        (
+            "wasmtime",
+            "VAL-W17-014: workflow must record the wasmtime runtime version "
+            "(the Python CEL axis after M6 cel-python removal)",
         ),
         # alerting path: GitHub issue with the required label
         (
@@ -833,6 +846,15 @@ def test_nightly_drift_workflow_has_required_shape() -> None:
     for needle, reason in required_substrings:
         if needle not in text:
             missing.append(reason)
+    # ROBOREV M6 finding D: cel-python is removed from the workspace; a
+    # workflow step that imports/installs/queries it fails before the corpus
+    # runs. The workflow must not reference it at all.
+    if "cel-python" in text:
+        missing.append(
+            "VAL-W17-014: workflow still references cel-python, which was "
+            "removed in M6 WS-I -- importlib.metadata.version('cel-python') "
+            "raises PackageNotFoundError and kills the scheduled job"
+        )
     assert missing == [], (
         "VAL-W17-014: nightly drift workflow is missing required elements:\n  "
         + "\n  ".join(missing)

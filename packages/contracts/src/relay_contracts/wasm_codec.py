@@ -75,7 +75,7 @@ from typing import Any
 # work.
 from relay_contracts.errors import SUBTYPE_ENGINE_REQUEST, RelayCelEngineError
 
-__all__ = ["CelTypeValue", "CelUint", "py_to_typed", "typed_to_py"]
+__all__ = ["CelMap", "CelTypeValue", "CelUint", "py_to_typed", "typed_to_py"]
 
 # Wire integer bounds (lib.rs:1358 / 1366): the wasm request decoder parses int
 # as i64 and uint as u64, so an out-of-range Python int produces JSON the wasm
@@ -136,6 +136,63 @@ class CelTypeValue:
 
     def __repr__(self) -> str:  # pragma: no cover -- diagnostic only
         return f"CelTypeValue({self.name!r})"
+
+
+class CelMap:
+    """A CEL map with at least one NON-string key, decoded LOSSLESSLY.
+
+    ROBOREV M6 finding A (HIGH, keystone-adjacent): decoding a typed map
+    into a native ``dict`` collapses DISTINCT CEL keys that compare equal in
+    Python -- ``CelUint`` is an ``int`` subclass, so the CEL int key 1 and
+    the CEL uint key 1 hash-collide (and ``bool True`` collides with ``int
+    1``); the second ``dict`` assignment silently OVERWRITES the first,
+    corrupting a VALID wasm result (the pinned engine emits ``{1:'a',
+    1u:'b'}`` as a TWO-entry map) before any re-encode/canonicalisation.
+
+    The mirror of the TS fix (wasm-evaluator.ts ``typedToNative`` map
+    branch, roborev rounds 2/3): a typed map whose keys are NOT all strings
+    decodes to this pair-list wrapper instead of a ``dict``. ``pairs`` holds
+    ``(typed_key, value)`` 2-tuples in WIRE ORDER, where ``typed_key`` is
+    the ORIGINAL typed-canonical key object VERBATIM (``{"t":"int","v":"1"}``
+    stays distinct from ``{"t":"uint","v":"1"}``) and ``value`` is the
+    decoded native -- exactly the TS ``Map`` whose keys are the original
+    ``TypedValue`` objects. ``py_to_typed`` round-trips the wrapper back to
+    the byte-identical wire form (same ``key_sort_string`` ordering the
+    crate emits), with a collision check that FAILS CLOSED (RELAY-CEL-009 /
+    RELAY-CEL-ENGINE-REQUEST) on two distinct typed keys sharing one
+    canonical key-sort-string -- on BOTH the decode and encode paths,
+    matching the TS codec. All-string-key maps keep decoding to a plain
+    ``dict`` (the unchanged fast path).
+
+    Deliberately a PLAIN immutable class (same standalone-load constraint as
+    :class:`CelTypeValue`): unhashable (like ``dict``), iterable over its
+    pairs, equality by pair sequence.
+    """
+
+    __slots__ = ("pairs",)
+
+    # A CEL map is a mutable-conceptually container, like dict: unhashable.
+    __hash__ = None  # type: ignore[assignment]
+
+    def __init__(self, pairs: Any) -> None:
+        object.__setattr__(
+            self, "pairs", tuple((key, value) for key, value in pairs)
+        )
+
+    def __setattr__(self, attr: str, value: Any) -> None:
+        raise AttributeError(f"CelMap is immutable; cannot set {attr!r}")
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    def __iter__(self) -> Any:
+        return iter(self.pairs)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, CelMap) and other.pairs == self.pairs
+
+    def __repr__(self) -> str:  # pragma: no cover -- diagnostic only
+        return f"CelMap({list(self.pairs)!r})"
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +394,46 @@ def py_to_typed(value: Any) -> dict[str, Any]:
     # list (lib.rs:1147-1150, order kept).
     if isinstance(value, list | tuple):
         return {"t": "list", "v": [py_to_typed(item) for item in value]}
+
+    # CelMap -- a losslessly-decoded non-string-keyed CEL map (ROBOREV M6
+    # finding A). Re-emit the ORIGINAL typed keys VERBATIM, sorted by
+    # key_sort_string (Python str comparison is code-point order, which
+    # equals UTF-8 byte order -- the crate's Rust `str` Ord, lib.rs:1270),
+    # so decode -> encode is BYTE-IDENTICAL. The collision check fails
+    # CLOSED on a duplicate CEL key: the wasm request decoder inserts into a
+    # Rust HashMap, which would silently overwrite one value. Mirrors the TS
+    # nativeToTyped Map branch.
+    if isinstance(value, CelMap):
+        cel_map_entries: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+        encode_seen_sort_keys: set[str] = set()
+        for typed_key, val in value.pairs:
+            try:
+                sort_key = _key_sort_string(typed_key)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RelayCelEngineError(
+                    f"py_to_typed: CelMap contains an invalid CEL map key "
+                    f"{typed_key!r}: only bool/int/uint/string typed keys "
+                    "are orderable in the wasm key_sort_string form "
+                    "(matches the TS keySortString fail-closed throw).",
+                    subtype=SUBTYPE_ENGINE_REQUEST,
+                ) from exc
+            if sort_key in encode_seen_sort_keys:
+                raise RelayCelEngineError(
+                    "py_to_typed: CelMap contains a duplicate / colliding "
+                    f"CEL key {typed_key!r} (key_sort_string {sort_key!r}); "
+                    "a CEL map cannot carry two equal keys -- failing "
+                    "closed rather than letting the wasm HashMap silently "
+                    "overwrite one value (matches the TS codec and the "
+                    "typed_to_py decode path).",
+                    subtype=SUBTYPE_ENGINE_REQUEST,
+                )
+            encode_seen_sort_keys.add(sort_key)
+            cel_map_entries.append((sort_key, typed_key, py_to_typed(val)))
+        cel_map_entries.sort(key=lambda e: e[0])
+        return {
+            "t": "map",
+            "v": [[tk, tv] for _, tk, tv in cel_map_entries],
+        }
 
     # map (lib.rs:1151-1162, sorted pairs).
     if isinstance(value, dict):
@@ -558,13 +655,55 @@ def typed_to_py(typed: Any) -> Any:
         v = _require_v(typed)
         if not isinstance(v, list):
             raise ValueError("typed_to_py: map 'v' must be an array of [k,v] pairs")
-        result: dict[Any, Any] = {}
+        # Inspect the RAW typed key tags BEFORE decoding (ROBOREV M6 finding
+        # A, mirroring the TS typedToNative map branch): the key TYPE must
+        # never be lost. The all-string-key map keeps the legacy plain-dict
+        # fast path; ANY non-string key (bool/int/uint, possibly mixed with
+        # string keys) routes to the LOSSLESS CelMap wrapper, because native
+        # dict hashing collapses CelUint(1) onto int 1 and bool True onto
+        # int 1 -- the second assignment would silently OVERWRITE the first.
+        raw_pairs: list[tuple[dict[str, Any], Any]] = []
+        all_string_keys = True
         for pair in v:
             if not isinstance(pair, list | tuple) or len(pair) != 2:
                 raise ValueError("typed_to_py: map entry must be a [k,v] pair")
-            key = typed_to_py(pair[0])
-            result[key] = typed_to_py(pair[1])
-        return result
+            raw_key = pair[0]
+            if not isinstance(raw_key, dict):
+                raise ValueError(
+                    "typed_to_py: map key must be a typed object; "
+                    f"got {type(raw_key).__name__!r}"
+                )
+            if raw_key.get("t") != "string":
+                all_string_keys = False
+            raw_pairs.append((raw_key, pair[1]))
+        if all_string_keys:
+            result: dict[Any, Any] = {}
+            for raw_key, raw_val in raw_pairs:
+                result[typed_to_py(raw_key)] = typed_to_py(raw_val)
+            return result
+        # Lossless decode: keep the ORIGINAL typed keys verbatim; values
+        # decode to natives. _key_sort_string validates each key tag
+        # (bool/int/uint/string only) and is the collision discriminant
+        # (int 1 != uint 1 != bool true). A true duplicate CEL key cannot
+        # exist (the wasm decoder's Rust HashMap would have silently
+        # dropped one entry), so fail CLOSED with the structured engine
+        # error -- matching the TS typedToNative decode path.
+        seen_sort_keys: set[str] = set()
+        out_pairs: list[tuple[dict[str, Any], Any]] = []
+        for raw_key, raw_val in raw_pairs:
+            sort_key = _key_sort_string(raw_key)
+            if sort_key in seen_sort_keys:
+                raise RelayCelEngineError(
+                    "typed_to_py: wasm map contains a duplicate / colliding "
+                    f"key {raw_key!r} (key_sort_string {sort_key!r}); a CEL "
+                    "map cannot carry two equal keys -- failing closed "
+                    "rather than silently dropping an entry (matches the TS "
+                    "codec).",
+                    subtype=SUBTYPE_ENGINE_REQUEST,
+                )
+            seen_sort_keys.add(sort_key)
+            out_pairs.append((raw_key, typed_to_py(raw_val)))
+        return CelMap(out_pairs)
     raise ValueError(f"typed_to_py: unsupported typed tag {t!r}")
 
 

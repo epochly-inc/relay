@@ -38,6 +38,7 @@ from .errors import (
     RelayCelResourceExhaustedError,
     RelayCelTimeoutError,
 )
+from .wasm_codec import CelMap
 
 # CQ1 line 153 ("timeout-bounded"): default per-evaluation wall-clock
 # budget is 50 ms; the per-tenant override caps at 250 ms (also CQ1).
@@ -281,6 +282,16 @@ def _check_finite(value: Any) -> Any:
     if isinstance(value, list | tuple):
         for item in value:
             _check_finite(item)
+        return value
+    if isinstance(value, CelMap):
+        # A wasm map with non-string keys (bool/int/uint) decodes to the
+        # lossless CelMap pair-list (ROBOREV M6 finding A); it is not a
+        # Mapping, so walk its VALUES explicitly. Keys are the VERBATIM
+        # typed-canonical key objects (scalar CEL keys, never collections),
+        # mirroring the TS checkFinite Map branch, which iterates
+        # map.values() only.
+        for _typed_key, v in value.pairs:
+            _check_finite(v)
         return value
     if isinstance(value, Mapping):
         for k, v in value.items():
