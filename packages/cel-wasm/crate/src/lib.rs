@@ -92,6 +92,12 @@ mod codes {
     pub const COMPILE: &str = "RELAY-CEL-001";
     /// Relay CEL profile rejection (a construct the profile disables).
     pub const PROFILE: &str = "RELAY-CEL-002";
+    /// WS-J: the per-eval deterministic fuel/step budget was exhausted -- a
+    /// portable, in-engine timeout. Distinct from a wall-clock host timeout: it
+    /// is produced by the in-wasm fuel counter (no host clock), so a
+    /// Cloudflare-Workers-shaped path (no worker_threads / Worker.terminate) can
+    /// still emit a structured timeout byte-identically across hosts.
+    pub const TIMEOUT: &str = "RELAY-CEL-003";
     /// Runtime execution error (overload missing, division by zero, etc.).
     pub const EXEC: &str = "RELAY-CEL-004";
     /// Malformed request envelope (bad JSON, missing expr, bad binding).
@@ -107,6 +113,10 @@ mod subtypes {
     pub const DYN: &str = "RELAY-CEL-PROFILE-DYN-DISABLED";
     pub const TS: &str = "RELAY-CEL-PROFILE-TS-DISABLED";
     pub const DUR: &str = "RELAY-CEL-PROFILE-DUR-DISABLED";
+    /// WS-J: the (code, subtype) pair for a fuel-budget exhaustion -- the
+    /// in-engine timeout. Pairs with codes::TIMEOUT (RELAY-CEL-003) so the host
+    /// maps it to the typed RelayCelTimeoutError without parsing the message.
+    pub const TIMEOUT: &str = "RELAY-CEL-TIMEOUT-001";
 }
 
 struct CelError {
@@ -130,6 +140,19 @@ impl CelError {
             code: codes::PROFILE,
             message: message.into(),
             subtype: Some(subtype),
+        }
+    }
+
+    /// WS-J: a fuel-budget exhaustion (RELAY-CEL-003) carrying the structured
+    /// TIMEOUT subtype, so the host maps (code, subtype) -> RelayCelTimeoutError
+    /// without parsing the message string. This is the dedicated mapping for the
+    /// engine's deterministic in-wasm timeout; it must NOT be folded into the
+    /// generic EXEC (RELAY-CEL-004) path.
+    fn timeout(message: impl Into<String>) -> Self {
+        CelError {
+            code: codes::TIMEOUT,
+            message: message.into(),
+            subtype: Some(subtypes::TIMEOUT),
         }
     }
 }
@@ -269,11 +292,38 @@ fn eval_impl(input: &[u8]) -> Vec<u8> {
             }
         }
 
-        let value = program
-            .execute(&context)
-            .map_err(|e| CelError::new(codes::EXEC, format!("exec: {e:?}")))?;
+        // WS-J: the optional per-eval deterministic fuel/step budget. ABSENT or
+        // the disabled sentinel 0 => UNBOUNDED (no limit), preserving conformance
+        // byte-for-byte (the harness omits the field). A positive value caps the
+        // evaluated-node count. A negative or non-integer value is treated as the
+        // disabled sentinel (unbounded) rather than an error, so a malformed
+        // budget never changes a successful eval's RESULT bytes -- the budget is
+        // a guard, not part of the contract surface. The counter is an in-wasm
+        // thread-local (see cel::fuel): NO host import, NO wall clock.
+        let fuel_budget = req
+            .get("fuel_budget")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        cel::fuel::set_budget(fuel_budget);
+
+        let value = program.execute(&context).map_err(|e| match e {
+            // WS-J: a fuel-budget exhaustion maps to the dedicated RELAY-CEL-003 /
+            // RELAY-CEL-TIMEOUT-001 envelope (a portable in-engine timeout), NOT
+            // the generic EXEC (RELAY-CEL-004) path. Every other ExecutionError is
+            // a genuine runtime exec failure.
+            ExecutionError::FuelExhausted { budget } => CelError::timeout(format!(
+                "fuel budget exhausted: evaluation exceeded the step budget of {budget}"
+            )),
+            other => CelError::new(codes::EXEC, format!("exec: {other:?}")),
+        })?;
         Ok(value_to_typed(&value))
     })();
+
+    // WS-J: disarm the budget (back to unbounded) regardless of success/error, so
+    // a later eval on this thread (or a host wall-clock timeout that orphans a
+    // worker thread) never inherits a stale budget. Mirrors the udf_trace clear-
+    // first / drain-once discipline.
+    cel::fuel::reset();
 
     // Drain the per-thread UDF trace exactly once, regardless of success/error,
     // so the buffer never carries stale entries into a later eval on this thread.
@@ -292,11 +342,28 @@ fn eval_impl(input: &[u8]) -> Vec<u8> {
         }
         Err(e) => {
             let mut obj = json!({"ok": false, "error": e.message, "code": e.code});
-            // Emit `subtype` only for the profile rejections that carry one, so
-            // the host maps (code, subtype) -> the typed RelayCelError without
-            // parsing the message string. Non-profile errors omit it.
+            // Emit `subtype` only for the profile rejections that carry one (and
+            // the WS-J fuel-timeout, which carries TIMEOUT), so the host maps
+            // (code, subtype) -> the typed RelayCelError without parsing the
+            // message string. Errors with no subtype omit it.
             if let Some(st) = e.subtype {
                 obj["subtype"] = json!(st);
+            }
+            // BATCHED FIX (deferred crate udf_trace-on-error): attach the drained
+            // udf_trace to the ERROR envelope too. A relay.* UDF can RUN (and
+            // record forensics) before a LATER part of the expression fails (e.g.
+            // `size(relay.tool_arg(...)) + (1 / 0)` -- the UDF ran, then the
+            // division errors). Previously the trace was attached only on the
+            // success path, so this partial forensic record was LOST on a failed
+            // eval. Attaching it here (same per-name / call-order structure as the
+            // success path) preserves the partial UDF trace across a failure. The
+            // field is ABSENT when no relay.* UDF executed (udf_trace is None), so
+            // a non-UDF error is byte-identical to before. The host pipeline treats
+            // udf_trace on an error envelope as forensic-only (it does not resolve
+            // a canonical outcome from a failed eval), so this is additive and
+            // does not change error handling.
+            if let Some(trace) = udf_trace {
+                obj["udf_trace"] = trace;
             }
             obj
         }
@@ -1515,4 +1582,156 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
         i += 2;
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// WS-J: deterministic in-wasm fuel budget tests (TDD -- written RED first).
+//
+// These drive eval_impl directly (the same entrypoint the reactor `eval` export
+// uses), so they exercise the real eval pipeline + the JSON request/response
+// contract. They run on the NATIVE host target via `cargo test` (the cdylib
+// also builds as a test binary), so no wasm host is needed to assert the engine
+// semantics. The wasm build (build.sh) ships the same code path.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod fuel_tests {
+    use super::*;
+
+    /// Drive eval_impl with a raw request JSON string and parse the response.
+    fn eval_json(req: &str) -> J {
+        let out = eval_impl(req.as_bytes());
+        serde_json::from_slice(&out).expect("response is valid JSON")
+    }
+
+    /// A pathological expression: a triple-nested `.map` comprehension. With a
+    /// small fuel budget it must exhaust; with fuel absent it evaluates normally.
+    /// 10*10*10 inner iterations, each re-entering resolve_val several times, far
+    /// exceeds a budget of 8. This is the CEL expression body only; the request
+    /// JSON (with the closing `"`/`}` and the optional fuel field) is built by
+    /// `pathological_with_fuel`.
+    const PATHOLOGICAL_EXPR: &str =
+        "[0,1,2,3,4,5,6,7,8,9].map(x, [0,1,2,3,4,5,6,7,8,9].map(y, [0,1,2,3,4,5,6,7,8,9].map(z, x + y + z)))";
+
+    fn pathological_with_fuel(fuel: Option<u64>) -> String {
+        match fuel {
+            Some(n) => {
+                format!(r#"{{"expr":"{PATHOLOGICAL_EXPR}","fuel_budget":{n}}}"#)
+            }
+            None => format!(r#"{{"expr":"{PATHOLOGICAL_EXPR}"}}"#),
+        }
+    }
+
+    #[test]
+    fn fuel_exhaustion_returns_relay_cel_003_timeout() {
+        let resp = eval_json(&pathological_with_fuel(Some(8)));
+        assert_eq!(resp["ok"], J::Bool(false), "exhausted eval must fail: {resp}");
+        assert_eq!(
+            resp["code"], J::String(codes::TIMEOUT.to_string()),
+            "fuel exhaustion must surface RELAY-CEL-003: {resp}"
+        );
+        assert_eq!(
+            resp["subtype"], J::String(subtypes::TIMEOUT.to_string()),
+            "fuel exhaustion must carry the TIMEOUT subtype: {resp}"
+        );
+    }
+
+    #[test]
+    fn fuel_absent_evaluates_unbounded() {
+        let resp = eval_json(&pathological_with_fuel(None));
+        assert_eq!(
+            resp["ok"], J::Bool(true),
+            "fuel-absent eval must succeed unbounded: {resp}"
+        );
+        assert!(resp.get("value").is_some(), "must carry a value: {resp}");
+        assert!(
+            resp.get("code").is_none(),
+            "an unbounded success carries no error code: {resp}"
+        );
+    }
+
+    #[test]
+    fn fuel_disabled_sentinel_evaluates_unbounded() {
+        // A fuel_budget of 0 is the disabled sentinel: no limit, like absent.
+        let resp = eval_json(&pathological_with_fuel(Some(0)));
+        assert_eq!(
+            resp["ok"], J::Bool(true),
+            "fuel_budget=0 (disabled sentinel) must be unbounded: {resp}"
+        );
+    }
+
+    #[test]
+    fn generous_budget_evaluates_to_a_value() {
+        // The SAME expression with a generous budget returns a value -- proving
+        // the cap is a fuel limit, not a hard rejection of the expression.
+        let resp = eval_json(&pathological_with_fuel(Some(1_000_000)));
+        assert_eq!(
+            resp["ok"], J::Bool(true),
+            "generous budget must let the expression finish: {resp}"
+        );
+        assert!(resp.get("value").is_some(), "must carry a value: {resp}");
+    }
+
+    #[test]
+    fn fuel_accounting_is_deterministic() {
+        // Two independent evals of the SAME expression with the SAME (exhausting)
+        // budget must produce byte-identical output (the counter is deterministic,
+        // never host/time/iteration-order dependent).
+        let a = eval_impl(pathological_with_fuel(Some(8)).as_bytes());
+        let b = eval_impl(pathological_with_fuel(Some(8)).as_bytes());
+        assert_eq!(a, b, "same expr+budget twice -> identical output bytes");
+
+        // And a successful bounded run is likewise byte-identical run-to-run.
+        let c = eval_impl(pathological_with_fuel(Some(1_000_000)).as_bytes());
+        let d = eval_impl(pathological_with_fuel(Some(1_000_000)).as_bytes());
+        assert_eq!(c, d, "same expr+generous budget twice -> identical bytes");
+    }
+
+    #[test]
+    fn fuel_off_is_byte_identical_to_no_fuel_field() {
+        // VAL-002: the disabled path must be byte-identical to the pre-WS-J engine
+        // -- omitting the field and setting the disabled sentinel both produce the
+        // exact same response bytes as a plain request.
+        let plain = eval_impl(br#"{"expr":"1 + 2 + 3"}"#);
+        let absent = eval_impl(br#"{"expr":"1 + 2 + 3"}"#);
+        let sentinel = eval_impl(br#"{"expr":"1 + 2 + 3","fuel_budget":0}"#);
+        assert_eq!(plain, absent);
+        assert_eq!(
+            plain, sentinel,
+            "fuel_budget=0 must not perturb the response bytes vs the plain request"
+        );
+    }
+
+    #[test]
+    fn udf_trace_attached_on_error_envelope() {
+        // BATCHED FIX: a UDF that RUNS and records a trace, then the eval ERRORS.
+        // The error envelope must STILL carry the drained udf_trace (partial UDF
+        // forensics survive a failed eval). relay.tool_arg runs first (recording a
+        // trace entry), then `size(<string>) + (1 / 0)` forces a runtime
+        // division-by-zero EXEC error -- the tool_arg call is NOT short-circuited
+        // (`+` evaluates both operands), so its trace is recorded before the error.
+        let resp = eval_json(
+            r#"{"expr":"size(relay.tool_arg({'args': {'k': 'v'}}, 'k')) + (1 / 0)"}"#,
+        );
+        assert_eq!(resp["ok"], J::Bool(false), "this eval must error: {resp}");
+        assert!(
+            resp.get("udf_trace").is_some(),
+            "a failed eval that ran a UDF must STILL carry udf_trace: {resp}"
+        );
+        let trace = &resp["udf_trace"];
+        assert!(
+            trace.get("relay.tool_arg").is_some(),
+            "the executed UDF must appear in the error-envelope trace: {resp}"
+        );
+    }
+
+    #[test]
+    fn no_udf_trace_field_on_error_when_no_udf_ran() {
+        // An error that runs NO udf still omits the field (no empty object).
+        let resp = eval_json(r#"{"expr":"1 / 0"}"#);
+        assert_eq!(resp["ok"], J::Bool(false));
+        assert!(
+            resp.get("udf_trace").is_none(),
+            "no UDF ran -> no udf_trace field on the error envelope: {resp}"
+        );
+    }
 }

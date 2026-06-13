@@ -38,6 +38,74 @@ pub use json::ConvertToJsonError;
 
 use magic::FromContext;
 
+/// Relay fork (WS-J): the deterministic in-engine fuel/step budget.
+///
+/// A per-thread step counter threaded through the eval loop: `charge()` is
+/// called once per evaluated AST node (every `Value::resolve_val` entry) AND
+/// once per comprehension iteration, so the count is a DETERMINISTIC function of
+/// the expression + inputs -- never wall-clock, host, or HashMap-iteration-order
+/// dependent. This is the in-wasm half of a portable RELAY-CEL-003 timeout: it
+/// needs NO host import (no clock, no wasmtime epoch/fuel hook), so the no-WASI
+/// reactor still instantiates with an empty import object.
+///
+/// `limit == 0` is the DISABLED sentinel (unbounded -- the default, so the
+/// conformance corpus and every fuel-off eval are byte-identical to the pre-WS-J
+/// engine). A positive `limit` enforces a cap: when `used` exceeds it, `charge()`
+/// returns `ExecutionError::FuelExhausted` and evaluation unwinds cleanly through
+/// the normal `?` error path (no panic, no trap).
+///
+/// The host (the relay-cel-wasm crate) MUST call `set_budget(n)` before
+/// `Program::execute` and `reset()` after, so a prior eval's budget never leaks
+/// into the next eval on the same thread (mirrors the UDF_TRACE clear-first
+/// discipline).
+pub mod fuel {
+    use crate::ExecutionError;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// (limit, used). limit==0 => unbounded (disabled). Per-thread so a
+        /// daemon-thread host timeout that orphans a worker thread cannot leak a
+        /// budget into another thread's eval.
+        static FUEL: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    }
+
+    /// Arm the budget for the eval about to run: set the limit and zero the used
+    /// counter. `limit == 0` disables the budget (unbounded). Called by the host
+    /// immediately before `Program::execute`.
+    pub fn set_budget(limit: u64) {
+        FUEL.with(|f| f.set((limit, 0)));
+    }
+
+    /// Disarm the budget (back to unbounded) and zero the counter. Called by the
+    /// host after `Program::execute`, regardless of success/error, so the next
+    /// eval on this thread starts clean.
+    pub fn reset() {
+        FUEL.with(|f| f.set((0, 0)));
+    }
+
+    /// Charge one step. Increments the used counter; if a positive limit is set
+    /// and the counter exceeds it, returns `FuelExhausted`. A disabled budget
+    /// (limit==0) is a single Cell read + early return -- the fuel-off hot path
+    /// stays allocation-free and branch-light so fuel-off output is byte-
+    /// identical to the pre-WS-J engine.
+    #[inline(always)]
+    pub fn charge() -> Result<(), ExecutionError> {
+        FUEL.with(|f| {
+            let (limit, used) = f.get();
+            if limit == 0 {
+                return Ok(());
+            }
+            let used = used + 1;
+            f.set((limit, used));
+            if used > limit {
+                Err(ExecutionError::FuelExhausted { budget: limit })
+            } else {
+                Ok(())
+            }
+        })
+    }
+}
+
 pub mod extractors {
     pub use crate::magic::{Arguments, Identifier, This};
 
@@ -113,6 +181,17 @@ pub enum ExecutionError {
     Overflow(&'static str, Value, Value),
     #[error("Index out of bounds: {0:?}")]
     IndexOutOfBounds(Value),
+    /// Relay fork (WS-J): the per-evaluation deterministic fuel/step budget was
+    /// exhausted. The budget is an ENGINE-INTERNAL counter (see `fuel` module)
+    /// incremented once per evaluated AST node / comprehension iteration; when a
+    /// positive budget is exceeded, evaluation stops here with this error rather
+    /// than running unbounded. The wasm host maps this to a structured
+    /// RELAY-CEL-003 / RELAY-CEL-TIMEOUT-001 envelope (NOT a generic exec error).
+    /// It carries the budget so diagnostics can report what was exceeded; the
+    /// count itself is deterministic, so two runs of the same expression with the
+    /// same budget surface the identical error.
+    #[error("Fuel budget exhausted: evaluation exceeded the step budget of {budget}")]
+    FuelExhausted { budget: u64 },
 }
 
 impl ExecutionError {

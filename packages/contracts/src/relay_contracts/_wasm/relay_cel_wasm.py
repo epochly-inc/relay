@@ -89,6 +89,7 @@ class RelayCel:
         bindings: dict[str, Any] | None = None,
         container: str | None = None,
         relay_profile: bool = False,
+        fuel_budget: int | None = None,
     ) -> dict[str, Any]:
         """Evaluate `expr` with optional typed `bindings` and an optional CEL
         resolution `container` (namespace, e.g. "com.example"). Always returns a
@@ -98,7 +99,22 @@ class RelayCel:
         `relay_profile=True` turns on the Relay CEL profile's call-level
         restrictions: dyn()/timestamp()/duration() global calls are rejected
         with RELAY-CEL-002 and the matching subtype. The Relay host wrapper sets
-        this; the cel-spec conformance harness leaves it off."""
+        this; the cel-spec conformance harness leaves it off.
+
+        `fuel_budget` is the optional per-evaluation deterministic step budget
+        (WS-J): a positive integer caps the number of evaluated AST nodes /
+        comprehension iterations; when the cap is exceeded the engine returns a
+        structured `{"ok": False, "code": "RELAY-CEL-003",
+        "subtype": "RELAY-CEL-TIMEOUT-001"}` envelope instead of running
+        unbounded. `None` or `0` (the disabled sentinel) imposes NO limit and is
+        byte-identical to omitting the field -- so conformance and every fuel-off
+        eval are unchanged. The counter is an engine-internal in-wasm thread-local
+        (no host clock, no host import), so it is reproducible across runs and
+        hosts -- a Cloudflare-Workers-shaped path (no worker_threads) gets a
+        portable RELAY-CEL-003 from the budget rather than a wall-clock kill.
+        The field is added to the request ONLY when it is a positive int, so a
+        None / 0 / negative value leaves the request JSON byte-identical to the
+        no-fuel form (the disabled sentinel is the wasm default)."""
         req: dict[str, Any] = {"expr": expr}
         if bindings:
             req["bindings"] = bindings
@@ -106,6 +122,8 @@ class RelayCel:
             req["container"] = container
         if relay_profile:
             req["relay_profile"] = True
+        if fuel_budget is not None and fuel_budget > 0:
+            req["fuel_budget"] = fuel_budget
         inp = json.dumps(req).encode("utf-8")
         n = len(inp)
         try:

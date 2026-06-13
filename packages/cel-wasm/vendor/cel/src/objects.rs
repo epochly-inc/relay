@@ -1148,6 +1148,15 @@ impl Value {
         expr: &'a Expression,
         ctx: &'a Context<'a>,
     ) -> Result<Cow<'a, dyn Val>, ExecutionError> {
+        // Relay fork (WS-J): charge one step of the deterministic fuel budget per
+        // evaluated AST node. resolve_val is the single recursive eval dispatch --
+        // every node (and every comprehension iteration, which re-enters
+        // resolve_val for loop_cond/loop_step/result) passes through here, so this
+        // is a deterministic node count. When the budget is disabled (the default)
+        // this is one Cell read returning Ok early -- byte-identical behavior to
+        // the pre-WS-J engine. When a positive budget is exceeded, evaluation
+        // unwinds through the normal `?` error path with FuelExhausted (no panic).
+        crate::fuel::charge()?;
         match &expr.expr {
             Expr::Literal(literal) => Ok(literal.to_val()),
             Expr::Call(call) => {
