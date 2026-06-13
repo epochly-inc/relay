@@ -27,6 +27,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { makeCelEvaluator } from "../src/engine.js";
 import {
+  MAX_TIMEOUT_MS,
   RelayCelProfileError,
   RelayCelRegexBackreferenceError,
   SUBTYPE_PROFILE_DUR_DISABLED,
@@ -46,7 +47,19 @@ afterEach(async () => {
 });
 
 function backend(): WasmCelBackend {
-  ev = makeCelEvaluator();
+  // Decoupled from the wall-clock budget: these assert a value / profile
+  // RESULT (RELAY-CEL-002 rejections, a value parity eval), NOT timeout
+  // behavior. The dyn/timestamp/duration RELAY-CEL-002 rejection arrives from
+  // INSIDE the wasm via the Node Worker, so under concurrent full-suite load
+  // the 50ms DEFAULT_TIMEOUT_MS wall-clock can over-fire on Worker-thread
+  // spawn/scheduling jitter (not a genuinely slow eval) and surface a spurious
+  // RelayCelTimeoutError (RELAY-CEL-003) before the profile rejection returns.
+  // Use the spec per-tenant cap MAX_TIMEOUT_MS (250ms, imported -- not
+  // hardcoded) for 5x headroom so a fast eval cannot trip the wall-clock under
+  // load. The production DEFAULT/MAX constants are UNCHANGED; M7 P7EDGE's
+  // in-engine deterministic FUEL budget is the portable alternative. TS
+  // analogue of the Python de-flake in commits d5fd79b / 7a2bc04.
+  ev = makeCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
   return ev;
 }
 
@@ -103,7 +116,14 @@ describe("VAL-W6-011: the wasm evaluator enforces the Relay profile", () => {
     // The Python contract for the equivalent baseline test only asserts the
     // profile checks do not have false positives; a clean arithmetic
     // expression evaluates cleanly through the wasm engine.
-    ev = makeCelEvaluator();
+    //
+    // This asserts a value RESULT (== 7), not timeout behavior, so it is
+    // decoupled from the wall-clock budget: MAX_TIMEOUT_MS (250ms, imported)
+    // gives 5x headroom so the trivial eval cannot spuriously trip the Node
+    // Worker wall-clock under concurrent full-suite load. Production
+    // DEFAULT/MAX constants UNCHANGED; M7 P7EDGE in-engine fuel is the
+    // deterministic portable alternative.
+    ev = makeCelEvaluator({ timeoutMs: MAX_TIMEOUT_MS });
     const out = await ev.evaluate("1 + 2 * 3");
     expect(Number(out)).toBe(7);
   });
