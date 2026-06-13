@@ -231,7 +231,7 @@ copy of the canonical `packages/cel-wasm/python/relay_cel_wasm.py`).
 
 `WASM_PINNED_SHA256` in `packages/contracts/src/relay_contracts/wasm_artifact.py`
 records the exact sha256 of the `build.sh repro`-verified artifact
-(`7d92aca8ca605a2b76c36e944648de72aec56d1130294c0f22923d64c7faa4c0`).
+(`431d966b2818ef4539a4f6b78e2903a4d6911c6b6352e256e35531a44f992511`).
 A guard test (`test_wasm_pinned_sha_matches_packaged_artifact_on_disk`)
 fails CI if the vendored artifact drifts from the pinned sha. A separate
 byte-identity drift guard fails CI if the vendored loader copy diverges

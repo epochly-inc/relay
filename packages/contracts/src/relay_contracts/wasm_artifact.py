@@ -59,7 +59,7 @@ WASM_LOADER_PACKAGE_DATA_RELPATH: str = "_wasm/relay_cel_wasm.py"
 # (the ``[repro] PASS: byte-deterministic (<sha>)`` value). The shipped
 # package-data wasm MUST hash to this. PINNED, not signed (see module docstring).
 WASM_PINNED_SHA256: str = (
-    "7d92aca8ca605a2b76c36e944648de72aec56d1130294c0f22923d64c7faa4c0"
+    "431d966b2818ef4539a4f6b78e2903a4d6911c6b6352e256e35531a44f992511"
 )
 
 

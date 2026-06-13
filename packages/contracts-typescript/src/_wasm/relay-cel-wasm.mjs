@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 // crate/target/ tree. From this loader's directory
 // (packages/cel-wasm/typescript/) the vendored copy is two levels up then into
 // contracts-typescript/src/_wasm/. Both copies are byte-identical (same pinned
-// sha 7d92aca8...); a Python+TS sha-drift guard catches any divergence.
+// sha 431d966b...); a Python+TS sha-drift guard catches any divergence.
 function packageDataWasmPath() {
   const here = dirname(fileURLToPath(import.meta.url));
   return normalize(

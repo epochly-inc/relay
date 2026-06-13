@@ -76,7 +76,7 @@ export const WASM_LOADER_PACKAGE_DATA_RELPATH =
 // both ecosystems ship the SAME bytes. The shipped package-data wasm MUST hash
 // to this. PINNED, not signed (see module docstring).
 export const WASM_PINNED_SHA256 =
-  "7d92aca8ca605a2b76c36e944648de72aec56d1130294c0f22923d64c7faa4c0" as const;
+  "431d966b2818ef4539a4f6b78e2903a4d6911c6b6352e256e35531a44f992511" as const;
 
 // The package root, anchored to THIS module's on-disk location. wasm-artifact.ts
 // lives at packages/contracts-typescript/src/, so the package root is one level

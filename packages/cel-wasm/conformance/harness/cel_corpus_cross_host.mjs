@@ -114,7 +114,7 @@ const LOADER_PATH = resolve(
 // @epochly/relay-contracts (packages/contracts-typescript/src/_wasm/). This is
 // the SAME canonical artifact the .mjs loader's own defaultWasmPath() prefers,
 // is ALWAYS present on a clean checkout (no build), and is byte-identical to the
-// pinned sha 7d92aca8... (a Python+TS sha-drift guard enforces that). Mirrors
+// pinned sha 431d966b... (a Python+TS sha-drift guard enforces that). Mirrors
 // the Python runner's package-data resolution so BOTH standalone hosts load the
 // same committed bytes with no crate build.
 const PACKAGE_DATA_WASM_PATH = resolve(

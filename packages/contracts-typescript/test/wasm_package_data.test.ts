@@ -5,7 +5,7 @@
 // cross-host byte-identity guards:
 //
 //   - 009: the reproducible relay_cel_wasm.wasm (the build.sh deterministic-
-//     recipe artifact, sha 7d92aca8...) is shipped as PACKAGE DATA of
+//     recipe artifact, sha 431d966b...) is shipped as PACKAGE DATA of
 //     @epochly/relay-contracts and is resolvable via the package `files` +
 //     `exports` subpath (require.resolve / import.meta.resolve of the declared
 //     subpath) so the `.mjs` loader can locate it from an INSTALLED package
@@ -55,7 +55,7 @@ const PACKAGE_JSON_PATH = resolve(PACKAGE_ROOT, "package.json");
 // WASM_PINNED_SHA256). The TS package ships the SAME bytes for the npm ecosystem;
 // a divergence between this and the TS pinned constant / on-disk sha is a P0.
 const EXPECTED_REPRO_SHA =
-  "7d92aca8ca605a2b76c36e944648de72aec56d1130294c0f22923d64c7faa4c0";
+  "431d966b2818ef4539a4f6b78e2903a4d6911c6b6352e256e35531a44f992511";
 
 // The Python vendored copy of the SAME artifact. The byte-identity guard asserts
 // the TS vendored copy equals these bytes (one shared truth across ecosystems).
