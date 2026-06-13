@@ -12,15 +12,16 @@ and asserts:
   2. The vendored ``cel_spec_vectors.json`` has not been silently
      mutated from a known-good shape -- ``schema_version`` is still 1.
 
-  3. Bumping the upstream cel-python (``celpy``) or cel-js
-     (``cel-js``) package version requires re-pinning the vendor file's
-     ``_source_revision`` field. The script reads
-     ``packages/contracts/pyproject.toml`` for the celpy lower bound and
-     ``packages/contracts-typescript/package.json`` for the cel-js
-     pinned version; if either upstream pin changes without an
-     accompanying ``_source_revision`` bump (recorded in
-     ``vendor/.upstream-pins.json``), the script exits non-zero and
-     prints the diff that requires a vendor refresh.
+The legacy upstream-package-pin comparison (cel-python / cel-js lower
+bounds vs ``vendor/.upstream-pins.json``) was REMOVED in M6: both CEL
+libraries were deleted in the single-engine WASM cutover, so neither is a
+dependency of ``packages/contracts`` nor ``packages/contracts-typescript``
+anymore. The extractors returned None and the comparison was vacuous --
+dead machinery that masked the fact that there is no upstream CEL package
+left to drift-check. The surviving meaningful pin check is the wasm /
+cel-spec corpus drift in ``_check_celspec_corpus_drift`` (the pinned
+google/cel-spec commit, the MANIFEST.sha256 integrity manifest, and the
+profile-filter partition).
 
 The script is invoked manually and (when wired in via VAL-W6-054) by
 the tier-2 smoke job. It exits 0 when no drift is observed and 1 with
@@ -51,9 +52,6 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CORPUS_PATH = REPO_ROOT / "tests" / "conformance" / "cel" / "relay_cel_corpus.json"
 VENDOR_PATH = REPO_ROOT / "tests" / "conformance" / "cel" / "vendor" / "cel_spec_vectors.json"
-UPSTREAM_PINS_PATH = REPO_ROOT / "tests" / "conformance" / "cel" / "vendor" / ".upstream-pins.json"
-PY_CONTRACTS_PYPROJECT = REPO_ROOT / "packages" / "contracts" / "pyproject.toml"
-TS_CONTRACTS_PACKAGE_JSON = REPO_ROOT / "packages" / "contracts-typescript" / "package.json"
 
 # W17.3 additions: the formal cel-spec corpus lives at a separate
 # location (per contract VAL-W17-010 which mandates the path
@@ -78,47 +76,6 @@ def _load_json(path: Path) -> Any:
         raise FileNotFoundError(f"required file not found: {path}")
     with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)
-
-
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8") if path.exists() else ""
-
-
-def _extract_celpy_pin() -> str | None:
-    """Return the celpy version constraint from packages/contracts/
-    pyproject.toml, or None if the file or pin is missing."""
-
-    text = _read_text(PY_CONTRACTS_PYPROJECT)
-    if not text:
-        return None
-    # Look for a line like:
-    #   "cel-python>=0.4.0",  -- or
-    #   "celpy>=0.3.0",
-    # in the dependencies array. We don't depend on tomllib here so
-    # the parse stays minimal and platform-agnostic.
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        for prefix in ("cel-python", "celpy"):
-            if line.startswith(f'"{prefix}'):
-                return line.strip(' ",')
-    return None
-
-
-def _extract_celjs_pin() -> str | None:
-    text = _read_text(TS_CONTRACTS_PACKAGE_JSON)
-    if not text:
-        return None
-    try:
-        pkg = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    deps = pkg.get("dependencies", {})
-    if not isinstance(deps, dict):
-        return None
-    val = deps.get("cel-js")
-    return str(val) if isinstance(val, str) else None
 
 
 def _read_pinned_commit_celspec() -> str | None:
@@ -407,43 +364,14 @@ def main() -> int:
             mismatched += 1
             continue
 
-    # Detect upstream package-pin drift: if the upstream packages have
-    # bumped versions since the vendor file was last refreshed, the
-    # vendor's `_source_revision` MUST be re-pinned. We record the
-    # last-known pins in `vendor/.upstream-pins.json`; bumping a
-    # package without bumping that file fails the check.
-    py_pin = _extract_celpy_pin()
-    ts_pin = _extract_celjs_pin()
-    upstream_pins_text = _read_text(UPSTREAM_PINS_PATH)
-    if upstream_pins_text:
-        try:
-            recorded = json.loads(upstream_pins_text)
-        except json.JSONDecodeError:
-            recorded = {}
-    else:
-        recorded = {}
+    # The legacy upstream-package-pin drift comparison (cel-python / cel-js
+    # lower bounds vs vendor/.upstream-pins.json) was removed in M6: both CEL
+    # libraries were deleted in the single-engine WASM cutover, so neither is
+    # a dependency anymore. The extractors returned None and the comparison
+    # was vacuous (it never fired). The surviving meaningful pin check is the
+    # wasm / cel-spec corpus drift below.
 
-    if py_pin is not None and recorded.get("celpy") not in (None, py_pin):
-        drifts.append(
-            f"upstream celpy pin moved from {recorded['celpy']!r} to "
-            f"{py_pin!r}; refresh tests/conformance/cel/vendor/cel_spec_vectors.json "
-            "and update vendor/.upstream-pins.json"
-        )
-    # Exact-string comparison on purpose: the project pins cel-js to an
-    # EXACT version (no caret/tilde range). A change from "0.8.2" to a
-    # range like "^0.8.2" is itself meaningful drift (it changes which
-    # resolved version CI installs) and must be flagged. The nightly
-    # workflow installs cel-js@latest with --no-save so it never rewrites
-    # the committed pin, so this strict check does not false-positive on
-    # the drift run.
-    if ts_pin is not None and recorded.get("cel-js") not in (None, ts_pin):
-        drifts.append(
-            f"upstream cel-js pin moved from {recorded['cel-js']!r} to "
-            f"{ts_pin!r}; refresh tests/conformance/cel/vendor/cel_spec_vectors.json "
-            "and update vendor/.upstream-pins.json"
-        )
-
-    # W17.3 corpus drift checks (additive; preserves all W6.5 behavior).
+    # W17.3 corpus drift checks (additive; preserves all W6.5 vector-mapping behavior).
     drifts.extend(_check_celspec_corpus_drift())
 
     if drifts:

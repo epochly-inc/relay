@@ -583,6 +583,62 @@ def test_drift_checker_exits_zero() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W17-010")
+def test_drift_checker_has_no_dead_legacy_engine_pin_machinery() -> None:
+    """VAL-CWC-P6REMOVE (folded-in): cel-python and cel-js were both removed
+    in M6, so neither appears in packages/contracts/pyproject.toml nor in
+    packages/contracts-typescript/package.json. The drift checker's
+    upstream-package-pin comparison for those two libraries is therefore
+    vacuous (the extractor returns None, the comparison is skipped) -- dead
+    machinery that masks the fact that there is no longer any upstream CEL
+    package to drift-check. The surviving meaningful pin check is the
+    wasm/cel-spec corpus drift (_check_celspec_corpus_drift). Assert the dead
+    machinery is gone so the checker honestly checks only the surviving pins.
+    """
+
+    src = DRIFT_CHECKER_PATH.read_text(encoding="utf-8")
+    forbidden = [
+        "_extract_celpy_pin",
+        "_extract_celjs_pin",
+        "celpy pin moved",
+        "cel-js pin moved",
+    ]
+    present = [needle for needle in forbidden if needle in src]
+    assert present == [], (
+        "VAL-CWC-P6REMOVE: scripts/check-cel-spec-drift.py still carries dead "
+        "legacy-engine pin-comparison machinery (cel-python/cel-js were "
+        "removed in M6, so these branches are vacuous): "
+        + ", ".join(present)
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W17-010")
+def test_vendor_upstream_pins_has_no_dead_celpy_record() -> None:
+    """The W6.5 vendor pin record at
+    tests/conformance/cel/vendor/.upstream-pins.json must not retain a
+    historical 'celpy' pin -- cel-python was removed in M6, so the recorded
+    pin compares against nothing. A retained record is misleading
+    provenance."""
+
+    vendor_pins = (
+        REPO_ROOT
+        / "tests"
+        / "conformance"
+        / "cel"
+        / "vendor"
+        / ".upstream-pins.json"
+    )
+    assert vendor_pins.exists(), f"missing {vendor_pins}"
+    data = json.loads(vendor_pins.read_text(encoding="utf-8"))
+    assert "celpy" not in data, (
+        "VAL-CWC-P6REMOVE: vendor/.upstream-pins.json retains a dead 'celpy' "
+        "pin record; cel-python was removed in M6 and the drift checker no "
+        "longer compares it."
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W17-010")
 def test_upstream_pins_file_records_celspec_commit() -> None:
     """The companion `.upstream-pins.json` MUST record the cel-spec
     commit SHA + last-refreshed date so a future drift checker run can
@@ -627,16 +683,27 @@ def test_nightly_drift_workflow_present() -> None:
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W17-014")
 def test_nightly_drift_workflow_has_required_shape() -> None:
-    """The workflow MUST: (a) run on a cron schedule, (b) install the
-    LATEST cel-js (not the pinned version) -- cel-js is still the TS
-    legacy/rollback evaluator the TS corpus mirror drives, (c) record the
-    PINNED wasm engine inputs (the relay_cel_wasm artifact identity and
-    the wasmtime host runtime version) for the Python axis -- cel-python
-    was REMOVED in M6 WS-I, so any reference to it would fail the job
-    with PackageNotFoundError before the corpus ran (ROBOREV M6 finding
-    D), (d) execute the same pytest plumbing entry that this file is
-    part of, and (e) include an alerting path that opens a GitHub issue
-    tagged `area:conformance-drift` when drift is detected."""
+    """The nightly drift workflow is RETARGETED to wasm-only inputs
+    (VAL-CWC-P6REMOVE-012). cel-python and cel-js were both removed in M6,
+    so a job that installs/upgrades either (`pip install --upgrade
+    cel-python`, `npm install cel-js@latest`) monitors a dependency that no
+    longer exists -- dead CI. The drift canary now targets ONLY the wasm
+    engine's pinned inputs.
+
+    The workflow MUST: (a) run on a cron schedule, (b) record the PINNED
+    wasm engine inputs -- the relay_cel_wasm artifact identity and the
+    wasmtime host runtime version -- as the single CEL-engine provenance,
+    (c) execute the same pytest plumbing entry that this file is part of as
+    the corpus canary, (d) re-resolve the upstream cel-spec pin against the
+    remote so a deleted upstream tag is caught, and (e) include an alerting
+    path that opens a GitHub issue tagged `area:conformance-drift` when
+    drift is detected.
+
+    The workflow MUST NOT reference cel-python or cel-js at all: both were
+    removed in M6, so any install/upgrade/version-probe of them either
+    fails the job (PackageNotFoundError, ROBOREV M6 finding D) or silently
+    monitors nothing. This is the wasm-only model VAL-CWC-P6REMOVE-012
+    establishes."""
 
     if not NIGHTLY_WORKFLOW_PATH.exists():
         pytest.skip("workflow missing -- covered by sibling test")
@@ -645,29 +712,31 @@ def test_nightly_drift_workflow_has_required_shape() -> None:
         # cron trigger
         ("schedule:", "VAL-W17-014: workflow must run on a schedule (cron)"),
         ("cron:", "VAL-W17-014: workflow must declare a cron expression"),
-        # install latest cel-js (not pinned) -- the surviving upstream axis
-        (
-            "npm install cel-js@latest",
-            "VAL-W17-014: workflow must install cel-js@latest",
-        ),
-        # the Python axis is the single wasm engine: record its pinned
+        # the single CEL engine is the pinned wasm: record its pinned
         # artifact identity + the wasmtime host runtime version
         (
             "relay_cel_wasm",
-            "VAL-W17-014: workflow must record the wasm engine artifact "
-            "identity (the Python CEL axis after M6 cel-python removal)",
+            "VAL-CWC-P6REMOVE-012: workflow must record the wasm engine "
+            "artifact identity (the only CEL engine after M6 removal)",
         ),
         (
             "wasmtime",
-            "VAL-W17-014: workflow must record the wasmtime runtime version "
-            "(the Python CEL axis after M6 cel-python removal)",
+            "VAL-CWC-P6REMOVE-012: workflow must record the wasmtime runtime "
+            "version (the only CEL host runtime after M6 removal)",
+        ),
+        # the upstream pin re-resolution canary (a deleted cel-spec tag is
+        # still a meaningful wasm-corpus drift signal)
+        (
+            "PINNED_COMMIT.txt",
+            "VAL-CWC-P6REMOVE-012: workflow must re-resolve the pinned "
+            "cel-spec commit so a deleted upstream tag is caught",
         ),
         # alerting path: GitHub issue with the required label
         (
             "area:conformance-drift",
             "VAL-W17-014: workflow must reference area:conformance-drift label",
         ),
-        # the drift-detect entry point
+        # the drift-detect entry point (the corpus canary)
         (
             "tests/conformance/cel-spec/",
             "VAL-W17-014: workflow must reference the cel-spec corpus path",
@@ -677,18 +746,38 @@ def test_nightly_drift_workflow_has_required_shape() -> None:
     for needle, reason in required_substrings:
         if needle not in text:
             missing.append(reason)
-    # ROBOREV M6 finding D: cel-python is removed from the workspace; a
-    # workflow step that imports/installs/queries it fails before the corpus
-    # runs. The workflow must not reference it at all.
-    if "cel-python" in text:
-        missing.append(
-            "VAL-W17-014: workflow still references cel-python, which was "
-            "removed in M6 WS-I -- importlib.metadata.version('cel-python') "
-            "raises PackageNotFoundError and kills the scheduled job"
-        )
+    # VAL-CWC-P6REMOVE-012: cel-python and cel-js are removed from the
+    # workspace; a workflow step that installs/upgrades/probes either
+    # monitors a dependency that no longer exists (dead CI) or fails before
+    # the corpus runs. The retargeted wasm-only canary must not reference
+    # them at all.
+    forbidden_substrings = [
+        ("cel-python", "cel-python (removed in M6 WS-I)"),
+        ("cel-js", "cel-js (removed in M6 CI-collapse)"),
+        (
+            "pip install --upgrade cel-python",
+            "pip install --upgrade cel-python (dead -- cel-python removed)",
+        ),
+        (
+            "cel-js@latest",
+            "cel-js@latest (dead -- cel-js removed)",
+        ),
+    ]
+    forbidden_present: list[str] = []
+    for needle, label in forbidden_substrings:
+        if needle in text:
+            forbidden_present.append(
+                f"VAL-CWC-P6REMOVE-012: workflow still references {label}; "
+                "the wasm-only drift canary must not monitor a removed CEL "
+                "dependency"
+            )
     assert missing == [], (
         "VAL-W17-014: nightly drift workflow is missing required elements:\n  "
         + "\n  ".join(missing)
+    )
+    assert forbidden_present == [], (
+        "VAL-CWC-P6REMOVE-012: nightly drift workflow retains dead "
+        "legacy-engine references:\n  " + "\n  ".join(forbidden_present)
     )
 
 

@@ -33,17 +33,16 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - "packages/cel-wasm/**"
-      - ".github/workflows/cel-wasm-conformance.yml"
-      # The m3-discipline-gate job ascii-lints + baseline-checks files under
-      # these trees, so a change to ONLY one of them must still trigger the
-      # gate (FINDING-3b: the gate previously triggered only on cel-wasm/**).
-      - "scripts/**"
-      - "tests/conformance/cel/**"
-      - "packages/contracts/**"
-      - "packages/contracts-typescript/**"
-      - "packages/schemas/**"
+    # VAL-CWC-P6REMOVE-011: NO `paths:` filter on the PR trigger. After the
+    # single-engine WASM cutover the wasm build is the SOLE CEL backend, so
+    # the conformance + reproducible-build + cel-wasm-aggregate gate must be
+    # release-blocking on EVERY pull request to main -- a change anywhere
+    # (contracts, contracts-typescript, schemas, or otherwise) cannot merge
+    # without the wasm gate running. A path-scoped required check is skipped
+    # (reported missing/pending) on PRs that miss the globs, which would let
+    # a consumer change merge ungated; running unconditionally closes that
+    # gap. The push trigger below stays path-scoped (push to main is not the
+    # merge gate).
   push:
     branches:
       - main

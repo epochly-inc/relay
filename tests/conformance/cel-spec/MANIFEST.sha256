@@ -7,7 +7,7 @@
 # excluded by design (the pin is validated by the nightly git ls-remote
 # check; the manifest cannot contain its own digest).
 
-723dcca8bd975798e22208a0a9e8d05ceb1af2b89163dc8d8aa6eb1da87d78f3  .upstream-pins.json
-7688b67a65818353f422af35cb324028c92840731920cc91aaee509fde6e318c  celspec_vectors.json
-b5f71e4f8768973d3616f067f8e6228033de48b665142116732cb56b795d4f6d  relay-profile-filter.yaml
-ab82fcfb4bd6b0e3578cb7a8cae45693e1ac731c6e83ca57f6d67e8976e33830  dropped-candidates.json
+6066601f4c32990184f573beb2fbba211f0a1c3901ac39b7d770c630b2cde595  .upstream-pins.json
+6069bd38d4a852e53547e3c64898ebc1895ac41004b152d7f0670ab4f2363be5  celspec_vectors.json
+5045658ac496db90943d7f40cbc24541cab3345f7b0caaeccf3b3755184b920c  relay-profile-filter.yaml
+58501d04601609d88a4151fe2957d984f5b3e8aedf89cc63c315c9d91d2e1011  dropped-candidates.json
