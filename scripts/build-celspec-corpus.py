@@ -17,10 +17,11 @@ What it does:
      value is a profile-safe JSON kind (int / bool / string / list / map /
      null). Out-of-profile expressions (dyn, timestamp, duration, uint,
      bytes) are dropped even when their value is profile-safe.
-  4. Evaluates every candidate under BOTH cel-python and cel-js and keeps
-     only those where cel-python == cel-js == the upstream golden. A
-     candidate the two runtimes disagree on, or that diverges from the
-     upstream golden, is out of profile by construction and is dropped.
+  4. Evaluates every candidate under the SINGLE relay_cel_wasm engine (the
+     wasm-anchored M6 WS-I model; cel-js and cel-python were removed) and
+     keeps only those where the wasm engine == the upstream golden. A
+     candidate that diverges from the upstream golden is out of profile by
+     construction and is dropped.
   5. Emits, with every claim true and mechanically auditable:
        - celspec_vectors.json   (real expr / golden / source / pinned SHA)
        - relay-profile-filter.yaml
@@ -36,7 +37,7 @@ Modes:
                 is for maintainers, not CI; CI uses
                 scripts/check-cel-spec-drift.py which is offline).
 
-Run under uv so cel-python / relay_contracts resolve:
+Run under uv so relay_contracts (the wasm engine) resolves:
     uv run python scripts/build-celspec-corpus.py
     uv run python scripts/build-celspec-corpus.py --check
 
@@ -49,7 +50,6 @@ import argparse
 import hashlib
 import json
 import re
-import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -64,9 +64,6 @@ VECTORS_PATH = CELSPEC_DIR / "celspec_vectors.json"
 PROFILE_FILTER_PATH = CELSPEC_DIR / "relay-profile-filter.yaml"
 MANIFEST_PATH = CELSPEC_DIR / "MANIFEST.sha256"
 DROPPED_PATH = CELSPEC_DIR / "dropped-candidates.json"
-CELJS_RUNNER = (
-    REPO_ROOT / "packages" / "contracts-typescript" / "test" / "_w17_3_celjs_runner.mjs"
-)
 
 RAW_BASE = "https://raw.githubusercontent.com/google/cel-spec/{sha}/tests/simple/testdata/{name}"
 SOURCE_REPO = "https://github.com/google/cel-spec"
@@ -580,9 +577,12 @@ def _verify(cands: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dic
     from relay_contracts import RELAY_UDFS, WasmCelEvaluator
     from relay_contracts.evaluator import MAX_TIMEOUT_MS
 
-    # M6 WS-I: the single wasm engine is the Python-side verifier (the legacy
-    # engine was removed). The spec-max budget decouples corpus building from
-    # host-thread scheduling jitter.
+    # M6 WS-I single-engine model: the corpus is wasm-anchored. The SINGLE
+    # relay_cel_wasm engine (the same wasm the Python host and the TS host
+    # both load) is the verifier; cel-js was removed, so the second
+    # cross-runtime axis is gone -- a candidate is verified when the wasm
+    # engine reproduces the upstream golden. The spec-max budget decouples
+    # corpus building from host-thread scheduling jitter.
     ev = WasmCelEvaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
     py: dict[int, Any] = {}
     for i, c in enumerate(cands):
@@ -590,51 +590,32 @@ def _verify(cands: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dic
             py[i] = _to_python(ev.evaluate(c["expr"], {}))
         except Exception:  # noqa: BLE001
             py[i] = _SENTINEL
-    # cel-js batch.
-    vectors = [
-        {"vector_id": str(i), "expression": c["expr"], "bindings": {}}
-        for i, c in enumerate(cands)
-    ]
-    proc = subprocess.run(
-        ["node", str(CELJS_RUNNER)],
-        input=json.dumps({"vectors": vectors}).encode(),
-        capture_output=True, cwd=str(REPO_ROOT), timeout=300, check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError("cel-js runner failed: " + proc.stderr.decode()[:2000])
-    ts: dict[int, Any] = {int(r["vector_id"]): (r["value"] if r.get("ok") else _SENTINEL)
-                          for r in json.loads(proc.stdout.decode())["results"]}
     verified: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     for i, c in enumerate(cands):
         pv = py.get(i, _SENTINEL)
-        tv = ts.get(i, _SENTINEL)
-        if pv == c["golden"] and tv == c["golden"]:
+        if pv == c["golden"]:
             verified.append(c)
         else:
             dropped.append(
                 {"file": c["file"], "section": c["section"], "test": c["test"],
-                 "expr": c["expr"], "golden": c["golden"], "py": pv, "ts": tv}
+                 "expr": c["expr"], "golden": c["golden"], "wasm": pv}
             )
     # Report dropped candidates LOUDLY. A candidate is statically in
-    # profile (passed _expr_in_profile + has a decodable golden) yet one
-    # runtime disagrees with the upstream golden. Most are cel-js feature
-    # gaps (cel-js 0.8.x lacks some CEL builtins), which legitimately fall
-    # outside the verified profile -- but a NEW drop after a previously
-    # clean run can signal a real cel-python/cel-js regression silently
-    # shrinking the corpus. Surfacing them keeps that visible.
+    # profile (passed _expr_in_profile + has a decodable golden) yet the
+    # wasm engine disagrees with the upstream golden. A NEW drop after a
+    # previously clean run can signal a real engine/profile regression
+    # silently shrinking the corpus. Surfacing them keeps that visible.
     if dropped:
         sys.stderr.write(
             f"[build] dropped {len(dropped)} in-profile candidate(s) on "
-            f"runtime/golden mismatch (cel-js feature gaps expected; a NEW "
-            f"increase may signal a regression):\n"
+            f"wasm/golden mismatch (a NEW increase may signal a regression):\n"
         )
         for d in dropped:
-            py_s = "<err>" if d["py"] is _SENTINEL else repr(d["py"])
-            ts_s = "<err>" if d["ts"] is _SENTINEL else repr(d["ts"])
+            wasm_s = "<err>" if d["wasm"] is _SENTINEL else repr(d["wasm"])
             sys.stderr.write(
                 f"  - {d['file']}::{d['section']}::{d['test']}  expr={d['expr']!r} "
-                f"golden={d['golden']!r} py={py_s} ts={ts_s}\n"
+                f"golden={d['golden']!r} wasm={wasm_s}\n"
             )
     return verified, dropped
 
@@ -746,9 +727,9 @@ def _render_vectors_json(doc: dict[str, Any]) -> str:
 
 
 def _build_dropped_doc(sha: str, dropped: list[dict[str, Any]]) -> str:
-    """Render the audit list of in-profile candidates the runtime/golden
-    parity check dropped (committed alongside the corpus so a NEW drop is
-    visible in the PR diff). Deterministic ordering for stable diffs."""
+    """Render the audit list of in-profile candidates the wasm/golden parity
+    check dropped (committed alongside the corpus so a NEW drop is visible in
+    the PR diff). Deterministic ordering for stable diffs."""
     items = sorted(
         dropped, key=lambda d: (d["file"], d["section"], d["test"])
     )
@@ -758,19 +739,18 @@ def _build_dropped_doc(sha: str, dropped: list[dict[str, Any]]) -> str:
             "source": f"{SOURCE_TREE}/{d['file']}::{d['section']}::{d['test']}",
             "expression": d["expr"],
             "upstream_golden": d["golden"],
-            "cel_python": "<error>" if d["py"] is _SENTINEL else d["py"],
-            "cel_js": "<error>" if d["ts"] is _SENTINEL else d["ts"],
+            "wasm": "<error>" if d["wasm"] is _SENTINEL else d["wasm"],
         })
     doc = {
         "_doc": (
-            "W17.3 cel-spec parity-dropped candidates (audit artifact). Each "
-            "entry is an upstream testdata case that passed the static profile "
-            "filter and has a profile-safe golden, but at least one of cel-python "
-            "/ cel-js disagreed with the upstream golden -- so it was NOT included "
-            "in celspec_vectors.json. Tracked in git (and digested in MANIFEST.sha256) "
-            "so a NEW drop is visible as a PR diff and reviewable as a potential "
-            "regression. Generated by scripts/build-celspec-corpus.py -- DO NOT "
-            "hand-edit."
+            "W17.3 cel-spec wasm/golden-dropped candidates (audit artifact). "
+            "Each entry is an upstream testdata case that passed the static "
+            "profile filter and has a profile-safe golden, but the single "
+            "relay_cel_wasm engine disagreed with the upstream golden -- so it "
+            "was NOT included in celspec_vectors.json. Tracked in git (and "
+            "digested in MANIFEST.sha256) so a NEW drop is visible as a PR diff "
+            "and reviewable as a potential regression. Generated by "
+            "scripts/build-celspec-corpus.py -- DO NOT hand-edit."
         ),
         "_schema_version": 1,
         "_pinned_commit_sha": sha,

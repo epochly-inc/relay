@@ -271,3 +271,117 @@ def test_textual_alias_of_same_cel_key_fails_closed_as_collision(
         typed_to_py(typed)
     assert ctx.value.code == "RELAY-CEL-009"
     assert ctx.value.subtype == SUBTYPE_ENGINE_REQUEST
+
+
+# ---------------------------------------------------------------------------
+# ROBOREV P6REMOVE round-4 (LOW): a Rust-ACCEPTED in-range value with MANY
+# leading zeros must DECODE, not raise. Rust ``str::parse::<i64>`` /
+# ``parse::<u64>`` accept arbitrarily many leading zeros (overflow-checked, so
+# the only bound is the i64 / u64 RANGE -- not digit count). Python ``int()``
+# on 3.12+ enforces a 4300-digit string-conversion limit, so the codec's raw
+# ``int()`` RAISED on e.g. "0"*5000 -- a Py<->Rust divergence. The fix strips
+# the sign + leading zeros (grammar already checked) before ``int()`` so only
+# the bounded-width significant digits reach it.
+#
+# The probe strings exceed the 4300-digit limit DELIBERATELY: BEFORE the fix
+# every assertion here raised ValueError("Exceeds the limit (4300 digits)...");
+# AFTER the fix they decode to the small Rust value.
+_LEADING_ZERO_5000 = "0" * 5000
+# "+" + 5000 zeros + "5" -> Rust parses to 5.
+_PLUS_LEADING_ZERO_5000_5 = "+" + "0" * 5000 + "5"
+# "-" + 5000 zeros + "5" -> Rust parses to -5 (int only).
+_MINUS_LEADING_ZERO_5000_5 = "-" + "0" * 5000 + "5"
+
+
+def test_scalar_int_long_leading_zeros_decode_not_raise() -> None:
+    # RED before fix: int("0"*5000) raises the 4300-digit ValueError.
+    # GREEN after fix: normalized to "0", decodes to 0 (Rust-accepted).
+    assert typed_to_py({"t": "int", "v": _LEADING_ZERO_5000}) == 0
+    assert typed_to_py({"t": "int", "v": _PLUS_LEADING_ZERO_5000_5}) == 5
+    assert typed_to_py({"t": "int", "v": _MINUS_LEADING_ZERO_5000_5}) == -5
+
+
+def test_scalar_uint_long_leading_zeros_decode_not_raise() -> None:
+    # RED before fix: int("0"*5000) raises the 4300-digit ValueError.
+    # GREEN after fix: normalized to "0", decodes to CelUint(0) (Rust-accepted).
+    assert typed_to_py({"t": "uint", "v": _LEADING_ZERO_5000}) == CelUint(0)
+    assert typed_to_py({"t": "uint", "v": _PLUS_LEADING_ZERO_5000_5}) == CelUint(5)
+
+
+def test_scalar_long_leading_zeros_still_range_checked() -> None:
+    # Leading zeros do NOT widen the range: a long-leading-zero value whose
+    # SIGNIFICANT digits exceed i64/u64 still raises (the bound is on the value,
+    # not the digit count). Rust's overflow-checked parse rejects these too.
+    over_i64 = "0" * 5000 + str(_I64_MAX + 1)
+    over_u64 = "0" * 5000 + str(_U64_MAX + 1)
+    with pytest.raises(ValueError):
+        typed_to_py({"t": "int", "v": over_i64})
+    with pytest.raises(ValueError):
+        typed_to_py({"t": "uint", "v": over_u64})
+
+
+def test_long_leading_zero_int_map_key_decodes_and_collides_with_canonical() -> None:
+    # The map-key path (CelMap decode via _require_valid_map_key ->
+    # _key_sort_string) must (a) NOT raise the 4300-digit error on a
+    # long-leading-zero key and (b) recognize it as the SAME CEL key as its
+    # canonical form -- so a map carrying both fails closed as a collision
+    # (the wasm HashMap would silently drop one). "0"*5000 is the CEL key 0,
+    # which must collide with the canonical "0" key.
+    typed = {
+        "t": "map",
+        "v": [
+            [{"t": "int", "v": _LEADING_ZERO_5000}, {"t": "string", "v": "a"}],
+            [{"t": "int", "v": "0"}, {"t": "string", "v": "b"}],
+        ],
+    }
+    with pytest.raises(RelayCelEngineError) as ctx:
+        typed_to_py(typed)
+    assert ctx.value.code == "RELAY-CEL-009"
+    assert ctx.value.subtype == SUBTYPE_ENGINE_REQUEST
+
+
+def test_long_leading_zero_5_int_map_key_collides_with_canonical_5() -> None:
+    # "+" + "0"*5000 + "5" is the CEL key 5; it must collide with "5".
+    typed = {
+        "t": "map",
+        "v": [
+            [
+                {"t": "int", "v": _PLUS_LEADING_ZERO_5000_5},
+                {"t": "string", "v": "a"},
+            ],
+            [{"t": "int", "v": "5"}, {"t": "string", "v": "b"}],
+        ],
+    }
+    with pytest.raises(RelayCelEngineError) as ctx:
+        typed_to_py(typed)
+    assert ctx.value.code == "RELAY-CEL-009"
+    assert ctx.value.subtype == SUBTYPE_ENGINE_REQUEST
+
+
+def test_long_leading_zero_uint_map_key_collides_with_canonical() -> None:
+    # The uint key-sort path must also normalize before int(): "0"*5000 as a
+    # uint key is the CEL uint 0, colliding with the canonical "0" uint key.
+    typed = {
+        "t": "map",
+        "v": [
+            [{"t": "uint", "v": _LEADING_ZERO_5000}, {"t": "string", "v": "a"}],
+            [{"t": "uint", "v": "0"}, {"t": "string", "v": "b"}],
+        ],
+    }
+    with pytest.raises(RelayCelEngineError) as ctx:
+        typed_to_py(typed)
+    assert ctx.value.code == "RELAY-CEL-009"
+    assert ctx.value.subtype == SUBTYPE_ENGINE_REQUEST
+
+
+def test_long_leading_zero_encode_map_key_round_trips_byte_identically() -> None:
+    # A hand-built CelMap with a long-leading-zero key must ENCODE without
+    # raising the 4300-digit error (the encode path also routes keys through
+    # _require_valid_map_key -> _key_sort_string). The original key bytes are
+    # re-emitted VERBATIM (the codec never normalizes the stored wire key), so
+    # a single-entry map round-trips byte-identically.
+    raw = {"t": "int", "v": _PLUS_LEADING_ZERO_5000_5}
+    typed = {"t": "map", "v": [[raw, {"t": "string", "v": "x"}]]}
+    decoded = typed_to_py(typed)
+    assert isinstance(decoded, CelMap)
+    assert _wire_bytes(py_to_typed(decoded)) == _wire_bytes(typed)

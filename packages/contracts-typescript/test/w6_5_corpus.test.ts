@@ -111,11 +111,14 @@ interface Corpus {
 // scripts/generate-relay-cel-corpus.py and the Python test_w6_5_corpus.py. The
 // FROZEN golden records the REMOVED legacy engine's lenient lexing of a
 // backslash + non-ASCII digit string literal; the wasm correctly raises
-// RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE. The pinned expressions use
-// \u-escapes so this source stays pure ASCII (U+FF10 / U+0660).
+// RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE. The non-ASCII digit is built with
+// String.fromCodePoint so this source stays pure ASCII (CLAUDE.md "ASCII-Safe
+// Source"): each expression is a CEL string literal `"\<digit>"` -- a double
+// quote, a backslash, the fullwidth (U+FF10) / Arabic-Indic (U+0660) zero, and
+// a closing double quote.
 const ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS: Record<string, string> = {
-  regex_backslash_fullwidth_digit_accepted: '"\\０"',
-  regex_backslash_arabic_digit_accepted: '"\\٠"',
+  regex_backslash_fullwidth_digit_accepted: `"\\${String.fromCodePoint(0xff10)}"`,
+  regex_backslash_arabic_digit_accepted: `"\\${String.fromCodePoint(0x0660)}"`,
 };
 
 function loadCorpus(): Corpus {

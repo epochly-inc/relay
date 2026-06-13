@@ -331,9 +331,16 @@ def _key_sort_string(typed_key: dict[str, Any]) -> str:
         # Rust formats a bool via Display: "true" / "false".
         return f"0:bool:{'true' if v else 'false'}"
     if t == "int":
-        return f"1:int:{int(v) + _I64_OFFSET:020}"
+        # Normalize sign + leading zeros before int() (ROBOREV P6REMOVE
+        # round-4): a long-leading-zero key (e.g. "+0...05") is the SAME CEL
+        # key as its canonical form, so it MUST produce the identical sort
+        # string (and thus collide) -- and the raw int() would trip Python's
+        # 4300-digit string-conversion limit on a Rust-accepted value. v has
+        # already passed the strict wire grammar at the _require_valid_map_key
+        # call site, so normalization is sound here.
+        return f"1:int:{int(_normalize_grammar_checked_decimal(v)) + _I64_OFFSET:020}"
     if t == "uint":
-        return f"2:uint:{int(v):020}"
+        return f"2:uint:{int(_normalize_grammar_checked_decimal(v)):020}"
     if t == "string":
         return f"3:string:{v}"
     raise ValueError(f"invalid map key type: {t!r}")
@@ -533,14 +540,49 @@ _WIRE_INT_RE = re.compile(r"[+-]?[0-9]+")
 _WIRE_UINT_RE = re.compile(r"\+?[0-9]+")
 
 
+def _normalize_grammar_checked_decimal(wire: str) -> str:
+    """Strip the optional ASCII sign and leading zeros from a wire decimal that
+    has ALREADY passed the strict ``_WIRE_INT_RE`` / ``_WIRE_UINT_RE`` grammar.
+
+    Returns a sign-prefixed, leading-zero-free decimal (e.g. ``"+0000"`` ->
+    ``"0"``, ``"-007"`` -> ``"-7"``, ``"5"`` -> ``"5"``) that is numerically
+    identical to the input. Rust's ``str::parse::<i64>`` / ``parse::<u64>``
+    accept arbitrarily many leading zeros (they cannot overflow), bounded only
+    by the i64 / u64 RANGE -- not by digit count. Python's ``int()`` on 3.12+
+    enforces a 4300-digit string-conversion limit, so a Rust-ACCEPTED in-range
+    value with thousands of leading zeros (e.g. ``"0"*5000`` -> 0,
+    ``"+" + "0"*5000 + "5"`` -> 5) RAISES instead of decoding -- a Py<->Rust
+    divergence (ROBOREV P6REMOVE round-4 LOW). Normalizing first leaves at most
+    20 significant digits (u64 has 20; i64 has 19) for ``int()`` to consume, so
+    the digit limit is never reached and the Rust-accepted value decodes.
+
+    Grammar precondition (caller-enforced): ``wire`` matches the relevant
+    ``[+-]?[0-9]+`` / ``\\+?[0-9]+`` pattern, so this never sees whitespace,
+    ``_``, non-ASCII digits, an empty string, or a bare sign.
+    """
+    sign = ""
+    body = wire
+    if body and body[0] in "+-":
+        if body[0] == "-":
+            sign = "-"
+        body = body[1:]
+    # Drop leading zeros but keep at least one significant digit so "0"*N -> "0"
+    # (and "-0"*N -> "-0", numerically 0). lstrip cannot empty a nonempty
+    # all-digit body without this guard.
+    body = body.lstrip("0") or "0"
+    return f"{sign}{body}"
+
+
 def _parse_wire_int(wire: str) -> int:
     """Parse an i64 wire decimal string EXACTLY as Rust ``str::parse::<i64>``.
 
     Raises ``ValueError`` on every form the crate rejects (whitespace, ``_``,
     non-ASCII digits, empty, bare sign, out-of-i64-range); accepts the
     crate-accepted forms (canonical, leading ``+``, leading zeros, ``-0``). The
-    value is computed with ``int()`` only AFTER the grammar check, so ``int``'s
-    laxer parsing can never widen what is admitted.
+    value is computed with ``int()`` only AFTER the grammar check AND after
+    stripping the sign + leading zeros, so ``int``'s laxer parsing can never
+    widen what is admitted and Python's 4300-digit ``int()`` limit can never
+    REJECT a Rust-accepted long-leading-zero value (ROBOREV P6REMOVE round-4).
     """
     if not isinstance(wire, str) or _WIRE_INT_RE.fullmatch(wire) is None:
         raise ValueError(
@@ -548,7 +590,7 @@ def _parse_wire_int(wire: str) -> int:
             "(optional +/- sign then ASCII digits only; no whitespace, "
             "underscores, or non-ASCII digits)"
         )
-    value = int(wire)
+    value = int(_normalize_grammar_checked_decimal(wire))
     if value < _I64_MIN or value > _I64_MAX:
         raise ValueError(
             f"int wire value {wire!r} is outside the i64 range "
@@ -561,14 +603,16 @@ def _parse_wire_uint(wire: str) -> int:
     """Parse a u64 wire decimal string EXACTLY as Rust ``str::parse::<u64>``.
 
     Like :func:`_parse_wire_int` but the unsigned grammar rejects a leading
-    ``-`` entirely (including ``-0``); bounds-checks against u64.
+    ``-`` entirely (including ``-0``); bounds-checks against u64. Leading zeros
+    are stripped before ``int()`` so a long-leading-zero u64 (Rust-accepted)
+    never trips Python's 4300-digit limit (ROBOREV P6REMOVE round-4).
     """
     if not isinstance(wire, str) or _WIRE_UINT_RE.fullmatch(wire) is None:
         raise ValueError(
             f"uint wire value {wire!r} is not a Rust-parseable u64 decimal "
             "(optional + sign then ASCII digits only; '-' rejected outright)"
         )
-    value = int(wire)
+    value = int(_normalize_grammar_checked_decimal(wire))
     if value > _U64_MAX:
         raise ValueError(
             f"uint wire value {wire!r} is outside the u64 range [0, {_U64_MAX}]"
