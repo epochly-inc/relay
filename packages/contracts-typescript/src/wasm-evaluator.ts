@@ -45,12 +45,14 @@ import { Worker } from "node:worker_threads";
 
 import {
   CODE_RELAY_CEL_002,
+  CODE_RELAY_CEL_003,
   RelayCelEngineError,
   RelayCelNumericOutOfBoundsError,
   RelayCelProfileError,
   RelayCelTimeoutError,
   RelayCelUnsupportedUdfError,
   type RelayCelSubtype,
+  SUBTYPE_TIMEOUT,
   WASM_PROFILE_SUBTYPES,
 } from "./errors.js";
 import {
@@ -759,6 +761,18 @@ function requireStringV(typed: TypedValue, tag: string): string {
 // Mirrors the Python _WASM_PROFILE_CODE (wasm_backed_evaluator.py:95).
 const WASM_PROFILE_CODE: string = CODE_RELAY_CEL_002;
 
+// The wasm's structured RELAY-CEL-003 timeout code (WS-J in-engine fuel
+// exhaustion). The wasm fuel counter, when the per-evaluation budget is
+// exhausted, returns {ok:false, code:RELAY-CEL-003, subtype:RELAY-CEL-TIMEOUT-001}
+// -- the SAME (code, subtype) pair the Node worker-thread wall-clock timeout
+// throws via RelayCelTimeoutError (the host wall-clock kill at
+// wasm-evaluator.ts onTimeout). The decode maps this envelope onto the SAME
+// RelayCelTimeoutError class so the Cloudflare-edge in-engine fuel timeout and
+// the worker-thread wall-clock timeout are INDISTINGUISHABLE downstream: same
+// class, same code (RELAY-CEL-003), same subtype (RELAY-CEL-TIMEOUT-001). No
+// new RELAY-CEL-NNN timeout code, no divergent subtype (VAL-CWC-P7EDGE-007).
+const WASM_TIMEOUT_CODE: string = CODE_RELAY_CEL_003;
+
 // The three relay.* UDFs the wasm hosts natively. A caller may pass these (e.g.
 // via RELAY_UDFS) without rejection; any OTHER UDF name has no registration slot
 // in the wasm and is rejected fail-closed. Mirrors the Python _NATIVE_UDF_NAMES
@@ -792,6 +806,15 @@ export interface WasmResponseEnvelope {
 //   ok:true                 -> typedToNative(value), then host checkFinite
 //                              (RELAY-CEL-006 / NUMERIC-OOB stays host-side)
 //   ok:false code 002        -> RelayCelProfileError(message, <wasm subtype>)
+//   ok:false code 003        -> RelayCelTimeoutError(message) -- the in-engine
+//                              fuel-exhaustion timeout (WS-J / edge path), the
+//                              SAME class + code (RELAY-CEL-003) + subtype
+//                              (RELAY-CEL-TIMEOUT-001) the Node worker-thread
+//                              wall-clock kill throws. The two timeout origins
+//                              are INDISTINGUISHABLE downstream
+//                              (VAL-CWC-P7EDGE-007). A 003 envelope without the
+//                              structured RELAY-CEL-TIMEOUT-001 subtype is an
+//                              engine-request anomaly, not a trusted timeout.
 //   ok:false (any other)     -> RelayCelEngineError.fromWasmEnvelope(code, msg)
 //                              => RELAY-CEL-009 with a per-cause engine subtype;
 //                              a wasm EXEC (its 004) / REQUEST (its 006) failure
@@ -855,6 +878,28 @@ export function decodeWasmEnvelope(envelope: unknown): unknown {
       );
     }
     throw new RelayCelProfileError(message, subtype as RelayCelSubtype);
+  }
+
+  // RELAY-CEL-003 timeout: the wasm's in-engine fuel counter exhausted the
+  // per-evaluation budget (WS-J / the Cloudflare-edge path). Map (code, subtype)
+  // -> RelayCelTimeoutError -- the SAME class + code + subtype the Node
+  // worker-thread wall-clock kill throws -- so the two timeout origins are
+  // INDISTINGUISHABLE downstream (VAL-CWC-P7EDGE-007). Like the profile branch
+  // above, a 003 envelope MUST carry the structured subtype RELAY-CEL-TIMEOUT-001;
+  // an absent / unexpected subtype is an engine-request anomaly, NOT a
+  // trustworthy timeout (it would otherwise mask a malformed envelope as a
+  // benign timeout and let a bogus signed per-condition subtype through).
+  if (code === WASM_TIMEOUT_CODE) {
+    const subtype = env.subtype;
+    if (subtype !== SUBTYPE_TIMEOUT) {
+      throw new RelayCelEngineError(
+        `wasm timeout envelope (RELAY-CEL-003) carried an unexpected subtype ` +
+          `${JSON.stringify(subtype)} (expected ${JSON.stringify(SUBTYPE_TIMEOUT)}): ` +
+          `${message}`,
+        "RELAY-CEL-ENGINE-REQUEST",
+      );
+    }
+    throw new RelayCelTimeoutError(message);
   }
 
   // Every other wasm failure cause -> the dedicated RELAY-CEL-009 engine error
