@@ -61,6 +61,14 @@ _EXHAUSTING_BUDGET = 8
 # `Some(1_000_000)` non-exhausting case.
 _GENEROUS_BUDGET = 1_000_000
 
+# The u64 ceiling (2**64 - 1): the largest budget the wasm's serde as_u64() can
+# read. A positive fuel_budget STRICTLY GREATER than this serializes outside u64,
+# so the wasm's as_u64().unwrap_or(0) would read 0 -- the DISABLED sentinel --
+# SILENTLY turning a "large finite" budget into "unbounded" and letting a
+# fuel-exhausting expression run unbounded (defeating the timeout). The loader
+# fail-closed guard raises ValueError for such a value before adding the field.
+_U64_MAX = 2**64 - 1
+
 # The cross-host (code, subtype) timeout contract (crate codes::TIMEOUT /
 # subtypes::TIMEOUT). MUST be identical to the TS Workers fuel path and the Node
 # worker-thread RelayCelTimeoutError -- no new timeout code, no divergent subtype.
@@ -137,3 +145,42 @@ def test_fuel_timeout_verdict_is_deterministic():
     ok2 = C.eval(_PATHOLOGICAL, fuel_budget=_GENEROUS_BUDGET)
     assert ok1 == ok2, f"same expr+generous budget twice must be identical: {ok1!r}"
     assert ok1["ok"] is True, ok1
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("budget", [2**64, 2**64 + 1, 10**21, 2**70])
+def test_fuel_budget_above_u64_max_fails_closed(budget):
+    """FAIL CLOSED (roborev MED): a positive fuel_budget exceeding u64 max
+    (2**64 - 1) raises ValueError BEFORE the field is added to the request.
+
+    The wasm reads fuel_budget with serde as_u64().unwrap_or(0); a Python int that
+    serializes outside u64 would become 0 in the wasm -- the DISABLED sentinel --
+    SILENTLY turning the budget off and letting the fuel-exhausting expr run
+    unbounded. The loader must surface the misconfig (raise) rather than silently
+    send it (mask) or silently drop it (also mask)."""
+    assert budget > _U64_MAX, "fixture sanity: budget must exceed u64 max"
+    with pytest.raises(ValueError, match="(?i)fuel"):
+        C.eval(_PATHOLOGICAL, fuel_budget=budget)
+
+
+@pytest.mark.plumbing
+def test_fuel_budget_at_u64_max_is_accepted_not_rejected():
+    """Boundary: a budget EXACTLY at u64 max (2**64 - 1) is the largest value the
+    wasm can read, so it is VALID -- the guard rejects only values STRICTLY ABOVE
+    it. u64 max is an effectively-unbounded budget, so the exhausting expr finishes
+    under it -> ok==True (proves the guard does not over-reject the boundary)."""
+    r = C.eval(_PATHOLOGICAL, fuel_budget=_U64_MAX)
+    assert r["ok"] is True, f"u64-max budget must be accepted (finishes the expr): {r}"
+    assert "value" in r, f"a successful eval carries a value: {r}"
+    assert r.get("code") != _TIMEOUT_CODE, f"u64-max budget must not trip a timeout: {r}"
+
+
+@pytest.mark.plumbing
+def test_fuel_budget_in_range_still_caps_after_guard():
+    """No false rejection: an ordinary small in-range budget (8) STILL trips the
+    in-engine timeout after the fail-closed guard is in place -- the guard rejects
+    only out-of-u64 values, never a normal budget."""
+    r = C.eval(_PATHOLOGICAL, fuel_budget=_EXHAUSTING_BUDGET)
+    assert r["ok"] is False, f"an in-range budget must still cap the eval: {r}"
+    assert r["code"] == _TIMEOUT_CODE, f"must still surface RELAY-CEL-003: {r}"
+    assert r["subtype"] == _TIMEOUT_SUBTYPE, f"must still carry the TIMEOUT subtype: {r}"

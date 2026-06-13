@@ -33,6 +33,14 @@ import { RelayCel } from "../../typescript/relay-cel-wasm.mjs";
 const EXHAUSTING_EXPR = "[1,2,3,4,5].map(x, [1,2,3,4,5].map(y, x*y)).size()";
 const SMALL_BUDGET = 8;
 const GENEROUS_BUDGET = 10000000;
+// The u64 max (2**64 - 1). A positive integer the wasm CAN read as a u64 -- the
+// largest valid budget. The crate reads fuel_budget with serde as_u64(); a value
+// the JSON serializes OUTSIDE u64 becomes 0 (unwrap_or(0)) in the wasm, silently
+// DISABLING the budget. The loader fail-closed guard rejects such values BEFORE
+// serialization. Note JS Number.MAX_SAFE_INTEGER (2**53 - 1) is already < u64
+// max, so Number.isSafeInteger covers the representable-as-exact-u64 requirement
+// (a safe integer always serializes as a plain decimal the wasm can read).
+const U64_MAX = 18446744073709551615n;
 
 // Spy on WebAssembly.instantiate to capture the import object the loader passes,
 // proving the no-import reactor is preserved (VAL-005) end-to-end through the
@@ -169,6 +177,94 @@ test("fuelBudget=0 is the disabled sentinel: unbounded, request JSON byte-identi
   });
   assert.equal(zero.ok, true, "fuelBudget:0 (disabled sentinel) => unbounded");
   assert.equal(negative.ok, true, "negative fuelBudget => unbounded");
+});
+
+// --- FAIL-CLOSED on an out-of-u64 / non-safe-integer fuel budget (roborev MED) -
+//
+// The crate reads fuel_budget with serde as_u64().unwrap_or(0): a POSITIVE value
+// the JSON serializes OUTSIDE u64 (e.g. 1e21, or a JS non-safe integer like
+// 2**53) becomes 0 in the wasm -- which is the DISABLED sentinel. So a "large
+// finite" budget would SILENTLY become "unbounded" and a fuel-exhausting
+// expression would run UNBOUNDED, defeating the timeout. The loader must FAIL
+// CLOSED: for a positive number that is NOT a safe integer it THROWS a RangeError
+// (surfaces the misconfig) rather than silently sending it (masks it) or silently
+// dropping it (also masks it). absent / 0 / negative remain the no-field form.
+
+test("fuelBudget 1e21 (positive, integer, but NOT a safe integer) THROWS a RangeError (fail closed, not a silent unbounded run)", async () => {
+  const cel = await RelayCel.load();
+  // 1e21 is Number.isInteger===true but serializes as "1e+21", which the wasm's
+  // as_u64() cannot read -> unwrap_or(0) -> budget SILENTLY disabled. Must throw.
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: 1e21 }),
+    (err) => {
+      assert.ok(
+        err instanceof RangeError,
+        `expected a RangeError, got ${err && err.constructor && err.constructor.name}`,
+      );
+      assert.match(
+        err.message,
+        /fuel/i,
+        "the RangeError message must name the offending fuel budget",
+      );
+      return true;
+    },
+    "a positive out-of-u64 / non-safe-integer fuelBudget must FAIL CLOSED (throw), never silently disable the budget",
+  );
+});
+
+test("fuelBudget 2**53 (positive integer just above MAX_SAFE_INTEGER) THROWS a RangeError (fail closed)", async () => {
+  const cel = await RelayCel.load();
+  // 2**53 == 9007199254740992: Number.isInteger===true, Number.isSafeInteger===
+  // false (the first integer that loses exactness). It MAY round on serialize, so
+  // it is not a trustworthy budget -> fail closed.
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: 2 ** 53 }),
+    RangeError,
+    "a positive non-safe-integer fuelBudget must throw a RangeError (fail closed)",
+  );
+});
+
+test("the snake_case alias fuel_budget is ALSO fail-closed on an out-of-u64 value", async () => {
+  const cel = await RelayCel.load();
+  // The fail-closed guard must apply to BOTH the camelCase opt key and the
+  // snake_case wire-name alias -- both feed the same wasm fuel_budget field.
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuel_budget: 1e21 }),
+    RangeError,
+    "the snake_case alias must be fail-closed too (same wasm field)",
+  );
+});
+
+test("an IN-RANGE positive fuelBudget (8) still works after the fail-closed guard (no false rejection)", async () => {
+  const cel = await RelayCel.load();
+  // A small in-range budget must STILL trip the in-engine timeout (the guard
+  // rejects only out-of-u64 values, never an ordinary safe-integer budget).
+  const out = await cel.eval(EXHAUSTING_EXPR, undefined, {
+    fuelBudget: SMALL_BUDGET,
+  });
+  assert.equal(out.ok, false, "an in-range budget must still cap the eval");
+  assert.equal(out.code, "RELAY-CEL-003");
+  assert.equal(out.subtype, "RELAY-CEL-TIMEOUT-001");
+});
+
+test("a LARGE but still safe-integer fuelBudget (MAX_SAFE_INTEGER) is accepted (boundary: < u64 max, representable)", async () => {
+  const cel = await RelayCel.load();
+  // Number.MAX_SAFE_INTEGER (2**53 - 1 == 9007199254740991) is the largest exact
+  // integer JS can represent; it is < u64 max (2**64 - 1), serializes as a plain
+  // decimal the wasm reads, so it is a VALID (huge, effectively unbounded) budget
+  // and must NOT be rejected. The exhausting expr finishes under it -> ok:true.
+  assert.ok(
+    BigInt(Number.MAX_SAFE_INTEGER) < U64_MAX,
+    "MAX_SAFE_INTEGER must be < u64 max for this boundary case to be valid",
+  );
+  const out = await cel.eval(EXHAUSTING_EXPR, undefined, {
+    fuelBudget: Number.MAX_SAFE_INTEGER,
+  });
+  assert.equal(
+    out.ok,
+    true,
+    "a safe-integer budget (< u64 max) must be accepted, not rejected",
+  );
 });
 
 test("snake_case opts.fuel_budget is accepted as an alias for fuelBudget", async () => {

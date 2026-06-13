@@ -127,9 +127,22 @@ export class RelayCel {
    * instantiates with an EMPTY import object), a Cloudflare-Workers-shaped path
    * (no worker_threads, no Worker.terminate) gets a portable, deterministic
    * RELAY-CEL-003 from the budget rather than from a wall-clock thread-kill. The
-   * field is added to the request ONLY when it is a positive finite integer, so
+   * field is added to the request ONLY when it is a positive SAFE integer, so
    * an absent / 0 / negative / non-int value leaves the request JSON
    * byte-identical to the no-fuel form (0 is the wasm-side disabled sentinel).
+   *
+   * FAIL CLOSED on an out-of-u64 budget: the wasm reads fuel_budget with serde
+   * as_u64().unwrap_or(0), so a POSITIVE value the JSON serializes OUTSIDE u64
+   * (e.g. 1e21 -- Number.isInteger but serialized as "1e+21" -- or a JS non-safe
+   * integer such as 2**53 that may lose exactness on serialize) would become 0 in
+   * the wasm: the DISABLED sentinel. A "large finite" budget silently becoming
+   * "unbounded" is an availability foot-gun (a fuel-exhausting expression would
+   * then run unbounded, defeating the timeout), so a positive value that is NOT a
+   * safe integer THROWS a RangeError -- surfacing the misconfig rather than
+   * silently sending it (which masks it) or silently dropping it (also masks it).
+   * Number.isSafeInteger is the exact ceiling: MAX_SAFE_INTEGER (2**53 - 1) is
+   * already < u64 max (2**64 - 1), and a safe integer always serializes as a plain
+   * decimal the wasm can read, so a safe positive integer is a representable u64.
    *
    * The wasm-request field names (`relay_profile`, `container`, `fuel_budget`)
    * MUST match the Python loader (relay_cel_wasm.py) and the crate
@@ -145,13 +158,26 @@ export class RelayCel {
       if (options.relayProfile) {
         req.relay_profile = true;
       }
-      // Mirror the Python loader: add fuel_budget ONLY when a positive finite
+      // Mirror the Python loader: add fuel_budget ONLY when a positive SAFE
       // integer, so absent / 0 / negative / non-int leaves the request JSON
       // byte-identical to the no-fuel form (the disabled sentinel is the wasm
       // default). Accept either the camelCase opts key (fuelBudget) or the
       // snake_case wire-name key (fuel_budget).
       const fuel = options.fuelBudget ?? options.fuel_budget;
-      if (typeof fuel === "number" && Number.isInteger(fuel) && fuel > 0) {
+      if (typeof fuel === "number" && fuel > 0) {
+        // FAIL CLOSED on an out-of-u64 / non-safe-integer positive budget: such a
+        // value (e.g. 1e21, or 2**53) serializes outside u64, so the wasm's
+        // as_u64().unwrap_or(0) would read 0 -- silently DISABLING the budget and
+        // letting a fuel-exhausting expression run unbounded. Throw a RangeError so
+        // the misconfig surfaces instead of being masked. Number.isSafeInteger is
+        // the exact ceiling (MAX_SAFE_INTEGER 2**53 - 1 < u64 max 2**64 - 1).
+        if (!Number.isSafeInteger(fuel)) {
+          throw new RangeError(
+            `fuel budget ${fuel} is not a safe integer (must be a positive ` +
+              `integer <= ${Number.MAX_SAFE_INTEGER}); a larger/non-integer value ` +
+              "would serialize outside u64 and SILENTLY DISABLE the budget in the wasm",
+          );
+        }
         req.fuel_budget = fuel;
       }
     }

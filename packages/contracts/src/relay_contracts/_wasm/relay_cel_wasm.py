@@ -45,6 +45,12 @@ from typing import Any, cast
 
 from wasmtime import Engine, Func, Instance, Memory, Module, Store, Trap
 
+# The u64 ceiling (2**64 - 1): the largest fuel_budget the wasm's serde as_u64()
+# can read. A positive fuel_budget strictly greater than this serializes outside
+# u64, so the wasm's as_u64().unwrap_or(0) would read 0 (the disabled sentinel) --
+# the loader fails closed (raises) on such a value rather than silently disabling.
+_U64_MAX = 2**64 - 1
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_WASM = os.path.normpath(
     os.path.join(
@@ -114,7 +120,17 @@ class RelayCel:
         portable RELAY-CEL-003 from the budget rather than a wall-clock kill.
         The field is added to the request ONLY when it is a positive int, so a
         None / 0 / negative value leaves the request JSON byte-identical to the
-        no-fuel form (the disabled sentinel is the wasm default)."""
+        no-fuel form (the disabled sentinel is the wasm default).
+
+        FAIL CLOSED on an out-of-u64 budget: the wasm reads fuel_budget with serde
+        as_u64().unwrap_or(0), so a positive value that serializes OUTSIDE u64
+        (i.e. > 2**64 - 1) would become 0 in the wasm -- the DISABLED sentinel --
+        SILENTLY turning a "large finite" budget into "unbounded" and letting a
+        fuel-exhausting expression run unbounded (defeating the timeout). To
+        surface the misconfig rather than mask it, a positive fuel_budget strictly
+        greater than the u64 ceiling raises ValueError before the field is added.
+        A budget exactly at 2**64 - 1 is the largest representable u64 and is
+        accepted."""
         req: dict[str, Any] = {"expr": expr}
         if bindings:
             req["bindings"] = bindings
@@ -123,6 +139,13 @@ class RelayCel:
         if relay_profile:
             req["relay_profile"] = True
         if fuel_budget is not None and fuel_budget > 0:
+            if fuel_budget > _U64_MAX:
+                raise ValueError(
+                    f"fuel_budget {fuel_budget} exceeds the u64 maximum "
+                    f"({_U64_MAX}); a value outside u64 would serialize so the "
+                    "wasm reads as_u64().unwrap_or(0) and SILENTLY DISABLE the "
+                    "budget -- failing closed to surface the misconfig"
+                )
             req["fuel_budget"] = fuel_budget
         inp = json.dumps(req).encode("utf-8")
         n = len(inp)

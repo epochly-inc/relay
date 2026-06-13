@@ -48,6 +48,13 @@ dist:
 
 test: build
 	$(PYTHON) -m pytest $(PKG)/tests -v
+	# WS-J edge fuel-timeout node harness (node --test): exercises the TS/edge
+	# .mjs loader fuel surface end to end (forwarding, the RELAY-CEL-003 timeout
+	# path, and the fail-closed out-of-u64 range guard). Also wired as a pytest
+	# plumbing test (relay/tests/conformance/cel/test_wsj_edge_fuel_timeout_node_harness.py)
+	# so the CI plumbing gate runs it; this `make test` invocation is the local
+	# direct path. CEL_WASM points it at the reproducible-recipe wasm just built.
+	CEL_WASM=$(WASM) node --test $(CONF)/harness/wsj_edge_fuel_timeout.test.mjs
 
 all: build conformance parity test
 
