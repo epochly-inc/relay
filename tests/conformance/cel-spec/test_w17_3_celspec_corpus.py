@@ -416,9 +416,10 @@ _PARAM_IDS = [v.get("vector_id", "<unknown>") for v in _PARAM_VECTORS]
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W17-011")
 @pytest.mark.parametrize("vector", _PARAM_VECTORS, ids=_PARAM_IDS)
-def test_celpy_evaluates_included_vector(vector: dict[str, Any]) -> None:
-    """cel-python MUST produce the expected value for every included
-    vector. The expected value uses cel-spec's value-kind taxonomy
+def test_wasm_evaluates_included_vector(vector: dict[str, Any]) -> None:
+    """The wasm engine (relay_cel_wasm, the single CEL backend since M6) MUST
+    produce the expected value for every included vector. The expected value
+    uses cel-spec's value-kind taxonomy
     (int/uint/double/string/bool/list/map) materialised as JSON."""
 
     if vector.get("_pending"):
@@ -459,7 +460,8 @@ def test_celpy_evaluates_included_vector(vector: dict[str, Any]) -> None:
     actual = _to_python(raw)
     expected = vector["expected_value"]
     assert actual == expected, (
-        f"VAL-W17-011: cel-python diverged from cel-spec golden for vector "
+        f"VAL-W17-011: the wasm engine (relay_cel_wasm) diverged from the "
+        f"cel-spec golden for vector "
         f"{vector['vector_id']!r}\n"
         f"  expression: {vector['expression']!r}\n"
         f"  bindings:   {vector.get('bindings')!r}\n"

@@ -373,8 +373,10 @@ def _probe_three_udfs() -> list[Finding]:
                     )
                 )
             continue
-        # The probe expressions are boolean; the wasm returns a CEL boolean
-        # (celtypes.BoolType, a non-bool int subclass). Assert the decoded result
+        # The probe expressions are boolean; the live wasm codec returns a
+        # native Python bool (the legacy interpreter's BoolType is gone since
+        # M6 -- _decoded_is_boolean keeps a BoolType name-check only as a
+        # defensive guard). Assert the decoded result
         # is an ACTUAL boolean TYPE before comparing -- a non-boolean truthy/falsy
         # result (e.g. a broken codec returning 1/0 or a string) is a wrong
         # verdict, NOT a silent pass via truthiness coercion (roborev LOW).
