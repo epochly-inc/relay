@@ -536,11 +536,14 @@ class GateEvaluator:
         self._anti_bypass = anti_bypass or AntiBypassGuard()
         # Single shared CEL evaluator with the canonical Relay UDF set.
         # VAL-W8-002: gate policy conditions MUST be evaluated by the W6
-        # contract engine, never inlined. The evaluator is constructed by
-        # the contracts factory -- the single engine-construction site,
-        # which returns the wasm-backed engine (the only CEL backend since
-        # the M6 single-engine cutover) -- so gate src stays env-free and
-        # deterministic (VAL-W8-005 / VAL-CWC-P2TSGATE-010). The hint is
+        # contract engine, never inlined. The evaluator is constructed via
+        # the contracts factory -- the single engine-SELECTION (env-read)
+        # site, which returns the wasm-backed engine (the only CEL backend
+        # since the M6 single-engine cutover). Other paths may construct the
+        # wasm evaluator directly; the locked invariant is that the
+        # engine-selection environment variable is read ONLY in the contracts
+        # factory, never here, so gate src stays env-free and deterministic
+        # (VAL-W8-005 / VAL-CWC-P2TSGATE-010). The hint is
         # the CelEvaluatorProtocol facade so the gate stays decoupled from
         # engine internals.
         self._cel: CelEvaluatorProtocol = cel_evaluator or make_cel_evaluator(

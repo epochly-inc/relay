@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import datetime
 import math
+import re
 from typing import Any
 
 # Absolute import (NOT ``from .errors``): this module is sometimes loaded
@@ -375,13 +376,15 @@ def _require_valid_map_key(typed_key: Any) -> str:
     if t == "bool":
         _require_bool_v(typed_key)
     elif t == "int":
-        # Scalar strictness + the i64 wire bound in one step (the crate's
-        # s.parse::<i64>() enforces both at once, lib.rs:1358). _encode_int
-        # is the existing bounds helper; its string result is discarded.
-        _encode_int(int(_require_str_v(typed_key)))
+        # Strict Rust-grammar parse + the i64 wire bound in one step (the
+        # crate's s.parse::<i64>() enforces both at once, lib.rs:1358).
+        # _parse_wire_int rejects every form int() would over-admit
+        # (whitespace/underscores/non-ASCII digits/bare sign); its value is
+        # discarded -- only the validation matters here.
+        _parse_wire_int(_require_str_v(typed_key))
     elif t == "uint":
-        # u64 bound via the existing bounds helper (lib.rs:1366).
-        _encode_uint(int(_require_str_v(typed_key)))
+        # Strict u64 parse + bound (lib.rs:1366); '-' rejected outright.
+        _parse_wire_uint(_require_str_v(typed_key))
     elif t == "string":
         _require_str_v(typed_key)
     else:
@@ -511,6 +514,66 @@ def py_to_typed(value: Any) -> dict[str, Any]:
     raise TypeError(
         f"py_to_typed: unsupported value type {type(value).__name__!r}: {value!r}"
     )
+
+
+# Strict wire-decimal grammar mirroring the crate's Rust integer parse
+# (lib.rs:1358 ``s.parse::<i64>()`` / 1366 ``s.parse::<u64>()``). Rust accepts an
+# optional single ASCII sign (``+``/``-`` for i64; ``+`` ONLY for u64 -- the
+# unsigned parse rejects ``-`` outright, including ``-0``), then one or more
+# ASCII digits ``0-9``, and NOTHING else: no surrounding/embedded whitespace
+# (ASCII or Unicode), no ``_`` digit separators, no non-ASCII decimal digits
+# (e.g. fullwidth), no empty digit run, no bare sign. Python ``int()`` -- which
+# the codec previously used raw on both the scalar decode path and the map-key
+# paths -- is laxer on ALL of those, so a hand-built key like
+# ``{"t":"int","v":"1_000"}`` passed validation and was emitted VERBATIM: bytes
+# the wasm request decoder rejects (ROBOREV M6 round-3 MED). ``[0-9]`` matches
+# only ASCII digits (Unicode digits would need ``\d``); ``fullmatch`` anchors
+# the FULL string with no trailing-newline allowance (unlike ``$``).
+_WIRE_INT_RE = re.compile(r"[+-]?[0-9]+")
+_WIRE_UINT_RE = re.compile(r"\+?[0-9]+")
+
+
+def _parse_wire_int(wire: str) -> int:
+    """Parse an i64 wire decimal string EXACTLY as Rust ``str::parse::<i64>``.
+
+    Raises ``ValueError`` on every form the crate rejects (whitespace, ``_``,
+    non-ASCII digits, empty, bare sign, out-of-i64-range); accepts the
+    crate-accepted forms (canonical, leading ``+``, leading zeros, ``-0``). The
+    value is computed with ``int()`` only AFTER the grammar check, so ``int``'s
+    laxer parsing can never widen what is admitted.
+    """
+    if not isinstance(wire, str) or _WIRE_INT_RE.fullmatch(wire) is None:
+        raise ValueError(
+            f"int wire value {wire!r} is not a Rust-parseable i64 decimal "
+            "(optional +/- sign then ASCII digits only; no whitespace, "
+            "underscores, or non-ASCII digits)"
+        )
+    value = int(wire)
+    if value < _I64_MIN or value > _I64_MAX:
+        raise ValueError(
+            f"int wire value {wire!r} is outside the i64 range "
+            f"[{_I64_MIN}, {_I64_MAX}]"
+        )
+    return value
+
+
+def _parse_wire_uint(wire: str) -> int:
+    """Parse a u64 wire decimal string EXACTLY as Rust ``str::parse::<u64>``.
+
+    Like :func:`_parse_wire_int` but the unsigned grammar rejects a leading
+    ``-`` entirely (including ``-0``); bounds-checks against u64.
+    """
+    if not isinstance(wire, str) or _WIRE_UINT_RE.fullmatch(wire) is None:
+        raise ValueError(
+            f"uint wire value {wire!r} is not a Rust-parseable u64 decimal "
+            "(optional + sign then ASCII digits only; '-' rejected outright)"
+        )
+    value = int(wire)
+    if value > _U64_MAX:
+        raise ValueError(
+            f"uint wire value {wire!r} is outside the u64 range [0, {_U64_MAX}]"
+        )
+    return value
 
 
 def _encode_int(value: Any) -> str:
@@ -675,11 +738,14 @@ def typed_to_py(typed: Any) -> Any:
         raise ValueError("typed_to_py: typed object missing 't'") from exc
 
     if t == "int":
-        # lib.rs:1353-1359: as_str() then i64 parse -- v MUST be a JSON string.
-        return int(_require_str_v(typed))
+        # lib.rs:1353-1359: as_str() then i64 parse -- v MUST be a JSON string
+        # AND parse EXACTLY as Rust str::parse::<i64> (strict grammar + i64
+        # bound), never with Python int()'s laxer rules (ROBOREV M6 round-3).
+        return _parse_wire_int(_require_str_v(typed))
     if t == "uint":
-        # lib.rs:1361-1367: as_str() then u64 parse.
-        return CelUint(int(_require_str_v(typed)))
+        # lib.rs:1361-1367: as_str() then u64 parse -- strict Rust grammar +
+        # u64 bound ('-' rejected outright), never Python int() (ROBOREV M6 r3).
+        return CelUint(_parse_wire_uint(_require_str_v(typed)))
     if t == "double":
         # lib.rs:1369-1384 accepts a string sentinel/decimal OR a raw JSON number.
         return _decode_double(_require_v(typed))
