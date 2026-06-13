@@ -11,10 +11,9 @@ This ``cel_engine`` check is a RUNTIME PROBE (unlike the grep-only invariant
 checkers in this package). It is PURE in the verify-self sense: it only reads /
 parses under ``repo_root`` and the imported ``relay_contracts`` package data; it
 performs NO mutation, NO network, and NO filesystem write. It loads the wasm
-DIRECTLY via :class:`relay_contracts.WasmCelEvaluator`, independent of the
-``RELAY_CEL_ENGINE`` env selection (the default-flip is a LATER M5 feature; this
-check stays engine-selection-agnostic so it validates the wasm engine whether or
-not it is the active default).
+DIRECTLY via :class:`relay_contracts.WasmCelEvaluator`: the single reproducible
+wasm engine is the ONLY CEL backend (there is no legacy engine to select), so the
+check validates that one engine unconditionally.
 
 Four probes, each mapping a failure cause to a distinct finding code:
 
@@ -305,12 +304,12 @@ def _is_engine_load_error(exc: BaseException) -> bool:
 def _decoded_is_boolean(value: Any) -> bool:
     """True iff ``value`` is an actual CEL/Python boolean TYPE (not truthy/falsy).
 
-    Mirrors the pipeline's :func:`relay_contracts.pipeline._classify_outcome`
-    type discrimination: a Python ``bool`` OR the cel-python ``BoolType`` (an int
-    subclass that is NOT a ``bool`` subclass -- the type ``typed_to_py`` returns
-    for a CEL boolean). Detection is by class-name for the BoolType case so this
-    checker stays decoupled from the evaluator's celtypes internals, exactly as
-    the pipeline does.
+    The wasm value codec decodes a CEL boolean to a native Python ``bool``, so the
+    primary acceptance is ``isinstance(value, bool)``. The trailing class-name
+    check for ``BoolType`` is a defensive guard against any future codec that
+    surfaces a non-``bool`` int-subclass boolean (an int subclass that is NOT a
+    ``bool`` subclass); detection is by class-name so this checker stays decoupled
+    from the evaluator's value-codec internals.
 
     A truthiness coercion (``bool(raw)``) would let a broken value codec / engine
     returning ``1`` / ``0`` / a non-empty string SILENTLY pass a boolean verdict

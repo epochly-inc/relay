@@ -733,3 +733,65 @@ def test_cel_engine_corrupt_but_present_wasm_is_wasm_unloadable(
     ), "corrupt-but-present wasm must NOT be misclassified as DYN-NOT-FENCED"
     for finding in findings:
         assert finding.code in FINDING_CODES
+
+
+# -----------------------------------------------------------------------------
+# VAL-CWC-P6REMOVE-013: the cli invariants tree is legacy-CEL-engine FREE in text
+# -----------------------------------------------------------------------------
+#
+# Post-cutover (M6: cel-python + cel-js removed; the single wasm engine is the
+# ONLY backend) the verify-self CEL-engine check loads the wasm DIRECTLY and no
+# longer branches on -- or even mentions -- the legacy engines. Every source
+# file under ``relay_cli/invariants/`` (code, comment, OR docstring) must be free
+# of the legacy-engine tokens; a residual mention is stale text that misdescribes
+# the wasm-only reality. This mirrors the decisive VAL-013 grep
+# (``grep -rnE 'celpy|cel-python|cel-js|RELAY_CEL_ENGINE'
+# packages/cli/src/relay_cli/invariants/`` -> exit 1 / no match).
+
+_INVARIANTS_TREE = (
+    REPO_ROOT / "packages" / "cli" / "src" / "relay_cli" / "invariants"
+)
+
+# The legacy-engine tokens that must NOT appear anywhere in the invariants tree.
+# ``RELAY_CEL_ENGINE`` is the (removed) env selector; ``celpy`` / ``cel-python``
+# / ``cel-js`` are the removed legacy engines.
+_LEGACY_ENGINE_TOKENS = ("celpy", "cel-python", "cel-js", "RELAY_CEL_ENGINE")
+
+
+@pytest.mark.fulfills("VAL-CWC-P6REMOVE-013")
+def test_invariants_tree_is_legacy_engine_free() -> None:
+    """No source file under ``relay_cli/invariants/`` references a legacy CEL
+    engine (``celpy`` / ``cel-python`` / ``cel-js`` / ``RELAY_CEL_ENGINE``) in
+    code, comment, OR docstring -- the wasm engine is the only backend post-M6.
+
+    Encodes VAL-CWC-P6REMOVE-013: the decisive grep over the invariants tree must
+    yield no match. A residual mention is stale text describing a removed engine.
+    """
+    offenders: list[str] = []
+    for py_path in sorted(_INVARIANTS_TREE.rglob("*.py")):
+        text = py_path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for token in _LEGACY_ENGINE_TOKENS:
+                if token in line:
+                    rel = py_path.relative_to(REPO_ROOT)
+                    offenders.append(f"{rel}:{lineno}: {token}: {line.strip()}")
+    assert not offenders, (
+        "invariants tree must be legacy-CEL-engine free (VAL-CWC-P6REMOVE-013); "
+        "found legacy-engine references:\n" + "\n".join(offenders)
+    )
+
+
+@pytest.mark.fulfills("VAL-CWC-P6REMOVE-013")
+def test_check_order_keeps_cel_engine_in_alphabetic_slot() -> None:
+    """``CHECK_ORDER`` retains ``cel-engine-single-wasm`` at its alphabetic slot.
+
+    VAL-CWC-P6REMOVE-013 requires the purge to PRESERVE the cel-engine check's
+    registration and the byte-stable alphabetic order that the verify-self JSON
+    snapshot depends on (``CHECK_ORDER == tuple(sorted(CHECK_ORDER))``).
+    """
+    assert cel_engine.CHECK_NAME == "cel-engine-single-wasm"
+    assert cel_engine.CHECK_NAME in CHECK_ORDER
+    assert tuple(sorted(CHECK_ORDER)) == CHECK_ORDER
+    # The check is at the exact slot sorted() places it (no manual reorder).
+    expected_index = sorted(CHECK_ORDER).index(cel_engine.CHECK_NAME)
+    assert CHECK_ORDER.index(cel_engine.CHECK_NAME) == expected_index
