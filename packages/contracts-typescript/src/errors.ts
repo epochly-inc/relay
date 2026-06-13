@@ -3,7 +3,11 @@
 // Every Relay-CEL error carries a canonical `RELAY-CEL-NNN` code plus a
 // stable `subtype` token. The Python errors module
 // (packages/contracts/src/relay_contracts/errors.py) emits the identical
-// token set; the pair (`code`, `subtype`) is the cross-runtime byte-equality
+// token set for the cross-runtime PARITY-TESTED engine-error subtypes; each
+// host additionally defines host-specific subtypes that are not cross-emitted
+// (e.g. this module's RELAY-CEL-PROFILE-STRUCT-DISABLED fence vs the Python
+// RELAY-CEL-008 / RELAY-CEL-RESOURCE-EXHAUSTED classification). For the shared
+// subtypes, the pair (`code`, `subtype`) is the cross-runtime byte-equality
 // key that VAL-W6-006 / VAL-W6-007 / VAL-W6-014 enforce.
 //
 // Code-to-subtype map (must match packages/contracts/src/relay_contracts/errors.py):

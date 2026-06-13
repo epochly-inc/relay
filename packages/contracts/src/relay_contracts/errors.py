@@ -2,9 +2,13 @@
 
 Every Relay-CEL error carries a canonical ``RELAY-CEL-NNN`` code (from the
 generated :class:`RelayErrorCode` registry) plus a stable ``subtype`` token.
-The TypeScript errors module (errors.ts) emits the identical token set.
-The pair (`code`, `subtype`) is the cross-runtime byte-equality key that
-VAL-W6-006 and VAL-W6-007 enforce.
+The TypeScript errors module (errors.ts) emits the identical token set for
+the cross-runtime PARITY-TESTED engine-error subtypes; each host additionally
+defines host-specific subtypes that are not cross-emitted (e.g. the Python
+RELAY-CEL-008 / RELAY-CEL-RESOURCE-EXHAUSTED classification here vs the
+TypeScript RELAY-CEL-PROFILE-STRUCT-DISABLED fence there). For the shared
+subtypes, the pair (`code`, `subtype`) is the cross-runtime byte-equality key
+that VAL-W6-006 and VAL-W6-007 enforce.
 
 Code-to-subtype map (mirror in the TypeScript errors.ts module):
 

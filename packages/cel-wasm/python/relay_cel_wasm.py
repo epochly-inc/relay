@@ -1,6 +1,6 @@
 """Python loader for the relay-cel-wasm single CEL engine.
 
-This is the OSS-portable Python entrypoint: the vendored wasm loader. It loads
+This is the OSS-portable Python entrypoint: the Python wasm loader. It loads
 the SAME signed `.wasm` reactor that the TS/edge runtime loads and evaluates CEL
 expressions over it. It is the single CEL evaluation core for the Python host
 (the contracts factory's WasmCelEvaluator delegates to it); the cross-host
