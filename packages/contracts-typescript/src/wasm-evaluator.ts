@@ -1248,10 +1248,15 @@ export class WasmCelBackend {
    * Promise rejects with RelayCelTimeoutError; the Worker handle is dropped
    * (quarantined) so the next evaluate() respawns a fresh Worker -- the
    * (possibly mid-eval) wasm instance dies with the terminated Worker and never
-   * corrupts the next evaluation. Per-runtime: this is the NODE path. The
-   * Cloudflare Workers path is platform-CPU-limit-only until WS-J (see below);
-   * we DO NOT silently skip the budget -- an explicit runtime branch selects the
-   * Node Worker hard-kill here.
+   * corrupts the next evaluation. Per-runtime: this is the NODE path -- the
+   * worker_threads wall-clock hard-kill. The Cloudflare-Workers-shaped path does
+   * NOT use this class; it uses the in-engine DETERMINISTIC FUEL BUDGET (WS-J,
+   * now landed -- see the non-Node branch below and the loader's `fuelBudget`
+   * surface in packages/cel-wasm/typescript/relay-cel-wasm.mjs) for a portable,
+   * structured RELAY-CEL-003 timeout with no worker_threads / Worker.terminate.
+   * The old "platform-CPU-limit-only until WS-J" gap is CLOSED. We DO NOT
+   * silently skip the budget -- an explicit runtime branch selects the Node
+   * Worker hard-kill here.
    *
    * The wall-clock budget covers the WHOLE sequence -- ensureWorker() (Worker
    * spawn + loader import + RelayCel.load()) AND the eval -- so a stalled
@@ -1266,16 +1271,23 @@ export class WasmCelBackend {
   ): Promise<WasmResponseEnvelope> {
     if (!isNodeRuntime()) {
       // Cloudflare Workers (and other non-Node runtimes) have no
-      // worker_threads + terminate primitive. Per the locked decision, the
-      // wall-clock timeout there is the platform CPU limit ONLY, and the full
-      // host-enforced hard-kill lands in WS-J (the edge work-stream). We do NOT
-      // silently fall through a missing budget: surface a structured engine
-      // error so a non-Node caller that reaches here before WS-J fails loud
-      // rather than running unbounded.
+      // worker_threads + terminate primitive, so THIS class's wall-clock
+      // hard-kill is Node-only by construction. The portable cross-host timeout
+      // on the edge is NOT a wall clock: WS-J landed the in-engine DETERMINISTIC
+      // FUEL BUDGET, so a Cloudflare-Workers-shaped path (no worker_threads, no
+      // Worker.terminate, no host import) gets a structured RELAY-CEL-003 /
+      // RELAY-CEL-TIMEOUT-001 from the in-wasm fuel counter -- byte-identical to
+      // the Python host -- via the loader's `fuelBudget` option
+      // (packages/cel-wasm/typescript/relay-cel-wasm.mjs). The old
+      // "platform-CPU-limit-only until WS-J" gap is CLOSED. This worker-thread
+      // backend is the Node hard-kill surface and does NOT itself thread fuel;
+      // a non-Node caller that reaches THIS class must use the loader's fuel
+      // path instead, so we fail loud here rather than running unbounded.
       throw new RelayCelEngineError(
-        "WasmCelBackend wall-clock hard-kill is Node-only until WS-J; the " +
-          "Cloudflare path relies on the platform CPU limit and is wired in " +
-          "the edge work-stream.",
+        "WasmCelBackend wall-clock hard-kill is the Node worker-thread surface; " +
+          "the Cloudflare-Workers-shaped path uses the in-engine fuel budget " +
+          "(loader fuelBudget option) for a portable RELAY-CEL-003 timeout, not " +
+          "this class.",
         "RELAY-CEL-ENGINE-REQUEST",
       );
     }

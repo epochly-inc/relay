@@ -225,3 +225,77 @@ steps 4-5 wire the Python + TS hosts behind `RELAY_CEL_ENGINE` (default celpy);
 step 6 flip default; step 7 drop cel-python/cel-js. Steps 4+ touch production + a
 public-API decision (caller-supplied extra UDFs) -- they need the open-question
 answers first.
+
+## WS-J edge timeout: the platform-CPU-only gap is CLOSED (DONE + VERIFIED)
+
+**Status: CLOSED.** WS-C shipped the Node host's wall-clock timeout as a
+`node:worker_threads` Worker hard-kill (`Worker.terminate()`): a hung or
+budget-exceeding evaluation is aborted by terminating the Worker that owns the
+wasm instance. That primitive does NOT exist on Cloudflare Workers (no
+`worker_threads`, no `Worker.terminate`), so WS-C documented an honest residual
+gap: the **Cloudflare-Workers-shaped edge path's timeout was the platform CPU
+limit ONLY -- a documented gap until WS-J**. A platform CPU limit is host-defined,
+not portable, and not byte-identical across hosts, so an edge evaluation could
+not produce the SAME structured timeout an audited Relay bundle requires.
+
+WS-J **closes** that gap with an **in-engine DETERMINISTIC FUEL BUDGET** rather
+than a wall clock. The vendored cel fork (`vendor/cel/src/lib.rs`,
+`vendor/cel/src/objects.rs`, marked `Relay fork (WS-J)`) charges one unit of a
+per-evaluation step budget per evaluated AST node / comprehension iteration; the
+wasm wrapper (`crate/src/lib.rs`) accepts an optional `fuel_budget` request field
+and, when a POSITIVE budget is exhausted, returns the structured envelope
+`{ok:false, code:"RELAY-CEL-003", subtype:"RELAY-CEL-TIMEOUT-001"}` instead of
+running unbounded. Key properties that make this the portable edge timeout:
+
+- **No new wasm import.** The fuel counter is an engine-internal in-wasm
+  thread-local; the reactor still instantiates with an EMPTY import object (no
+  host clock, no `Date.now`, no host callback). A Cloudflare-Workers-shaped path
+  (no `worker_threads`, no `Worker.terminate`) therefore gets a structured
+  timeout PURELY from the in-wasm counter -- it does not need any host-kill
+  primitive the edge runtime lacks.
+- **Same (code, subtype) envelope as WS-C.** The fuel-exhaustion timeout maps to
+  the EXACT (`RELAY-CEL-003`, `RELAY-CEL-TIMEOUT-001`) pair the Node
+  worker-thread wall-clock kill surfaces via `RelayCelTimeoutError`. No new
+  `RELAY-CEL-NNN` timeout code, no divergent subtype: the edge fuel path and the
+  Node worker-thread path are INDISTINGUISHABLE downstream
+  (VAL-CWC-P7EDGE-007).
+- **Byte-identical across Python + Node.** Because the budget and the exhaustion
+  envelope live INSIDE the single wasm, the Python (wasmtime) host and the Node
+  host loading the SAME `.wasm` produce a byte-identical fuel-exhaustion envelope
+  -- byte-parity BY CONSTRUCTION, asserted by the cross-host parity gate
+  (`tests/conformance/cel/test_fuel_exhaustion_cross_host_envelope_parity.py`,
+  VAL-CWC-P7EDGE-004).
+- **Fuel-off is byte-identical to the pre-WS-J engine.** An ABSENT / 0 / negative
+  budget is the disabled sentinel: the request JSON is byte-identical to the
+  no-fuel form and every cel-spec conformance record and every fuel-off eval
+  stays byte-for-byte equal to the pre-WS-J engine (VAL-002). The fuel budget
+  adds NO conformance regression: ex-proto stays 100.0% and the reproducible
+  build hash is unchanged-by-recipe (`make repro` -> the pinned
+  `431d966b2818ef4539a4f6b78e2903a4d6911c6b6352e256e35531a44f992511`).
+- **Loaders thread the budget identically + fail closed.** Both the TS/edge
+  loader (`typescript/relay-cel-wasm.mjs`, `fuelBudget`/`fuel_budget` option) and
+  the Python loader (`python/relay_cel_wasm.py`, `fuel_budget=`) add the field to
+  the wasm request ONLY when it is a positive in-range integer, and FAIL CLOSED
+  (raise/throw) on a positive value outside u64 / non-safe-integer rather than
+  letting a "large finite" budget silently become the unbounded sentinel.
+
+The TS `WasmCelBackend` (`packages/contracts-typescript/src/wasm-evaluator.ts`)
+is the NODE worker-thread surface and KEEPS its `Worker.terminate()` wall-clock
+hard-kill; its non-Node branch fails loud (it does not itself thread fuel). The
+portable edge timeout for a Cloudflare-Workers-shaped caller is the loader's
+`fuelBudget` option, wired straight to the in-wasm counter above. The decode of
+the fuel envelope onto `RelayCelTimeoutError` lives at
+`wasm-evaluator.ts` `decodeWasmEnvelope` (`code 003 -> RelayCelTimeoutError`).
+
+Verified (WS-J acceptance commands, the cel-wasm CI workflow runs the first
+two): `make -C packages/cel-wasm gate` exit 0 (ex-proto 100.0% + cross-host
+byte-parity); `make -C packages/cel-wasm repro` exit 0 (byte-deterministic ==
+pinned `431d966b...`, 0 embedded machine paths); `make -C packages/cel-wasm
+ascii-lint` exit 0. The WS-J Python loader fuel-timeout test
+(`tests/test_wsj_fuel_timeout.py`), the TS edge-fuel-timeout vitest, and the
+fuel-exhaustion cross-host envelope-parity plumbing test all green. The cel-wasm
+CI workflow (`.github/workflows/cel-wasm-conformance.yml`) runs the
+`conformance-gate` (`make gate`) and `reproducible-build` (`make repro`) jobs as
+release-blocking required checks, plus the WS-J fuel-exhaustion cross-host parity
+plumbing step in the discipline gate. NO new wasm import, NO trust-anchor key
+material, NO crate/pinned-sha change beyond the already-landed fuel code.
