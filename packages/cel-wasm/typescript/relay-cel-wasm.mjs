@@ -103,10 +103,11 @@ export class RelayCel {
 
   /**
    * Evaluate `expr` with optional typed `bindings` and an optional
-   * `{relayProfile, container}` options object. Returns the typed result
-   * object: success carries `value`, failure carries `error` + `code`. A wasm
-   * trap (should not happen for in-profile inputs after the G1 fence) is caught,
-   * the instance re-instantiated, and reported as ENGINE_PANIC.
+   * `{relayProfile, container, fuelBudget}` options object. Returns the typed
+   * result object: success carries `value`, failure carries `error` + `code`
+   * (+ `subtype` for profile rejections / fuel exhaustion). A wasm trap (should
+   * not happen for in-profile inputs after the G1 fence) is caught, the instance
+   * re-instantiated, and reported as ENGINE_PANIC.
    *
    * `relayProfile: true` turns on the Relay CEL profile's call-level
    * restrictions: dyn()/timestamp()/duration() global calls are rejected with
@@ -114,9 +115,25 @@ export class RelayCel {
    * the cel-spec conformance harness leaves it off (so the request JSON is
    * byte-identical to the no-options form -- the field is ADDED only when
    * truthy). `container` is the optional CEL resolution namespace (e.g.
-   * "com.example"). The wasm-request field names (`relay_profile`, `container`)
+   * "com.example").
+   *
+   * `fuelBudget` (alias `fuel_budget`) is the optional per-evaluation
+   * deterministic step budget (WS-J): a positive integer caps the number of
+   * evaluated AST nodes / comprehension iterations; when the cap is exceeded the
+   * in-wasm fuel counter returns a structured
+   * `{ok:false, code:"RELAY-CEL-003", subtype:"RELAY-CEL-TIMEOUT-001"}` envelope
+   * instead of running unbounded. Because the counter is an engine-internal
+   * in-wasm thread-local (no host clock, no host import -- the reactor still
+   * instantiates with an EMPTY import object), a Cloudflare-Workers-shaped path
+   * (no worker_threads, no Worker.terminate) gets a portable, deterministic
+   * RELAY-CEL-003 from the budget rather than from a wall-clock thread-kill. The
+   * field is added to the request ONLY when it is a positive finite integer, so
+   * an absent / 0 / negative / non-int value leaves the request JSON
+   * byte-identical to the no-fuel form (0 is the wasm-side disabled sentinel).
+   *
+   * The wasm-request field names (`relay_profile`, `container`, `fuel_budget`)
    * MUST match the Python loader (relay_cel_wasm.py) and the crate
-   * (crate/src/lib.rs:239-240, 259) exactly -- both hosts hit the same reactor.
+   * (crate/src/lib.rs) exactly -- both hosts hit the same reactor.
    */
   async eval(expr, bindings, options) {
     const { memory, alloc, eval: evalFn, dealloc } = this.#exports;
@@ -127,6 +144,15 @@ export class RelayCel {
       }
       if (options.relayProfile) {
         req.relay_profile = true;
+      }
+      // Mirror the Python loader: add fuel_budget ONLY when a positive finite
+      // integer, so absent / 0 / negative / non-int leaves the request JSON
+      // byte-identical to the no-fuel form (the disabled sentinel is the wasm
+      // default). Accept either the camelCase opts key (fuelBudget) or the
+      // snake_case wire-name key (fuel_budget).
+      const fuel = options.fuelBudget ?? options.fuel_budget;
+      if (typeof fuel === "number" && Number.isInteger(fuel) && fuel > 0) {
+        req.fuel_budget = fuel;
       }
     }
     const inp = this.#enc.encode(JSON.stringify(req));
