@@ -38,7 +38,8 @@ import {
 // (VAL-CWC-P2TSGATE-005). This pipeline imports `nativeToTyped` / `TypedValue`
 // from there rather than keeping a second copy that could drift -- a P0
 // byte-parity risk. The codec's int/double classification + BigInt overflow
-// boundary is the keystone-invariant-#16 contract with cel-python.
+// boundary is the keystone-invariant-#16 contract with the wasm crate's
+// canonical classification (lib.rs) and its Python-host mirror.
 import {
   decodeWasmEnvelope,
   nativeToTyped,

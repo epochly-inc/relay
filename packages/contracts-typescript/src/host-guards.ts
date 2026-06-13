@@ -11,7 +11,7 @@
 //
 // Mirrors the host-guard surface of
 // packages/contracts/src/relay_contracts/evaluator.py (the engine-agnostic
-// host-guards module after the cel-python removal): regex-backref pre-screen,
+// host-guards module of the Python host): regex-backref pre-screen,
 // _check_finite, and the timeout bounds.
 //
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
@@ -29,24 +29,25 @@ export const MAX_TIMEOUT_MS = 250;
 // VAL-PARITY-001: integral evaluation results whose absolute value EXCEEDS
 // Number.MAX_SAFE_INTEGER (2**53 - 1) are rejected at the result boundary,
 // mirroring packages/contracts/src/relay_contracts/evaluator.py
-// SAFE_INTEGER_BOUND. cel-python keeps such an integer exact (arbitrary
-// precision) while a JS double silently rounds it, so the same logical
-// result would canonicalise to DIFFERENT JCS bytes in each runtime -- a
-// cross-runtime digest break (CLAUDE.md keystone invariant #11). Both
-// runtimes apply the SAME numeric threshold (abs > MAX_SAFE_INTEGER,
-// equivalently magnitude >= 2**53) so they fail-closed identically.
+// SAFE_INTEGER_BOUND. The Python host carries such an integer exactly (the
+// wasm engine returns ints as decimal-string typed values, which Python keeps
+// exact) while a JS double silently rounds it, so the same logical result
+// would canonicalise to DIFFERENT JCS bytes in each runtime -- a cross-runtime
+// digest break (CLAUDE.md keystone invariant #11). Both runtimes apply the
+// SAME numeric threshold (abs > MAX_SAFE_INTEGER, equivalently magnitude
+// >= 2**53) so they fail-closed identically.
 //
 // The threshold is MAX_SAFE_INTEGER (2**53 - 1), NOT 2**53: 2**53 is itself
 // NOT a safe integer -- it is indistinguishable from 2**53 + 1 after IEEE-754
 // double rounding (both round to the same float64), so a JS-double result of
 // exactly 2**53 may be a ROUNDED integer overflow (e.g. 9007199254740992 + 1
-// -> exact int 9007199254740993 in cel-python, rounded to 9007199254740992
+// -> exact int 9007199254740993 on the Python host, rounded to 9007199254740992
 // in a JS double). Accepting exactly 2**53 is precisely what would let a
-// rounded integer overflow pass (fail-open vs cel-python). Key identity: for
-// any integer V, float64(V) > MAX_SAFE_INTEGER  <=>  V >= 2**53, so this bound
-// gives the SAME verdict in cel-python (exact int) and in the JS host (float64)
-// for every integer including arithmetic overflow. (Found by `codex review`:
-// CEL +-2^53 Py<->TS parity P1; CONFIRMED empirically.)
+// rounded integer overflow pass (fail-open vs the exact-int Python host). Key
+// identity: for any integer V, float64(V) > MAX_SAFE_INTEGER  <=>  V >= 2**53,
+// so this bound gives the SAME verdict on the Python host (exact int) and in
+// the JS host (float64) for every integer including arithmetic overflow.
+// (Found by `codex review`: CEL +-2^53 Py<->TS parity P1; CONFIRMED empirically.)
 export const SAFE_INTEGER_BOUND = 2 ** 53 - 1; // 9007199254740991 === Number.MAX_SAFE_INTEGER
 
 // Regex feature detection: backreference (\1, \2, ...) -- RE2 forbids
@@ -103,10 +104,10 @@ export function checkFinite(value: unknown): unknown {
       );
     }
     // VAL-PARITY-001: an integral result whose magnitude exceeds
-    // MAX_SAFE_INTEGER (2**53 - 1) is an out-of-band signal -- cel-python
+    // MAX_SAFE_INTEGER (2**53 - 1) is an out-of-band signal -- the Python host
     // preserves it exactly while a JS double rounds it, diverging the
     // cross-runtime digest. Fail-closed here so the JS host refuses the same
-    // result cel-python refuses. 2**53 itself is NOT safe (it cannot be
+    // result the Python host refuses. 2**53 itself is NOT safe (it cannot be
     // distinguished from 2**53 + 1 after rounding) so it is rejected; only
     // magnitude <= MAX_SAFE_INTEGER is accepted. Non-integral numbers (e.g.
     // 1.5) are not subject to this bound.

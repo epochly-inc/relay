@@ -2,11 +2,11 @@
 
 Every Relay-CEL error carries a canonical ``RELAY-CEL-NNN`` code (from the
 generated :class:`RelayErrorCode` registry) plus a stable ``subtype`` token.
-The cel-js mirror (W6.2) emits the identical token set. The pair
-(`code`, `subtype`) is the cross-runtime byte-equality key that VAL-W6-006
-and VAL-W6-007 enforce.
+The TypeScript errors module (errors.ts) emits the identical token set.
+The pair (`code`, `subtype`) is the cross-runtime byte-equality key that
+VAL-W6-006 and VAL-W6-007 enforce.
 
-Code-to-subtype map (W6.1 scope; mirror in cel-js TS module on W6.2):
+Code-to-subtype map (mirror in the TypeScript errors.ts module):
 
     RELAY-CEL-002  RELAY-CEL-PROFILE-DYN-DISABLED
     RELAY-CEL-002  RELAY-CEL-PROFILE-TS-DISABLED
@@ -36,7 +36,7 @@ from typing import Final
 
 from relay_schemas.error_codes import RelayErrorCode
 
-# --- Stable subtype tokens (cross-runtime byte equality with cel-js) -------
+# --- Stable subtype tokens (cross-runtime byte equality with errors.ts) ----
 
 SUBTYPE_PROFILE_DYN_DISABLED: Final[str] = "RELAY-CEL-PROFILE-DYN-DISABLED"
 SUBTYPE_PROFILE_TS_DISABLED: Final[str] = "RELAY-CEL-PROFILE-TS-DISABLED"
@@ -66,9 +66,9 @@ class RelayCelErrorEnvelope:
     """Stable JSON-serializable envelope.
 
     The key set (``code``, ``subtype``, ``message``) is the cross-runtime
-    contract: cel-js (W6.2) MUST emit the same three keys in the same
-    spelling for a given fixture. ``message`` is human prose and NOT part
-    of the byte-equality contract; tests compare ``code`` + ``subtype``.
+    contract: the TypeScript errors.ts module MUST emit the same three keys
+    in the same spelling for a given fixture. ``message`` is human prose and
+    NOT part of the byte-equality contract; tests compare ``code`` + ``subtype``.
     """
 
     code: str
@@ -76,7 +76,7 @@ class RelayCelErrorEnvelope:
     message: str
 
     def to_dict(self) -> dict[str, str]:
-        # Stable key order matches the cel-js mirror.
+        # Stable key order matches the TypeScript errors.ts mirror.
         return {"code": self.code, "subtype": self.subtype, "message": self.message}
 
 

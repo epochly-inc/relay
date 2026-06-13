@@ -3,8 +3,8 @@
 Used by the Relay CEL evaluator to canonicalise structured evaluation
 results before hashing or cross-runtime comparison (VAL-W6-005). Output
 bytes MUST be byte-equal to those produced by the cyberphone/json-
-canonicalization Java reference and to the cel-js mirror that ships in
-W6.2.
+canonicalization Java reference and to the TypeScript JCS serializer
+(canonical.ts, the cross-host byte-parity mirror).
 
 Why not the stdlib JSON sorter (key-sorted ``json.dumps`` with compact
 separators)? Because key ordering alone is insufficient. RFC 8785 also pins:

@@ -1,8 +1,9 @@
 // Structured error envelope for the Relay CEL evaluator (TypeScript).
 //
 // Every Relay-CEL error carries a canonical `RELAY-CEL-NNN` code plus a
-// stable `subtype` token. The cel-python module emits the identical token
-// set; the pair (`code`, `subtype`) is the cross-runtime byte-equality
+// stable `subtype` token. The Python errors module
+// (packages/contracts/src/relay_contracts/errors.py) emits the identical
+// token set; the pair (`code`, `subtype`) is the cross-runtime byte-equality
 // key that VAL-W6-006 / VAL-W6-007 / VAL-W6-014 enforce.
 //
 // Code-to-subtype map (must match packages/contracts/src/relay_contracts/errors.py):
@@ -131,7 +132,7 @@ export const WASM_PROFILE_SUBTYPES: ReadonlySet<RelayCelSubtype> = new Set<
 ]);
 
 // Stable JSON-serialisable envelope. Key set (`code`, `subtype`,
-// `message`) matches the cel-python Python envelope -- tests compare
+// `message`) matches the Python envelope (errors.py) -- tests compare
 // `code` + `subtype` for cross-runtime byte equality.
 export interface RelayCelErrorEnvelope {
   code: RelayCelCode;

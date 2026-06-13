@@ -9,7 +9,8 @@
 // key_sort_string / canonical_double).
 //
 // CLAUDE.md keystone invariant #16 (a P0): the typed-canonical {"t","v"} form
-// and the int/double classification MUST match cel-python EXACTLY -- any
+// and the int/double classification MUST match the wasm crate's canonical
+// classification EXACTLY (lib.rs, the cross-host byte-parity keystone) -- any
 // divergence breaks the cross-host udf_outputs_jcs digest and is a release
 // block.
 //
@@ -152,10 +153,11 @@ export type TypedValue =
 //   - array          -> {"t":"list","v":[...]}        (order preserved)
 //   - object         -> {"t":"map","v":[[k,v],...]}   (sorted by key_sort_string)
 //
-// int/double classification mirrors cel-python json_to_cel (adapter.py:140-155)
-// through the JSON wire boundary: a JS whole-valued number serializes to a JSON
-// integer (no decimal point) -> Python int -> json_to_cel -> IntType; a JS
-// non-integral number serializes to a JSON float -> Python float -> DoubleType.
+// int/double classification mirrors the wasm crate's json-to-CEL binding
+// (lib.rs) and the Python host's py_to_typed through the JSON wire boundary: a
+// JS whole-valued number serializes to a JSON integer (no decimal point) -> a
+// CEL int typed value; a JS non-integral number serializes to a JSON float ->
+// a CEL double typed value.
 //
 // Binding values are the INPUTS to the wasm; the udf_trace OUTPUT bytes (the
 // byte-parity target) are produced INSIDE the wasm regardless of how we encode
@@ -207,8 +209,9 @@ export function nativeToTyped(value: unknown): TypedValue {
             `[-(2**53 - 1), 2**53 - 1]: ${decimal}`,
         );
       }
-      // A whole-valued JS number is bound as a CEL int (matches cel-python
-      // json_to_cel, which classifies a JSON integer as IntType).
+      // A whole-valued JS number is bound as a CEL int (matches the wasm
+      // crate's json-to-CEL binding, which classifies a JSON integer as a CEL
+      // int, and the Python host's py_to_typed).
       return { t: "int", v: decimal };
     }
     // Non-integral -> double, canonical-g form (the faithful port of the Python
@@ -236,8 +239,8 @@ export function nativeToTyped(value: unknown): TypedValue {
     // a Rust HashMap (lib.rs:1437 `hm.insert`), so a duplicate silently OVERWRITES
     // one value (data loss). Fail closed here -- byte-symmetric with the
     // typedToNative DECODE path, which already rejects a colliding key (round-2
-    // finding D), and with the Python codec (a celpy MapType raises on a duplicate
-    // insert). keystone #16: the two hosts MUST agree.
+    // finding D), and with the Python host codec (which rejects a duplicate
+    // map-key insert). keystone #16: the two hosts MUST agree.
     const seenSortKeys = new Set<string>();
     for (const [k, val] of value) {
       // The Map produced by typedToNative carries TypedValue keys; keySortString
@@ -418,8 +421,8 @@ export function typedToNative(typed: TypedValue): unknown {
       // keys) -> a JS Map whose KEYS are the ORIGINAL TypedValue objects. This is
       // LOSSLESS: int vs uint vs bool vs string survive, and the key_sort_string
       // collision check fails closed on a true duplicate CEL key (two pairs that
-      // map to the SAME ordered key) -- mirroring the Python codec, whose celpy
-      // MapType raises on a duplicate / int-vs-uint collision (the two engines
+      // map to the SAME ordered key) -- mirroring the Python host codec, which
+      // raises on a duplicate / int-vs-uint map-key collision (the two hosts
       // MUST agree, keystone #16). A Map also has no prototype-pollution surface.
       const map = new Map<TypedValue, unknown>();
       const seenSortKeys = new Set<string>();
