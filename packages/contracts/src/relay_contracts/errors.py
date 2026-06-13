@@ -43,7 +43,8 @@ from typing import Final
 
 from relay_schemas.error_codes import RelayErrorCode
 
-# --- Stable subtype tokens (cross-runtime byte equality with errors.ts) ----
+# --- Python named subtype tokens (the wasm-emitted set is byte-equal with
+# --- errors.ts; host-internal tokens such as RESOURCE-EXHAUSTED are Python-only)
 
 SUBTYPE_PROFILE_DYN_DISABLED: Final[str] = "RELAY-CEL-PROFILE-DYN-DISABLED"
 SUBTYPE_PROFILE_TS_DISABLED: Final[str] = "RELAY-CEL-PROFILE-TS-DISABLED"
