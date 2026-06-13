@@ -29,7 +29,7 @@ import {
   RelayCelTimeoutError,
   SUBTYPE_TIMEOUT,
 } from "../src/errors.js";
-import { MAX_TIMEOUT_MS } from "../src/evaluator.js";
+import { MAX_TIMEOUT_MS } from "../src/host-guards.js";
 import { WasmCelBackend } from "../src/wasm-evaluator.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));

@@ -7,10 +7,11 @@
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 export { jcsCanonicalize } from "./canonical.js";
-// VAL-CWC-P5FLIP-011 (M5): the canonical engine-selection factory. Default
-// (engine unset/blank) constructs the wasm-backed WasmCelBackend; explicit
-// "celjs"/"cel-js" constructs the legacy cel-js RelayCelEvaluator (the
-// rollback escape hatch until M6). TS mirror of the Python make_cel_evaluator
+// VAL-CWC-P6REMOVE-005/-006 (M6 WS-I): the canonical engine-selection factory.
+// The wasm-backed WasmCelBackend is the ONLY CEL backend. An explicit legacy
+// engine selection fails closed with the factory's structured unknown-engine
+// error naming the wasm-only allowed set (the M5 rollback hatch is closed at
+// M6). TS mirror of the Python make_cel_evaluator
 // (packages/contracts/src/relay_contracts/engine.py).
 export { makeCelEvaluator } from "./engine.js";
 export type {
@@ -18,11 +19,10 @@ export type {
   CelEvaluator,
   MakeCelEvaluatorOptions,
 } from "./engine.js";
-export {
-  DEFAULT_TIMEOUT_MS,
-  MAX_TIMEOUT_MS,
-  RelayCelEvaluator,
-} from "./evaluator.js";
+// The per-evaluation wall-clock budget bounds. Engine-agnostic host-side
+// constants -- the surviving host-guards module is their home (locked
+// decision #4) after the legacy evaluator's removal.
+export { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from "./host-guards.js";
 // VAL-CWC-P1HOST-019: the wasm-path udf_outputs_jcs reconstruction (TS mirror
 // of the Python pipeline's wasm hot path), byte-identical to the Python host.
 export { evaluateUdfOutputs } from "./pipeline.js";

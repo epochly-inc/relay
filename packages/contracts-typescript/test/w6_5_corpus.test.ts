@@ -2,23 +2,28 @@
 //
 // Loads ../../../tests/conformance/cel/relay_cel_corpus.json (the same
 // file the Python runner exercises in
-// packages/contracts/tests/test_w6_5_corpus.py) and asserts the
-// cel-js evaluator produces JCS-canonical bytes byte-identical to the
-// recorded ``py_jcs_b64`` for every ``eval_value`` and ``udf_value``
-// case (VAL-W6-051), and that ``eval_error`` cases raise on the cel-js
-// side (VAL-W6-051's both-runtimes-must-throw clause).
+// packages/contracts/tests/test_w6_5_corpus.py) and asserts the wasm-backed
+// evaluator produces JCS-canonical bytes byte-identical to the recorded
+// ``py_jcs_b64`` for every ``eval_value`` and ``udf_value`` case (VAL-W6-051),
+// and that ``eval_error`` cases raise on the TS side (VAL-W6-051's
+// both-runtimes-must-throw clause).
+//
+// M6 WS-I: the corpus value cases evaluate through the SINGLE wasm CEL engine
+// (the cel-js axis is removed). EXACTLY TWO frozen eval_value cases record the
+// REMOVED legacy engine's lenient (spec-INCORRECT) lexing of a backslash +
+// non-ASCII digit string literal; the wasm correctly raises RELAY-CEL-009 /
+// RELAY-CEL-ENGINE-COMPILE for them (a lexical error per the CEL spec). The
+// per-case runner asserts the DOCUMENTED wasm behavior for those two ids --
+// strongly guarded (the pinned expression must match) so a corpus edit or a
+// wasm regression cannot hide behind the carve-out. Mirrors the Python
+// adjudicated carve-out in test_w6_5_corpus.py.
 //
 // Each corpus case is its own vitest test so per-case failures
 // localise (mismatch surface = exactly one test name + payload diff).
 //
-// The corpus generator
-// (scripts/generate-relay-cel-corpus.py) computes ``py_jcs_b64`` from
-// the cel-python evaluator. This file's job is to prove cel-js
-// agrees byte-for-byte.
-//
-// Tool: vitest. Runs in tier-2 smoke (npm test --workspaces). Idiom
-// matrix and per-UDF-floor structure assertions live on the Python
-// side in test_w6_5_corpus.py to avoid duplicating the truth.
+// The corpus generator (scripts/generate-relay-cel-corpus.py) computes
+// ``py_jcs_b64`` from the cel-python evaluator. This file's job is to prove the
+// wasm engine + the TS UDFs + the TS JCS encoder agree byte-for-byte.
 //
 // ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
@@ -26,18 +31,23 @@ import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 
+import { makeCelEvaluator } from "../src/engine.js";
 import {
   jcsCanonicalize,
+  MAX_TIMEOUT_MS,
   RELAY_COVERAGE_NAME,
   RELAY_SCHEMA_MATCH_NAME,
   RELAY_TOOL_ARG_NAME,
-  RelayCelEvaluator,
+  RELAY_UDFS,
+  RelayCelEngineError,
   relayCoverage,
   relaySchemaMatch,
   relayToolArg,
+  SUBTYPE_ENGINE_COMPILE,
 } from "../src/index.js";
+import type { WasmCelBackend } from "../src/wasm-evaluator.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CORPUS_PATH = resolve(
@@ -97,6 +107,17 @@ interface Corpus {
   cases: CorpusCase[];
 }
 
+// M6 WS-I: the user-adjudicated legacy-lexer carve-out, mirrored from
+// scripts/generate-relay-cel-corpus.py and the Python test_w6_5_corpus.py. The
+// FROZEN golden records the REMOVED legacy engine's lenient lexing of a
+// backslash + non-ASCII digit string literal; the wasm correctly raises
+// RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE. The pinned expressions use
+// \u-escapes so this source stays pure ASCII (U+FF10 / U+0660).
+const ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS: Record<string, string> = {
+  regex_backslash_fullwidth_digit_accepted: '"\\０"',
+  regex_backslash_arabic_digit_accepted: '"\\٠"',
+};
+
 function loadCorpus(): Corpus {
   return JSON.parse(readFileSync(CORPUS_PATH, "utf-8")) as Corpus;
 }
@@ -145,31 +166,48 @@ describe("VAL-W6-050: corpus is well-formed", () => {
   });
 });
 
-describe("VAL-W6-051: cel-js eval_value bytes match cel-python golden", () => {
-  // Use the cel-js parser-only path (parse + walk + evaluate) via the
-  // public ``evaluate`` export from cel-js. The Relay profile checker
-  // is exercised via RelayCelEvaluator separately; here we assert
-  // raw byte-equality for the value-producing cases.
-  //
-  // Importing cel-js directly via ``evaluate`` keeps each parametrised
-  // test cheap (no per-case worker spawn). The Relay profile rejects
-  // dyn / timestamp / duration which appear ONLY in the eval_error
-  // bucket below -- value cases never trip the profile.
+describe("VAL-W6-051: wasm-host eval_value bytes match cel-python golden", () => {
+  // Each parametrised case constructs a fresh wasm backend so a hung/terminated
+  // Worker never leaks across cases; it is disposed in afterEach.
+  let ev: WasmCelBackend | null = null;
+
+  afterEach(async () => {
+    if (ev !== null) {
+      await ev.dispose();
+      ev = null;
+    }
+  });
+
   for (const c of corpus.cases) {
     if (c.kind !== "eval_value") continue;
     test(c.id, async () => {
-      // Lazy-import cel-js for the same reason the Python side uses
-      // a per-test evaluator: parametrised vitest tests run quickly
-      // and we don't want to pay cel-js cold-import cost on every
-      // case (the import is module-cached after the first test).
-      const mod = await import("cel-js");
-      const evaluate = mod.evaluate;
+      ev = makeCelEvaluator({ udfs: RELAY_UDFS, timeoutMs: MAX_TIMEOUT_MS });
+      if (c.id in ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS) {
+        // M6 WS-I adjudicated carve-out: the FROZEN golden records the removed
+        // legacy engine's lenient lexing; the wasm correctly raises the
+        // documented compile error. Assert the pinned expression AND the
+        // documented structured error -- the case is still exercised, with the
+        // spec-correct expectation.
+        expect(c.expression).toBe(ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS[c.id]);
+        let caught: unknown = null;
+        try {
+          await ev.evaluate(c.expression, c.bindings ?? {});
+        } catch (e) {
+          caught = e;
+        }
+        expect(caught).toBeInstanceOf(RelayCelEngineError);
+        expect((caught as RelayCelEngineError).code).toBe("RELAY-CEL-009");
+        expect((caught as RelayCelEngineError).subtype).toBe(
+          SUBTYPE_ENGINE_COMPILE,
+        );
+        return;
+      }
       let result: unknown;
       try {
-        result = evaluate(c.expression, c.bindings ?? {}, {});
+        result = await ev.evaluate(c.expression, c.bindings ?? {});
       } catch (e) {
         throw new Error(
-          `VAL-W6-051: cel-js failed to evaluate eval_value case ${c.id}: ${(e as Error).message}\n  expression: ${c.expression}\n  bindings: ${JSON.stringify(c.bindings ?? {})}`,
+          `VAL-W6-051: wasm host failed to evaluate eval_value case ${c.id}: ${(e as Error).message}\n  expression: ${c.expression}\n  bindings: ${JSON.stringify(c.bindings ?? {})}`,
         );
       }
       const tsBytes = jcsCanonicalize(result);
@@ -178,7 +216,7 @@ describe("VAL-W6-051: cel-js eval_value bytes match cel-python golden", () => {
       if (!equal) {
         const tsB64 = Buffer.from(tsBytes).toString("base64");
         throw new Error(
-          `VAL-W6-051: cel-js bytes diverged from cel-python golden for case ${c.id}\n  expression: ${c.expression}\n  bindings:   ${JSON.stringify(c.bindings ?? {})}\n  py_b64: ${c.py_jcs_b64}\n  ts_b64: ${tsB64}\n  py_str: ${Buffer.from(pyBytes).toString("utf-8")}\n  ts_str: ${Buffer.from(tsBytes).toString("utf-8")}`,
+          `VAL-W6-051: wasm-host bytes diverged from cel-python golden for case ${c.id}\n  expression: ${c.expression}\n  bindings:   ${JSON.stringify(c.bindings ?? {})}\n  py_b64: ${c.py_jcs_b64}\n  ts_b64: ${tsB64}\n  py_str: ${Buffer.from(pyBytes).toString("utf-8")}\n  ts_str: ${Buffer.from(tsBytes).toString("utf-8")}`,
         );
       }
       expect(equal).toBe(true);
@@ -186,25 +224,29 @@ describe("VAL-W6-051: cel-js eval_value bytes match cel-python golden", () => {
   }
 });
 
-describe("VAL-W6-051: cel-js eval_error cases throw", () => {
-  // Use RelayCelEvaluator (which carries the Relay profile checker)
-  // for these cases since some eval_error idioms (dyn / timestamp /
-  // duration / regex backreferences) are caught by the Relay profile,
-  // not by cel-js itself. Sharing one evaluator across tests keeps the
-  // worker spawn cost amortised.
-  const ev = new RelayCelEvaluator();
+describe("VAL-W6-051: wasm-host eval_error cases throw", () => {
+  let ev: WasmCelBackend | null = null;
+
+  afterEach(async () => {
+    if (ev !== null) {
+      await ev.dispose();
+      ev = null;
+    }
+  });
+
   for (const c of corpus.cases) {
     if (c.kind !== "eval_error") continue;
-    test(c.id, () => {
+    test(c.id, async () => {
+      ev = makeCelEvaluator({ udfs: RELAY_UDFS, timeoutMs: MAX_TIMEOUT_MS });
       let raised = false;
       try {
-        ev.evaluate(c.expression, c.bindings ?? {});
+        await ev.evaluate(c.expression, c.bindings ?? {});
       } catch {
         raised = true;
       }
       if (!raised) {
         throw new Error(
-          `VAL-W6-051: cel-js (with Relay profile) did NOT raise for eval_error case ${c.id}\n  expression: ${c.expression}\n  bindings:   ${JSON.stringify(c.bindings ?? {})}`,
+          `VAL-W6-051: the wasm host did NOT raise for eval_error case ${c.id}\n  expression: ${c.expression}\n  bindings:   ${JSON.stringify(c.bindings ?? {})}`,
         );
       }
       expect(raised).toBe(true);
@@ -212,7 +254,7 @@ describe("VAL-W6-051: cel-js eval_error cases throw", () => {
   }
 });
 
-describe("VAL-W6-051: cel-js udf_value direct-call bytes match cel-python golden", () => {
+describe("VAL-W6-051: udf_value direct-call bytes match cel-python golden", () => {
   for (const c of corpus.cases) {
     if (c.kind !== "udf_value") continue;
     test(c.id, () => {

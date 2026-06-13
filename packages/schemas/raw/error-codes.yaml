@@ -109,7 +109,7 @@ codes:
   description: |
     Relay CEL profile violation: the expression uses a construct the profile forbids. Discriminating subtypes: `RELAY-CEL-PROFILE-DYN-DISABLED` (dyn(...) erases the type lattice), `RELAY-CEL-PROFILE-TS-DISABLED` (native timestamp(...)), `RELAY-CEL-PROFILE-DUR-DISABLED` (native duration(...)). Raised at `compile()` time so contract publish fails before any assertion is stored.
   triggers: |
-    `RelayCelEvaluator.compile` called on an expression containing `dyn(...)`, `timestamp(...)`, or `duration(...)`. Emit site: `packages/contracts/src/relay_contracts/evaluator.py` and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`. Surfaced via `RelayCelProfileError`.
+    Evaluation called on an expression containing `dyn(...)`, `timestamp(...)`, or `duration(...)`. Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (the host profile screen) and the TypeScript wasm host at `packages/contracts-typescript/src/wasm-evaluator.ts` (the wasm engine emits the structured RELAY-CEL-002 envelope, mapped by `decodeWasmEnvelope`). Surfaced via `RelayCelProfileError`.
   how_to_fix: |
     Replace the disallowed construct with a profile-safe form: use typed inputs instead of `dyn`, the `relay.timestamp_*` UDFs instead of native temporal types, and structured field access instead of duration arithmetic. See `docs/contracts/udf-reference.md`.
   introduced_in: v0.1.0
@@ -119,7 +119,7 @@ codes:
   description: |
     Wall-clock evaluation timeout. The Relay CEL evaluator enforces a per-evaluation wall-clock budget; expressions (including UDF execution) that exceed the budget are rejected with subtype `RELAY-CEL-TIMEOUT-001`. Per CLAUDE.md banned-pattern #16 every Relay UDF is pure and bounded; a timeout is a defensive cap, not a normal outcome.
   triggers: |
-    `RelayCelEvaluator.evaluate` exceeded the configured wall-clock budget (VAL-W6-003). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelTimeoutError`) and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`.
+    Evaluation exceeded the configured wall-clock budget (VAL-W6-003). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelTimeoutError`) and the TypeScript wasm host at `packages/contracts-typescript/src/wasm-evaluator.ts` (the node:worker_threads Worker is hard-killed on budget exceed, raising `RelayCelTimeoutError`).
   how_to_fix: |
     Simplify the expression, shorten the UDF call chain, or raise the per-evaluation budget after auditing the cause. A persistent timeout on a pure UDF indicates either a pathological input or a UDF bug; re-verify the UDF against the conformance corpus.
   introduced_in: v0.1.0
@@ -129,7 +129,7 @@ codes:
   description: |
     UDF purity violation. A user-defined function was registered with `pure=False`, which the Relay CEL profile forbids: replay must be byte-deterministic, and an impure UDF breaks cross-runtime evidence parity. Subtype: `RELAY-CEL-UDF-IMPURE`. Per CLAUDE.md banned-pattern #16, every registered UDF must be pure (no wall clock, no network, no filesystem, no random, no mutable globals, no locale-dependent ops).
   triggers: |
-    `RelayCelEvaluator` UDF registration attempted with `pure=False` (VAL-W6-004). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` and `packages/contracts-typescript/src/evaluator.ts`. Raised as `RelayUdfPurityError`.
+    UDF registration attempted with `pure=False` (VAL-W6-004), or a caller-supplied non-allowlist UDF was forwarded to the wasm engine. Emit site: `packages/contracts/src/relay_contracts/udf.py` and `packages/contracts-typescript/src/udf.ts` (raise `RelayUdfPurityError` on a non-pure registration); the wasm host at `packages/contracts-typescript/src/wasm-evaluator.ts` raises `RelayCelUnsupportedUdfError` for a non-allowlist UDF.
   how_to_fix: |
     Remove all non-deterministic dependencies from the UDF body (eliminate `time.time` / `Date.now`, network, fs, random, locale-dependent sorts). Re-register with `pure=True` and add a case to the Relay Conformance Corpus (`tests/conformance/cel/`) demonstrating cross-runtime determinism before re-publishing.
   introduced_in: v0.1.0
@@ -149,7 +149,7 @@ codes:
   description: |
     Evaluation produced a non-finite numeric (NaN, +Inf, or -Inf). Subtype: `RELAY-CEL-NUMERIC-OOB`. RFC 8785 (JCS) section 3.2.2 cannot canonicalise NaN or Infinity, so the evaluator rejects the result before any digest or evidence binding is attempted; emitting such a value would silently break cross-runtime signature parity.
   triggers: |
-    An arithmetic operation or UDF return produced NaN / +Inf / -Inf during evaluation (VAL-W6-006). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelNumericOutOfBoundsError`) and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`.
+    An arithmetic operation or UDF return produced NaN / +Inf / -Inf, or an out-of-safe-range integer, during evaluation (VAL-W6-006). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelNumericOutOfBoundsError`) and the TypeScript host guard at `packages/contracts-typescript/src/host-guards.ts` (`checkFinite`, applied on the wasm result, raises `RelayCelNumericOutOfBoundsError`).
   how_to_fix: |
     Guard division and exponentiation against zero / overflow in the expression. If the value legitimately needs a non-finite sentinel, represent it as an explicit enum string (e.g. `"infinity"`) so JCS can canonicalise it.
   introduced_in: v0.1.0
@@ -159,7 +159,7 @@ codes:
   description: |
     Regex literal contains a backreference, which RE2 forbids. Subtype: `RELAY-CEL-PROFILE-REGEX-BACKREF`. RE2 is the only regex engine the Relay CEL profile permits because PCRE-style backtracking opens a ReDoS attack surface. Rejected at `compile()` so contract publish fails before storage.
   triggers: |
-    `matches(...)` (or a string literal used as a regex) contains a backreference like `\1`, `(.)\1+`, etc. (VAL-W6-007). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelRegexBackreferenceError`) and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`.
+    `matches(...)` (or a string literal used as a regex) contains a backreference like `\1`, `(.)\1+`, etc. (VAL-W6-007). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelRegexBackreferenceError`) and the TypeScript host guard at `packages/contracts-typescript/src/host-guards.ts` (`checkRegexBackref`, the host pre-screen run before the wasm call, raises `RelayCelRegexBackreferenceError`).
   how_to_fix: |
     Rewrite the pattern without backreferences. Most backref idioms have an equivalent RE2 formulation using character classes or explicit repetition; otherwise move the check out of CEL into a pure UDF that validates the input structurally.
   introduced_in: v0.1.0

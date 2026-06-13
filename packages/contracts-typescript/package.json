@@ -2,7 +2,7 @@
   "name": "@epochly/relay-contracts",
   "version": "0.0.0",
   "private": true,
-  "description": "Relay-profile CEL evaluation for TypeScript: wasm-backed engine (default as of M5) plus the legacy cel-js evaluator (explicit rollback until M6), with the RFC 8785 JCS canonical encoder. TypeScript mirror of packages/contracts/ (Python).",
+  "description": "Relay-profile CEL evaluation for TypeScript: the wasm-backed engine is the only CEL backend, with the RFC 8785 JCS canonical encoder. TypeScript mirror of packages/contracts/ (Python).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -31,9 +31,7 @@
   "engines": {
     "node": ">=22.13.0"
   },
-  "dependencies": {
-    "cel-js": "0.8.2"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.0.0",
     "eslint": "^10.4.1",

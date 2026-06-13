@@ -57,7 +57,7 @@ import {
   checkRegexBackref,
   DEFAULT_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
-} from "./evaluator.js";
+} from "./host-guards.js";
 import type { PureUdf } from "./udf.js";
 import { RELAY_COVERAGE_NAME } from "./udfs/coverage.js";
 import { RELAY_SCHEMA_MATCH_NAME } from "./udfs/schema_match.js";
@@ -817,7 +817,8 @@ export function decodeWasmEnvelope(envelope: unknown): unknown {
     // Host-side finiteness / safe-integer guard on the converted result. This
     // guard stays HOST-SIDE (it is NOT delegated to the wasm) so a NaN/+-Inf or
     // an out-of-safe-range integer / whole double is rejected with
-    // RELAY-CEL-006 / NUMERIC-OOB exactly as the cel-js path does.
+    // RELAY-CEL-006 / NUMERIC-OOB (the single host-side numeric invariant, now
+    // sourced from host-guards.ts).
     checkFinite(value);
     return value;
   }

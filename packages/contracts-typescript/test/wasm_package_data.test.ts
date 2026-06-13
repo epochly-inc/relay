@@ -36,7 +36,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, describe, expect, test } from "vitest";
 
-import { RelayCelEvaluator } from "../src/evaluator.js";
+import { makeCelEvaluator } from "../src/engine.js";
 import { RelayCelError } from "../src/errors.js";
 import { WasmCelBackend } from "../src/wasm-evaluator.js";
 import {
@@ -177,13 +177,29 @@ describe("VAL-CWC-P3CORPUS-011: TS wasm backend gated on artifact presence", () 
     expect(resolved).toBeNull();
   });
 
-  test("wasm missing artifact structured error: the cel-js DEFAULT path still evaluates 1+2==3 with the wasm absent", async () => {
-    // A missing wasm artifact must NOT break the default (cel-js) engine. The
-    // RelayCelEvaluator binds cel-js, never the wasm loader, so it evaluates
-    // correctly regardless of wasm presence.
-    const evaluator = new RelayCelEvaluator();
-    const result = await evaluator.evaluate("1 + 2");
-    expect(result).toBe(3);
+  test("the wasm DEFAULT path resolves the PACKAGED artifact and evaluates 1+2==3 (fresh-install wiring)", async () => {
+    // M6 WS-I: the wasm engine is the only backend. The default factory
+    // (CEL_WASM unset, no explicit wasmPath) must resolve the PACKAGED wasm +
+    // loader (WS-G package data) so a fresh install evaluates with NO
+    // configuration. This is the successor of the old "cel-js fallback"
+    // assertion: there is no fallback engine -- the packaged wasm IS the
+    // default path, and it must work out of the box.
+    const savedCelWasm = process.env.CEL_WASM;
+    delete process.env.CEL_WASM;
+    try {
+      expect(resolvePackagedWasmPath()).not.toBeNull();
+      const evaluator = makeCelEvaluator({ timeoutMs: 250 });
+      try {
+        const result = await evaluator.evaluate("1 + 2");
+        expect(result).toBe(3);
+      } finally {
+        await evaluator.dispose();
+      }
+    } finally {
+      if (savedCelWasm !== undefined) {
+        process.env.CEL_WASM = savedCelWasm;
+      }
+    }
   });
 });
 

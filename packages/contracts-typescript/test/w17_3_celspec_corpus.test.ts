@@ -4,9 +4,13 @@
 // ../../../tests/conformance/cel-spec/relay-profile-filter.yaml (the
 // same files the Python runner exercises in
 // tests/conformance/cel-spec/test_w17_3_celspec_corpus.py) and asserts
-// VAL-W17-011 / VAL-W17-012 on the cel-js side: every profile-included
+// VAL-W17-011 / VAL-W17-012 on the TS side: every profile-included
 // vector evaluates to the recorded `expected_value` byte-equal under
 // JCS canonicalization.
+//
+// M6 WS-I: the vectors evaluate through the SINGLE wasm CEL engine (the cel-js
+// axis is removed). This is the TS mirror of the Python runner, which evaluates
+// included vectors through make_cel_evaluator (the wasm engine) post-cutover.
 //
 // Each corpus vector is its own vitest test so per-vector failures
 // localise: the mismatch surface is exactly one test name + the full
@@ -22,9 +26,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { evaluate } from "cel-js";
+import { makeCelEvaluator } from "../src/engine.js";
+import { MAX_TIMEOUT_MS, RELAY_UDFS } from "../src/index.js";
+import type { WasmCelBackend } from "../src/wasm-evaluator.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CELSPEC_DIR = resolve(HERE, "..", "..", "..", "tests", "conformance", "cel-spec");
@@ -238,15 +244,35 @@ describe("VAL-W17-011: profile filter partitions corpus", () => {
   });
 });
 
-describe("VAL-W17-012: cel-js evaluates every included vector to expected_value", () => {
+describe("VAL-W17-012: the wasm engine evaluates every included vector to expected_value", () => {
+  // One shared wasm backend across the included vectors (amortises the Worker
+  // cold-start) -- the wasm engine is stateless across evaluate() calls and is
+  // disposed in afterAll.
+  let ev: WasmCelBackend | null = null;
+
+  beforeAll(() => {
+    ev = makeCelEvaluator({ udfs: RELAY_UDFS, timeoutMs: MAX_TIMEOUT_MS });
+  });
+
+  afterAll(async () => {
+    if (ev !== null) {
+      await ev.dispose();
+      ev = null;
+    }
+  });
+
   for (const vec of includedVectors) {
-    test(vec.vector_id, () => {
+    test(vec.vector_id, async () => {
+      const backend = ev;
+      if (backend === null) {
+        throw new Error("wasm backend not initialised");
+      }
       let actual: unknown;
       try {
-        actual = evaluate(vec.expression, vec.bindings ?? {}, {});
+        actual = await backend.evaluate(vec.expression, vec.bindings ?? {});
       } catch (e) {
         throw new Error(
-          `VAL-W17-012: cel-js threw evaluating ${vec.vector_id}: ${(e as Error).message}\n  expression: ${vec.expression}\n  bindings:   ${JSON.stringify(vec.bindings ?? {})}`,
+          `VAL-W17-012: the wasm engine threw evaluating ${vec.vector_id}: ${(e as Error).message}\n  expression: ${vec.expression}\n  bindings:   ${JSON.stringify(vec.bindings ?? {})}`,
         );
       }
       const actualCanon = canonicalJSON(actual);
@@ -262,7 +288,7 @@ describe("VAL-W17-012: cel-js evaluates every included vector to expected_value"
         });
         const diffSha = createHash("sha256").update(diffPayload).digest("hex");
         throw new Error(
-          `VAL-W17-012/013: cel-js diverged from cel-spec golden for ${vec.vector_id}\n` +
+          `VAL-W17-012/013: the wasm engine diverged from cel-spec golden for ${vec.vector_id}\n` +
             `  vector_input_expression: ${vec.expression}\n` +
             `  bindings: ${JSON.stringify(vec.bindings ?? {})}\n` +
             `  expected: ${expectedCanon}\n` +

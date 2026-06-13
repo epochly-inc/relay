@@ -1,9 +1,18 @@
 """W17.3 cel-spec conformance corpus tests.
 
-Pinned-vector conformance suite that exercises both the Python CEL
-evaluator (the single wasm engine) and the TypeScript CEL evaluator
-(cel-js, invoked via Node subprocess) against a Relay-profile-filtered
-subset of the google/cel-spec conformance vector set.
+Pinned-vector conformance suite that exercises the Python CEL evaluator
+(the single wasm engine) against a Relay-profile-filtered subset of the
+google/cel-spec conformance vector set.
+
+M6 WS-I: the legacy cel-js engine is removed, so the cross-runtime
+cel-python-vs-cel-js parity axis (which invoked cel-js via a Node
+subprocess) is gone -- both hosts now evaluate through the SAME wasm
+engine, so byte-parity is by construction (proven by the cross-host
+Py-wasm-vs-Node-wasm conformance harness), and a separate cel-js parity
+runner has no premise to test. The TypeScript side still has a native
+vitest mirror at
+``packages/contracts-typescript/test/w17_3_celspec_corpus.test.ts``,
+which now evaluates the same included vectors through the wasm engine.
 
 Assertion coverage:
 
@@ -13,34 +22,25 @@ Assertion coverage:
     (every imported corpus file is digested), and
     ``test_drift_checker_validates_pin`` (running
     ``scripts/check-cel-spec-drift.py`` exits 0).
-  * VAL-W17-011: cel-python passes 100% of profile-included vectors.
-    The profile filter at ``relay-profile-filter.yaml`` enumerates which
-    vectors are inside Relay's CEL profile. Each included vector becomes
-    its own parametrised pytest test for per-vector localisation.
-    Excluded vectors MUST carry a written `reason` and a citation field;
-    an unjustified exclusion fails ``test_profile_filter_justified``.
-  * VAL-W17-012: cel-js passes 100% of the SAME profile-included
-    vectors. Asserted here via Node subprocess invocation; the
-    side-by-side parity matrix is checked by
-    ``test_parity_celpy_vs_celjs_per_vector``.
-  * VAL-W17-013: ANY divergence between cel-python and cel-js on an
-    included vector fails the suite with the FULL DIFF -- not a count.
-    The diff record contains exactly the six fields named in the
-    contract: vector_id, vector_input_expression, expected, py_actual,
-    ts_actual, diff_payload_sha256. Asserted by the parity test
-    formatter ``_format_full_diff`` and exercised by
+  * VAL-W17-011: the wasm CEL engine passes 100% of profile-included
+    vectors. The profile filter at ``relay-profile-filter.yaml``
+    enumerates which vectors are inside Relay's CEL profile. Each
+    included vector becomes its own parametrised pytest test for
+    per-vector localisation. Excluded vectors MUST carry a written
+    `reason` and a citation field; an unjustified exclusion fails
+    ``test_profile_filter_justified``.
+  * VAL-W17-012: the wasm engine is exercised over the SAME
+    profile-included vectors here AND in the vitest mirror, so both the
+    Python and TypeScript hosts have native conformance runners.
+  * VAL-W17-013: the FULL-DIFF formatter is preserved so a future
+    mismatch reports the six contract fields (vector_id,
+    vector_input_expression, expected, py_actual, ts_actual,
+    diff_payload_sha256) rather than a count. Exercised by
     ``test_full_diff_formatter_contains_all_six_fields``.
   * VAL-W17-014: drift detection runs nightly. The presence of the
     nightly workflow file at
     ``.github/workflows/nightly-cel-drift.yml`` is asserted here so
     the contract evidence does not depend on a CI-only artifact.
-
-The cel-js side is exercised in a sibling vitest mirror at
-``packages/contracts-typescript/test/w17_3_celspec_corpus.test.ts`` so
-both runtimes have a native test runner. This Python file additionally
-invokes cel-js via a Node subprocess so per-vector parity diffs land in
-a single pytest report (the contract requires the diff be visible in
-the test output, not split across two runners' logs).
 
 Tool: conformance-corpus-test (pytest plumbing tier).
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
@@ -74,14 +74,6 @@ TS_MIRROR_PATH = (
     / "test"
     / "w17_3_celspec_corpus.test.ts"
 )
-CELJS_SUBPROCESS_RUNNER = (
-    REPO_ROOT
-    / "packages"
-    / "contracts-typescript"
-    / "test"
-    / "_w17_3_celjs_runner.mjs"
-)
-
 # 40-hex-char git SHA-1 commit ID pattern.
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 # SHA-256 hex pattern for MANIFEST entries.
@@ -477,7 +469,7 @@ def test_celpy_evaluates_included_vector(vector: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# VAL-W17-012 + VAL-W17-013: cel-js parity + full diff on mismatch
+# VAL-W17-013: full-diff record formatter (retained for any future mismatch)
 # ---------------------------------------------------------------------------
 
 
@@ -554,172 +546,11 @@ def test_full_diff_formatter_contains_all_six_fields() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W17-012")
-def test_celjs_subprocess_runner_present() -> None:
-    """The Node subprocess that evaluates cel-js for parity must exist
-    next to the vitest mirror."""
-
-    assert CELJS_SUBPROCESS_RUNNER.exists(), (
-        f"VAL-W17-012: missing cel-js subprocess runner at "
-        f"{CELJS_SUBPROCESS_RUNNER}; pytest cannot drive cel-js without it."
-    )
-
-
-@pytest.mark.plumbing
-@pytest.mark.fulfills("VAL-W17-012")
 def test_ts_mirror_test_file_exists() -> None:
     assert TS_MIRROR_PATH.exists(), (
-        f"VAL-W17-012: missing TS mirror at {TS_MIRROR_PATH}; cel-js parity "
-        "is not enforced on the TypeScript side."
+        f"VAL-W17-012: missing TS mirror at {TS_MIRROR_PATH}; the wasm-engine "
+        "conformance is not enforced on the TypeScript side."
     )
-
-
-def _run_celjs_batch(vectors: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Spawn Node, pipe vectors as JSON on stdin, parse results.
-
-    The runner returns one result object per vector with shape:
-        {"vector_id": str, "ok": bool, "value": Any | None,
-         "error": str | None}
-    A non-zero exit code means the runner itself crashed (not a vector
-    eval failure -- those are reported per-record).
-    """
-
-    if not CELJS_SUBPROCESS_RUNNER.exists():
-        pytest.fail(
-            f"VAL-W17-012: cel-js runner missing at {CELJS_SUBPROCESS_RUNNER}"
-        )
-    payload = json.dumps({"vectors": vectors}).encode("utf-8")
-    # Pin cwd to the repo root so Node's ESM resolver finds cel-js in the
-    # hoisted workspace root node_modules/ regardless of the test's
-    # inherited cwd (some sibling tests use monkeypatch.chdir(tmp_path)
-    # which would otherwise break package resolution).
-    proc = subprocess.run(
-        ["node", str(CELJS_SUBPROCESS_RUNNER)],
-        input=payload,
-        capture_output=True,
-        timeout=120,
-        check=False,
-        cwd=str(REPO_ROOT),
-    )
-    if proc.returncode != 0:
-        pytest.fail(
-            f"VAL-W17-012: cel-js runner exited {proc.returncode}\n"
-            f"  stderr: {proc.stderr.decode('utf-8', errors='replace')}\n"
-            f"  stdout: {proc.stdout.decode('utf-8', errors='replace')[:2000]}"
-        )
-    try:
-        return json.loads(proc.stdout.decode("utf-8"))["results"]
-    except (json.JSONDecodeError, KeyError) as exc:
-        pytest.fail(
-            f"VAL-W17-012: cel-js runner produced unparseable output: {exc}\n"
-            f"  stdout: {proc.stdout.decode('utf-8', errors='replace')[:2000]}"
-        )
-
-
-@pytest.mark.plumbing
-@pytest.mark.fulfills("VAL-W17-012")
-@pytest.mark.fulfills("VAL-W17-013")
-def test_parity_celpy_vs_celjs_per_vector() -> None:
-    """Full cross-runtime parity. Both runtimes evaluate every included
-    vector; ANY divergence produces the six-field diff record from
-    ``_format_full_diff`` -- not a count.
-
-    This is one pytest test rather than parametrized because per-vector
-    parity is verified inside VAL-W17-011 (cel-python) and the vitest
-    mirror (cel-js); this test's job is to assert they AGREE, which is
-    a single-batch operation per the runner's cost amortisation.
-    """
-
-    if not _INCLUDED_VECTORS_FOR_PARAM:
-        pytest.fail(
-            "VAL-W17-013: no included vectors to parity-check; corpus "
-            "has not been populated yet."
-        )
-
-    from relay_contracts import RELAY_UDFS, make_cel_evaluator
-
-    def _to_python(value: Any) -> Any:
-        """Collapse evaluator results to JSON-roundtrippable Python. The wasm
-        codec decodes to native classes; the int branch also covers the
-        CelUint marker subclass."""
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int):
-            return int(value)
-        if isinstance(value, float):
-            return float(value)
-        if isinstance(value, str):
-            return str(value)
-        if isinstance(value, list | tuple):
-            return [_to_python(v) for v in value]
-        if isinstance(value, dict):
-            return {str(k): _to_python(v) for k, v in value.items()}
-        raise TypeError(f"unsupported evaluator result type: {type(value).__name__}")
-
-    # Construct via the make_cel_evaluator factory (the ONLY RELAY_CEL_ENGINE
-    # read site, engine.py) so this cel-spec parity test exercises the
-    # production single-engine path. RELAY_UDFS is the accepted allowlist.
-    # Bindings are plain JSON-native values (the wasm codec encodes them).
-    ev = make_cel_evaluator(udfs=RELAY_UDFS)
-    py_results: dict[str, Any] = {}
-    py_errors: dict[str, str] = {}
-    for vec in _INCLUDED_VECTORS_FOR_PARAM:
-        vid = vec["vector_id"]
-        try:
-            bindings = dict(vec.get("bindings") or {})
-            raw = ev.evaluate(vec["expression"], bindings)
-            py_results[vid] = _to_python(raw)
-        except Exception as e:  # noqa: BLE001 - we want every error captured
-            py_errors[vid] = f"{type(e).__name__}: {e}"
-
-    ts_records = _run_celjs_batch(_INCLUDED_VECTORS_FOR_PARAM)
-    ts_results: dict[str, Any] = {}
-    ts_errors: dict[str, str] = {}
-    for rec in ts_records:
-        if rec.get("ok"):
-            ts_results[rec["vector_id"]] = rec["value"]
-        else:
-            ts_errors[rec["vector_id"]] = rec.get("error") or "<unknown>"
-
-    divergences: list[dict[str, Any]] = []
-    for vec in _INCLUDED_VECTORS_FOR_PARAM:
-        vid = vec["vector_id"]
-        py_val = py_results.get(vid, f"<py_error:{py_errors.get(vid)}>")
-        ts_val = ts_results.get(vid, f"<ts_error:{ts_errors.get(vid)}>")
-        # A vector with NO recorded py value AND no recorded ts value
-        # means both runtimes errored. That is a parity match (both
-        # rejected), but only if neither expected a value. We treat the
-        # "both errored" case as an explicit divergence from the
-        # expected golden, surfaced for the operator's review.
-        if vid in py_errors and vid in ts_errors:
-            divergences.append(
-                _format_full_diff(vec, py_actual=py_val, ts_actual=ts_val)
-            )
-            continue
-        if vid in py_errors or vid in ts_errors:
-            divergences.append(
-                _format_full_diff(vec, py_actual=py_val, ts_actual=ts_val)
-            )
-            continue
-        if py_val != ts_val:
-            divergences.append(
-                _format_full_diff(vec, py_actual=py_val, ts_actual=ts_val)
-            )
-
-    if divergences:
-        # Print the full per-vector diff records to stdout so CI captures
-        # them in <system-out>. The assert message also includes them so
-        # they appear in the JUnit failure payload.
-        rendered = "\n".join(
-            json.dumps(rec, sort_keys=True, indent=2) for rec in divergences
-        )
-        for rec in divergences:
-            print("[parity-diff]", json.dumps(rec, sort_keys=True))
-        pytest.fail(
-            f"VAL-W17-012/013: {len(divergences)} cel-python vs cel-js "
-            f"parity divergences (full diff follows; no counts):\n{rendered}"
-        )
 
 
 # ---------------------------------------------------------------------------
