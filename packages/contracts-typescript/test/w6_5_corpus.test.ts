@@ -31,7 +31,7 @@ import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { makeCelEvaluator } from "../src/engine.js";
 import {
@@ -170,11 +170,23 @@ describe("VAL-W6-050: corpus is well-formed", () => {
 });
 
 describe("VAL-W6-051: wasm-host eval_value bytes match cel-python golden", () => {
-  // Each parametrised case constructs a fresh wasm backend so a hung/terminated
-  // Worker never leaks across cases; it is disposed in afterEach.
+  // A single shared wasm backend is constructed ONCE per describe block (in
+  // beforeAll) and disposed ONCE (in afterAll). The backend already provides the
+  // per-case isolation a hung/terminated Worker would need: on any wall-clock
+  // timeout it hard-kills and quarantines its Worker, and the next evaluate()
+  // respawns a clean one (wasm-evaluator.ts runOnWorker / onTimeout). These
+  // conformance cases are deterministic and never time out, so constructing a
+  // fresh backend per case was unnecessary -- and with 200+ cases it spawned
+  // 200+ node:worker_threads Workers in sequence, a spawn-storm that
+  // intermittently blew the timeout budget under parallel test-file load. One
+  // shared backend removes that flake while preserving the same isolation.
   let ev: WasmCelBackend | null = null;
 
-  afterEach(async () => {
+  beforeAll(() => {
+    ev = makeCelEvaluator({ udfs: RELAY_UDFS, timeoutMs: MAX_TIMEOUT_MS });
+  });
+
+  afterAll(async () => {
     if (ev !== null) {
       await ev.dispose();
       ev = null;
@@ -184,7 +196,7 @@ describe("VAL-W6-051: wasm-host eval_value bytes match cel-python golden", () =>
   for (const c of corpus.cases) {
     if (c.kind !== "eval_value") continue;
     test(c.id, async () => {
-      ev = makeCelEvaluator({ udfs: RELAY_UDFS, timeoutMs: MAX_TIMEOUT_MS });
+      if (ev === null) throw new Error("shared wasm backend was not constructed");
       if (c.id in ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS) {
         // M6 WS-I adjudicated carve-out: the FROZEN golden records the removed
         // legacy engine's lenient lexing; the wasm correctly raises the
@@ -228,9 +240,19 @@ describe("VAL-W6-051: wasm-host eval_value bytes match cel-python golden", () =>
 });
 
 describe("VAL-W6-051: wasm-host eval_error cases throw", () => {
+  // Same rationale as the eval_value block above: a single shared wasm backend
+  // is constructed once per describe (beforeAll) and disposed once (afterAll).
+  // The backend hard-kills and respawns its Worker on any timeout
+  // (wasm-evaluator.ts runOnWorker quarantine), so per-case construction is
+  // unnecessary; building 200+ Workers caused a spawn-storm timing flake under
+  // parallel load.
   let ev: WasmCelBackend | null = null;
 
-  afterEach(async () => {
+  beforeAll(() => {
+    ev = makeCelEvaluator({ udfs: RELAY_UDFS, timeoutMs: MAX_TIMEOUT_MS });
+  });
+
+  afterAll(async () => {
     if (ev !== null) {
       await ev.dispose();
       ev = null;
@@ -240,7 +262,7 @@ describe("VAL-W6-051: wasm-host eval_error cases throw", () => {
   for (const c of corpus.cases) {
     if (c.kind !== "eval_error") continue;
     test(c.id, async () => {
-      ev = makeCelEvaluator({ udfs: RELAY_UDFS, timeoutMs: MAX_TIMEOUT_MS });
+      if (ev === null) throw new Error("shared wasm backend was not constructed");
       let raised = false;
       try {
         await ev.evaluate(c.expression, c.bindings ?? {});
