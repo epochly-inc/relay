@@ -46,6 +46,7 @@ from relay_contracts.errors import (
     SUBTYPE_PROFILE_DUR_DISABLED,
     SUBTYPE_PROFILE_DYN_DISABLED,
     SUBTYPE_PROFILE_TS_DISABLED,
+    SUBTYPE_TIMEOUT,
     SUBTYPE_UDF_IMPURE,
     SUBTYPE_UDF_UNREGISTERED,
     RelayCelEngineError,
@@ -53,6 +54,7 @@ from relay_contracts.errors import (
     RelayCelNumericOutOfBoundsError,
     RelayCelProfileError,
     RelayCelRegexBackreferenceError,
+    RelayCelTimeoutError,
     RelayCelUnsupportedUdfError,
 )
 from relay_contracts.evaluator import MAX_TIMEOUT_MS
@@ -367,6 +369,83 @@ def test_wasm_request_failure_does_not_surface_as_host_numeric_oob(monkeypatch):
     assert exc.value.code == "RELAY-CEL-009"
     assert exc.value.subtype == SUBTYPE_ENGINE_REQUEST
     assert not isinstance(exc.value, RelayCelNumericOutOfBoundsError)
+
+
+# ---------------------------------------------------------------------------
+# VAL-CWC-P7EDGE-008 (Python cross-host parity): a wasm RELAY-CEL-003
+# fuel-exhaustion envelope decodes to RelayCelTimeoutError -- the SAME class +
+# code + subtype the host wall-clock kill throws -- NOT RelayCelEngineError/009.
+# Mirrors the TS decodeWasmEnvelope fix (commit 873b171) for behavioral parity.
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+def test_decode_wasm_003_envelope_maps_to_timeout_not_engine_009():
+    """A {ok:false, code:RELAY-CEL-003, subtype:RELAY-CEL-TIMEOUT-001} wasm
+    envelope (the in-engine fuel-budget exhaustion path) must decode to
+    RelayCelTimeoutError with code RELAY-CEL-003 / subtype RELAY-CEL-TIMEOUT-001,
+    indistinguishable from the host wall-clock timeout -- NOT the generic
+    RelayCelEngineError (RELAY-CEL-009)."""
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
+    envelope = {
+        "ok": False,
+        "code": "RELAY-CEL-003",
+        "subtype": "RELAY-CEL-TIMEOUT-001",
+        "error": "fuel budget exhausted",
+    }
+    with pytest.raises(RelayCelTimeoutError) as exc:
+        ev._decode_envelope(envelope)
+    err = exc.value
+    assert err.code == "RELAY-CEL-003", err.code
+    assert err.subtype == SUBTYPE_TIMEOUT, err.subtype
+    assert err.subtype == "RELAY-CEL-TIMEOUT-001", err.subtype
+    # It is the timeout class, never the generic engine-009 class.
+    assert isinstance(err, RelayCelError)
+    assert not isinstance(err, RelayCelEngineError)
+
+
+@pytest.mark.plumbing
+def test_decode_wasm_003_envelope_through_evaluate_maps_to_timeout(monkeypatch):
+    """End-to-end through evaluate(): a fuel-exhaustion 003 envelope returned by
+    the wasm handle surfaces as RelayCelTimeoutError, not RelayCelEngineError --
+    so a fuel-derived timeout is downstream-identical to the host wall-clock kill
+    (cross-host parity with the TS path)."""
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
+
+    def fake_eval(expr, bindings=None, container=None, relay_profile=False):
+        return {
+            "ok": False,
+            "code": "RELAY-CEL-003",
+            "subtype": "RELAY-CEL-TIMEOUT-001",
+            "error": "fuel budget exhausted",
+        }
+
+    monkeypatch.setattr(ev._thread_handle(), "eval", fake_eval)
+    with pytest.raises(RelayCelTimeoutError) as exc:
+        ev.evaluate("1 + 1")
+    assert exc.value.code == "RELAY-CEL-003"
+    assert exc.value.subtype == SUBTYPE_TIMEOUT
+    assert not isinstance(exc.value, RelayCelEngineError)
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("bad_subtype", [None, "", "RELAY-CEL-PROFILE-DYN-DISABLED"])
+def test_decode_wasm_003_envelope_without_timeout_subtype_is_engine_anomaly(bad_subtype):
+    """Parity with the TS subtype guard: a RELAY-CEL-003 envelope that lacks the
+    structured RELAY-CEL-TIMEOUT-001 subtype is an engine-request anomaly
+    (RELAY-CEL-009), NOT a blindly-trusted timeout -- a malformed 003 must never
+    masquerade as a benign timeout downstream."""
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
+    envelope: dict[str, Any] = {
+        "ok": False,
+        "code": "RELAY-CEL-003",
+        "error": "malformed timeout envelope",
+    }
+    if bad_subtype is not None:
+        envelope["subtype"] = bad_subtype
+    with pytest.raises(RelayCelEngineError) as exc:
+        ev._decode_envelope(envelope)
+    assert exc.value.code == "RELAY-CEL-009"
+    assert exc.value.subtype == SUBTYPE_ENGINE_REQUEST
+    assert not isinstance(exc.value, RelayCelTimeoutError)
 
 
 # ---------------------------------------------------------------------------

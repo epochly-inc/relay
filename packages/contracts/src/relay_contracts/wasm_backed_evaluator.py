@@ -73,6 +73,7 @@ from relay_schemas.error_codes import RelayErrorCode
 
 from .callee_parser import extract_bare_callees
 from .errors import (
+    SUBTYPE_TIMEOUT,
     RelayCelEngineError,
     RelayCelError,
     RelayCelProfileError,
@@ -111,6 +112,14 @@ _NATIVE_UDF_NAMES: frozenset[str] = frozenset(
 # a structured ``subtype`` (DYN/TS/DUR/STRUCT-DISABLED) which the host maps
 # verbatim onto RelayCelProfileError -- NEVER by parsing the message string.
 _WASM_PROFILE_CODE: str = RelayErrorCode.RELAY_CEL_002
+
+# The wasm engine's structured RELAY-CEL-003 timeout code: the in-engine
+# fuel-budget counter exhausted the per-evaluation step budget (WS-J / the
+# Cloudflare-edge path). It carries the structured subtype RELAY-CEL-TIMEOUT-001
+# which the host maps onto RelayCelTimeoutError -- the SAME class + code +
+# subtype the host wall-clock kill throws, so the two timeout origins are
+# INDISTINGUISHABLE downstream (cross-host parity with TS decodeWasmEnvelope).
+_WASM_TIMEOUT_CODE: str = RelayErrorCode.RELAY_CEL_003
 
 # The wasm engine's OWN compile-failure code (the crate `codes` module emits
 # RELAY-CEL-001 for a parse/compile failure inside the engine). probe_compile
@@ -766,10 +775,18 @@ class WasmCelEvaluator:
         Success -> ``typed_to_py`` of the typed-canonical value, then host
         ``_check_finite`` (RELAY-CEL-006 / NUMERIC-OOB) on the converted result.
         Failure -> RELAY-CEL-002 PROFILE (with the wasm's structured subtype) ->
-        :class:`RelayCelProfileError`; every other ``{"ok": false}`` cause (001
+        :class:`RelayCelProfileError`; RELAY-CEL-003 (the wasm's in-engine
+        fuel-budget exhaustion, structured subtype RELAY-CEL-TIMEOUT-001) ->
+        :class:`RelayCelTimeoutError` -- the SAME class + code + subtype the host
+        wall-clock kill throws, so a fuel-derived timeout is INDISTINGUISHABLE
+        downstream from the host timeout (cross-host parity with the TS
+        ``decodeWasmEnvelope`` path); every other ``{"ok": false}`` cause (001
         compile / 004 exec / 006 request / RELAY-CEL-PANIC) ->
         :class:`RelayCelEngineError` (RELAY-CEL-009) via
         :meth:`RelayCelEngineError.from_wasm_envelope` (never the host 004/006).
+        Like the profile branch, a 003 envelope that lacks the structured
+        RELAY-CEL-TIMEOUT-001 subtype is treated as an engine-request anomaly
+        (RELAY-CEL-009 / ENGINE-REQUEST), never a blindly-trusted timeout.
         """
         if not isinstance(envelope, dict):
             raise RelayCelEngineError(
@@ -798,6 +815,26 @@ class WasmCelEvaluator:
                     subtype="RELAY-CEL-ENGINE-REQUEST",
                 )
             raise RelayCelProfileError(message, subtype=subtype)
+
+        # RELAY-CEL-003 timeout: the wasm's in-engine fuel counter exhausted the
+        # per-evaluation budget (WS-J / the Cloudflare-edge path). Map
+        # (code, subtype) -> RelayCelTimeoutError -- the SAME class + code +
+        # subtype the host wall-clock kill throws -- so the two timeout origins
+        # are INDISTINGUISHABLE downstream (cross-host parity with the TS
+        # decodeWasmEnvelope path). Like the profile branch above, a 003 envelope
+        # MUST carry the structured subtype RELAY-CEL-TIMEOUT-001; an absent /
+        # unexpected subtype is an engine-request anomaly, NOT a trustworthy
+        # timeout (it would otherwise mask a malformed envelope as a benign
+        # timeout and let a bogus signed per-condition subtype through).
+        if code == _WASM_TIMEOUT_CODE:
+            subtype = envelope.get("subtype")
+            if subtype != SUBTYPE_TIMEOUT:
+                raise RelayCelEngineError(
+                    "wasm timeout envelope (RELAY-CEL-003) carried an unexpected "
+                    f"subtype {subtype!r} (expected {SUBTYPE_TIMEOUT!r}): {message}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                )
+            raise RelayCelTimeoutError(message)
 
         # Every other wasm failure cause -> the dedicated RELAY-CEL-009 engine
         # error with a per-cause subtype. Reuse the canonical mapping in

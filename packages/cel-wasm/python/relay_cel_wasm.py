@@ -118,16 +118,21 @@ class RelayCel:
         (no host clock, no host import), so it is reproducible across runs and
         hosts -- a Cloudflare-Workers-shaped path (no worker_threads) gets a
         portable RELAY-CEL-003 from the budget rather than a wall-clock kill.
-        The field is added to the request ONLY when it is a positive int, so a
-        None / 0 / negative value leaves the request JSON byte-identical to the
-        no-fuel form (the disabled sentinel is the wasm default).
+        The field is added to the request ONLY when it is an EXACT positive int
+        in u64 range, so a None / 0 / negative-int value leaves the request JSON
+        byte-identical to the no-fuel form (the disabled sentinel is the wasm
+        default).
 
-        FAIL CLOSED on an out-of-u64 budget: the wasm reads fuel_budget with serde
-        as_u64().unwrap_or(0), so a positive value that serializes OUTSIDE u64
-        (i.e. > 2**64 - 1) would become 0 in the wasm -- the DISABLED sentinel --
-        SILENTLY turning a "large finite" budget into "unbounded" and letting a
-        fuel-exhausting expression run unbounded (defeating the timeout). To
-        surface the misconfig rather than mask it, a positive fuel_budget strictly
+        FAIL CLOSED on a NON-int budget: the wasm reads fuel_budget with serde
+        as_u64().unwrap_or(0), so a positive NON-int value (a float 8.0 / 1.5 or
+        a bool True) JSON-serializes as 8.0 / 1.5 / true -- which as_u64() cannot
+        read, so it returns None and unwrap_or(0) SILENTLY DISABLES the budget
+        (fail-open), turning a "budget set" misconfig into "unbounded" and letting
+        a fuel-exhausting expression run unbounded (defeating the timeout). The
+        same SILENT-DISABLE trap applies to a positive int that serializes OUTSIDE
+        u64 (> 2**64 - 1). To surface the misconfig rather than mask it, a
+        fuel_budget that is NOT an exact int (type(fuel_budget) is int, which
+        EXCLUDES bool since type(True) is bool, and float) OR an int strictly
         greater than the u64 ceiling raises ValueError before the field is added.
         A budget exactly at 2**64 - 1 is the largest representable u64 and is
         accepted."""
@@ -138,7 +143,19 @@ class RelayCel:
             req["container"] = container
         if relay_profile:
             req["relay_profile"] = True
-        if fuel_budget is not None and fuel_budget > 0:
+        if fuel_budget is not None:
+            # Exact-int type check FIRST (fail closed): a non-int (float / bool)
+            # would serialize so the wasm's as_u64().unwrap_or(0) reads 0 -- the
+            # DISABLED sentinel -- silently turning the budget off. type(x) is int
+            # excludes bool (type(True) is bool) and float, so only a real int
+            # passes. Surface the misconfig rather than mask it.
+            if type(fuel_budget) is not int:
+                raise ValueError(
+                    f"fuel_budget must be an int, got {type(fuel_budget).__name__} "
+                    f"({fuel_budget!r}); a non-int serializes so the wasm reads "
+                    "as_u64().unwrap_or(0) and SILENTLY DISABLES the budget -- "
+                    "failing closed to surface the misconfig"
+                )
             if fuel_budget > _U64_MAX:
                 raise ValueError(
                     f"fuel_budget {fuel_budget} exceeds the u64 maximum "
@@ -146,7 +163,11 @@ class RelayCel:
                     "wasm reads as_u64().unwrap_or(0) and SILENTLY DISABLE the "
                     "budget -- failing closed to surface the misconfig"
                 )
-            req["fuel_budget"] = fuel_budget
+            # A non-positive int (0 sentinel / negative) is the DISABLED form: no
+            # field, byte-identical to the no-fuel request. Only a positive
+            # in-range int forwards the budget.
+            if fuel_budget > 0:
+                req["fuel_budget"] = fuel_budget
         inp = json.dumps(req).encode("utf-8")
         n = len(inp)
         try:
