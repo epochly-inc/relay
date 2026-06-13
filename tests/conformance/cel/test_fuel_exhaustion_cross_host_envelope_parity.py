@@ -59,7 +59,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -163,7 +163,9 @@ def _python_fuel_envelope_bytes(wasm_path: str) -> bytes:
     """
     from wasmtime import (  # noqa: PLC0415  -- runtime loader import (cel-wasm convention)
         Engine,
+        Func,
         Instance,
+        Memory,
         Module,
         Store,
     )
@@ -173,10 +175,12 @@ def _python_fuel_envelope_bytes(wasm_path: str) -> bytes:
     store = Store(engine)
     instance = Instance(store, module, [])
     exports = instance.exports(store)
-    memory = exports["memory"]
-    alloc = exports["alloc"]
-    eval_fn = exports["eval"]
-    dealloc = exports["dealloc"]
+    # cast() narrows the wasmtime export union (Func|Global|Memory|Table|...) for
+    # the type checker; a runtime no-op, mirroring relay_cel_wasm.py:81-84.
+    memory = cast(Memory, exports["memory"])
+    alloc = cast(Func, exports["alloc"])
+    eval_fn = cast(Func, exports["eval"])
+    dealloc = cast(Func, exports["dealloc"])
 
     # The request JSON with the fuel_budget field set directly -- the field order
     # here does NOT affect the OUTPUT bytes (the wasm re-serializes its own
