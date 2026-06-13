@@ -151,6 +151,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: "setup node 22 (cross-host parity host)"
+        # The WS-J fuel-exhaustion cross-host parity step below invokes `node`
+        # as a subprocess (the Python pytest drives the Node harness to capture
+        # the Node-host envelope bytes). Pin node 22 to match the conformance-gate
+        # job rather than relying on the runner's default node.
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: "install uv"
         run: pip install uv
 
@@ -184,6 +193,8 @@ jobs:
             tests/conformance/cel/test_udf_via_cel_byte_match_runner.py \
             tests/conformance/cel/test_udf_via_cel_corpus.py \
             packages/cel-wasm/conformance/harness/udf_via_cel_cross_host.mjs \
+            packages/cel-wasm/conformance/harness/fuel_exhaustion_cross_host.mjs \
+            tests/conformance/cel/test_fuel_exhaustion_cross_host_envelope_parity.py \
             packages/contracts/src/relay_contracts/wasm_artifact.py \
             packages/contracts/src/relay_contracts/wasm_backed_evaluator.py \
             "packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.py" \
@@ -242,6 +253,24 @@ jobs:
           uv run pytest \
             packages/contracts/tests/test_wasm_package_data.py \
             packages/contracts/tests/test_wasm_loader_package_data.py \
+            -m plumbing -p no:cacheprovider -q
+
+      - name: "tier-1 plumbing: WS-J fuel-exhaustion cross-host envelope parity"
+        # VAL-CWC-P7EDGE-004: the fuel-exhaustion RELAY-CEL-003 /
+        # RELAY-CEL-TIMEOUT-001 error envelope is BYTE-IDENTICAL when produced by
+        # the Python (wasmtime) host and the Node host loading the SAME .wasm. The
+        # pytest drives the FIXED fuel-exhausting expr+budget through the Python
+        # wasmtime host AND the sibling Node harness
+        # (conformance/harness/fuel_exhaustion_cross_host.mjs, which drives the
+        # wasm request JSON directly so it does not depend on the loader's
+        # optional fuel surface) and asserts the raw wire bytes match. CEL_WASM
+        # points both hosts at the artifact built above so they load the SAME
+        # bytes on a clean runner.
+        env:
+          CEL_WASM: "${{ github.workspace }}/packages/cel-wasm/crate/target/wasm32-unknown-unknown/release/relay_cel_wasm.wasm"
+        run: |
+          uv run pytest \
+            tests/conformance/cel/test_fuel_exhaustion_cross_host_envelope_parity.py \
             -m plumbing -p no:cacheprovider -q
 
   cel-wasm-aggregate:
