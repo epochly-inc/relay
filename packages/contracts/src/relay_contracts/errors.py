@@ -2,15 +2,18 @@
 
 Every Relay-CEL error carries a canonical ``RELAY-CEL-NNN`` code (from the
 generated :class:`RelayErrorCode` registry) plus a stable ``subtype`` token.
-The TypeScript errors module (errors.ts) emits the identical token set for
-the cross-runtime PARITY-TESTED engine-error subtypes; each host additionally
-defines host-specific subtypes that are not cross-emitted (e.g. the Python
-RELAY-CEL-008 / RELAY-CEL-RESOURCE-EXHAUSTED classification here vs the
-TypeScript RELAY-CEL-PROFILE-STRUCT-DISABLED fence there). For the shared
-subtypes, the pair (`code`, `subtype`) is the cross-runtime byte-equality key
-that VAL-W6-006 and VAL-W6-007 enforce.
+The TypeScript errors module (errors.ts) surfaces the SAME wasm-emitted
+engine-error subtypes (the RELAY-CEL-002 profile family, the RELAY-CEL-009
+engine-* family, etc.) -- whether via a named constant or by propagating the
+wasm envelope's subtype string. For those wasm-emitted subtypes the pair
+(`code`, `subtype`) is the cross-runtime byte-equality key that VAL-W6-006 and
+VAL-W6-007 enforce. The per-host code-to-subtype registries below list each
+host's OWN named-constant set and are NOT required to be identical outside the
+wasm-emitted set (a host may name or classify host-internal conditions -- such
+as runtime/thread resource exhaustion -- on its own).
 
-Code-to-subtype map (mirror in the TypeScript errors.ts module):
+Code-to-subtype map (Python named subtypes; the wasm-emitted set is shared
+with errors.ts):
 
     RELAY-CEL-002  RELAY-CEL-PROFILE-DYN-DISABLED
     RELAY-CEL-002  RELAY-CEL-PROFILE-TS-DISABLED
