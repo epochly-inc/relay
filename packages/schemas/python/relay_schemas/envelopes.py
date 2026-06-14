@@ -36,6 +36,7 @@ Spec anchors:
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -159,24 +160,140 @@ class RelayUnknownEnumValueError(ValueError):
 # byte-identical UTF-8 output for the same input value.
 
 
-def canonical_bytes(value: Any) -> bytes:
-    """Emit RFC-8785-compatible canonical JSON bytes for a Python value.
+# Largest IEEE-754 double that is an exact integer (JS Number.MAX_SAFE_INTEGER).
+_JS_MAX_SAFE_INTEGER = 2**53 - 1
 
-    Recurses into nested dicts (sort keys lexicographically) and lists
-    (preserve order). Decimals MUST be passed in as strings (the caller is
-    responsible for encoding ``Decimal`` -> string before invoking this
+
+def _es6_number_to_string_positive(n: float) -> str:
+    """ECMA-262 7.1.12.1 Number::toString for a strictly POSITIVE finite double.
+
+    Mirrors JS ``String(n)`` byte-for-byte (ported from
+    ``relay_verifier.canonical`` -- the schemas package cannot depend on the
+    verifier, so the proven algorithm is duplicated). Python's ``repr(float)``
+    and ``json.dumps`` choose different exponent thresholds / zero-padding /
+    trailing ``.0`` than ECMA-262, so a bare float serialized via ``json.dumps``
+    diverged from the TS ``canonicalJsonStringify`` which uses ``String(value)``
+    (re-hunt schemas-03). Caller handles NaN/Inf/zero/negative dispatch.
+    """
+    s = repr(n)
+    if "e" in s:
+        mantissa, exp_str = s.split("e")
+        exp = int(exp_str)
+    else:
+        mantissa, exp = s, 0
+    if "." in mantissa:
+        int_part, frac_part = mantissa.split(".")
+    else:
+        int_part, frac_part = mantissa, ""
+    raw_digits = int_part + frac_part
+    stripped_lead = raw_digits.lstrip("0")
+    leading_zero_count = len(raw_digits) - len(stripped_lead)
+    if not stripped_lead:
+        return "0"
+    stripped = stripped_lead.rstrip("0")
+    n_dec = len(int_part) - leading_zero_count + exp
+    k = len(stripped)
+    if k <= n_dec <= 21:
+        return stripped + ("0" * (n_dec - k))
+    if 0 < n_dec <= 21:
+        return stripped[:n_dec] + "." + stripped[n_dec:]
+    if -6 < n_dec <= 0:
+        return "0." + ("0" * (-n_dec)) + stripped
+    sign = "+" if n_dec - 1 >= 0 else "-"
+    abs_exp = str(abs(n_dec - 1))
+    if k == 1:
+        return stripped + "e" + sign + abs_exp
+    return stripped[0] + "." + stripped[1:] + "e" + sign + abs_exp
+
+
+def _canonical_encode(value: Any) -> str:
+    """Recursive RFC-8785 encoder matching the TS ``canonicalJsonStringify``."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        # A JSON integer beyond JS's safe-integer range cannot be represented
+        # exactly as a double, so TS ``String(parsedNumber)`` would emit a
+        # ROUNDED value while Python ``str(int)`` is exact -- irreconcilable.
+        # Reject on BOTH sides (the TS guard throws) so the canonical form fails
+        # CLOSED rather than diverging (re-hunt schemas-03). Such values must be
+        # string-encoded by the caller (see the docstring contract).
+        if not (-_JS_MAX_SAFE_INTEGER <= value <= _JS_MAX_SAFE_INTEGER):
+            raise ValueError(
+                f"integer {value} is outside the JS safe-integer range "
+                f"[-(2**53-1), 2**53-1]; canonical payloads MUST string-encode "
+                "such values for Py<->TS byte parity"
+            )
+        return str(value)
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise ValueError(
+                f"canonical JSON cannot encode non-finite number: {value!r}"
+            )
+        # JS has a single number type, so a JSON exponential like ``1e16`` parses
+        # to an INTEGER-valued number that ``Number.isInteger`` accepts but
+        # ``Number.isSafeInteger`` rejects -> the TS guard throws. Python parses
+        # the same literal to a FLOAT, which would otherwise slip through here and
+        # be ECMA-262-formatted (accepted) -> a Py-accepts/TS-rejects divergence.
+        # Reject an integer-valued float outside the safe-integer range so BOTH
+        # runtimes fail closed on it (re-hunt schemas-03).
+        if value.is_integer() and abs(value) > _JS_MAX_SAFE_INTEGER:
+            raise ValueError(
+                f"float {value!r} has an integer value outside the JS "
+                "safe-integer range [-(2**53-1), 2**53-1]; canonical payloads "
+                "MUST string-encode such values for Py<->TS byte parity"
+            )
+        if value == 0.0:
+            return "0"  # ECMA-262: both 0.0 and -0.0 -> "0"
+        if value < 0:
+            return "-" + _es6_number_to_string_positive(-value)
+        return _es6_number_to_string_positive(value)
+    if isinstance(value, str):
+        # Reuse json.dumps' string escaping: byte-identical to the prior
+        # implementation AND to TS JSON.stringify for the Relay value subset.
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_canonical_encode(v) for v in value) + "]"
+    if isinstance(value, dict):
+        # RFC 8785 section 3.2.3: object keys ordered by their UTF-16 code-unit
+        # sequence (NOT Unicode code point). For BMP keys the orderings coincide;
+        # they diverge only for SMP (>= U+10000) keys, where Python's default
+        # str (code-point) sort disagreed with the TS Object.keys().sort()
+        # (UTF-16 code-unit) -- a non-BMP-key byte divergence (re-hunt
+        # schemas-04). ``encode("utf-16-be")`` orders by code unit.
+        items = sorted(
+            ((str(k), v) for k, v in value.items()),
+            key=lambda kv: kv[0].encode("utf-16-be"),
+        )
+        return (
+            "{"
+            + ",".join(
+                json.dumps(k, ensure_ascii=False) + ":" + _canonical_encode(v)
+                for k, v in items
+            )
+            + "}"
+        )
+    raise TypeError(
+        f"canonical JSON: unsupported type {type(value).__name__}"
+    )
+
+
+def canonical_bytes(value: Any) -> bytes:
+    """Emit RFC-8785 canonical JSON bytes for a Python value.
+
+    Recurses into nested dicts (keys ordered by UTF-16 code unit, RFC 8785
+    3.2.3) and lists (preserve order). Numbers are encoded per ECMA-262
+    Number::toString so floats match the TS ``canonicalJsonStringify``
+    (``String(value)``) byte-for-byte; non-finite floats and integers outside
+    the JS safe-integer range are REJECTED fail-closed. Decimals MUST be passed
+    in as strings (the caller encodes ``Decimal`` -> string before invoking this
     function so precision is bit-exact across Py and TS).
 
-    Mirrors ``canonicalJsonStringify`` in envelopes.ts byte-for-byte for
-    the value subset used by Relay envelopes.
+    Mirrors ``canonicalJsonStringify`` in envelopes.ts byte-for-byte for the
+    value subset used by Relay envelopes.
     """
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
+    return _canonical_encode(value).encode("utf-8")
 
 
 # -----------------------------------------------------------------------------
@@ -780,7 +897,12 @@ def serialize_event_log_entry_canonical(entry: EventLogEntry) -> bytes:
         "occurred_at": occurred_at_str,
         "ingest_sequence": entry.ingest_sequence,
     }
-    return json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    # Route through canonical_bytes (RFC 8785): ensure_ascii=False raw UTF-8 +
+    # allow_nan=False + ECMA-262 numbers + UTF-16 key sort. The prior bare
+    # json.dumps here omitted ensure_ascii/allow_nan, so a non-ASCII payload
+    # diverged from TS and a non-finite payload float emitted invalid-JSON
+    # NaN/Infinity instead of raising (re-hunt schemas-04/-05).
+    return canonical_bytes(canonical)
 
 
 # -----------------------------------------------------------------------------
@@ -1296,7 +1418,10 @@ def serialize_replay_fixture_canonical(fixture: ReplayFixture) -> bytes:
         "allowed_in_replay": fixture.allowed_in_replay,
         "created_at": fixture.created_at.isoformat(),
     }
-    return json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    # Route through canonical_bytes for RFC-8785 Py<->TS byte parity (raw UTF-8,
+    # allow_nan=False, ECMA-262 numbers, UTF-16 key sort) -- see
+    # serialize_event_log_entry_canonical (re-hunt schemas-04/-05).
+    return canonical_bytes(canonical)
 
 
 # -----------------------------------------------------------------------------

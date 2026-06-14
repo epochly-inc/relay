@@ -2445,6 +2445,19 @@ function canonicalJsonStringify(value: unknown): string {
     if (!Number.isFinite(value)) {
       throw new Error("canonicalJsonStringify: non-finite number not allowed");
     }
+    // An integer outside the JS safe-integer range cannot round-trip exactly:
+    // String(value) would emit a ROUNDED token while Python str(int) is exact,
+    // an irreconcilable Py<->TS divergence. Reject it fail-closed so both
+    // runtimes agree (Python canonical_bytes raises on the same input). Such
+    // values MUST be string-encoded by the caller (re-hunt schemas-03).
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      throw new Error(
+        "canonicalJsonStringify: integer outside the JS safe-integer range " +
+          "must be string-encoded for Py<->TS byte parity",
+      );
+    }
+    // String(value) implements ECMA-262 Number::toString, matching the Python
+    // ECMA-262 number encoder for finite safe values.
     return String(value);
   }
   if (typeof value === "string") return JSON.stringify(value);
