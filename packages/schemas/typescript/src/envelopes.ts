@@ -1952,9 +1952,14 @@ function parseClaimSubject(field: string, value: unknown): ClaimSubject {
 }
 
 /** Validate and normalize a single EvidenceRef (VAL-V3M1-011). */
+// Python EvidenceRef is `extra="forbid"`; the TS parser must reject unknown
+// keys too or it silently drops them, breaking schema parity (roborev a2adc74).
+const EVIDENCE_REF_FIELDS = ["kind", "ref", "digest", "value"] as const;
+
 function parseEvidenceRef(field: string, value: unknown): EvidenceRef {
   checkRecordOrObject(field, value);
   const r = value as Record<string, unknown>;
+  checkExtraFields(`${field} (EvidenceRef)`, r, EVIDENCE_REF_FIELDS);
   checkString(`${field}.kind`, r.kind);
   checkString(`${field}.ref`, r.ref);
   checkSha256HashNullable(`${field}.digest`, r.digest);

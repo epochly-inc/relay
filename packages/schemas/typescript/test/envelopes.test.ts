@@ -1665,6 +1665,41 @@ describe("VAL-W1-020 evidence_claims.claim_type closed enum of eight kinds", () 
   });
 });
 
+// EvidenceRef extra-field rejection (roborev a2adc74): Python EvidenceRef is
+// extra="forbid"; the TS parser must reject unknown keys too, not silently drop
+// them. Exercised through parseEvidenceClaim, which parses each evidence_ref.
+describe("EvidenceRef extra=forbid parity", () => {
+  it("accepts a well-formed evidence_ref", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          evidence_refs: [
+            { kind: "artifact", ref: "artifact:abc", digest: null, value: null },
+          ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects an evidence_ref carrying an unexpected key", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          evidence_refs: [
+            {
+              kind: "artifact",
+              ref: "artifact:abc",
+              digest: null,
+              value: null,
+              unexpected_key: 1,
+            },
+          ],
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // VAL-W1-021: evidence_claims.claim_digest + signature + supersedes_claim_id
 // ---------------------------------------------------------------------------

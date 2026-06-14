@@ -20,9 +20,8 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
-import io
+import ast
 import re
-import tokenize
 from pathlib import Path, PurePosixPath
 from typing import Final
 
@@ -75,22 +74,6 @@ _BACKTICK_RE: Final[re.Pattern[str]] = re.compile(r"``[^`]+``|`[^`]+`")
 # raw operations the rest of the tree may not.
 _PRIMITIVE_DIR_TOKEN: Final[str] = "primitives"
 
-# Token types whose multi-line spans mark documentation/prose lines. STRING
-# covers triple-quoted docstrings + block strings; the FSTRING_* members
-# (Python 3.12+) cover multi-line f-strings. Resolved defensively so the module
-# imports on any supported interpreter regardless of which f-string token names
-# exist.
-_STRING_TOKEN_TYPES: Final[frozenset[int]] = frozenset(
-    t
-    for t in (
-        getattr(tokenize, "STRING", None),
-        getattr(tokenize, "FSTRING_START", None),
-        getattr(tokenize, "FSTRING_MIDDLE", None),
-        getattr(tokenize, "FSTRING_END", None),
-    )
-    if t is not None
-)
-
 
 def _is_in_primitive_dir(rel_posix: str) -> bool:
     """Return True iff ``rel_posix`` lives under any ``primitives/`` dir.
@@ -104,31 +87,42 @@ def _is_in_primitive_dir(rel_posix: str) -> bool:
 
 
 def multiline_string_line_numbers(text: str, *, is_python: bool) -> frozenset[int]:
-    """Return the 1-based line numbers that lie inside a MULTI-LINE string
-    literal (triple-quoted docstring / block string) of a Python source.
+    """Return the 1-based line numbers covered by a STANDALONE string-expression
+    statement (a docstring or a bare string-literal "comment") in a Python source.
 
     A pattern match (a banned ``db.execute(``, a canonical-row write, ...) on
     such a line is documentation/prose, not an executable callsite -- e.g. a
-    module docstring that documents a grep guard across several lines with an
-    unclosed ``...`` RST span. Uses Python's real tokenizer so detection is
-    robust to
-    nested quotes, escapes, and the multi-line RST case the removed
-    backtick-token heuristic mishandled. Non-Python sources (and any source the
-    tokenizer cannot parse) return the empty set -- the per-line comment/backtick
-    heuristics still apply there.
+    module docstring that documents a grep guard across several lines.
+
+    CRITICAL: this targets ONLY bare string-expression STATEMENTS
+    (``ast.Expr`` whose value is a string constant). A string passed to
+    ``execute(...)`` is a Call ARGUMENT, and a string assigned to a variable is
+    an assignment value -- NEITHER is an ``ast.Expr`` statement, so a
+    triple-quoted canonical-table SQL write passed to ``execute(...)`` is NOT
+    suppressed and stays flagged (roborev a2adc74). A naive "every multi-line
+    string token" suppression would mask exactly that executable write.
+
+    Non-Python sources (and any source ``ast.parse`` cannot handle) return the
+    empty set -- the per-line comment/backtick heuristics still apply there.
     """
     if not is_python:
         return frozenset()
-    doc_lines: set[int] = set()
     try:
-        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
-            if tok.type in _STRING_TOKEN_TYPES:
-                start_row, end_row = tok.start[0], tok.end[0]
-                if end_row > start_row:
-                    doc_lines.update(range(start_row, end_row + 1))
-    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
         # Unparseable / partial source: fall back to the per-line heuristics.
         return frozenset()
+    doc_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            const = node.value
+            start = const.lineno
+            end = getattr(const, "end_lineno", start) or start
+            doc_lines.update(range(start, end + 1))
     return frozenset(doc_lines)
 
 

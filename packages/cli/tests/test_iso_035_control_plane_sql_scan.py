@@ -167,3 +167,79 @@ def test_sql_comment_and_string_literal_are_not_false_positives(
         "SQL comments / string literals must not be false positives; got "
         + repr(findings)
     )
+
+
+# ---------------------------------------------------------------------------
+# Docstring-region suppression must NOT mask an executable triple-quoted SQL
+# write (roborev a2adc74). A string passed to execute() is a Call ARGUMENT, not
+# a docstring -- suppressing every multi-line Python string would let an
+# unauthorized canonical write hide inside a triple-quoted SQL literal. Only
+# true docstrings / bare string-expression statements are prose.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-035")
+def test_canonical_write_in_triple_quoted_py_string_is_detected(
+    tmp_path: Path,
+) -> None:
+    """A canonical write inside a TRIPLE-QUOTED SQL string passed to execute()
+    (a Call argument, NOT a docstring) MUST be flagged -- docstring suppression
+    must not skip it."""
+    _make_clean_tree(tmp_path)
+    src = tmp_path / "packages" / "okpkg" / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "writer.py").write_text(
+        '"""Module docstring (prose)."""\n'
+        "\n"
+        "\n"
+        "def write(conn) -> None:\n"
+        "    conn.execute(\n"
+        '        """\n'
+        "        INSERT INTO run_results (id, status) VALUES (1, 'accepted')\n"
+        '        """\n'
+        "    )\n",
+        encoding="utf-8",
+    )
+
+    _name, findings = control_plane_writes.run(tmp_path)
+
+    assert any(
+        f.file.endswith("writer.py")
+        and f.code == RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP
+        for f in findings
+    ), (
+        "an executable triple-quoted INSERT passed to execute() MUST be flagged; "
+        "got " + repr(findings)
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-035")
+def test_canonical_write_in_module_docstring_is_not_flagged(
+    tmp_path: Path,
+) -> None:
+    """A canonical-write pattern mentioned in a MULTI-LINE module docstring
+    (prose, a bare string-expression statement) MUST NOT be flagged."""
+    _make_clean_tree(tmp_path)
+    src = tmp_path / "packages" / "okpkg" / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "doc.py").write_text(
+        '"""Module.\n'
+        "\n"
+        "This module is the only writer; a grep guard enforces that no other\n"
+        "module emits INSERT INTO run_results or UPDATE gate_decisions.\n"
+        '"""\n'
+        "\n"
+        "\n"
+        "def helper() -> int:\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+
+    _name, findings = control_plane_writes.run(tmp_path)
+
+    assert not any(f.file.endswith("doc.py") for f in findings), (
+        "a canonical-write pattern mentioned in a module docstring must NOT be "
+        "flagged; got " + repr(findings)
+    )

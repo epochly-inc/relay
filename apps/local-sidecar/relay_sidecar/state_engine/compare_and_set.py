@@ -724,14 +724,30 @@ async def compare_and_set_state(
             override_conn = (
                 conn if override_event_kind == OPERATOR_OVERRIDE_EVENT_KIND else None
             )
-            # Bind the operator_override_claim to the AUTHENTICATED actor.
+            # Bind the operator_override_claim to the REQUEST actor anchor.
             # The engine already overwrites payload_in['actor_identity_hash']
             # with actor.identity_hash above ("a caller MUST NOT be able to
             # spoof the actor anchor"); the override claim's OWN
-            # actor_identity_hash must be bound to that same authenticated
-            # actor. Admin identity_hashes are not secret (they appear in
-            # audit columns), so an override honored on a borrowed hash would
-            # let any non-admin caller defeat the anti-bypass keystone guard.
+            # actor_identity_hash must equal that same actor anchor. This closes
+            # the override-SPECIFIC privilege escalation: a non-admin actor can
+            # no longer keep its own (non-admin) actor identity on the row while
+            # BORROWING a known admin identity_hash purely in the override claim
+            # to slip bypass markers past the anti-bypass keystone guard (admin
+            # identity_hashes are not secret -- they appear in audit columns). An
+            # override is now honored ONLY when the request is itself attributed
+            # to the non-revoked org_admin.
+            #
+            # TRUST BOUNDARY (not a residual of this fix): in the OSS local
+            # sidecar the actor identity is CALLER-ASSERTED (the bearer token
+            # grants scopes, not a registered identity -- runtime.py:1325, and
+            # registered_tokens records carry only `scopes`). A caller who both
+            # possesses a valid token AND knows an admin identity_hash can fully
+            # impersonate that admin on ANY endpoint, not just this one. Binding
+            # cryptographic actor identity to the authenticated channel is a
+            # HOSTED control-plane property (hosted-issued tokens); the OSS path
+            # cannot enforce it without a spec amendment introducing
+            # identity-bearing OSS tokens. This binding is the strongest
+            # guarantee achievable in the OSS trust model (roborev a2adc74).
             raise_on_reject(
                 await screen_payload(
                     payload=full_payload,
