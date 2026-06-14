@@ -198,15 +198,18 @@ def _match_is_documentation(
     for m in _BACKTICK_RE.finditer(line):
         if m.start() < match_start < m.end():
             return True
-    # Heuristic 4: unclosed double-backtick to the left of the match
-    # (RST inline-code spanning a multi-line docstring continuation
-    # line). The ``...`` opener may live on this line with no closer
-    # before line-end; the closer typically appears on the next physical
-    # line. If we see ``...``  with content but the match position is
-    # AFTER the opener and BEFORE any matching closer on this line, the
-    # match is inside the inline-code span and is documentation.
-    left = line[:match_start]
-    return "``" in left and left.count("``") % 2 == 1
+    # NOTE: a prior "Heuristic 4" treated an ODD count of ``"``"`` tokens to the
+    # LEFT of the match as an unclosed RST inline-code span -> documentation. But
+    # a ``"``"`` inside an ordinary string literal (e.g. ``marker = "``"; ...``)
+    # is not RST, so a banned db.execute( / cur.execute( on the same physical
+    # line was masked vacuously (re-hunt cli-inv-1). A whole-tree scan found no
+    # source line that relied on it -- legitimate RST inline code is already
+    # suppressed by heuristic 3's closed-backtick-pair check above. Genuine
+    # multi-line RST docstring continuation, if ever needed, must be handled with
+    # real cross-line triple-quote/comment-region tracking in run(), never by
+    # counting backtick tokens on a single executable line. The function
+    # therefore falls through to a definite NOT-documentation verdict.
+    return False
 
 
 def run(repo_root: Path) -> tuple[str, list[Finding]]:

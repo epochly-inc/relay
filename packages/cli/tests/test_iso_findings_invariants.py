@@ -198,6 +198,37 @@ def test_escaped_backslash_does_not_hide_real_bypass() -> None:
 
 
 @pytest.mark.fulfills("VAL-ISO-014")
+@pytest.mark.parametrize(
+    "line",
+    [
+        'marker = "``"; db.execute(query)',
+        'raw = "``"; cur.execute("INSERT INTO run_results (id) VALUES (1)")',
+        "x = '``' or db.execute(q)",
+    ],
+)
+def test_double_backtick_token_does_not_hide_bypass(line: str) -> None:
+    r"""A real banned call on a line that merely CONTAINS a ``"``"`` token
+    inside a string literal must NOT be classified as documentation.
+
+    The removed "Heuristic 4" counted backtick TOKENS on a single executable
+    line and called an odd count an "RST inline-code span" -> documentation. But
+    a ``"``"`` inside an ordinary string literal is not RST, so the banned
+    ``db.execute(`` / ``cur.execute(`` that followed was masked vacuously
+    (re-hunt cli-inv-1). The closed-backtick-pair check (heuristic 3) already
+    suppresses legitimate RST inline code, so the token-counting heuristic is
+    removed; the function falls through to ``return False`` for these lines.
+    """
+    match_start = next(
+        line.index(c) for c in ("db.execute(", "cur.execute(") if c in line
+    )
+    is_doc = atomic_primitives._match_is_documentation(line, match_start)
+    assert is_doc is False, (
+        "a banned persistence call on a line that merely contains a '``' token "
+        f"in a string literal must NOT be documentation; line={line!r}"
+    )
+
+
+@pytest.mark.fulfills("VAL-ISO-014")
 def test_escaped_backslash_hash_variant_does_not_hide_bypass() -> None:
     r"""Same defect, ``#`` comment marker variant: bypass is detected.
 

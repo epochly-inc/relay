@@ -277,6 +277,78 @@ def test_age_helper_idempotent_does_not_double_breach(
     assert row[0] == 1
 
 
+# ---------------------------------------------------------------------------
+# TOCTOU double-emit backstop (re-hunt evals-explain-2). The prior-breach
+# pre-filter reads OUTSIDE the write transaction, so two concurrent sweeps can
+# both pass it and both INSERT -> two breach rows for one hypothesis (verified
+# COUNT=2). The fix gives each breach a DETERMINISTIC idempotency_key
+# (``sla-breach:<hid>``) so the partial unique index
+# uq_event_log_entries_idempotency (scope_id, idempotency_key) is the DB-level
+# backstop; the loser's INSERT raises IntegrityError and is swallowed as an
+# idempotent no-op. (The shared fixture builds only the TABLE, so these tests
+# also create the index that ships in the same migration.)
+# ---------------------------------------------------------------------------
+
+
+def _create_idempotency_index(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_event_log_entries_idempotency "
+        "ON event_log_entries(scope_id, idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL;"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M4-011")
+def test_sla_breach_sets_deterministic_idempotency_key(
+    conn: sqlite3.Connection,
+) -> None:
+    _create_idempotency_index(conn)
+    created = datetime(2026, 4, 13, 9, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 5, 18, 9, 0, 0, tzinfo=UTC)
+    _insert_hypothesis(
+        conn, hypothesis_id="hyp-key", run_id="run-key", created_at=created
+    )
+    assert age_unreviewed_hypotheses(conn, now) == 1
+    key = conn.execute(
+        "SELECT idempotency_key FROM event_log_entries "
+        "WHERE event_type = ? AND scope_id = ?",
+        (EVENT_TYPE_SLA_BREACHED, "hyp-key"),
+    ).fetchone()[0]
+    assert key == "sla-breach:hyp-key"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M4-011")
+def test_sla_breach_db_backstop_swallows_concurrent_duplicate(
+    conn: sqlite3.Connection,
+) -> None:
+    from relay_explain.sla import _emit_sla_breach_events
+
+    _create_idempotency_index(conn)
+    created = datetime(2026, 4, 13, 9, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 5, 18, 9, 0, 0, tzinfo=UTC)
+    _insert_hypothesis(
+        conn, hypothesis_id="hyp-race", run_id="run-race", created_at=created
+    )
+    # Winner: a real sweep emits the breach (sets the deterministic key).
+    assert age_unreviewed_hypotheses(conn, now) == 1
+    # Loser: a concurrent sweep that computed new_breaches BEFORE the winner
+    # committed re-attempts the SAME breach. The DB unique index rejects it and
+    # the helper swallows the IntegrityError -> no-op, exactly one row survives.
+    now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    second = _emit_sla_breach_events(
+        conn, [("hyp-race", "run-race", 99)], project_id="local", now_iso=now_iso
+    )
+    assert second == 0
+    count = conn.execute(
+        "SELECT COUNT(*) FROM event_log_entries "
+        "WHERE event_type = ? AND scope_id = ?",
+        (EVENT_TYPE_SLA_BREACHED, "hyp-race"),
+    ).fetchone()[0]
+    assert count == 1
+
+
 # ===========================================================================
 # VAL-V3M4-012: event_log_entries row with required payload fields
 # ===========================================================================
