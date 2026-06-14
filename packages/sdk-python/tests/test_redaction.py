@@ -890,6 +890,79 @@ def test_redos_guard_accepts_alternation_with_bounded_quantifier() -> None:
     assert _check_regex_redos_safety("(a|a)b") is None
 
 
+# ---------------------------------------------------------------------------
+# NESTED-WRAPPER BYPASS (roborev 7feb671 HIGH). The overlap rule above checked
+# only a group whose OWN top-level alternation is DIRECTLY followed by an
+# unbounded quantifier. A WRAPPER hides the overlap one level down: in
+# ``((a|a))*b`` the OUTER group ``((a|a))`` has no top-level ``|`` (its body is
+# the inner group), and the INNER ``(a|a)`` is not itself quantified -- so
+# NEITHER condition fired and the catastrophic pattern loaded. ``((a|a))*`` is
+# just as exponential as ``(a|a)*`` (each ``a`` is consumed two ways, the outer
+# ``*`` partitions the run 2^n ways). The fix PROPAGATES an
+# "overlap-alternation present at any depth" signal up the group stack (like the
+# existing nested-quantifier signal) and trips when ANY enclosing group is
+# unbounded-quantified.
+# ---------------------------------------------------------------------------
+
+_WRAPPED_OVERLAP_ALTERNATION_REDOS_PATTERNS = [
+    "((a|a))*b",  # capturing wrapper around the overlap, outer '*'
+    "(?:(?:a|a))*b",  # non-capturing wrapper, outer '*'
+    "((a|a))+y",  # capturing wrapper, outer '+'
+    "((a|a)){2,}z",  # capturing wrapper, outer open-ended interval {2,}
+    "(((a|a)))+x",  # DOUBLE wrapper, outer '+'
+    r"((\w|a))*b",  # wrapped '\w'-vs-'a' overlap, outer '*'
+    "((a|a)?)*w",  # inner BOUNDED '?' but outer UNBOUNDED '*' -> still 2^n
+    "(?:(a|a))+q",  # mixed non-capturing wrapper around a capturing overlap
+]
+
+# Wrapped forms that MUST still LOAD: a wrapped DISJOINT alternation is linear,
+# and a wrapped overlap under only a BOUNDED outer quantifier (or none) cannot
+# blow up. The propagation must NOT over-reject these.
+_WRAPPED_SAFE_PATTERNS = [
+    "((?:sk-|key_))*[A-Za-z0-9]{20,}",  # wrapped DISJOINT credential matcher
+    "((foo|bar))+y",  # wrapped disjoint (f vs b) -> linear
+    "((a|a))?b",  # wrapped overlap, OUTER bounded '?' -> at most one rep
+    "((a|a)){2,4}c",  # wrapped overlap, OUTER bounded interval -> capped
+    "((a|a))b",  # wrapped overlap, NO outer quantifier -> linear
+]
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _WRAPPED_OVERLAP_ALTERNATION_REDOS_PATTERNS)
+def test_redos_guard_rejects_wrapped_overlapping_alternation(pattern: str) -> None:
+    """A WRAPPED overlapping alternation under an outer UNBOUNDED quantifier is
+    just as catastrophic as the direct form and MUST be REJECTED.
+
+    RED at base (roborev 7feb671 HIGH): the overlap signal was read only from
+    the just-closed group's OWN top-level alternation, so ``((a|a))*b`` and
+    ``(?:(?:a|a))*b`` loaded. GREEN after propagating the overlap signal up the
+    group stack.
+    """
+    from relay.redaction import _check_regex_redos_safety
+
+    result = _check_regex_redos_safety(pattern)
+    assert result is not None, (
+        f"wrapped overlapping-alternation pattern {pattern!r} not flagged as ReDoS"
+    )
+    assert result["reason"] == "redos_pattern", (
+        f"unexpected reason for {pattern!r}: {result!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _WRAPPED_SAFE_PATTERNS)
+def test_redos_guard_accepts_wrapped_safe_alternation(pattern: str) -> None:
+    """The overlap-propagation must NOT over-reject: a wrapped DISJOINT
+    alternation is linear, and a wrapped overlap under only a BOUNDED outer
+    quantifier (or none) cannot blow up. All MUST LOAD (return ``None``).
+    """
+    from relay.redaction import _check_regex_redos_safety
+
+    assert _check_regex_redos_safety(pattern) is None, (
+        f"wrapped-safe pattern {pattern!r} falsely flagged as ReDoS"
+    )
+
+
 @pytest.mark.plumbing
 def test_redos_guard_overlap_alternation_policy_rejected_at_load() -> None:
     """The overlapping-alternation pattern is rejected end-to-end at policy

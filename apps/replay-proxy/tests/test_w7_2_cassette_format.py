@@ -720,6 +720,105 @@ def test_canonical_request_non_string_method_quarantines(
 
 
 @pytest.mark.fulfills("VAL-ISO-010")
+@pytest.mark.parametrize("bad_content_type", [False, 0, [], None])
+def test_canonical_request_falsey_non_string_content_type_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+    bad_content_type: Any,
+) -> None:
+    """VAL-ISO-010 regression (roborev 7feb671 LOW): a request.json with a
+    PRESENT but FALSEY non-string ``content_type`` (``false`` / ``0`` / ``[]`` /
+    ``null``) MUST quarantine -- NOT slip past the type check.
+
+    The pre-fix read ``obj.get("content_type", "") or ""`` coerced any falsey
+    value to ``""`` BEFORE the ``isinstance(..., str)`` validation, so the
+    malformed sidecar was canonicalized as if the field were absent instead of
+    being quarantined. The fix defaults ONLY on absence and validates a present
+    value, so a falsey non-string raises ``KeyError`` (in the iso-010 catch
+    tuple) and quarantines.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {},
+                "body_b64": "",
+                "content_type": bad_content_type,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+@pytest.mark.parametrize("bad_body", [False, 0, []])
+def test_canonical_request_falsey_non_string_body_b64_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+    bad_body: Any,
+) -> None:
+    """VAL-ISO-010 regression (roborev 7feb671 LOW, sibling): a request.json
+    with a PRESENT but FALSEY non-string ``body_b64`` (``false`` / ``0`` /
+    ``[]``) MUST quarantine -- NOT be silently treated as an EMPTY body.
+
+    The pre-fix read ``base64.b64decode(obj.get("body_b64", "") or "", ...)``
+    coerced a falsey non-string to ``""`` (decoding to an empty body) BEFORE any
+    type validation, so a malformed sidecar was canonicalized with a wrong
+    (empty) body. The fix validates ``body_b64`` is a string before decoding, so
+    a falsey non-string raises ``KeyError`` and quarantines.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {},
+                "body_b64": bad_body,
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
 def test_canonical_request_invalid_base64_body_quarantines(
     empty_cassette_dir: Path,
     make_replay_fixture: Any,

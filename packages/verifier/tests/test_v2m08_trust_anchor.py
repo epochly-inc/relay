@@ -433,6 +433,32 @@ def test_attacker_subpath_on_relay_host_is_byo_not_relay_inc() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M08-044")
+def test_non_numeric_port_keeps_host_and_path_parity_reference() -> None:
+    """A NON-NUMERIC port (``host:abc``) must NOT break host/path extraction.
+
+    Python ``urlparse`` keeps host and path for a ``host:abc`` authority (the
+    digit-validating ``.port`` accessor is never used by
+    ``classify_trust_anchor``), so the canonical Relay-Inc host still classifies
+    ``relay_inc``. This is the PARITY REFERENCE for the TS ``_RAW_URL_RE`` fix
+    (roborev 7feb671 MEDIUM): the TS regex previously required a numeric port and
+    diverged to ``byo``. A non-numeric port on a non-Relay host stays ``byo``.
+    """
+    assert (
+        classify_trust_anchor("https://relay.epochly.com:abc/.well-known/jwks.json")
+        == TRUST_ANCHOR_CLASS_RELAY_INC
+    )
+    assert (
+        classify_trust_anchor("https://relay.epochly.com:443/.well-known/jwks.json")
+        == TRUST_ANCHOR_CLASS_RELAY_INC
+    )
+    assert (
+        classify_trust_anchor("https://attacker.example:abc/.well-known/jwks.json")
+        == TRUST_ANCHOR_CLASS_BYO
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-044")
 def test_attacker_subpath_bundle_reports_byo_and_unknown_signer_role() -> None:
     """End-to-end: a bundle declaring an attacker-controlled subpath on
     the Relay-Inc host MUST surface ``trust_anchor_class='byo'`` and

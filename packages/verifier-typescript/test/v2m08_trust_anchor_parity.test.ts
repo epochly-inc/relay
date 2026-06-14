@@ -285,6 +285,30 @@ describe("verifier-ts-2 classifyTrustAnchor Python-urlparse parity", () => {
     // must agree (empty host -> not relay.epochly.com -> byo).
     expect(classifyTrustAnchor("fork.example")).toBe(TRUST_ANCHOR_CLASS_BYO);
   });
+
+  // Bug verifier-ts-2b (roborev 7feb671 MEDIUM): a NON-NUMERIC port must not
+  // break host/path extraction. Python urlparse keeps host and path for a
+  // host:abc authority (the `.port` validator is never accessed by
+  // classify_trust_anchor), so it classifies relay_inc. The TS `_RAW_URL_RE`
+  // previously required `[0-9]*` for the port, so `:abc` failed the whole match
+  // -> empty host -> byo: a verifier-output / signer_role parity break.
+  test("non-numeric port keeps host+path (relay_inc, urlparse parity)", () => {
+    expect(
+      classifyTrustAnchor("https://relay.epochly.com:abc/.well-known/jwks.json"),
+    ).toBe(TRUST_ANCHOR_CLASS_RELAY_INC);
+  });
+
+  test("numeric port keeps host+path (relay_inc regression guard)", () => {
+    expect(
+      classifyTrustAnchor("https://relay.epochly.com:443/.well-known/jwks.json"),
+    ).toBe(TRUST_ANCHOR_CLASS_RELAY_INC);
+  });
+
+  test("non-numeric port on a non-Relay host stays byo", () => {
+    expect(
+      classifyTrustAnchor("https://attacker.example:abc/.well-known/jwks.json"),
+    ).toBe(TRUST_ANCHOR_CLASS_BYO);
+  });
 });
 
 // ----------------------------------------------------------------------------

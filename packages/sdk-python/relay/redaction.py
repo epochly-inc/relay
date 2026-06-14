@@ -558,10 +558,23 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
     # Per open group: index of the first body character (just past the open
     # token). Used to slice the body for overlap analysis when the group closes.
     group_body_start: list[int] = []
+    # Per open group: does its body (so far) CONTAIN an overlapping top-level
+    # alternation at ANY nesting depth -- its OWN top-level alternation OR a
+    # deeper WRAPPED group's (propagated up like the quantifier signal). Without
+    # this, a wrapper hides the overlap one level down (``((a|a))*`` /
+    # ``(?:(?:a|a))*``) where neither the inner alternation is directly
+    # quantified nor the outer group has a top-level ``|`` -- so the catastrophe
+    # is missed (roborev 7feb671 HIGH). The signal trips when ANY enclosing group
+    # is unbounded-quantified.
+    group_body_has_overlap: list[bool] = []
 
     def mark_current_group_quantifier() -> None:
         if group_body_has_quantifier:
             group_body_has_quantifier[-1] = True
+
+    def mark_current_group_overlap() -> None:
+        if group_body_has_overlap:
+            group_body_has_overlap[-1] = True
 
     i = 0
     n = len(raw_pattern)
@@ -598,6 +611,7 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
                     # ``end`` is the first body character (just past the prefix).
                     group_body_has_quantifier.append(False)
                     group_body_has_alternation.append(False)
+                    group_body_has_overlap.append(False)
                     group_body_start.append(end)
                 else:
                     # Self-terminating directive (``(?flags)`` / ``(?P=name)``):
@@ -608,6 +622,7 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
                 continue
             group_body_has_quantifier.append(False)
             group_body_has_alternation.append(False)
+            group_body_has_overlap.append(False)
             group_body_start.append(i + 1)
             i += 1
             continue
@@ -630,6 +645,11 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
                 if group_body_has_alternation
                 else False
             )
+            inner_had_overlap = (
+                group_body_has_overlap.pop()
+                if group_body_has_overlap
+                else False
+            )
             body_start = (
                 group_body_start.pop() if group_body_start else i
             )
@@ -650,14 +670,22 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
             )
             if inner_had_quantifier and group_is_quantified:
                 return redos
-            # REDACT cluster Bug B: a top-level alternation of OVERLAPPING
-            # branches under an UNBOUNDED quantifier is catastrophic even with
-            # no inner quantifier. Slice the just-closed body and test overlap.
-            if (
-                inner_had_alternation
-                and group_is_unbounded_quantified
-                and _alternation_overlaps(raw_pattern[body_start:i])
-            ):
+            # This group's OWN top-level alternation overlaps? (Short-circuit on
+            # ``inner_had_alternation`` so the slice scan only runs when there is
+            # a top-level ``|`` to analyze.)
+            this_group_overlaps = inner_had_alternation and _alternation_overlaps(
+                raw_pattern[body_start:i]
+            )
+            # The body contains an overlapping alternation at ANY nesting depth:
+            # its OWN top-level alternation OR a deeper WRAPPED group's (the
+            # propagated signal).
+            body_contains_overlap = this_group_overlaps or inner_had_overlap
+            # REDACT cluster Bug B (+ nested-wrapper bypass, roborev 7feb671):
+            # an UNBOUNDED quantifier applied to a body that contains an
+            # overlapping alternation at ANY depth -- DIRECTLY (``(a|a)*``) OR
+            # WRAPPED (``((a|a))*`` / ``(?:(?:a|a))*``) -- is catastrophic
+            # backtracking. The 1 MiB leaf clamp does not bound the 2^n blow-up.
+            if group_is_unbounded_quantified and body_contains_overlap:
                 return redos_overlap_alternation
             # Propagate the "contains a quantifier" signal to the ENCLOSING
             # group when either the inner body had a quantifier OR the group
@@ -665,6 +693,11 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
             # still detected when an outer quantifier applies.
             if inner_had_quantifier or group_is_quantified:
                 mark_current_group_quantifier()
+            # Propagate the overlap signal to the ENCLOSING group so a wrapper
+            # that is itself unbounded-quantified higher up still trips, even
+            # though this group is not directly quantified.
+            if body_contains_overlap:
+                mark_current_group_overlap()
             i += 1
             continue
         if ch in ("*", "+", "?"):

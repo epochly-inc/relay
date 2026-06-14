@@ -961,28 +961,33 @@ def _read_canonical_key_for_fixture(
     obj = json.loads(raw)
     import base64
 
-    # validate=True so a non-base64 body_b64 raises binascii.Error (which
-    # load_cassette catches and quarantines) rather than silently
-    # discarding invalid characters (VAL-ISO-010).
-    body_bytes = base64.b64decode(obj.get("body_b64", "") or "", validate=True)
     method = obj["method"]
     url = obj["url"]
-    content_type = obj.get("content_type", "") or ""
-    # Validate the string-typed CanonicalRequest fields BEFORE constructing
-    # the (frozen, unvalidated) dataclass. CanonicalRequest performs no
-    # runtime type checking, so a non-string ``url`` / ``method`` /
-    # ``content_type`` would otherwise surface as an uncaught ``AttributeError``
-    # deeper inside ``derive_canonical_key`` -- ``urlparse(<int>)`` raises
-    # ``AttributeError('int' has no attribute 'decode')`` and
-    # ``self.method.upper()`` raises ``AttributeError('int' has no attribute
-    # 'upper')`` -- which is NOT in load_cassette's iso-010 catch tuple and so
-    # bypasses quarantine entirely. Raise ``KeyError`` (already in that catch
-    # tuple) so the malformed sidecar is quarantined like every other
-    # corrupt-field case, keeping the catch tuple narrow per its design
-    # comment (VAL-ISO-010).
+    # Read the OPTIONAL string fields defaulting to "" ONLY on ABSENCE. The
+    # previous ``obj.get(k, "") or ""`` collapsed a PRESENT but FALSEY non-string
+    # (``0`` / ``false`` / ``[]`` / ``null``) to "" BEFORE the type check, so a
+    # malformed sidecar slipped past quarantine and was canonicalized as if the
+    # field were absent -- a wrong (empty) ``body_b64`` / ``content_type``
+    # (roborev 7feb671 LOW). An absent key still defaults to "" (a str, accepted);
+    # a present non-string is validated below and quarantined.
+    body_b64 = obj.get("body_b64", "")
+    content_type = obj.get("content_type", "")
+    # Validate the string-typed CanonicalRequest fields BEFORE any use (decode or
+    # dataclass construction). CanonicalRequest performs no runtime type checking,
+    # so a non-string ``url`` / ``method`` / ``content_type`` would otherwise
+    # surface as an uncaught ``AttributeError`` deeper inside
+    # ``derive_canonical_key`` -- ``urlparse(<int>)`` raises ``AttributeError``
+    # ('int' has no attribute 'decode') and ``self.method.upper()`` raises
+    # ``AttributeError`` ('int' has no attribute 'upper') -- and a non-string
+    # ``body_b64`` would raise ``TypeError`` inside ``base64.b64decode``: none of
+    # which are in load_cassette's iso-010 catch tuple, so they bypass quarantine
+    # entirely. Raise ``KeyError`` (already in that catch tuple) so the malformed
+    # sidecar is quarantined like every other corrupt-field case, keeping the
+    # catch tuple narrow per its design comment (VAL-ISO-010).
     for field_name, value in (
         ("method", method),
         ("url", url),
+        ("body_b64", body_b64),
         ("content_type", content_type),
     ):
         if not isinstance(value, str):
@@ -990,6 +995,10 @@ def _read_canonical_key_for_fixture(
                 f"canonical request field {field_name!r} MUST be a string; "
                 f"got {type(value).__name__}"
             )
+    # validate=True so a non-base64 body_b64 raises binascii.Error (which
+    # load_cassette catches and quarantines) rather than silently discarding
+    # invalid characters (VAL-ISO-010). ``body_b64`` is now guaranteed a str.
+    body_bytes = base64.b64decode(body_b64, validate=True)
     req = CanonicalRequest(
         method=method,
         url=url,

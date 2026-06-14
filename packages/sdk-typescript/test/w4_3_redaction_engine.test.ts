@@ -672,5 +672,51 @@ describe("VAL-REDACT-006: policy regex ReDoS guard (load-time rejection + leaf c
         });
       }
     });
+
+    // Nested-wrapper bypass (roborev 7feb671 HIGH): the overlap is hidden one
+    // level down -- the OUTER group has no top-level `|` and the INNER overlap
+    // group is not itself quantified -- yet ((a|a))* is just as exponential as
+    // (a|a)*. The overlap signal is propagated up the group stack and trips when
+    // any ENCLOSING group is unbounded-quantified. Mirrors the Python guard.
+    describe("Bug B nested-wrapper: wrapped overlapping alternation under an outer unbounded quantifier", () => {
+      for (const pattern of [
+        "((a|a))*b",
+        "(?:(?:a|a))*b",
+        "((a|a))+y",
+        "((a|a)){2,}z",
+        "(((a|a)))+x",
+        "((\\w|a))*b",
+        "((a|a)?)*w",
+        "(?:(a|a))+q",
+      ]) {
+        it(`rejects wrapped overlapping alternation ${JSON.stringify(pattern)} with RELAY-SDK-017`, () => {
+          let caught: unknown;
+          try {
+            loadRedactionPolicy(redosPolicy(pattern));
+          } catch (err) {
+            caught = err;
+          }
+          expect(caught).toBeInstanceOf(RelayRedactionPolicyError);
+          const e = caught as RelayRedactionPolicyError;
+          expect(e.code).toBe(REDOS_CODE);
+          expect((e.details as { reason?: string }).reason).toBe(REDOS_REASON);
+        });
+      }
+
+      // The propagation must NOT over-reject: a wrapped DISJOINT alternation is
+      // linear, and a wrapped overlap under only a BOUNDED outer quantifier (or
+      // none) cannot blow up. All MUST load.
+      for (const pattern of [
+        "((?:sk-|key_))*[A-Za-z0-9]{20,}",
+        "((foo|bar))+y",
+        "((a|a))?b",
+        "((a|a)){2,4}c",
+        "((a|a))b",
+      ]) {
+        it(`accepts wrapped-safe alternation ${JSON.stringify(pattern)} at LOAD time`, () => {
+          expect(() => loadRedactionPolicy(redosPolicy(pattern))).not.toThrow();
+        });
+      }
+    });
   });
 });

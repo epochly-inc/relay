@@ -1469,6 +1469,17 @@ _REDOS_PATTERNS = [
     "(a|a){2,}b",
     "(?:a|a)*x",
     "(ab|a)*c",
+    # Nested-wrapper bypass (roborev 7feb671 HIGH): the overlap is hidden one
+    # level down -- the OUTER group has no top-level `|` and the INNER overlap
+    # group is not itself quantified -- yet ((a|a))* is just as exponential as
+    # (a|a)*. Both runtimes MUST reject these identically after propagating the
+    # overlap signal up the group stack.
+    "((a|a))*b",
+    "(?:(?:a|a))*b",
+    "((a|a))+y",
+    "((a|a)){2,}z",
+    "(((a|a)))+x",
+    "((a|a)?)*w",
 ]
 
 # Gate-2: legitimate GROUP-PREFIX constructs (non-capturing / inline-flag /

@@ -170,8 +170,17 @@ export type TrustAnchorClass =
  * no `scheme://` authority (e.g. `fork.example`) yields an empty host,
  * matching Python `urlparse("fork.example").hostname == None`.
  */
+// The port suffix accepts ANY characters up to the path delimiter (`[^/?#]*`),
+// NOT only digits: Python `urlparse(...).hostname`/`.path` extract host and path
+// even when the port is non-numeric (e.g. `host:abc`), because `.port` (which
+// validates digits) is never accessed by classify_trust_anchor. Requiring
+// `[0-9]*` here made the whole regex FAIL to match
+// `https://relay.epochly.com:abc/.well-known/jwks.json`, yielding an empty host
+// (-> `byo`) while Python kept the host (-> `relay_inc`): a verifier-output /
+// signer_role parity break (roborev 7feb671 MEDIUM). Host is still the run up to
+// the FIRST `:` (group 1), matching Python's `partition(':')` hostname split.
 const _RAW_URL_RE =
-  /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^/?#]*@)?(\[[^\]]*\]|[^/:?#@]*)(?::[0-9]*)?([/?#].*)?$/;
+  /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^/?#]*@)?(\[[^\]]*\]|[^/:?#@]*)(?::[^/?#]*)?([/?#].*)?$/;
 
 function _urlparseHostPath(url: string): { host: string; path: string } {
   const m = _RAW_URL_RE.exec(url);

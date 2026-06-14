@@ -186,10 +186,25 @@ function checkRegexRedosSafety(
   // Per open group: index of the first body character (just past the open
   // token). Used to slice the body for overlap analysis when the group closes.
   const groupBodyStart: number[] = [];
+  // Per open group: does its body (so far) CONTAIN an overlapping top-level
+  // alternation at ANY nesting depth -- its OWN top-level alternation OR a
+  // deeper WRAPPED group's (propagated up like the quantifier signal). Without
+  // this, a wrapper hides the overlap one level down (((a|a))* /
+  // (?:(?:a|a))*) where neither the inner alternation is directly quantified
+  // nor the outer group has a top-level `|` -- so the catastrophe is missed
+  // (roborev 7feb671 HIGH). The signal trips when ANY enclosing group is
+  // unbounded-quantified. Mirrors the Python guard byte-for-byte.
+  const groupBodyHasOverlap: boolean[] = [];
 
   const markCurrentGroupQuantifier = (): void => {
     if (groupBodyHasQuantifier.length > 0) {
       groupBodyHasQuantifier[groupBodyHasQuantifier.length - 1] = true;
+    }
+  };
+
+  const markCurrentGroupOverlap = (): void => {
+    if (groupBodyHasOverlap.length > 0) {
+      groupBodyHasOverlap[groupBodyHasOverlap.length - 1] = true;
     }
   };
 
@@ -227,6 +242,7 @@ function checkRegexRedosSafety(
           // ((?:a+)+) is still detected. `prefix.end` is the first body char.
           groupBodyHasQuantifier.push(false);
           groupBodyHasAlternation.push(false);
+          groupBodyHasOverlap.push(false);
           groupBodyStart.push(prefix.end);
         }
         // Else: self-terminating directive ((?flags) / (?P=name)) -- no
@@ -236,6 +252,7 @@ function checkRegexRedosSafety(
       }
       groupBodyHasQuantifier.push(false);
       groupBodyHasAlternation.push(false);
+      groupBodyHasOverlap.push(false);
       groupBodyStart.push(i + 1);
       i += 1;
       continue;
@@ -259,6 +276,10 @@ function checkRegexRedosSafety(
         groupBodyHasAlternation.length > 0
           ? (groupBodyHasAlternation.pop() ?? false)
           : false;
+      const innerHadOverlap =
+        groupBodyHasOverlap.length > 0
+          ? (groupBodyHasOverlap.pop() ?? false)
+          : false;
       const bodyStart =
         groupBodyStart.length > 0 ? (groupBodyStart.pop() ?? i) : i;
       const next = i + 1 < n ? rawPattern[i + 1] : undefined;
@@ -278,14 +299,21 @@ function checkRegexRedosSafety(
       if (innerHadQuantifier && groupIsQuantified) {
         return REDOS;
       }
-      // REDACT cluster Bug B: a top-level alternation of OVERLAPPING branches
-      // under an UNBOUNDED quantifier is catastrophic even with no inner
-      // quantifier. Slice the just-closed body and test overlap.
-      if (
+      // This group's OWN top-level alternation overlaps? (Short-circuit on
+      // innerHadAlternation so the slice scan only runs when there is a
+      // top-level `|` to analyze.)
+      const thisGroupOverlaps =
         innerHadAlternation &&
-        groupIsUnboundedQuantified &&
-        alternationOverlaps(rawPattern.slice(bodyStart, i))
-      ) {
+        alternationOverlaps(rawPattern.slice(bodyStart, i));
+      // The body contains an overlapping alternation at ANY nesting depth: its
+      // OWN top-level alternation OR a deeper WRAPPED group's (propagated up).
+      const bodyContainsOverlap = thisGroupOverlaps || innerHadOverlap;
+      // REDACT cluster Bug B (+ nested-wrapper bypass, roborev 7feb671): an
+      // UNBOUNDED quantifier applied to a body that contains an overlapping
+      // alternation at ANY depth -- DIRECTLY ((a|a)*) OR WRAPPED (((a|a))* /
+      // (?:(?:a|a))*) -- is catastrophic backtracking. The 1 MiB leaf clamp
+      // does not bound the 2^n blow-up.
+      if (groupIsUnboundedQuantified && bodyContainsOverlap) {
         return REDOS_OVERLAP_ALTERNATION;
       }
       // The closed group is part of its ENCLOSING group's body. Propagate the
@@ -294,6 +322,12 @@ function checkRegexRedosSafety(
       // (e.g. ``((a+))+``) is still detected when an outer quantifier applies.
       if (innerHadQuantifier || groupIsQuantified) {
         markCurrentGroupQuantifier();
+      }
+      // Propagate the overlap signal to the ENCLOSING group so a wrapper that
+      // is itself unbounded-quantified higher up still trips, even though this
+      // group is not directly quantified.
+      if (bodyContainsOverlap) {
+        markCurrentGroupOverlap();
       }
       i += 1;
       continue;
