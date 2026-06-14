@@ -537,7 +537,20 @@ function _verifyBundle(bundle: Record<string, unknown>, jwks: JWKS): JwsResult {
 
   const signatures = bundle["signatures"];
   if (!Array.isArray(signatures) || signatures.length === 0) {
-    // No signatures: structure_ok stays true, signatures_ok is false.
+    // Mirror Python `verify_bundle` (verifier.py:362-365): an absent/empty
+    // `signatures` array returns the ALL-DEFAULT result -- Python returns BEFORE
+    // computing the bundle digest, structure_ok, digest_ok, or claims_count, so
+    // all four stay at their zero values. The TS path set them above (lines
+    // 528-536) before this gate, which diverged Py<->TS on every one of those
+    // fields for a no-signatures bundle AND, because the per-claim
+    // namespace/manifest/artifact checks are gated on structure_ok, made TS run
+    // checks Python skips -- a divergent structured-error set (re-hunt
+    // verifier-structure-parity-1/-2, keystone JCS-byte parity). Reset to the
+    // Python defaults so a no-signatures bundle is byte-identical across runtimes.
+    result.structure_ok = false;
+    result.digest_ok = false;
+    result.claims_count = 0;
+    result.bundle_digest_sha256 = "";
     return result;
   }
 

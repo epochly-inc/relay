@@ -680,3 +680,46 @@ def test_publish_signed_mode_when_force_signed_set(tmp_path: Path) -> None:
     assert "kid" in sig
     assert "signing_input_b64u" in sig
     assert "signature_b64u" in sig
+
+
+# -----------------------------------------------------------------------------
+# Coverage-gate fail-open end-to-end (re-hunt cli-commands-1, P0): a bundle whose
+# active P0 assertion carries a null assertion_id MUST fail publish closed. Before
+# the parser chokepoint fix it parsed as id=None and bypassed ALL FOUR coverage
+# invariants -- exit 0 with a signed coverage report. Now the parser rejects the
+# null id so publish exits non-zero (bundle-invalid), never emitting a report.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-060")
+def test_publish_rejects_null_assertion_id_active_p0(tmp_path: Path) -> None:
+    null_id_assertion = {
+        "schema_version": "relay.assertion.behavioral.v1",
+        "assertion_id": None,  # the fail-open trigger
+        "kind": "behavioral",
+        "severity": "p0",
+        "expression": "1 + 1 == 2",
+        "owner_email": "team-platform@example.com",  # group-alias (would trip 004)
+        "lifecycle_state": "active",
+    }
+    bundle_path = _write_bundle(
+        tmp_path,
+        assertions=[null_id_assertion],
+        gates=[],  # uncovered -> would be an orphan too
+    )
+    rhome = tmp_path / "rhome"
+    result = _run_rly(
+        ["contract", "publish", str(bundle_path)],
+        extra_env={"RELAY_HOME": str(rhome)},
+    )
+    assert result.returncode != 0, (
+        f"null-id active P0 bundle MUST fail publish closed; "
+        f"stderr={result.stderr} stdout={result.stdout}"
+    )
+    # No signed coverage report may have been written for a fail-open bundle.
+    coverage_dir = rhome / "contract" / "coverage"
+    if coverage_dir.exists():
+        assert not any(coverage_dir.iterdir()), (
+            "a coverage report was written despite the null-id rejection"
+        )

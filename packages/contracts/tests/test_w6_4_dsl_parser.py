@@ -152,6 +152,97 @@ def test_missing_schema_version_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Coverage-gate fail-open (re-hunt cli-commands-1, P0): a PRESENT-but-null (or
+# empty / non-string) assertion_id passed _check_required_fields (key-presence
+# only), so the assertion parsed with assertion_id=None and then silently
+# bypassed ALL FOUR coverage invariants on `rly contract publish`
+# (check_orphans / check_duplicate_digests / check_missing_owner /
+# check_group_alias_owners all skip assertions whose id is None). The parser is
+# the single chokepoint: every non-gate_policy kind MUST carry a non-empty
+# string assertion_id. gate_policy legitimately has none.
+# ---------------------------------------------------------------------------
+
+
+def _doc_with_assertion_id(schema_version: str, assertion_id: object) -> dict:
+    """A minimal otherwise-valid doc for ``schema_version`` carrying the given
+    ``assertion_id`` (used to prove a null/empty/non-string id is rejected)."""
+    base: dict = {
+        "schema_version": schema_version,
+        "assertion_id": assertion_id,
+        "severity": "p0",
+        "owner_email": "owner@example.com",
+        "lifecycle_state": "active",
+    }
+    if schema_version == "relay.assertion.behavioral.v1":
+        base["kind"] = "behavioral"
+        base["expression"] = "true"
+    elif schema_version == "relay.assertion.schema.v1":
+        base["kind"] = "schema"
+        base["schema_json"] = {"type": "object"}
+    elif schema_version == "relay.assertion.tool_arg.v1":
+        base["kind"] = "tool_arg"
+        base["args_schema"] = {"type": "object"}
+    elif schema_version == "relay.assertion.eval.v1":
+        base["kind"] = "eval"
+        base["evaluator"] = "exact_match"
+    return base
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-041")
+@pytest.mark.parametrize(
+    "schema_version",
+    [
+        "relay.assertion.behavioral.v1",
+        "relay.assertion.schema.v1",
+        "relay.assertion.tool_arg.v1",
+        "relay.assertion.eval.v1",
+    ],
+)
+@pytest.mark.parametrize("bad_id", [None, "", "   "])
+def test_null_or_empty_assertion_id_rejected_for_all_assertion_kinds(
+    schema_version: str, bad_id: object
+) -> None:
+    """A null/empty/whitespace assertion_id on ANY non-gate assertion kind MUST
+    be rejected at parse time with RELAY-CONTRACT-001 -- it cannot reach the
+    coverage gate as an id=None orphan that bypasses every invariant."""
+    with pytest.raises(ContractParseError) as ctx:
+        parse_contract(_doc_with_assertion_id(schema_version, bad_id))
+    assert ctx.value.code == "RELAY-CONTRACT-001"
+    assert ctx.value.payload.get("json_path") == "$.assertion_id"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-041")
+def test_non_string_assertion_id_rejected() -> None:
+    """A non-string assertion_id (int/list/dict) MUST be rejected, not coerced."""
+    for bad_id in (12345, ["x"], {"k": "v"}):
+        with pytest.raises(ContractParseError) as ctx:
+            parse_contract(
+                _doc_with_assertion_id("relay.assertion.behavioral.v1", bad_id)
+            )
+        assert ctx.value.code == "RELAY-CONTRACT-001"
+        assert ctx.value.payload.get("json_path") == "$.assertion_id"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-041")
+def test_gate_policy_without_assertion_id_still_parses() -> None:
+    """gate_policy legitimately has NO assertion_id; the new check MUST NOT
+    reject it (regression guard for the chokepoint fix)."""
+    parsed = parse_contract(
+        {
+            "schema_version": "relay.gate_policy.v1",
+            "policy_version": "2026-06-14.gp",
+            "conditions": [{"all_of": []}],
+            "owner_email": "owner@example.com",
+            "lifecycle_state": "active",
+        }
+    )
+    assert parsed.assertion_id is None
+
+
+# ---------------------------------------------------------------------------
 # VAL-W6-042: publish-time CEL profile compilation
 # ---------------------------------------------------------------------------
 

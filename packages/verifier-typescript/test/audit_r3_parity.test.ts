@@ -217,6 +217,22 @@ describe("BUG-C1 path-traversal hardening (parity with Python)", () => {
           ],
         },
       ],
+      // A placeholder signature is REQUIRED to reach the per-claim path screen:
+      // that screen is gated on structure_ok in BOTH runtimes (TS
+      // bundle_validator.ts; Python validate_bundle gates it on structure_ok),
+      // and structure_ok requires a non-empty `signatures` array (verifier.py
+      // sets it only after the signatures-present check). The entry need not
+      // verify (structure_ok only requires presence; signatures_ok stays false).
+      // Without it Python ALSO skips the screen, so an unsigned bundle here would
+      // be a FALSE parity test (re-hunt verifier-structure-parity-1/-2).
+      signatures: [
+        {
+          kid: "placeholder",
+          alg: "EdDSA",
+          signing_input_b64u: "eyJ4IjoxfQ",
+          signature_b64u: "AA",
+        },
+      ],
     };
     const out = validateBundle({
       bundle,
@@ -250,6 +266,18 @@ describe("BUG-C1 path-traversal hardening (parity with Python)", () => {
             { artifact_id: "/etc/passwd", digest: "d1" },
             { artifact_id: "../escape", digest: "d2" },
           ],
+        },
+      ],
+      // Placeholder signature so structure_ok=true and the per-claim path screen
+      // runs (gated on structure_ok in both runtimes) -- see the note in the
+      // preceding test. Without it, an unsigned bundle skips the screen in BOTH
+      // Python and TS, making this a false parity test.
+      signatures: [
+        {
+          kid: "placeholder",
+          alg: "EdDSA",
+          signing_input_b64u: "eyJ4IjoxfQ",
+          signature_b64u: "AA",
         },
       ],
     };
