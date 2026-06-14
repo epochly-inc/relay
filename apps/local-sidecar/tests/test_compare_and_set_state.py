@@ -19,6 +19,7 @@ import asyncio
 import uuid
 
 import pytest
+from relay_sidecar.anti_bypass import AntiBypassRejection
 from relay_sidecar.db import SidecarDatabase
 from relay_sidecar.state_engine import (
     EXPECTED_FROM_MISMATCH,
@@ -43,6 +44,29 @@ async def _seed_scope(
         project_id=project_id,
     )
     return scope_id, project_id
+
+
+def _seed_admin_actor(db_path, *, identity_hash: str) -> None:
+    """Insert a non-revoked human org_admin actors row (override path)."""
+    import sqlite3
+    from datetime import UTC, datetime
+
+    now = (
+        datetime.now(tz=UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO actors "
+            "(identity_hash, kind, display_name, org_admin, registered_at, revoked_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (identity_hash, "human", "test-admin", 1, now, None),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @pytest.mark.plumbing
@@ -233,5 +257,91 @@ async def test_concurrent_compare_and_set_one_winner(tmp_path) -> None:
         # same event after the winner committed.
         winners = sum(1 for r in results if r)
         assert winners == 1, results
+    finally:
+        await db.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-057")
+@pytest.mark.asyncio
+async def test_override_claim_actor_hash_bound_to_authenticated_actor(
+    tmp_path,
+) -> None:
+    """A non-admin caller MUST NOT bypass anti-bypass with a borrowed admin
+    hash; the authenticated org_admin's own override still works.
+
+    Security finding (anti-bypass keystone): the operator_override path took
+    the override claim's ``actor_identity_hash`` straight from caller payload
+    WITHOUT comparing it to the authenticated ``actor.identity_hash``. Admin
+    hashes are NOT secret (they show up in audit columns), so any non-admin
+    caller who has seen one admin hash could forge an override and commit a
+    bypass-marker audit row. The fix binds the override claim's hash to the
+    AUTHENTICATED actor.
+    """
+    db = SidecarDatabase(db_path=tmp_path / "sidecar.db", reader_count=1)
+    try:
+        await db.open()
+        admin_identity = "sha256-" + ("a" * 64)
+        attacker_identity = "sha256-" + ("e" * 64)
+        _seed_admin_actor(tmp_path / "sidecar.db", identity_hash=admin_identity)
+
+        # --- Attack: authenticated non-admin sdk actor supplies a BORROWED
+        #     admin override claim plus a bypass marker. MUST be rejected. ---
+        attack_scope, attack_project = await _seed_scope(db)
+        attacker = ActorRef(kind="sdk", identity_hash=attacker_identity)
+        with pytest.raises(AntiBypassRejection):
+            await compare_and_set_state(
+                database=db,
+                scope_kind="run",
+                scope_id=attack_scope,
+                expected_from="pending",
+                event="ingest.run_received",
+                actor=attacker,
+                payload={
+                    "note": "git commit --no-verify",
+                    "operator_override_claim": {
+                        "actor_identity_hash": admin_identity,
+                    },
+                },
+                project_id=attack_project,
+            )
+
+        # No marker-bearing audit row was committed for the attack scope, and
+        # the state did NOT advance (the rejection aborts the transaction).
+        reader = db.acquire_reader()
+        async with reader.execute(
+            "SELECT state, epoch FROM scope_state WHERE scope_id = ?",
+            (attack_scope,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None and row[0] == "pending" and int(row[1]) == 0, row
+        async with reader.execute(
+            "SELECT COUNT(*) FROM event_log_entries WHERE scope_id = ?",
+            (attack_scope,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None and int(row[0]) == 0, row
+
+        # --- Legitimate: the AUTHENTICATED org_admin supplies its OWN
+        #     override claim. The marker payload is recorded; state advances. ---
+        admin_scope, admin_project = await _seed_scope(db)
+        admin_actor = ActorRef(kind="sdk", identity_hash=admin_identity)
+        ok_result = await compare_and_set_state(
+            database=db,
+            scope_kind="run",
+            scope_id=admin_scope,
+            expected_from="pending",
+            event="ingest.run_received",
+            actor=admin_actor,
+            payload={
+                "note": "git commit --no-verify",
+                "operator_override_claim": {
+                    "actor_identity_hash": admin_identity,
+                },
+            },
+            project_id=admin_project,
+        )
+        assert ok_result.ok is True, ok_result
+        assert ok_result.new_state == "captured", ok_result
     finally:
         await db.close()

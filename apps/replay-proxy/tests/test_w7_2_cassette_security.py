@@ -299,6 +299,170 @@ def test_lookup_rejects_tampered_entry(
 
 
 # -----------------------------------------------------------------------------
+# Bug 2b (LOW): on-disk re-digested tamper served as authentic without an
+# anchor, and no fail-closed mode for trust-requiring serving paths.
+#
+# The per-entry response_digest re-check (test_lookup_rejects_tampered_entry)
+# only catches *in-memory* mutation where the stale recorded digest is left
+# behind. An attacker with write access to the cassette FILE rewrites the
+# response bytes AND recomputes the per-entry response_digest, so the
+# in-memory consistency check passes; the only defense is the file-level
+# anchor, which the production caller omits. We add a fail-closed
+# ``require_integrity`` mode so a trust-requiring path that lacks an anchor
+# refuses to serve rather than serving forged bytes silently.
+# -----------------------------------------------------------------------------
+
+
+def _redigest_forge_on_disk(
+    session_dir: Path,
+    *,
+    request_body: dict[str, Any],
+    forged_response: dict[str, Any],
+) -> Path:
+    """Rewrite the on-disk cassette with a forged response, re-digesting.
+
+    Simulates the real attack: an adversary with write access rewrites the
+    entry's response bytes and recomputes the per-entry response_digest so
+    the cassette is internally consistent. The only thing that changes that
+    an honest verifier could catch is the file-level SHA-256.
+    """
+    header = CassetteHeader(
+        schema_version=CASSETTE_HEADER_SCHEMA_VERSION,
+        case_id="case_security",
+        session_id=session_dir.name,
+        recorded_at="2026-05-14T00:00:00Z",
+        manifest_commit_hash="sha256-" + ("0" * 64),
+    )
+    forged_entry = CassetteEntry(
+        schema_version=CASSETTE_ENTRY_SCHEMA_VERSION,
+        sequence=0,
+        provider="openai",
+        model="gpt-4o-mini",
+        request_digest=canonical_request_digest(request_body),
+        response=forged_response,
+        # Attacker recomputes the per-entry digest over the forged bytes,
+        # so the in-memory response_digest re-check cannot catch this.
+        response_digest=canonical_response_digest(forged_response),
+        timestamp="2026-05-14T00:00:01Z",
+    )
+    cassette_path = session_dir / "cassette.jsonl"
+    write_cassette_file(cassette_path, header, [forged_entry])
+    return cassette_path
+
+
+def test_require_integrity_without_anchor_fails_closed(
+    cassette_root: Path,
+) -> None:
+    """A trust-requiring server with no anchor MUST refuse to serve.
+
+    This is the core fix: the production serving path that requires
+    integrity but was not handed an ``expected_file_digest_sha256`` anchor
+    must fail closed (no cassette served) rather than silently serving
+    unanchored, untrusted bytes.
+    """
+    sd = cassette_root / "sesReqIntegNoAnchor__________"
+    sd.mkdir(parents=True, exist_ok=True)
+    request = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
+    response = {"id": "resp1", "object": "chat.completion", "choices": []}
+    _seed_session_with_cassette(sd, request_body=request, response_body=response)
+    server = CassetteServer(sd, require_integrity=True)
+    with pytest.raises(CassetteFormatError) as excinfo:
+        server.lookup(
+            IncomingRequest(provider="openai", model="gpt-4o-mini", body=request)
+        )
+    assert "integrity_anchor_required" in str(excinfo.value)
+
+
+def test_require_integrity_with_matching_anchor_serves(
+    cassette_root: Path,
+) -> None:
+    """Trust-requiring server WITH a matching anchor still serves."""
+    sd = cassette_root / "sesReqIntegMatch_____________"
+    sd.mkdir(parents=True, exist_ok=True)
+    request = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
+    response = {"id": "resp1", "object": "chat.completion", "choices": []}
+    cassette_path = _seed_session_with_cassette(
+        sd, request_body=request, response_body=response
+    )
+    parsed = parse_cassette(cassette_path.read_bytes(), str(cassette_path))
+    server = CassetteServer(
+        sd,
+        expected_file_digest_sha256=parsed.file_digest_sha256,
+        require_integrity=True,
+    )
+    result = server.lookup(
+        IncomingRequest(provider="openai", model="gpt-4o-mini", body=request)
+    )
+    assert result is not None
+    assert result.status == 200
+
+
+def test_require_integrity_rejects_ondisk_redigested_tamper(
+    cassette_root: Path,
+) -> None:
+    """On-disk re-digested forgery MUST be rejected when anchored.
+
+    The attacker rewrites the cassette file with a forged response and
+    recomputes the per-entry response_digest (so the in-memory re-check is
+    defeated). With the anchor pinned to the ORIGINAL file digest and
+    integrity required, the file-level check catches the forgery on load --
+    the forged bytes are never served.
+    """
+    sd = cassette_root / "sesReqIntegOnDiskForge_______"
+    sd.mkdir(parents=True, exist_ok=True)
+    request = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
+    authentic = {"id": "resp1", "object": "chat.completion", "choices": []}
+    cassette_path = _seed_session_with_cassette(
+        sd, request_body=request, response_body=authentic
+    )
+    # Capture the trust anchor BEFORE tampering: the file digest of the
+    # genuine, recorded cassette (as a signed manifest / evidence bundle
+    # would carry).
+    anchor = parse_cassette(
+        cassette_path.read_bytes(), str(cassette_path)
+    ).file_digest_sha256
+
+    # Attacker rewrites the file with a forged-but-internally-consistent
+    # response.
+    forged = {"id": "resp1", "object": "chat.completion", "choices": [{"injected": True}]}
+    _redigest_forge_on_disk(sd, request_body=request, forged_response=forged)
+
+    server = CassetteServer(
+        sd, expected_file_digest_sha256=anchor, require_integrity=True
+    )
+    with pytest.raises(CassetteFormatError) as excinfo:
+        server.lookup(
+            IncomingRequest(provider="openai", model="gpt-4o-mini", body=request)
+        )
+    assert "file_digest_mismatch" in str(excinfo.value)
+
+
+def test_redigested_ondisk_forge_unanchored_serves_authentic_today(
+    cassette_root: Path,
+) -> None:
+    """Demonstrates the gap: unanchored serve has NO tamper detection.
+
+    With no anchor (the current production default) an on-disk re-digested
+    forgery serves as authentic -- the per-entry digest re-check passes
+    because the attacker recomputed it. This is the back-compat behavior
+    the fail-closed mode exists to protect against; it MUST remain the
+    behavior only when integrity is NOT required (back-compat preserved).
+    """
+    sd = cassette_root / "sesUnanchoredForgeServes_____"
+    sd.mkdir(parents=True, exist_ok=True)
+    request = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
+    forged = {"id": "resp1", "object": "chat.completion", "choices": [{"injected": True}]}
+    _redigest_forge_on_disk(sd, request_body=request, forged_response=forged)
+    # No anchor, no require_integrity -> back-compat path, serves.
+    server = CassetteServer(sd)
+    result = server.lookup(
+        IncomingRequest(provider="openai", model="gpt-4o-mini", body=request)
+    )
+    assert result is not None
+    assert b"injected" in result.body_bytes
+
+
+# -----------------------------------------------------------------------------
 # Bug 3 (P1): _filter_headers case-mismatch drops extra_relevant_headers
 # -----------------------------------------------------------------------------
 

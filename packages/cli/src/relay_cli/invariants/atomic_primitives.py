@@ -20,7 +20,9 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import io
 import re
+import tokenize
 from pathlib import Path, PurePosixPath
 from typing import Final
 
@@ -73,6 +75,22 @@ _BACKTICK_RE: Final[re.Pattern[str]] = re.compile(r"``[^`]+``|`[^`]+`")
 # raw operations the rest of the tree may not.
 _PRIMITIVE_DIR_TOKEN: Final[str] = "primitives"
 
+# Token types whose multi-line spans mark documentation/prose lines. STRING
+# covers triple-quoted docstrings + block strings; the FSTRING_* members
+# (Python 3.12+) cover multi-line f-strings. Resolved defensively so the module
+# imports on any supported interpreter regardless of which f-string token names
+# exist.
+_STRING_TOKEN_TYPES: Final[frozenset[int]] = frozenset(
+    t
+    for t in (
+        getattr(tokenize, "STRING", None),
+        getattr(tokenize, "FSTRING_START", None),
+        getattr(tokenize, "FSTRING_MIDDLE", None),
+        getattr(tokenize, "FSTRING_END", None),
+    )
+    if t is not None
+)
+
 
 def _is_in_primitive_dir(rel_posix: str) -> bool:
     """Return True iff ``rel_posix`` lives under any ``primitives/`` dir.
@@ -85,22 +103,58 @@ def _is_in_primitive_dir(rel_posix: str) -> bool:
     return _PRIMITIVE_DIR_TOKEN in PurePosixPath(rel_posix).parts
 
 
+def multiline_string_line_numbers(text: str, *, is_python: bool) -> frozenset[int]:
+    """Return the 1-based line numbers that lie inside a MULTI-LINE string
+    literal (triple-quoted docstring / block string) of a Python source.
+
+    A pattern match (a banned ``db.execute(``, a canonical-row write, ...) on
+    such a line is documentation/prose, not an executable callsite -- e.g. a
+    module docstring that documents a grep guard across several lines with an
+    unclosed ``...`` RST span. Uses Python's real tokenizer so detection is
+    robust to
+    nested quotes, escapes, and the multi-line RST case the removed
+    backtick-token heuristic mishandled. Non-Python sources (and any source the
+    tokenizer cannot parse) return the empty set -- the per-line comment/backtick
+    heuristics still apply there.
+    """
+    if not is_python:
+        return frozenset()
+    doc_lines: set[int] = set()
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type in _STRING_TOKEN_TYPES:
+                start_row, end_row = tok.start[0], tok.end[0]
+                if end_row > start_row:
+                    doc_lines.update(range(start_row, end_row + 1))
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        # Unparseable / partial source: fall back to the per-line heuristics.
+        return frozenset()
+    return frozenset(doc_lines)
+
+
 def _match_is_documentation(
-    line: str, match_start: int, *, sql: bool = False, slash_comment: bool = True
+    line: str,
+    match_start: int,
+    *,
+    sql: bool = False,
+    slash_comment: bool = True,
+    hash_comment: bool = True,
+    in_docstring: bool = False,
 ) -> bool:
     """Return True iff the match position appears inside a documentation context.
 
     Heuristics (each conservative; only fires when the match lives in
     explicit documentation syntax):
 
-      1. The leftmost non-whitespace character on the line is ``#`` or
-         ``//`` (when ``slash_comment=True``) (or ``--`` when ``sql=True``)
-         -> entire line is a comment -> documentation.
-      2. A standalone ``#`` (Python/shell comment), ``//`` (TS/JS comment,
-         only when ``slash_comment=True``), or SQL ``--`` (when
-         ``sql=True``) appears in the line BEFORE the match position, NOT
-         inside a string literal -> the match is inside a trailing
-         comment.
+      1. The leftmost non-whitespace character on the line is ``#`` (when
+         ``hash_comment=True``) or ``//`` (when ``slash_comment=True``) (or
+         ``--`` when ``sql=True``) -> entire line is a comment ->
+         documentation.
+      2. A standalone ``#`` (Python/shell comment, only when
+         ``hash_comment=True``), ``//`` (TS/JS comment, only when
+         ``slash_comment=True``), or SQL ``--`` (when ``sql=True``) appears
+         in the line BEFORE the match position, NOT inside a string literal
+         -> the match is inside a trailing comment.
       3. The match span is wholly enclosed by a backtick pair on the
          line -> the match is a backtick-quoted reference.
       4. (``sql=True`` only) The match is enclosed in a quoted string
@@ -146,10 +200,36 @@ def _match_is_documentation(
     ``slash_comment=False`` (SQL uses ``--``, not ``//``). The default
     ``slash_comment=True`` preserves the historical TS/JS behavior for any
     caller that does not specify a language.
+
+    ``hash_comment`` selects whether ``#`` is a line-comment marker for the
+    scanned language. It MUST be ``True`` only for languages where ``#``
+    actually begins a comment -- Python (``.py``/``.pyi``), shell, and SQL.
+    For TS/JS (``.ts``/``.tsx``/``.js``/``.jsx``/``.mjs``/``.cjs``) it MUST
+    be ``False``: in those languages ``#`` is a PRIVATE-FIELD sigil (e.g.
+    ``class C { #n = 1 }``) or a shebang, NOT a comment. Treating ``#`` as a
+    comment on TS/JS source makes a real bypass invisible -- a production
+    line such as ``class C { #n = 1; m(){ db.execute(q); } }`` would be
+    falsely classified as documentation and the keystone-#8 violation
+    SKIPPED, going vacuous for that line. The default ``hash_comment=True``
+    preserves the historical Python/shell/SQL behavior for any caller that
+    does not specify a language (including the control-plane-write SQL/Python
+    caller).
     """
+    # Heuristic 0: the line lies INSIDE a multi-line string literal (module /
+    # function docstring or block string). A pattern match there is PROSE, not
+    # executable code -- e.g. a module docstring that documents a grep guard with
+    # a multi-line ``...`` RST span mentioning a canonical-row write pattern. This
+    # is computed once per file with a real tokenizer (see
+    # multiline_string_line_numbers) and is the correct replacement for the
+    # removed backtick-token-counting heuristic, which both produced false
+    # negatives (a "``" inside an executable string literal) and could not see
+    # cross-line spans (re-hunt cli-inv-1 follow-up: the heuristic-4 removal
+    # regressed the legitimate multi-line-docstring exclusion).
+    if in_docstring:
+        return True
     # Heuristic 1: full-line comment.
     stripped = line.lstrip()
-    if stripped.startswith("#"):
+    if hash_comment and stripped.startswith("#"):
         return True
     if slash_comment and stripped.startswith("//"):
         return True
@@ -172,7 +252,7 @@ def _match_is_documentation(
             if backslashes % 2 == 1:
                 continue
             quote_count += 1
-        elif ch == "#" and quote_count % 2 == 0 or (
+        elif (hash_comment and ch == "#" and quote_count % 2 == 0) or (
             slash_comment
             and ch == "/"
             and quote_count % 2 == 0
@@ -239,12 +319,31 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
         # classified as documentation and the keystone-#8 violation would
         # be skipped, making this guard vacuous for that line.
         slash_is_comment = path.suffix not in (".py", ".pyi")
+        # ``#`` is a line comment ONLY in Python (and shell/SQL); in the
+        # TS/JS family (``.ts``/``.tsx``/``.js``/``.jsx``/``.mjs``/``.cjs``)
+        # ``#`` is a private-field sigil / shebang, NOT a comment. We must
+        # NOT treat it as a comment for those sources -- otherwise a
+        # production line like ``class C { #n = 1; m(){ db.execute(q); } }``
+        # would be falsely classified as documentation and the keystone-#8
+        # violation would be skipped, making this guard vacuous for that line.
+        hash_is_comment = path.suffix in (".py", ".pyi")
+        # Lines inside a multi-line string literal (docstring / block string) are
+        # prose, not executable callsites -- computed once per file via the real
+        # tokenizer so a banned token mentioned in a multi-line docstring is not
+        # flagged (the correct replacement for the removed backtick-counting).
+        doc_lines = multiline_string_line_numbers(
+            text, is_python=path.suffix in (".py", ".pyi")
+        )
         for line_no_minus_one, line in enumerate(text.split("\n")):
             m = _PRIMITIVE_BYPASS_RE.search(line)
             if m is None:
                 continue
             if _match_is_documentation(
-                line, m.start(), slash_comment=slash_is_comment
+                line,
+                m.start(),
+                slash_comment=slash_is_comment,
+                hash_comment=hash_is_comment,
+                in_docstring=(line_no_minus_one + 1) in doc_lines,
             ):
                 continue
             findings.append(

@@ -303,6 +303,10 @@ const SCOPE_STATE_FIXTURES: ReadonlyArray<readonly [string, string]> = [
   ["union_scope_state_replay_case.json", "replay_case"],
   ["union_scope_state_gate_round.json", "gate_round"],
   ["union_scope_state_evidence_bundle.json", "evidence_bundle"],
+  // VAL-V2M01-036: union spans all six scope_kinds. eval_run and release
+  // close the Py<->TS parity gap (the TS guard previously omitted them).
+  ["union_scope_state_eval_run.json", "eval_run"],
+  ["union_scope_state_release.json", "release"],
 ];
 
 describe("VAL-W1-043: discriminated-union round-trip (TypeScript side)", () => {
@@ -323,12 +327,12 @@ describe("VAL-W1-043: discriminated-union round-trip (TypeScript side)", () => {
     });
   }
 
-  it("the four ScopeState variants produce distinct digests", () => {
+  it("the six ScopeState variants produce distinct digests", () => {
     const digests = SCOPE_STATE_FIXTURES.map(([fixture]) =>
       loadFixtureSha256(fixture),
     );
     const unique = new Set(digests);
-    expect(unique.size).toBe(4);
+    expect(unique.size).toBe(6);
   });
 
   it("RedactionPolicy(matcher.kind=regex) byte-equal round-trip", () => {
@@ -418,8 +422,10 @@ const CORPUS_FIXTURES: readonly string[] = [
   "timestamp_z.json",
   "union_redaction_matcher_json_pointer.json",
   "union_redaction_matcher_regex.json",
+  "union_scope_state_eval_run.json",
   "union_scope_state_evidence_bundle.json",
   "union_scope_state_gate_round.json",
+  "union_scope_state_release.json",
   "union_scope_state_replay_case.json",
   "union_scope_state_run.json",
   "unknown_enum_value.json",
@@ -437,7 +443,7 @@ describe("VAL-W1-045: corpus tier-1 budget (TypeScript side)", () => {
   });
 
   it("every fixture has a .sha256 sidecar", () => {
-    expect(CORPUS_FIXTURES.length).toBe(13);
+    expect(CORPUS_FIXTURES.length).toBe(15);
     for (const fixture of CORPUS_FIXTURES) {
       const sidecar = path.join(
         CORPUS_DIR,

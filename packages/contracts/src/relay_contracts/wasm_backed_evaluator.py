@@ -725,12 +725,34 @@ class WasmCelEvaluator:
 
         ``None`` / empty -> ``{}``. Each binding value is converted via
         ``py_to_typed`` (the single Python<->wasm value codec).
+
+        An unsupported Python binding type (a ``set``, a ``complex``, an
+        arbitrary object -- anything ``py_to_typed`` has no branch for) raises a
+        bare ``TypeError`` / ``ValueError`` out of the codec. The host facade
+        MUST NEVER leak a bare Python exception type for a bad binding, so the
+        encode step is wrapped: any codec ``TypeError`` / ``ValueError`` is
+        re-raised as a structured :class:`RelayCelEngineError`
+        (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) naming the offending binding
+        and preserving the original cause (``raise ... from``). The binding name
+        is in the message for diagnosis; the binding value is carried by the
+        chained codec cause (which already includes the ``repr``).
         """
         if not bindings:
             return {}
         from .wasm_codec import py_to_typed
 
-        return {name: py_to_typed(value) for name, value in bindings.items()}
+        encoded: dict[str, Any] = {}
+        for name, value in bindings.items():
+            try:
+                encoded[name] = py_to_typed(value)
+            except (TypeError, ValueError) as exc:
+                raise RelayCelEngineError(
+                    f"wasm CEL binding {name!r} has an unsupported Python type "
+                    f"{type(value).__name__!r} that the value codec cannot "
+                    f"encode: {value!r}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                ) from exc
+        return encoded
 
     def _extract_udf_trace(self, envelope: Any) -> dict[str, list[Any]]:
         """Return the wasm ``udf_trace`` field as a per-name list-of-typed map.

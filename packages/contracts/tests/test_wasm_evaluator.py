@@ -468,6 +468,66 @@ def test_decode_wasm_003_envelope_without_timeout_subtype_is_engine_anomaly(bad_
 
 
 # ---------------------------------------------------------------------------
+# Binding-encode failures surface as structured RelayCelError, never a bare
+# Python exception. The host facade encodes each caller binding through
+# py_to_typed; an unsupported Python binding type (a set, a custom object, ...)
+# raises a bare TypeError/ValueError out of the codec. That MUST be wrapped into
+# a structured RelayCelError (RELAY-CEL-009 / ENGINE-REQUEST) with the offending
+# binding name + value in the message and the original cause preserved -- the
+# host facade NEVER leaks a bare TypeError/ValueError for a bad binding.
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+def test_unencodable_set_binding_raises_structured_error_not_bare_typeerror():
+    # roborev LOW: evaluate('x == x', {'x': {1,2,3}}) -- a set binding is
+    # unencodable (py_to_typed has no set branch, it falls through to a bare
+    # TypeError). The host facade must wrap that into a structured RelayCelError,
+    # not leak the bare TypeError.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
+    with pytest.raises(RelayCelError) as exc:
+        ev.evaluate("x == x", {"x": {1, 2, 3}})
+    err = exc.value
+    # It is the structured engine-request error, never a bare TypeError/ValueError.
+    assert isinstance(err, RelayCelEngineError)
+    assert err.code == "RELAY-CEL-009"
+    assert err.subtype == SUBTYPE_ENGINE_REQUEST
+    # The offending binding name is named in the message for diagnosis.
+    assert "x" in err.message
+    # The original codec exception is preserved as the cause (raise ... from e).
+    assert isinstance(err.__cause__, (TypeError, ValueError))
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        {1, 2, 3},          # set -- no py_to_typed branch
+        frozenset({1, 2}),  # frozenset -- no py_to_typed branch
+        object(),           # arbitrary unsupported object
+        complex(1, 2),      # complex number -- no py_to_typed branch
+    ],
+)
+def test_various_unencodable_bindings_raise_structured_error(bad_value):
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
+    with pytest.raises(RelayCelError) as exc:
+        ev.evaluate("y == y", {"y": bad_value})
+    err = exc.value
+    assert isinstance(err, RelayCelEngineError)
+    assert err.code == "RELAY-CEL-009"
+    assert err.subtype == SUBTYPE_ENGINE_REQUEST
+    # The bare codec exception type is preserved as the cause, not leaked raw.
+    assert isinstance(err.__cause__, (TypeError, ValueError))
+
+
+@pytest.mark.plumbing
+def test_valid_binding_still_evaluates_after_encode_guard():
+    # The encode guard must NOT regress a valid binding: a normal int binding
+    # evaluates correctly through the same _encode_bindings path.
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
+    assert ev.evaluate("x == x", {"x": 7}) is True
+    assert ev.evaluate("x + 1", {"x": 41}) == 42
+
+
+# ---------------------------------------------------------------------------
 # VAL-CWC-P1HOST-008: per-thread handle + Store quarantine + concurrency
 # ---------------------------------------------------------------------------
 @pytest.mark.plumbing

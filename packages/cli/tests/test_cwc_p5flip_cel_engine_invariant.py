@@ -249,9 +249,11 @@ def test_cel_engine_missing_wasm_fails_closed(
 
     This proves the runner records a FAIL, not an internal-error envelope from a
     Python traceback (VAL-CWC-P5FLIP-005)."""
-    # Point the check's wasm path resolver at a missing artifact.
+    # Point the check's wasm path resolver at a missing artifact. The override
+    # accepts the optional ``repo_root`` so the real ``None``-return branch (not a
+    # signature TypeError) drives the fail-closed path through ``run(repo_root)``.
     monkeypatch.setattr(
-        cel_engine, "_resolve_loaded_wasm_path", lambda: None
+        cel_engine, "_resolve_loaded_wasm_path", lambda repo_root=None: None
     )
 
     # run() MUST NOT raise.
@@ -795,3 +797,196 @@ def test_check_order_keeps_cel_engine_in_alphabetic_slot() -> None:
     # The check is at the exact slot sorted() places it (no manual reorder).
     expected_index = sorted(CHECK_ORDER).index(cel_engine.CHECK_NAME)
     assert CHECK_ORDER.index(cel_engine.CHECK_NAME) == expected_index
+
+
+# -----------------------------------------------------------------------------
+# VAL-ISO-005 (cel-engine): the SHA / pin probes honor --repo-root.
+# -----------------------------------------------------------------------------
+#
+# Regression: the cel-engine SHA probe resolved BOTH the wasm artifact AND the
+# pinned sha256 via the IMPORTED ``relay_contracts`` package on ``sys.path``, so
+# ``rly verify-self --repo-root <tree>`` validated the INSTALLED wheel, not the
+# tree the operator named. A tampered ``.wasm`` (or a stale ``WASM_PINNED_SHA256``
+# pin) IN the named tree slipped past verification because the probe never read
+# from ``repo_root``. These tests build a temp ``repo_root`` whose tree carries a
+# tampered wasm / mismatched pin and assert the probe -- anchored at ``repo_root``
+# -- detects it; a clean tree passes. Mirrors the sigstore/rekor/tsa pattern of
+# reading the verified surface from the SOURCE under ``repo_root``.
+
+# The on-disk layout of the wasm artifact + its pin source under a repo root.
+_TREE_WASM_RELPATH = (
+    "packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.wasm"
+)
+_TREE_WASM_ARTIFACT_PY_RELPATH = (
+    "packages/contracts/src/relay_contracts/wasm_artifact.py"
+)
+
+
+def _build_tree_repo_root(
+    tmp_path: Path, wasm_bytes: bytes, pinned_sha: str
+) -> Path:
+    """Materialize a minimal ``repo_root`` carrying a tree wasm + pin source.
+
+    Writes ``packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.wasm``
+    with ``wasm_bytes`` and a ``wasm_artifact.py`` whose ``WASM_PINNED_SHA256``
+    annotated assignment is ``pinned_sha`` -- exactly the two surfaces the SHA
+    probe must read from ``repo_root`` (NOT from the imported package).
+    """
+    root = tmp_path / "tree"
+    wasm_path = root / _TREE_WASM_RELPATH
+    wasm_path.parent.mkdir(parents=True, exist_ok=True)
+    wasm_path.write_bytes(wasm_bytes)
+
+    art_path = root / _TREE_WASM_ARTIFACT_PY_RELPATH
+    art_path.parent.mkdir(parents=True, exist_ok=True)
+    # An annotated module-level assignment, the same shape the real
+    # wasm_artifact.py uses (a parenthesized string literal).
+    art_path.write_text(
+        '"""tree wasm_artifact stub."""\n'
+        "from __future__ import annotations\n\n"
+        "WASM_PACKAGE_DATA_RELPATH: str = "
+        '"_wasm/relay_cel_wasm.wasm"\n\n'
+        "WASM_PINNED_SHA256: str = (\n"
+        f'    "{pinned_sha}"\n'
+        ")\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-004")
+def test_cel_engine_sha_probe_clean_tree_passes(tmp_path: Path) -> None:
+    """A clean tree (pin matches the tree's wasm bytes) passes the SHA probe when
+    the probe is anchored at ``repo_root`` (not the imported wheel)."""
+    import hashlib as _hashlib
+
+    wasm_bytes = b"clean wasm body \x00\x01\x02" * 16
+    pinned = _hashlib.sha256(wasm_bytes).hexdigest()
+    root = _build_tree_repo_root(tmp_path, wasm_bytes, pinned)
+
+    findings = cel_engine._probe_sha_match(root)
+    assert findings == [], [(f.code, f.pattern) for f in findings]
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-004")
+def test_cel_engine_sha_probe_tampered_tree_wasm_emits_finding(
+    tmp_path: Path,
+) -> None:
+    """A TAMPERED wasm in the named tree (a byte appended, pin unchanged) is
+    detected by the ``repo_root``-anchored SHA probe.
+
+    This is the load-bearing regression: a tampered ``.wasm`` under
+    ``--repo-root`` must FAIL verification, not pass because the installed wheel
+    is clean."""
+    import hashlib as _hashlib
+
+    clean = b"original wasm body \x00\x01\x02" * 16
+    pinned = _hashlib.sha256(clean).hexdigest()
+    tampered = clean + b"\xff"  # append a byte: digest changes, pin does not
+    assert _hashlib.sha256(tampered).hexdigest() != pinned
+    root = _build_tree_repo_root(tmp_path, tampered, pinned)
+
+    findings = cel_engine._probe_sha_match(root)
+    assert len(findings) == 1, findings
+    assert (
+        findings[0].code
+        == cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH
+    )
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-004")
+def test_cel_engine_sha_probe_stale_pin_in_tree_emits_finding(
+    tmp_path: Path,
+) -> None:
+    """A STALE pin in the named tree (``WASM_PINNED_SHA256`` does not match the
+    tree's wasm) is detected by the ``repo_root``-anchored SHA probe."""
+    import hashlib as _hashlib
+
+    wasm_bytes = b"some wasm body \x07\x08" * 16
+    actual = _hashlib.sha256(wasm_bytes).hexdigest()
+    stale_pin = "0" * 64  # a pin that does NOT match the tree's wasm
+    assert stale_pin != actual
+    root = _build_tree_repo_root(tmp_path, wasm_bytes, stale_pin)
+
+    findings = cel_engine._probe_sha_match(root)
+    assert len(findings) == 1, findings
+    assert (
+        findings[0].code
+        == cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH
+    )
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-004")
+def test_cel_engine_resolve_loaded_wasm_path_uses_repo_root(
+    tmp_path: Path,
+) -> None:
+    """``_resolve_loaded_wasm_path(repo_root)`` resolves the tree's wasm, not the
+    imported package's wasm."""
+    wasm_bytes = b"tree-anchored wasm" * 8
+    root = _build_tree_repo_root(
+        tmp_path, wasm_bytes, "0" * 64
+    )
+    resolved = cel_engine._resolve_loaded_wasm_path(root)
+    assert resolved is not None
+    assert resolved == root / _TREE_WASM_RELPATH
+    assert resolved.read_bytes() == wasm_bytes
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-004")
+def test_cel_engine_resolve_loaded_wasm_path_absent_in_tree_is_none(
+    tmp_path: Path,
+) -> None:
+    """When the tree carries NO wasm artifact, the ``repo_root``-anchored
+    resolver returns ``None`` (the caller maps it to fail-closed)."""
+    empty = tmp_path / "empty-tree"
+    empty.mkdir()
+    assert cel_engine._resolve_loaded_wasm_path(empty) is None
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-004")
+def test_cel_engine_pinned_sha_parsed_from_tree_source(
+    tmp_path: Path,
+) -> None:
+    """``_pinned_wasm_sha256(repo_root)`` parses ``WASM_PINNED_SHA256`` from the
+    tree's ``wasm_artifact.py`` SOURCE (AST), not the imported constant."""
+    pin = "a" * 64
+    root = _build_tree_repo_root(tmp_path, b"x", pin)
+    assert cel_engine._pinned_wasm_sha256(root) == pin
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-004")
+def test_cel_engine_pinned_sha_absent_source_in_tree_is_none(
+    tmp_path: Path,
+) -> None:
+    """When the tree carries no ``wasm_artifact.py`` (or no pin assignment), the
+    ``repo_root``-anchored pin reader returns ``None`` -> fail-closed at the
+    caller."""
+    empty = tmp_path / "no-artifact-source"
+    empty.mkdir()
+    assert cel_engine._pinned_wasm_sha256(empty) is None
+
+
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-004")
+def test_cel_engine_run_repo_root_detects_tampered_tree_wasm(
+    tmp_path: Path,
+) -> None:
+    """End-to-end through ``run(repo_root)``: a tampered tree wasm (pin unchanged)
+    yields a SHA-MISMATCH finding -- the probe honored ``--repo-root``.
+
+    The UDF / dyn probes still load the imported engine (the only runnable wasm),
+    so they may add their own findings, but the SHA-MISMATCH from the tampered
+    tree MUST be present -- proving ``run(repo_root)`` validates the named tree's
+    artifact, not just the installed wheel."""
+    import hashlib as _hashlib
+
+    clean = b"runlevel wasm body \x01\x02\x03" * 16
+    pinned = _hashlib.sha256(clean).hexdigest()
+    tampered = clean + b"\x00"
+    root = _build_tree_repo_root(tmp_path, tampered, pinned)
+
+    name, findings = cel_engine.run(root)
+    assert name == cel_engine.CHECK_NAME
+    codes = {f.code for f in findings}
+    assert cel_engine.RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH in codes, [
+        (f.code, f.pattern) for f in findings
+    ]

@@ -32,8 +32,10 @@ import {
   ReplayCase,
   ReplayFixture,
   RunResult,
+  ScopeStateEvalRun,
   ScopeStateEvidenceBundle,
   ScopeStateGateRound,
+  ScopeStateRelease,
   ScopeStateReplayCase,
   ScopeStateRun,
   isActor,
@@ -779,6 +781,28 @@ function baseScopeStateEvidenceBundle(
   };
 }
 
+function baseScopeStateEvalRun(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...baseScopeStateRun(),
+    scope_kind: "eval_run",
+    state: "pending",
+    ...overrides,
+  };
+}
+
+function baseScopeStateRelease(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...baseScopeStateRun(),
+    scope_kind: "release",
+    state: "open",
+    ...overrides,
+  };
+}
+
 function baseIdempotencyRecord(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
@@ -969,6 +993,66 @@ describe("VAL-W1-011 scope_state discriminated union on scope_kind", () => {
       baseScopeStateEvidenceBundle(),
     ) as ScopeStateEvidenceBundle;
     expect(e.scope_kind).toBe("evidence_bundle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-V2M01-036: scope_state union spans all SIX scope_kinds. Python accepts
+// scope_kind=eval_run and scope_kind=release (envelopes.py EvalRunScopeState /
+// ReleaseScopeState, union spanning spec W lines 5072-5085); the hand-authored
+// TS guard must accept the same documents. Py<->TS verdict parity.
+// ---------------------------------------------------------------------------
+
+describe("VAL-V2M01-036 scope_state union covers eval_run and release", () => {
+  it.each([
+    "pending",
+    "running",
+    "scored",
+    "terminal",
+  ] as const)("scope_kind=eval_run accepts state=%s", (state) => {
+    expect(isScopeState(baseScopeStateEvalRun({ state }))).toBe(true);
+  });
+
+  it.each([
+    "open",
+    "gated",
+    "released",
+    "rolled_back",
+    "terminal",
+  ] as const)("scope_kind=release accepts state=%s", (state) => {
+    expect(isScopeState(baseScopeStateRelease({ state }))).toBe(true);
+  });
+
+  it("rejects scope_kind=eval_run with a release state (cross-tag)", () => {
+    expect(isScopeState(baseScopeStateEvalRun({ state: "open" }))).toBe(false);
+  });
+
+  it("rejects scope_kind=release with an eval_run state (cross-tag)", () => {
+    expect(isScopeState(baseScopeStateRelease({ state: "running" }))).toBe(
+      false,
+    );
+  });
+
+  it("rejects scope_kind=eval_run with a run state (cross-tag)", () => {
+    expect(
+      isScopeState(baseScopeStateEvalRun({ state: "captured" })),
+    ).toBe(false);
+  });
+
+  it("parseScopeState narrows eval_run and release variants", () => {
+    const ev = parseScopeState(
+      baseScopeStateEvalRun(),
+    ) as ScopeStateEvalRun;
+    expect(ev.scope_kind).toBe("eval_run");
+    const evState: ScopeStateEvalRun["state"] = ev.state;
+    expect(evState).toBe("pending");
+
+    const rel = parseScopeState(
+      baseScopeStateRelease(),
+    ) as ScopeStateRelease;
+    expect(rel.scope_kind).toBe("release");
+    const relState: ScopeStateRelease["state"] = rel.state;
+    expect(relState).toBe("open");
   });
 });
 
@@ -1354,7 +1438,46 @@ function baseEvidenceBundle(
   };
 }
 
+// Canonical nested-subject EvidenceClaim per the V3M1-F05 wire shape
+// (spec K lines 4388-4438). Python EvidenceClaim.model_validate requires the
+// nested subject + actor_kind / actor_identity_hash / occurred_at fields; the
+// TS guard must accept the same document. Py<->TS verdict parity.
 function baseEvidenceClaim(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.evidence_claim.v1",
+    evidence_claim_id: newUuid(),
+    evidence_bundle_id: newUuid(),
+    claim_type: "run_result",
+    subject: {
+      kind: "run",
+      id: newUuid(),
+      manifest_commit_hash: VALID_MANIFEST_HASH,
+    },
+    evidence_refs: [],
+    claim_predicate: null,
+    claim_digest: VALID_CLAIM_DIGEST,
+    redaction_transform_version: "relay.redaction.v1#transform-001",
+    actor_kind: "control_plane",
+    actor_identity_hash: VALID_ACTOR_HASH,
+    occurred_at: "2026-05-12T00:00:00+00:00",
+    manifest_commit_hash: VALID_MANIFEST_HASH,
+    signer_key_id: "key-claim-001",
+    signature: VALID_SIGNATURE,
+    supersedes_claim_id: null,
+    namespaces: null,
+    created_at: "2026-05-12T00:00:00+00:00",
+    ...overrides,
+  };
+}
+
+// Legacy FLAT-subject EvidenceClaim construction form. Mirrors Python's
+// back-compat shim (envelopes.py _absorb_flat_subject) which absorbs
+// subject_kind / subject_id into a nested subject before extra-field
+// rejection. Carries the V3M1-F05 fields (required by both runtimes) but
+// supplies the subject via the flat keys instead of the nested object.
+function baseEvidenceClaimFlat(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
@@ -1364,12 +1487,18 @@ function baseEvidenceClaim(
     claim_type: "run_result",
     subject_kind: "run",
     subject_id: newUuid(),
+    evidence_refs: [],
+    claim_predicate: null,
     claim_digest: VALID_CLAIM_DIGEST,
     redaction_transform_version: "relay.redaction.v1#transform-001",
+    actor_kind: "control_plane",
+    actor_identity_hash: VALID_ACTOR_HASH,
+    occurred_at: "2026-05-12T00:00:00+00:00",
     manifest_commit_hash: VALID_MANIFEST_HASH,
     signer_key_id: "key-claim-001",
     signature: VALID_SIGNATURE,
     supersedes_claim_id: null,
+    namespaces: null,
     created_at: "2026-05-12T00:00:00+00:00",
     ...overrides,
   };
@@ -1598,6 +1727,186 @@ describe("VAL-W1-021 evidence_claims field constraints", () => {
         baseEvidenceClaim({ supersedes_claim_id: "not-a-uuid" }),
       ),
     ).toThrow(/supersedes_claim_id/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-V3M1-015: EvidenceClaim canonical NESTED subject shape. Python
+// EvidenceClaim.model_validate (envelopes.py) requires subject:{kind,id,
+// manifest_commit_hash} + the V3M1-F05 fields (evidence_refs, claim_predicate,
+// actor_kind, actor_identity_hash, occurred_at, namespaces) and absorbs a flat
+// subject_kind/subject_id legacy claim via _absorb_flat_subject. The
+// hand-authored TS guard must accept the same documents. Py<->TS verdict
+// parity.
+// ---------------------------------------------------------------------------
+
+describe("VAL-V3M1-015 evidence_claims nested subject + V3M1-F05 fields", () => {
+  it("accepts the canonical nested-subject claim", () => {
+    expect(isEvidenceClaim(baseEvidenceClaim())).toBe(true);
+  });
+
+  it("exposes nested subject.kind / subject.id / subject.manifest_commit_hash", () => {
+    const subjectId = newUuid();
+    const claim = parseEvidenceClaim(
+      baseEvidenceClaim({
+        subject: {
+          kind: "eval_run",
+          id: subjectId,
+          manifest_commit_hash: VALID_MANIFEST_HASH,
+        },
+      }),
+    );
+    expect(claim.subject.kind).toBe("eval_run");
+    expect(claim.subject.id).toBe(subjectId);
+    expect(claim.subject.manifest_commit_hash).toBe(VALID_MANIFEST_HASH);
+  });
+
+  it.each([
+    "run",
+    "replay",
+    "eval_run",
+    "release",
+    "domain_pack",
+    "ai_system",
+  ] as const)("accepts subject.kind=%s", (kind) => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          subject: {
+            kind,
+            id: newUuid(),
+            manifest_commit_hash: VALID_MANIFEST_HASH,
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects an unknown subject.kind", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          subject: {
+            kind: "bogus_kind",
+            id: newUuid(),
+            manifest_commit_hash: VALID_MANIFEST_HASH,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a non-UUID subject.id", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          subject: {
+            kind: "run",
+            id: "not-a-uuid",
+            manifest_commit_hash: VALID_MANIFEST_HASH,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a missing subject object entirely", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.subject;
+    expect(isEvidenceClaim(payload)).toBe(false);
+  });
+
+  it("requires actor_kind (V3M1-F05) and rejects when absent", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.actor_kind;
+    expect(isEvidenceClaim(payload)).toBe(false);
+  });
+
+  it("rejects an unknown actor_kind enum value", () => {
+    expect(
+      isEvidenceClaim(baseEvidenceClaim({ actor_kind: "orchestrator" })),
+    ).toBe(false);
+  });
+
+  it("requires actor_identity_hash (canonical sha256 form)", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.actor_identity_hash;
+    expect(isEvidenceClaim(payload)).toBe(false);
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({ actor_identity_hash: "sha256:" + "a".repeat(64) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("requires occurred_at as an RFC 3339 datetime", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.occurred_at;
+    expect(isEvidenceClaim(payload)).toBe(false);
+  });
+
+  it("defaults evidence_refs to [] when omitted", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.evidence_refs;
+    const claim = parseEvidenceClaim(payload);
+    expect(claim.evidence_refs).toEqual([]);
+  });
+
+  it("accepts a populated evidence_refs list", () => {
+    const claim = parseEvidenceClaim(
+      baseEvidenceClaim({
+        evidence_refs: [
+          { kind: "artifact", ref: "r2://x", digest: VALID_CLAIM_DIGEST },
+          { kind: "exit_code", ref: "exit", value: 0 },
+        ],
+      }),
+    );
+    expect(claim.evidence_refs).toHaveLength(2);
+  });
+
+  it("accepts a null claim_predicate and a nested op/args predicate", () => {
+    expect(isEvidenceClaim(baseEvidenceClaim({ claim_predicate: null }))).toBe(
+      true,
+    );
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          claim_predicate: {
+            op: "and",
+            args: [{ op: "run_result_status_is", value: "accepted" }],
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a null namespaces and an x-relay extension envelope", () => {
+    expect(isEvidenceClaim(baseEvidenceClaim({ namespaces: null }))).toBe(true);
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          namespaces: { "x-relay": { schema_version: "v1" } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("absorbs a flat subject_kind/subject_id legacy claim (back-compat shim)", () => {
+    const flatId = newUuid();
+    const claim = parseEvidenceClaim(
+      baseEvidenceClaimFlat({ subject_kind: "run", subject_id: flatId }),
+    );
+    // Flat keys are absorbed into the nested subject; manifest_commit_hash is
+    // mirrored from the top-level field (Python _absorb_flat_subject parity).
+    expect(claim.subject.kind).toBe("run");
+    expect(claim.subject.id).toBe(flatId);
+    expect(claim.subject.manifest_commit_hash).toBe(VALID_MANIFEST_HASH);
+  });
+
+  it("rejects a legacy flat claim whose subject_id is not a UUID", () => {
+    expect(
+      isEvidenceClaim(baseEvidenceClaimFlat({ subject_id: "not-a-uuid" })),
+    ).toBe(false);
   });
 });
 
@@ -2026,6 +2335,8 @@ const _typeRefs: ReadonlyArray<
   | ScopeStateReplayCase
   | ScopeStateGateRound
   | ScopeStateEvidenceBundle
+  | ScopeStateEvalRun
+  | ScopeStateRelease
   | IdempotencyRecord
   | EventLogEntry
   | EvidenceBundle

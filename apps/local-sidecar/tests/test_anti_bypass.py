@@ -177,7 +177,13 @@ def _seed_actor(
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W2-057")
 def test_operator_override_path_permits_marker(tmp_path: Path) -> None:
-    """Marker payload + valid human org_admin override claim MUST be accepted."""
+    """Marker payload + valid human org_admin override claim MUST be accepted.
+
+    The override claim's ``actor_identity_hash`` is bound to the
+    AUTHENTICATED actor: the legitimate path supplies
+    ``authenticated_actor_identity_hash`` equal to the claim's hash (the
+    admin authenticating as itself).
+    """
     async def _run() -> None:
         db = SidecarDatabase(db_path=tmp_path / "sidecar.db", reader_count=1)
         await db.open()
@@ -194,6 +200,7 @@ def test_operator_override_path_permits_marker(tmp_path: Path) -> None:
                 event_kind=OPERATOR_OVERRIDE_EVENT_KIND,
                 operator_override_claim={"actor_identity_hash": identity},
                 actors_connection=db._writer,
+                authenticated_actor_identity_hash=identity,
             )
             assert result.ok is True, result
         finally:
@@ -274,6 +281,73 @@ def test_operator_override_missing_claim_rejected(tmp_path: Path) -> None:
                 actors_connection=db._writer,
             )
             assert result.ok is False, result
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-057")
+def test_operator_override_borrowed_admin_hash_rejected(tmp_path: Path) -> None:
+    """A borrowed admin hash MUST NOT bypass the marker scan.
+
+    Anti-bypass keystone: admin identity_hashes are NOT secret (they appear
+    in audit columns), so the override claim's ``actor_identity_hash`` MUST
+    be bound to the AUTHENTICATED actor. A non-admin caller supplying a
+    different (admin) hash they merely observed in an audit row MUST be
+    rejected even though that hash resolves to a non-revoked human org_admin.
+    """
+    async def _run() -> None:
+        db = SidecarDatabase(db_path=tmp_path / "sidecar.db", reader_count=1)
+        await db.open()
+        try:
+            admin_identity = "sha256-" + ("a" * 64)
+            attacker_identity = "sha256-" + ("e" * 64)
+            _seed_actor(
+                tmp_path / "sidecar.db",
+                identity_hash=admin_identity,
+                kind="human",
+                org_admin=1,
+            )
+            result = await screen_payload(
+                payload={"args": ["--no-verify"]},
+                event_kind=OPERATOR_OVERRIDE_EVENT_KIND,
+                operator_override_claim={"actor_identity_hash": admin_identity},
+                actors_connection=db._writer,
+                authenticated_actor_identity_hash=attacker_identity,
+            )
+            assert result.ok is False, result
+            assert result.reason_kind == BYPASS_MARKER_DETECTED_CLASS, result
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-057")
+def test_operator_override_self_admin_hash_accepted(tmp_path: Path) -> None:
+    """The AUTHENTICATED org_admin's own override claim MUST be accepted."""
+    async def _run() -> None:
+        db = SidecarDatabase(db_path=tmp_path / "sidecar.db", reader_count=1)
+        await db.open()
+        try:
+            admin_identity = "sha256-" + ("f" * 64)
+            _seed_actor(
+                tmp_path / "sidecar.db",
+                identity_hash=admin_identity,
+                kind="human",
+                org_admin=1,
+            )
+            result = await screen_payload(
+                payload={"args": ["--no-verify"]},
+                event_kind=OPERATOR_OVERRIDE_EVENT_KIND,
+                operator_override_claim={"actor_identity_hash": admin_identity},
+                actors_connection=db._writer,
+                authenticated_actor_identity_hash=admin_identity,
+            )
+            assert result.ok is True, result
         finally:
             await db.close()
 

@@ -22,6 +22,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -154,6 +155,36 @@ def _write_crypto_flag_stubs(root: Path) -> None:
         )
 
 
+def _write_wasm_engine_surface(root: Path) -> None:
+    """Materialize the cel-engine SHA-probe surface under a clean ``repo_root``.
+
+    The cel-engine SHA probe (VAL-ISO-005) reads the ``.wasm`` artifact bytes off
+    disk AND parses ``WASM_PINNED_SHA256`` from the ``wasm_artifact.py`` SOURCE
+    under ``--repo-root`` (so a tampered artifact or stale pin IN the named tree
+    is detected). A clean synthetic tree must therefore carry both surfaces with
+    a pin that MATCHES the artifact's sha256, or the probe (correctly) reports a
+    mismatch.
+    """
+    wasm_dir = root / "packages" / "contracts" / "src" / "relay_contracts" / "_wasm"
+    wasm_dir.mkdir(parents=True, exist_ok=True)
+    wasm_bytes = b"clean-tree-cel-wasm-fixture\n"
+    (wasm_dir / "relay_cel_wasm.wasm").write_bytes(wasm_bytes)
+    pinned = hashlib.sha256(wasm_bytes).hexdigest()
+    artifact_py = (
+        root / "packages" / "contracts" / "src" / "relay_contracts" / "wasm_artifact.py"
+    )
+    artifact_py.write_text(
+        '"""WASM artifact pin stub for the clean-tree fixture."""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "from typing import Final\n"
+        "\n"
+        f'WASM_PINNED_SHA256: Final[str] = "{pinned}"\n',
+        encoding="utf-8",
+    )
+
+
 def _make_clean_tree(root: Path) -> None:
     """Create a synthetic relay-like tree with zero violations."""
     (root / "packages" / "okpkg" / "src").mkdir(parents=True)
@@ -167,6 +198,9 @@ def _make_clean_tree(root: Path) -> None:
     # files with the flags True (mirroring the real repo) so the
     # sigstore/rekor/tsa verifier-implemented checks (VAL-ISO-005) pass.
     _write_crypto_flag_stubs(root)
+    # And the cel-engine SHA-probe surface (wasm artifact + matching pin) so the
+    # now-repo_root-anchored cel-engine check passes on the clean tree.
+    _write_wasm_engine_surface(root)
 
 
 def _make_tree_with_todo(root: Path) -> None:

@@ -26,10 +26,15 @@ Four probes, each mapping a failure cause to a distinct finding code:
      (:class:`RelayCelProfileError` with subtype
      ``RELAY-CEL-PROFILE-DYN-DISABLED``) rather than EVALUATING it. An unfenced
      ``dyn()`` -> ``RELAY-VERIFY-SELF-CEL-ENGINE-DYN-NOT-FENCED``.
-  3. **Pinned-sha probe** (VAL-CWC-P5FLIP-004): hash the ACTUALLY-LOADED packaged
-     ``.wasm`` and compare to the pinned ``WASM_PINNED_SHA256`` manifest record.
-     A mismatch (tampered / stale artifact) ->
-     ``RELAY-VERIFY-SELF-CEL-ENGINE-SHA-MISMATCH``.
+  3. **Pinned-sha probe** (VAL-CWC-P5FLIP-004): hash the ``.wasm`` artifact and
+     compare to the pinned ``WASM_PINNED_SHA256`` manifest record. Under
+     ``--repo-root <tree>`` BOTH surfaces are read FROM THAT TREE (the artifact's
+     bytes off disk; the pin parsed from the ``wasm_artifact.py`` source via AST,
+     no import), so a tampered ``.wasm`` OR a stale pin IN the named tree is
+     detected -- the probe validates the operator's tree, not the installed
+     wheel, mirroring how the sigstore / rekor / tsa verifiers read their flag
+     from the SOURCE under ``repo_root`` (VAL-ISO-005). A mismatch (tampered /
+     stale artifact) -> ``RELAY-VERIFY-SELF-CEL-ENGINE-SHA-MISMATCH``.
   4. **Fail-closed guard** (VAL-CWC-P5FLIP-005): when the packaged ``.wasm`` is
      ABSENT or UNLOADABLE, the check emits
      ``RELAY-VERIFY-SELF-CEL-ENGINE-WASM-UNLOADABLE`` with a clear structured
@@ -37,10 +42,17 @@ Four probes, each mapping a failure cause to a distinct finding code:
      internal-error envelope from a Python traceback. Every load / probe is
      wrapped so any load / parse failure becomes a structured finding.
 
-The packaged wasm is resolved via the ``relay_contracts.wasm_artifact``
-package-data resolver (``resolve_packaged_wasm_path()``) -- the SAME resolver the
-cross-host package-data test uses -- so a fresh-installed wheel is validated the
-same way the dev tree is.
+The SHA / pin probe resolves both surfaces from the operator's ``--repo-root``
+tree (the ``.wasm`` off disk; ``WASM_PINNED_SHA256`` parsed from the
+``wasm_artifact.py`` source via AST, no import), so a tampered artifact or a
+stale pin IN that tree is detected (VAL-ISO-005). When no ``repo_root`` is
+supplied (an in-process probe call) it falls back to the
+``relay_contracts.wasm_artifact`` package-data resolver
+(``resolve_packaged_wasm_path()``) -- the SAME resolver the cross-host
+package-data test uses -- so a fresh-installed wheel is validated the same way
+the dev tree is. The UDF / dyn verdict probes load the single reproducible wasm
+engine through the imported evaluator (a tree's wasm cannot be RUN without
+importing + instantiating it).
 
 Findings sort by ``(file, line, code)`` for determinism (VAL-W5-038); the
 runtime probes carry no source file/line, so a stable synthetic ``file`` token
@@ -51,6 +63,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import ast
 import hashlib
 from pathlib import Path
 from typing import Any, Final, NamedTuple
@@ -168,24 +181,117 @@ PROBED_UDF_NAMES: Final[tuple[str, ...]] = (
 # -----------------------------------------------------------------------------
 # Resolver / pin indirection (monkeypatch seams for the negative-branch tests)
 # -----------------------------------------------------------------------------
+#
+# VAL-ISO-005 (cel-engine): the SHA / pin probes must validate the tree the
+# operator named with ``--repo-root``, NOT the installed wheel on ``sys.path``.
+# Both surfaces -- the wasm artifact and the pinned sha256 -- are therefore
+# resolved from ``repo_root`` when one is supplied (the runner always supplies
+# the operator's ``repo_root``), mirroring how sigstore_verifier / rekor_verifier
+# / tsa_verifier read their flag from the SOURCE FILE under ``repo_root`` (AST
+# parse, no import). A ``repo_root`` of ``None`` (the legacy no-arg call shape the
+# probe unit tests use, and any future in-process caller) falls back to the
+# imported-package resolution so a wheel install is still validated.
+
+# The wasm artifact's on-disk path RELATIVE TO a ``repo_root`` (the dev/source
+# tree layout). This is the SAME bytes that ``relay_contracts.wasm_artifact``
+# ships as package data, but read from the named tree so a tampered ``.wasm`` IN
+# that tree is detected.
+_TREE_WASM_RELPATH: Final[str] = (
+    "packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.wasm"
+)
+
+# The source file that declares ``WASM_PINNED_SHA256`` (the WS-G pinned record),
+# RELATIVE TO a ``repo_root``. Parsed via AST (no import) so a STALE pin IN the
+# named tree is detected.
+_TREE_WASM_ARTIFACT_PY_RELPATH: Final[str] = (
+    "packages/contracts/src/relay_contracts/wasm_artifact.py"
+)
+
+# The pinned-sha constant name parsed from the wasm_artifact source.
+_PINNED_SHA_NAME: Final[str] = "WASM_PINNED_SHA256"
 
 
-def _resolve_loaded_wasm_path() -> Path | None:
-    """Resolve the packaged ``.wasm`` to a concrete on-disk path, else ``None``.
+def _str_constant_from_source(source_path: Path, name: str) -> str | None:
+    """Parse a module-level ``name = <str literal>`` assignment via AST.
 
-    Delegates to the ``relay_contracts.wasm_artifact`` package-data resolver --
-    the SAME one the cross-host package-data test uses -- so a fresh-installed
-    wheel is validated the same way the dev tree is. Returns ``None`` for an
-    absent / non-materializable artifact (the resolver never raises); the caller
-    maps ``None`` to a fail-closed finding.
+    Handles both annotated (``name: str = "..."``) and plain (``name = "..."``)
+    module-level assignments, including a parenthesized single string literal (the
+    shape ``WASM_PINNED_SHA256`` uses). Returns the string value, or ``None`` when
+    the file is absent/unreadable/unparseable, the assignment is missing, or the
+    value is not a plain string literal. Only TOP-LEVEL assignments count, so a
+    same-named local cannot shadow the canonical constant. Never imports/executes
+    the module under test (mirrors ``util_flag_source.resolve_bool_flag_from_source``).
     """
+    if not source_path.is_file():
+        return None
+    try:
+        text = source_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+
+    def _value(node: ast.expr | None) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    for stmt in tree.body:
+        if isinstance(stmt, ast.AnnAssign):
+            target = stmt.target
+            if (
+                isinstance(target, ast.Name)
+                and target.id == name
+                and stmt.value is not None
+            ):
+                return _value(stmt.value)
+        elif isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    return _value(stmt.value)
+    return None
+
+
+def _resolve_loaded_wasm_path(repo_root: Path | None = None) -> Path | None:
+    """Resolve the ``.wasm`` to a concrete on-disk path, else ``None``.
+
+    When ``repo_root`` is supplied (the ``rly verify-self --repo-root <tree>``
+    path), the artifact is resolved from the SOURCE TREE
+    (``<repo_root>/packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.wasm``)
+    so a tampered ``.wasm`` IN the named tree is detected -- the probe validates
+    the operator's tree, not the installed wheel (VAL-ISO-005). When ``repo_root``
+    is ``None`` it delegates to the ``relay_contracts.wasm_artifact`` package-data
+    resolver -- the SAME one the cross-host package-data test uses -- so a
+    fresh-installed wheel is validated the same way the dev tree is.
+
+    Returns ``None`` for an absent / non-materializable artifact (never raises);
+    the caller maps ``None`` to a fail-closed finding.
+    """
+    if repo_root is not None:
+        candidate = repo_root / _TREE_WASM_RELPATH
+        return candidate if candidate.is_file() else None
     from relay_contracts.wasm_artifact import resolve_packaged_wasm_path
 
     return resolve_packaged_wasm_path()
 
 
-def _pinned_wasm_sha256() -> str:
-    """Return the pinned manifest sha256 (the WS-G pinned record)."""
+def _pinned_wasm_sha256(repo_root: Path | None = None) -> str | None:
+    """Return the pinned manifest sha256 (the WS-G pinned record).
+
+    When ``repo_root`` is supplied, the pin is parsed from the
+    ``wasm_artifact.py`` SOURCE under the named tree (AST, no import) so a STALE
+    pin IN that tree is detected (VAL-ISO-005). Returns ``None`` when the source
+    file / constant is absent or not a plain string literal -- the caller maps
+    ``None`` to a fail-closed finding (an absent canonical pin is itself a
+    regression of the verified surface). When ``repo_root`` is ``None`` it returns
+    the imported constant so a wheel install is still validated.
+    """
+    if repo_root is not None:
+        return _str_constant_from_source(
+            repo_root / _TREE_WASM_ARTIFACT_PY_RELPATH, _PINNED_SHA_NAME
+        )
     from relay_contracts.wasm_artifact import WASM_PINNED_SHA256
 
     return WASM_PINNED_SHA256
@@ -518,16 +624,32 @@ def _probe_dyn_fence() -> list[Finding]:
 # -----------------------------------------------------------------------------
 
 
-def _probe_sha_match() -> list[Finding]:
-    """Compare the loaded-wasm sha256 to the pinned manifest sha; return findings.
+def _probe_sha_match(repo_root: Path | None = None) -> list[Finding]:
+    """Compare the tree-wasm sha256 to the pinned manifest sha; return findings.
 
-    Resolves the packaged ``.wasm`` (via the package-data resolver), hashes its
-    bytes, and compares to ``WASM_PINNED_SHA256``. An absent artifact is reported
-    fail-closed; a mismatch is one
-    ``RELAY-VERIFY-SELF-CEL-ENGINE-SHA-MISMATCH`` finding.
+    When ``repo_root`` is supplied (the operator's ``--repo-root`` tree), BOTH
+    the ``.wasm`` artifact AND the pinned ``WASM_PINNED_SHA256`` record are read
+    FROM THAT TREE (the artifact's bytes off disk; the pin parsed from the
+    ``wasm_artifact.py`` source via AST, no import). A tampered ``.wasm`` OR a
+    stale pin IN the named tree therefore fails the probe -- the check validates
+    the operator's tree, not the installed wheel (VAL-ISO-005). With
+    ``repo_root`` ``None`` it falls back to the imported-package surfaces so a
+    wheel install is still validated.
+
+    An absent / unreadable artifact, or an absent / non-literal pin, is reported
+    fail-closed; a mismatch is one ``RELAY-VERIFY-SELF-CEL-ENGINE-SHA-MISMATCH``
+    finding.
     """
     try:
-        wasm_path = _resolve_loaded_wasm_path()
+        # When ``repo_root`` is None this calls the seam with NO argument so a
+        # legacy 0-arg monkeypatch override (the probe unit tests) still binds;
+        # the production runner always supplies ``repo_root`` and takes the
+        # tree-anchored branch.
+        wasm_path = (
+            _resolve_loaded_wasm_path()
+            if repo_root is None
+            else _resolve_loaded_wasm_path(repo_root)
+        )
     except Exception as exc:  # noqa: BLE001 -- fail-closed on any resolve failure
         return [
             _finding(
@@ -553,7 +675,23 @@ def _probe_sha_match() -> list[Finding]:
             )
         ]
 
-    pinned = _pinned_wasm_sha256()
+    # Same 0-arg-compat call shape as the resolver above: legacy 0-arg
+    # monkeypatch overrides still bind when ``repo_root`` is None.
+    pinned = (
+        _pinned_wasm_sha256()
+        if repo_root is None
+        else _pinned_wasm_sha256(repo_root)
+    )
+    if pinned is None:
+        # The canonical pin declaration is absent / not a string literal in the
+        # named tree: the verified surface is missing, so fail closed (an absent
+        # pin cannot certify the artifact). VAL-ISO-005.
+        return [
+            _finding(
+                RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE,
+                "pinned wasm sha not resolvable for sha comparison",
+            )
+        ]
     if loaded_sha != pinned:
         return [
             _finding(
@@ -581,16 +719,22 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
     NEVER raises an unhandled exception, so the runner records a fail, not an
     internal-error envelope from a Python traceback.
 
-    ``repo_root`` is accepted for the canonical checker signature; this runtime
-    probe resolves the wasm via the imported ``relay_contracts`` package data
-    (anchored at the IMPORTED package root), not a ``repo_root``-relative path,
-    so it validates a wheel install the same way it validates the dev tree.
+    ``repo_root`` is the tree the operator named (``rly verify-self --repo-root
+    <tree>``). The SHA / pin probe reads BOTH the ``.wasm`` artifact AND the
+    pinned ``WASM_PINNED_SHA256`` record FROM THAT TREE (off-disk bytes + AST
+    parse of ``wasm_artifact.py``, no import), so a tampered ``.wasm`` or a stale
+    pin IN the named tree is detected -- mirroring how sigstore / rekor / tsa
+    verifiers read their flag from the SOURCE under ``repo_root`` (VAL-ISO-005).
+    The UDF / dyn verdict probes load the SINGLE reproducible wasm engine through
+    the imported evaluator (an arbitrary tree's wasm cannot be RUN without
+    importing + instantiating it); the SHA probe is what certifies the tree's
+    artifact bytes match the pinned record.
     """
     findings: list[Finding] = []
     try:
         findings.extend(_probe_three_udfs())
         findings.extend(_probe_dyn_fence())
-        findings.extend(_probe_sha_match())
+        findings.extend(_probe_sha_match(repo_root))
     except Exception as exc:  # noqa: BLE001 -- absolute fail-closed backstop
         # Defense in depth: every probe already converts its own failures to
         # findings, but a wholly-unexpected error MUST still become a fail

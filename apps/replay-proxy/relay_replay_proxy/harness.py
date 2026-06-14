@@ -220,7 +220,7 @@ class _InProcDriver(_ProxyDriver):
                 LOG.debug("inproc proxy: " + format, *args)
 
             def _serve_from_cassette(self) -> None:
-                length = int(self.headers.get("Content-Length", "0") or "0")
+                length = _parse_content_length(self.headers.get("Content-Length"))
                 raw = self.rfile.read(length) if length > 0 else b""
                 try:
                     body = json.loads(raw.decode("utf-8")) if raw else {}
@@ -314,6 +314,35 @@ class _InProcDriver(_ProxyDriver):
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self._stop_event.set()
+
+
+def _parse_content_length(raw: str | None) -> int:
+    """Parse an HTTP ``Content-Length`` header value defensively.
+
+    The header value is attacker-controllable. A robust server never lets a
+    malformed value crash the request handler. Per RFC 7230 sec 3.3.2 a valid
+    ``Content-Length`` is a run of one or more ASCII decimal digits with no
+    sign, no exponent, no radix prefix, and no embedded whitespace. Anything
+    else (a missing header, a non-decimal token like ``"abc"`` / ``"1e9"`` /
+    ``"0x10"``, a whitespace-padded value like ``" 12 "``, a negative value, or
+    a non-ASCII digit) is treated as a zero-length body so the handler still
+    returns a controlled response instead of raising an uncaught ``ValueError``
+    (or passing a negative length to ``rfile.read`` and reading the wrong
+    number of bytes).
+    """
+    if raw is None:
+        return 0
+    # Strict: only a pristine run of ASCII decimal digits is a valid length.
+    # ``str.isascii`` rules out unicode digit code points that ``str.isdigit``
+    # accepts but ``int`` may reject; we do NOT strip whitespace because an
+    # embedded/padded value is malformed, not merely formatted.
+    if not raw.isascii() or not raw.isdigit():
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:  # pragma: no cover - isascii()+isdigit() guarantee int()
+        return 0
+    return value if value >= 0 else 0
 
 
 def _provider_from_path(path: str) -> str | None:

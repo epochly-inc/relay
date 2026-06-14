@@ -1110,12 +1110,41 @@ export interface ScopeStateEvidenceBundle extends ScopeStateCommon {
     | "revoked";
 }
 
-/** Tagged union over all four scope_kind variants (VAL-W1-011). */
+/**
+ * scope_kind='eval_run' (spec AM eval lifecycle: pending -> running ->
+ * scored | terminal). Per spec W lines 5072-5085 the union spans all six
+ * scope_kinds; VAL-V2M01-036 landed this variant in milestone M01 (mirror of
+ * the Python EvalRunScopeState at envelopes.py).
+ */
+export interface ScopeStateEvalRun extends ScopeStateCommon {
+  readonly scope_kind: "eval_run";
+  readonly state: "pending" | "running" | "scored" | "terminal";
+}
+
+/**
+ * scope_kind='release' (spec Q.2 release lifecycle: open -> gated ->
+ * released | rolled_back | terminal). Per spec W lines 5072-5085 the union
+ * spans all six scope_kinds; VAL-V2M01-036 landed this variant in milestone
+ * M01 (mirror of the Python ReleaseScopeState at envelopes.py).
+ */
+export interface ScopeStateRelease extends ScopeStateCommon {
+  readonly scope_kind: "release";
+  readonly state:
+    | "open"
+    | "gated"
+    | "released"
+    | "rolled_back"
+    | "terminal";
+}
+
+/** Tagged union over all six scope_kind variants (VAL-W1-011, VAL-V2M01-036). */
 export type ScopeState =
   | ScopeStateRun
   | ScopeStateReplayCase
   | ScopeStateGateRound
-  | ScopeStateEvidenceBundle;
+  | ScopeStateEvidenceBundle
+  | ScopeStateEvalRun
+  | ScopeStateRelease;
 
 const SCOPE_STATE_COMMON_FIELDS = [
   "schema_version",
@@ -1162,11 +1191,28 @@ const SCOPE_STATE_EVIDENCE_BUNDLE_STATES = [
   "revoked",
 ] as const;
 
+const SCOPE_STATE_EVAL_RUN_STATES = [
+  "pending",
+  "running",
+  "scored",
+  "terminal",
+] as const;
+
+const SCOPE_STATE_RELEASE_STATES = [
+  "open",
+  "gated",
+  "released",
+  "rolled_back",
+  "terminal",
+] as const;
+
 const SCOPE_KIND_VALUES = [
   "run",
   "replay_case",
   "gate_round",
   "evidence_bundle",
+  "eval_run",
+  "release",
 ] as const;
 
 export function parseScopeState(input: unknown): ScopeState {
@@ -1230,6 +1276,30 @@ export function parseScopeState(input: unknown): ScopeState {
         scope_id: p.scope_id as string,
         project_id: p.project_id as string,
         state: p.state as ScopeStateEvidenceBundle["state"],
+        epoch: p.epoch as number,
+        created_at: p.created_at as string,
+        updated_at: p.updated_at as string,
+      };
+    case "eval_run":
+      checkEnum("state", p.state, SCOPE_STATE_EVAL_RUN_STATES);
+      return {
+        schema_version: "relay.scope_state.v1",
+        scope_kind: "eval_run",
+        scope_id: p.scope_id as string,
+        project_id: p.project_id as string,
+        state: p.state as ScopeStateEvalRun["state"],
+        epoch: p.epoch as number,
+        created_at: p.created_at as string,
+        updated_at: p.updated_at as string,
+      };
+    case "release":
+      checkEnum("state", p.state, SCOPE_STATE_RELEASE_STATES);
+      return {
+        schema_version: "relay.scope_state.v1",
+        scope_kind: "release",
+        scope_id: p.scope_id as string,
+        project_id: p.project_id as string,
+        state: p.state as ScopeStateRelease["state"],
         epoch: p.epoch as number,
         created_at: p.created_at as string,
         updated_at: p.updated_at as string,
@@ -1676,12 +1746,65 @@ export function isEvidenceBundle(input: unknown): input is EvidenceBundle {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Atomic claim inside an evidence bundle.
+ * Atomic claim inside an evidence bundle (spec K lines 4388-4438).
  *
  * - VAL-W1-020: claim_type closed enum of eight kinds
  * - VAL-W1-021: claim_digest sha256-<hex> + signature non-empty + nullable UUID
  * - VAL-W1-053: schema_version pinned to "relay.evidence_claim.v1"
+ *
+ * V3M1-F05 additions (mirror of the Python EvidenceClaim at
+ * packages/schemas/python/relay_schemas/envelopes.py):
+ *   VAL-V3M1-011: evidence_refs (list of EvidenceRef; defaults to [])
+ *   VAL-V3M1-012: claim_predicate (ClaimPredicate | null; recursion bounded
+ *                 at depth 8)
+ *   VAL-V3M1-013: actor_kind closed enum + actor_identity_hash sha256 required
+ *   VAL-V3M1-014: occurred_at datetime distinct from created_at
+ *   VAL-V3M1-015: subject is the nested {kind,id,manifest_commit_hash} object;
+ *                 a flat subject_kind/subject_id legacy claim is absorbed into
+ *                 the nested subject before the extra-field check (Python
+ *                 _absorb_flat_subject parity)
+ *   VAL-V3M1-021: namespaces (dict | null) carrying the ACEF x-relay envelope
  */
+
+/**
+ * Nested subject object for EvidenceClaim per spec K lines 4397-4401. The
+ * kind enum mirrors the Python ClaimSubject.
+ */
+export interface ClaimSubject {
+  readonly kind:
+    | "run"
+    | "replay"
+    | "eval_run"
+    | "release"
+    | "domain_pack"
+    | "ai_system";
+  readonly id: string;
+  readonly manifest_commit_hash: string;
+}
+
+/**
+ * Reference to a piece of evidence inside an EvidenceClaim (spec K lines
+ * 4402-4406). digest and value are independently optional; the verifier
+ * bundle-validator (VAL-V3M1-019) enforces the manifest-binding rule.
+ */
+export interface EvidenceRef {
+  readonly kind: string;
+  readonly ref: string;
+  readonly digest: string | null;
+  readonly value: unknown;
+}
+
+/**
+ * Recursive op/args structure per spec K lines 4407-4413. Leaf rows of the
+ * form {op, value} ride along via the optional `value` extra. Recursion depth
+ * is bounded at EVIDENCE_CLAIM_PREDICATE_MAX_DEPTH (8) per VAL-V3M1-012.
+ */
+export interface ClaimPredicate {
+  readonly op: string;
+  readonly args: readonly ClaimPredicate[];
+  readonly value?: unknown;
+}
+
 export interface EvidenceClaim {
   readonly schema_version: "relay.evidence_claim.v1";
   readonly evidence_claim_id: string;
@@ -1695,30 +1818,49 @@ export interface EvidenceClaim {
     | "incident"
     | "data_quality_check"
     | "provider_compatibility";
-  readonly subject_kind: string;
-  readonly subject_id: string;
+  readonly subject: ClaimSubject;
+  readonly evidence_refs: readonly EvidenceRef[];
+  readonly claim_predicate: ClaimPredicate | null;
   readonly claim_digest: string;
   readonly redaction_transform_version: string;
+  readonly actor_kind:
+    | "control_plane"
+    | "gate_engine"
+    | "worker"
+    | "sdk"
+    | "user"
+    | "cron";
+  readonly actor_identity_hash: string;
+  readonly occurred_at: string;
   readonly manifest_commit_hash: string;
   readonly signer_key_id: string;
   readonly signature: string;
   readonly supersedes_claim_id: string | null;
+  readonly namespaces: Record<string, unknown> | null;
   readonly created_at: string;
 }
 
+// Canonical (nested-subject) field set. The flat subject_kind / subject_id
+// keys are absorbed into `subject` BEFORE this check runs (Python
+// _absorb_flat_subject parity), so they are not listed here.
 const EVIDENCE_CLAIM_FIELDS = [
   "schema_version",
   "evidence_claim_id",
   "evidence_bundle_id",
   "claim_type",
-  "subject_kind",
-  "subject_id",
+  "subject",
+  "evidence_refs",
+  "claim_predicate",
   "claim_digest",
   "redaction_transform_version",
+  "actor_kind",
+  "actor_identity_hash",
+  "occurred_at",
   "manifest_commit_hash",
   "signer_key_id",
   "signature",
   "supersedes_claim_id",
+  "namespaces",
   "created_at",
 ] as const;
 
@@ -1733,27 +1875,190 @@ const EVIDENCE_CLAIM_TYPES = [
   "provider_compatibility",
 ] as const;
 
+const CLAIM_SUBJECT_KINDS = [
+  "run",
+  "replay",
+  "eval_run",
+  "release",
+  "domain_pack",
+  "ai_system",
+] as const;
+
+const EVIDENCE_CLAIM_ACTOR_KIND = [
+  "control_plane",
+  "gate_engine",
+  "worker",
+  "sdk",
+  "user",
+  "cron",
+] as const;
+
+// Spec K line 4407 recursion depth bound, mirrored from the Python
+// _CLAIM_PREDICATE_MAX_DEPTH. A leaf predicate (no args) is depth 1.
+const EVIDENCE_CLAIM_PREDICATE_MAX_DEPTH = 8;
+
+/**
+ * Mirror of the Python EvidenceClaim._absorb_flat_subject (mode='before')
+ * validator. If a nested `subject` object is already present it is kept
+ * as-is; otherwise a flat subject_kind/subject_id pair (legacy construction
+ * form) is folded into a nested subject whose manifest_commit_hash is mirrored
+ * from the top-level field. Returns a shallow copy; the input is not mutated.
+ */
+function absorbFlatSubject(
+  p: Record<string, unknown>,
+): Record<string, unknown> {
+  if ("subject" in p) {
+    return p;
+  }
+  const hasFlatKind = "subject_kind" in p;
+  const hasFlatId = "subject_id" in p;
+  if (!hasFlatKind && !hasFlatId) {
+    return p;
+  }
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(p)) {
+    if (key === "subject_kind" || key === "subject_id") continue;
+    out[key] = p[key];
+  }
+  out.subject = {
+    kind: p.subject_kind,
+    id: p.subject_id,
+    manifest_commit_hash: p.manifest_commit_hash,
+  };
+  return out;
+}
+
+/**
+ * Validate and normalize a nested ClaimSubject (VAL-V3M1-015). subject.kind
+ * is the closed CLAIM_SUBJECT_KINDS enum; subject.id is a UUID;
+ * subject.manifest_commit_hash inherits the canonical sha256 form.
+ */
+function parseClaimSubject(field: string, value: unknown): ClaimSubject {
+  checkRecordOrObject(field, value);
+  const s = value as Record<string, unknown>;
+  checkExtraFields(`${field}`, s, [
+    "kind",
+    "id",
+    "manifest_commit_hash",
+  ]);
+  checkEnum(`${field}.kind`, s.kind, CLAIM_SUBJECT_KINDS);
+  checkUuid(`${field}.id`, s.id);
+  checkSha256Hash(`${field}.manifest_commit_hash`, s.manifest_commit_hash);
+  return {
+    kind: s.kind as ClaimSubject["kind"],
+    id: s.id as string,
+    manifest_commit_hash: s.manifest_commit_hash as string,
+  };
+}
+
+/** Validate and normalize a single EvidenceRef (VAL-V3M1-011). */
+function parseEvidenceRef(field: string, value: unknown): EvidenceRef {
+  checkRecordOrObject(field, value);
+  const r = value as Record<string, unknown>;
+  checkString(`${field}.kind`, r.kind);
+  checkString(`${field}.ref`, r.ref);
+  checkSha256HashNullable(`${field}.digest`, r.digest);
+  return {
+    kind: r.kind as string,
+    ref: r.ref as string,
+    digest: (r.digest ?? null) as string | null,
+    value: r.value ?? null,
+  };
+}
+
+/**
+ * Validate and normalize a recursive ClaimPredicate (VAL-V3M1-012). The Python
+ * model is lenient on extras (leaf {op,value} rows), so we preserve any extra
+ * keys. `depth` tracks the current op-layer; a leaf is depth 1.
+ */
+function parseClaimPredicate(
+  field: string,
+  value: unknown,
+  depth: number,
+): ClaimPredicate {
+  if (depth > EVIDENCE_CLAIM_PREDICATE_MAX_DEPTH) {
+    throw new ValidationError(
+      field,
+      `claim_predicate recursion depth ${depth} exceeds spec K bound of ` +
+        `${EVIDENCE_CLAIM_PREDICATE_MAX_DEPTH} (VAL-V3M1-012)`,
+      value,
+    );
+  }
+  checkRecordOrObject(field, value);
+  const node = value as Record<string, unknown>;
+  checkString(`${field}.op`, node.op);
+  const rawArgs = node.args;
+  let args: ClaimPredicate[] = [];
+  if (rawArgs !== undefined) {
+    checkListOfAny(`${field}.args`, rawArgs);
+    args = (rawArgs as unknown[]).map((arg, i) =>
+      parseClaimPredicate(`${field}.args[${i}]`, arg, depth + 1),
+    );
+  }
+  const out: ClaimPredicate = { op: node.op as string, args };
+  if ("value" in node) {
+    return { ...out, value: node.value };
+  }
+  return out;
+}
+
 export function parseEvidenceClaim(input: unknown): EvidenceClaim {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     throw new ValidationError("<root>", "must be an object", input);
   }
-  const p = input as Record<string, unknown>;
+  // VAL-V3M1-015: absorb a flat subject_kind/subject_id legacy claim into the
+  // nested subject BEFORE the extra-field check (Python _absorb_flat_subject
+  // parity).
+  const p = absorbFlatSubject(input as Record<string, unknown>);
 
   checkExtraFields("EvidenceClaim", p, EVIDENCE_CLAIM_FIELDS);
   checkLiteral("schema_version", p.schema_version, "relay.evidence_claim.v1");
   checkUuid("evidence_claim_id", p.evidence_claim_id);
   checkUuid("evidence_bundle_id", p.evidence_bundle_id);
   checkEnum("claim_type", p.claim_type, EVIDENCE_CLAIM_TYPES);
-  checkString("subject_kind", p.subject_kind);
-  checkUuid("subject_id", p.subject_id);
+
+  // VAL-V3M1-015: nested subject object (required).
+  const subject = parseClaimSubject("subject", p.subject);
+
+  // VAL-V3M1-011: evidence_refs defaults to [] when omitted.
+  let evidenceRefs: EvidenceRef[] = [];
+  if (p.evidence_refs !== undefined) {
+    checkListOfAny("evidence_refs", p.evidence_refs);
+    evidenceRefs = (p.evidence_refs as unknown[]).map((r, i) =>
+      parseEvidenceRef(`evidence_refs[${i}]`, r),
+    );
+  }
+
+  // VAL-V3M1-012: claim_predicate is nullable; recursion bounded at depth 8.
+  let claimPredicate: ClaimPredicate | null = null;
+  if (p.claim_predicate !== undefined && p.claim_predicate !== null) {
+    claimPredicate = parseClaimPredicate("claim_predicate", p.claim_predicate, 1);
+  }
+
   // VAL-W1-021: claim_digest canonical sha256-<hex>.
   checkSha256Hash("claim_digest", p.claim_digest);
   checkString("redaction_transform_version", p.redaction_transform_version);
+
+  // VAL-V3M1-013: actor_kind closed enum + actor_identity_hash sha256.
+  checkEnum("actor_kind", p.actor_kind, EVIDENCE_CLAIM_ACTOR_KIND);
+  checkSha256Hash("actor_identity_hash", p.actor_identity_hash);
+
+  // VAL-V3M1-014: occurred_at RFC 3339 datetime distinct from created_at.
+  checkRfc3339("occurred_at", p.occurred_at);
+
   checkSha256Hash("manifest_commit_hash", p.manifest_commit_hash);
   checkString("signer_key_id", p.signer_key_id);
   // VAL-W1-021: signature non-empty string.
   checkNonEmptyString("signature", p.signature);
   checkUuidNullable("supersedes_claim_id", p.supersedes_claim_id);
+
+  // VAL-V3M1-021: namespaces dict | null (defaults to null when omitted).
+  let namespaces: Record<string, unknown> | null = null;
+  if (p.namespaces !== undefined && p.namespaces !== null) {
+    checkRecordOrObject("namespaces", p.namespaces);
+    namespaces = p.namespaces as Record<string, unknown>;
+  }
+
   checkRfc3339("created_at", p.created_at);
 
   return {
@@ -1761,14 +2066,19 @@ export function parseEvidenceClaim(input: unknown): EvidenceClaim {
     evidence_claim_id: p.evidence_claim_id as string,
     evidence_bundle_id: p.evidence_bundle_id as string,
     claim_type: p.claim_type as EvidenceClaim["claim_type"],
-    subject_kind: p.subject_kind as string,
-    subject_id: p.subject_id as string,
+    subject,
+    evidence_refs: evidenceRefs,
+    claim_predicate: claimPredicate,
     claim_digest: p.claim_digest as string,
     redaction_transform_version: p.redaction_transform_version as string,
+    actor_kind: p.actor_kind as EvidenceClaim["actor_kind"],
+    actor_identity_hash: p.actor_identity_hash as string,
+    occurred_at: p.occurred_at as string,
     manifest_commit_hash: p.manifest_commit_hash as string,
     signer_key_id: p.signer_key_id as string,
     signature: p.signature as string,
     supersedes_claim_id: (p.supersedes_claim_id ?? null) as string | null,
+    namespaces,
     created_at: p.created_at as string,
   };
 }

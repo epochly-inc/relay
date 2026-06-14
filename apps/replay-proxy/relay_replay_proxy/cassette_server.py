@@ -115,6 +115,21 @@ class CassetteServer:
         signed manifest, an evidence bundle reference, or any other
         trust-anchored source. The pure local-record-then-replay flow can
         omit it (back-compat) but loses tamper detection in exchange.
+      * ``require_integrity`` -- fail-closed switch for trust-requiring
+        serving paths. The per-entry ``response_digest`` re-check below
+        only catches an in-memory mutation that left a stale recorded
+        digest behind; it does NOT catch an on-disk forgery where an
+        attacker with write access rewrote the response bytes AND
+        recomputed the per-entry ``response_digest`` so the cassette is
+        internally consistent. The only defense against that is the
+        file-level anchor. When a serving path is trust-requiring it MUST
+        be handed an ``expected_file_digest_sha256`` anchor; if it is not,
+        ``require_integrity=True`` makes the loader refuse to serve
+        (raises ``CassetteFormatError`` with reason
+        ``integrity_anchor_required``) rather than silently serving
+        unanchored, untrusted bytes. The unanchored, integrity-not-required
+        path stays back-compatible for the pure local record-then-replay
+        flow.
       * Per-entry ``response_digest`` is re-verified on every ``lookup``
         call. An attacker who modified the in-memory ``entry.response``
         post-parse (supply-chain, malicious code holding the parsed
@@ -126,6 +141,7 @@ class CassetteServer:
         session_dir: Path,
         *,
         expected_file_digest_sha256: str | None = None,
+        require_integrity: bool = False,
     ) -> None:
         if not session_dir.is_absolute():
             raise ValueError(
@@ -137,6 +153,7 @@ class CassetteServer:
         # Lookup index: request_digest -> entry. Built on first load.
         self._index: dict[str, CassetteEntry] = {}
         self._expected_file_digest = expected_file_digest_sha256
+        self._require_integrity = require_integrity
 
     @property
     def session_dir(self) -> Path:
@@ -166,6 +183,24 @@ class CassetteServer:
         if not self._cassette_path.exists():
             raise CassetteFormatError(
                 f"cassette file not found at {self._cassette_path!s}",
+                0,
+                str(self._cassette_path),
+            )
+        # Fail-closed gate: a trust-requiring serving path MUST be anchored.
+        # The per-entry response_digest re-check in lookup() only catches an
+        # in-memory mutation that left a stale recorded digest behind; an
+        # attacker with write access who rewrites the on-disk response bytes
+        # AND recomputes the per-entry response_digest produces an
+        # internally-consistent forgery that no per-entry check can detect.
+        # The file-level anchor is the only defense. If integrity is required
+        # but no anchor was configured, refuse to serve rather than serving
+        # unanchored, untrusted bytes.
+        if self._require_integrity and self._expected_file_digest is None:
+            raise CassetteFormatError(
+                f"integrity_anchor_required: serving cassette "
+                f"{self._cassette_path!s} requires an "
+                f"expected_file_digest_sha256 anchor but none was "
+                f"configured; refusing to serve unanchored bytes",
                 0,
                 str(self._cassette_path),
             )

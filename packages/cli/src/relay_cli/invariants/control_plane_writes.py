@@ -36,7 +36,10 @@ from verify_self.finding_codes import (
     RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
 )
 
-from .atomic_primitives import _match_is_documentation
+from .atomic_primitives import (
+    _match_is_documentation,
+    multiline_string_line_numbers,
+)
 from .util import (
     Finding,
     iter_canonical_source_files,
@@ -137,12 +140,23 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
         # (``.py``/``.pyi``) uses ``//`` as floor division and SQL uses
         # ``--`` for comments, so neither may treat ``//`` as a comment.
         slash_is_comment = path.suffix not in (".py", ".pyi", ".sql")
+        # Lines inside a multi-line string literal (e.g. a module docstring that
+        # documents the grep guard with a multi-line ``...`` RST span mentioning
+        # a canonical run_results / gate_decisions write) are prose, not
+        # executable writes.
+        doc_lines = multiline_string_line_numbers(
+            text, is_python=path.suffix in (".py", ".pyi")
+        )
         for line_no_minus_one, line in enumerate(text.split("\n")):
             m = _CANONICAL_WRITE_RE.search(line)
             if m is None:
                 continue
             if _match_is_documentation(
-                line, m.start(), sql=is_sql, slash_comment=slash_is_comment
+                line,
+                m.start(),
+                sql=is_sql,
+                slash_comment=slash_is_comment,
+                in_docstring=(line_no_minus_one + 1) in doc_lines,
             ):
                 continue
             findings.append(

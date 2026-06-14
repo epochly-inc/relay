@@ -724,12 +724,21 @@ async def compare_and_set_state(
             override_conn = (
                 conn if override_event_kind == OPERATOR_OVERRIDE_EVENT_KIND else None
             )
+            # Bind the operator_override_claim to the AUTHENTICATED actor.
+            # The engine already overwrites payload_in['actor_identity_hash']
+            # with actor.identity_hash above ("a caller MUST NOT be able to
+            # spoof the actor anchor"); the override claim's OWN
+            # actor_identity_hash must be bound to that same authenticated
+            # actor. Admin identity_hashes are not secret (they appear in
+            # audit columns), so an override honored on a borrowed hash would
+            # let any non-admin caller defeat the anti-bypass keystone guard.
             raise_on_reject(
                 await screen_payload(
                     payload=full_payload,
                     event_kind=override_event_kind,
                     operator_override_claim=override_claim,
                     actors_connection=override_conn,
+                    authenticated_actor_identity_hash=actor.identity_hash,
                 )
             )
             # W2.5 VAL-W2-038: blob spillover for oversize payloads.
