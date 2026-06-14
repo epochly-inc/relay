@@ -366,30 +366,34 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
             text, is_python=path.suffix in (".py", ".pyi")
         )
         for line_no_minus_one, line in enumerate(text.split("\n")):
-            m = _PRIMITIVE_BYPASS_RE.search(line)
-            if m is None:
-                continue
-            if _match_is_documentation(
-                line,
-                m.start(),
-                slash_comment=slash_is_comment,
-                hash_comment=hash_is_comment,
-                in_docstring=position_in_documentation_string(
-                    line_no_minus_one + 1, m.start(), doc_spans
-                ),
-            ):
-                continue
-            findings.append(
-                Finding(
-                    file=rel,
-                    line=line_no_minus_one + 1,
-                    code=RELAY_VERIFY_SELF_PRIMITIVE_BYPASS,
-                    suggested_fix=suggested_fix_for(
-                        RELAY_VERIFY_SELF_PRIMITIVE_BYPASS
+            # Scan EVERY match on the line, not just the first: a documentation
+            # match (inside a doc string) earlier on the line must not hide a
+            # later EXECUTABLE match (``"db.execute("; db.execute(q)``) -- a
+            # single search() left that same-line violation unflagged
+            # (roborev cbd01f8). Record the first NON-documentation match.
+            for m in _PRIMITIVE_BYPASS_RE.finditer(line):
+                if _match_is_documentation(
+                    line,
+                    m.start(),
+                    slash_comment=slash_is_comment,
+                    hash_comment=hash_is_comment,
+                    in_docstring=position_in_documentation_string(
+                        line_no_minus_one + 1, m.start(), doc_spans
                     ),
-                    pattern=m.group(0),
+                ):
+                    continue
+                findings.append(
+                    Finding(
+                        file=rel,
+                        line=line_no_minus_one + 1,
+                        code=RELAY_VERIFY_SELF_PRIMITIVE_BYPASS,
+                        suggested_fix=suggested_fix_for(
+                            RELAY_VERIFY_SELF_PRIMITIVE_BYPASS
+                        ),
+                        pattern=m.group(0),
+                    )
                 )
-            )
+                break
     findings.sort(key=lambda f: (f.file, f.line, f.code))
     return CHECK_NAME, findings
 

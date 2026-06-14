@@ -333,6 +333,38 @@ def test_semicolon_statement_after_bare_string_is_not_suppressed(
 
 
 @pytest.mark.fulfills("VAL-ISO-014")
+def test_banned_token_inside_then_outside_string_same_line_is_flagged(
+    tmp_path: Path,
+) -> None:
+    """When a bare documentation string CONTAINS the banned token BEFORE a real
+    executable violation on the same line (``"db.execute("; db.execute(q)``), the
+    scanner must still flag the executable call -- a single-match-per-line scan
+    suppresses the in-string match and misses the live one (roborev cbd01f8)."""
+    src = tmp_path / "packages" / "okpkg" / "src"
+    src.mkdir(parents=True)
+    (src / "twomatch.py").write_text(
+        '"""Module."""\n'
+        "\n"
+        "\n"
+        "def write(conn, q):\n"
+        '    "mentions db.execute( in prose"; db.execute(q)\n',
+        encoding="utf-8",
+    )
+    _, findings = atomic_primitives.run(tmp_path)
+    flagged = {f.line for f in findings if f.file.endswith("twomatch.py")}
+    exec_line = (
+        (src / "twomatch.py").read_text(encoding="utf-8").splitlines().index(
+            '    "mentions db.execute( in prose"; db.execute(q)'
+        )
+        + 1
+    )
+    assert exec_line in flagged, (
+        "the executable db.execute( AFTER an in-string mention on the same line "
+        f"MUST be flagged; flagged={flagged!r}"
+    )
+
+
+@pytest.mark.fulfills("VAL-ISO-014")
 def test_escaped_backslash_hash_variant_does_not_hide_bypass() -> None:
     r"""Same defect, ``#`` comment marker variant: bypass is detected.
 
