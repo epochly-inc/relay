@@ -142,4 +142,44 @@ describe("VAL-PARITY-013 no-signatures bundle structure parity", () => {
     // carry claim_namespace_unknown that Python skips).
     expect(ts.reasons).toEqual(py.reasons);
   });
+
+  // roborev 8b805fc: a no-signatures bundle whose `claims` is ALSO missing /
+  // non-array must STILL return the all-default result (digest=""), matching
+  // Python which returns before computing the digest. The digest-then-claims
+  // order left bundle_digest_sha256 populated on this path.
+  test("no-signatures bundle with non-array/missing claims returns all-default (digest empty)", () => {
+    const bundles: Array<Record<string, unknown>> = [
+      {
+        schema_version: "relay.evidence.bundle.v1",
+        claims: "not-an-array",
+        trust_anchor: "https://relay.epochly.com/.well-known/jwks.json",
+        decided_at: "2026-05-15T12:00:00Z",
+      },
+      {
+        schema_version: "relay.evidence.bundle.v1",
+        // claims entirely absent
+        trust_anchor: "https://relay.epochly.com/.well-known/jwks.json",
+        decided_at: "2026-05-15T12:00:00Z",
+      },
+      {
+        schema_version: "relay.evidence.bundle.v1",
+        claims: { not: "an array" },
+        trust_anchor: "https://relay.epochly.com/.well-known/jwks.json",
+        decided_at: "2026-05-15T12:00:00Z",
+      },
+    ];
+    for (const bundle of bundles) {
+      const ts = tsSnapshot(bundle);
+      expect(ts.structure_ok).toBe(false);
+      expect(ts.digest_ok).toBe(false);
+      expect(ts.signatures_ok).toBe(false);
+      expect(ts.claims_count).toBe(0);
+      expect(ts.bundle_digest_sha256).toBe("");
+      // And field-for-field with Python on the same wire object.
+      const py = pyJson<ValidateSnapshot>(PY_VALIDATE(JSON.stringify(bundle)));
+      expect(ts.bundle_digest_sha256).toBe(py.bundle_digest_sha256);
+      expect(ts.structure_ok).toBe(py.structure_ok);
+      expect(ts.claims_count).toBe(py.claims_count);
+    }
+  });
 });

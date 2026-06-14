@@ -240,6 +240,11 @@ def test_polling_well_formed_dict_block_resolves_exit_1(
         {"gate_decision_id": "gd-x", "action": "deny", "round": 1},
         {"gate_decision_id": "gd-x", "action": "", "round": 1},
         {"gate_decision_id": "gd-x", "action": None, "round": 1},
+        # UNHASHABLE JSON action values: must fail closed, NOT raise TypeError on
+        # the set-membership test (roborev e456398).
+        {"gate_decision_id": "gd-x", "action": [], "round": 1},
+        {"gate_decision_id": "gd-x", "action": {}, "round": 1},
+        {"gate_decision_id": "gd-x", "action": ["accept"], "round": 1},
         # Action field entirely ABSENT (previously fabricated as "accept").
         {"gate_decision_id": "gd-x", "round": 1, "failed_assertions": []},
     ],

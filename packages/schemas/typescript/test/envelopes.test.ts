@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   Actor,
+  canonicalBytes,
   ErrorEnvelope,
   EventLogEntry,
   EvidenceBundle,
@@ -2720,5 +2721,57 @@ describe("W1.4 RELAY_ERROR_CODE_PATTERN exported", () => {
     expect(re.test("RELAY-GATE-021")).toBe(true);
     expect(re.test("relay-ing-031")).toBe(false);
     expect(re.test("RELAY-ING-31")).toBe(false);
+  });
+});
+
+// canonicalBytes RFC-8785 behaviors (roborev 2132ab7): non-optional vitest
+// coverage so the new TS canonicalization (ECMA-262 number ToString, UTF-16 key
+// sort, unsafe-integer + non-finite rejection, raw-UTF-8 strings) is exercised
+// even when the Python<->TS node parity test is skipped. The byte values mirror
+// the Python relay_schemas.envelopes.canonical_bytes assertions.
+describe("canonicalBytes RFC-8785 Py<->TS parity behaviors", () => {
+  const dec = new TextDecoder();
+  const enc = (v: unknown): string => dec.decode(canonicalBytes(v));
+
+  it("ECMA-262 number ToString: whole float -> integer, -0 -> 0, small float exponential", () => {
+    expect(enc({ whole: 1.0 })).toBe('{"whole":1}');
+    expect(enc({ z: -0.0 })).toBe('{"z":0}');
+    expect(enc({ e: 1e-7 })).toBe('{"e":1e-7}');
+    expect(enc({ a: 12.5, b: 0.1, c: 0.001 })).toBe('{"a":12.5,"b":0.1,"c":0.001}');
+  });
+
+  it("object keys sort by UTF-16 code unit: SMP key sorts before U+FFFF", () => {
+    // UTF-16 code units: "a"=0x0061 < U+1F600 (high surrogate 0xD83D) < U+FFFF.
+    // (U+1F600 < U+FFFF is the OPPOSITE of Unicode code-point ordering.) Both
+    // Python canonical_bytes and TS canonicalBytes emit this exact order.
+    expect(enc({ "￿": 2, "\u{1F600}": 1, a: 3 })).toBe(
+      '{"a":3,"\u{1F600}":1,"￿":2}',
+    );
+  });
+
+  it("non-ASCII strings emit raw UTF-8 (no \\uXXXX escaping)", () => {
+    expect(enc({ m: "café" })).toBe('{"m":"café"}');
+  });
+
+  it("rejects integers outside the JS safe-integer range (fail-closed parity)", () => {
+    expect(() => canonicalBytes({ x: 2 ** 53 })).toThrow();
+    expect(() => canonicalBytes({ x: -(2 ** 53) })).toThrow();
+    expect(() => canonicalBytes({ x: 1e16 })).toThrow(); // integer-valued, > 2^53
+    expect(() => canonicalBytes({ x: 1e18 })).toThrow();
+  });
+
+  it("rejects non-finite numbers", () => {
+    expect(() => canonicalBytes({ x: NaN })).toThrow();
+    expect(() => canonicalBytes({ x: Infinity })).toThrow();
+    expect(() => canonicalBytes({ x: -Infinity })).toThrow();
+  });
+
+  it("safe integers + nested structures round-trip identically", () => {
+    expect(enc({ ints: [0, -1, 42, 9007199254740991, -9007199254740991] })).toBe(
+      '{"ints":[0,-1,42,9007199254740991,-9007199254740991]}',
+    );
+    expect(enc({ nested: { z: [1, 2, { b: null, a: true }], y: "x" } })).toBe(
+      '{"nested":{"y":"x","z":[1,2,{"a":true,"b":null}]}}',
+    );
   });
 });

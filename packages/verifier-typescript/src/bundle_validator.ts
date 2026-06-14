@@ -522,9 +522,25 @@ function _verifyBundle(bundle: Record<string, unknown>, jwks: JWKS): JwsResult {
     claims_count: 0,
     signature_checks: [],
   };
-  // Bundle-level digest is over the signature-stripped JCS canonical
-  // bytes (mirrors bundleDigest convention and Python's
-  // `_payload_for_signing` + `canonical_json_bytes`).
+  // Mirror Python `verify_bundle` (verifier.py:362-365) ORDER: the
+  // signatures-presence check runs FIRST -- BEFORE the bundle digest and the
+  // claims validation. An absent/empty `signatures` array returns the
+  // ALL-DEFAULT result (structure_ok=false, digest_ok=false, claims_count=0,
+  // bundle_digest_sha256="") because Python returns before computing any of
+  // them. Checking signatures first keeps a no-signatures bundle byte-identical
+  // to Python on EVERY path -- including one whose `claims` is missing or
+  // non-array, which a digest-then-claims order left with a populated
+  // bundle_digest while Python returned all-default (re-hunt
+  // verifier-structure-parity-1/-2; roborev 8b805fc).
+  const signatures = bundle["signatures"];
+  if (!Array.isArray(signatures) || signatures.length === 0) {
+    return result;
+  }
+
+  // Bundle-level digest is over the signature-stripped JCS canonical bytes
+  // (mirrors bundleDigest convention and Python's `_payload_for_signing` +
+  // `canonical_json_bytes`). Only computed once signatures are present, matching
+  // Python (verifier.py:367-370).
   result.bundle_digest_sha256 = bundleDigest(bundle, { stripSignatures: true });
 
   const claims = bundle["claims"];
@@ -534,25 +550,6 @@ function _verifyBundle(bundle: Record<string, unknown>, jwks: JWKS): JwsResult {
   result.claims_count = claims.length;
   result.structure_ok = true;
   result.digest_ok = true;
-
-  const signatures = bundle["signatures"];
-  if (!Array.isArray(signatures) || signatures.length === 0) {
-    // Mirror Python `verify_bundle` (verifier.py:362-365): an absent/empty
-    // `signatures` array returns the ALL-DEFAULT result -- Python returns BEFORE
-    // computing the bundle digest, structure_ok, digest_ok, or claims_count, so
-    // all four stay at their zero values. The TS path set them above (lines
-    // 528-536) before this gate, which diverged Py<->TS on every one of those
-    // fields for a no-signatures bundle AND, because the per-claim
-    // namespace/manifest/artifact checks are gated on structure_ok, made TS run
-    // checks Python skips -- a divergent structured-error set (re-hunt
-    // verifier-structure-parity-1/-2, keystone JCS-byte parity). Reset to the
-    // Python defaults so a no-signatures bundle is byte-identical across runtimes.
-    result.structure_ok = false;
-    result.digest_ok = false;
-    result.claims_count = 0;
-    result.bundle_digest_sha256 = "";
-    return result;
-  }
 
   // BUG-C3 wire-shape parity: the canonical signing payload is the
   // bundle with `signatures` stripped. Each signature entry carries

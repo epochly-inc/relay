@@ -349,6 +349,37 @@ def test_sla_breach_db_backstop_swallows_concurrent_duplicate(
     assert count == 1
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M4-011")
+def test_sla_breach_non_dedupe_integrity_error_reraises(
+    conn: sqlite3.Connection,
+) -> None:
+    """A NON-dedupe IntegrityError (a NOT NULL / trigger / PK-collision class
+    failure, NOT the deterministic-key duplicate) MUST re-raise, not be silently
+    swallowed as an idempotent no-op (roborev df5390e). Simulated with a trigger
+    that rejects the breach insert; since no dedupe row exists, the handler
+    re-raises and no row is committed."""
+    from relay_explain.sla import _emit_sla_breach_events
+
+    _create_idempotency_index(conn)
+    conn.executescript(
+        "CREATE TRIGGER reject_breach BEFORE INSERT ON event_log_entries "
+        "WHEN NEW.event_type = 'explain.reviewer_sla_breached' "
+        "BEGIN SELECT RAISE(ABORT, 'simulated non-dedupe constraint'); END;"
+    )
+    now_iso = "2026-05-18T09:00:00Z"
+    with pytest.raises(sqlite3.IntegrityError):
+        _emit_sla_breach_events(
+            conn, [("hyp-z", "run-z", 99)], project_id="local", now_iso=now_iso
+        )
+    # No breach row committed (the error propagated, the batch rolled back).
+    count = conn.execute(
+        "SELECT COUNT(*) FROM event_log_entries WHERE event_type = ?",
+        (EVENT_TYPE_SLA_BREACHED,),
+    ).fetchone()[0]
+    assert count == 0
+
+
 # ===========================================================================
 # VAL-V3M4-012: event_log_entries row with required payload fields
 # ===========================================================================

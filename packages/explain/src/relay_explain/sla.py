@@ -291,9 +291,23 @@ def _emit_sla_breach_events(
                     ),
                 )
             except sqlite3.IntegrityError:
-                # Another concurrent sweep already emitted this hypothesis's
-                # breach (the partial unique index rejected the duplicate).
-                # Idempotent no-op: do NOT consume a sequence number or count it.
+                # An IntegrityError here is treated as an idempotent no-op ONLY
+                # when it is genuinely the deterministic-key duplicate (the
+                # partial unique index rejected a row another concurrent sweep
+                # already committed). Confirm that the breach row actually exists
+                # for this (scope_id, idempotency_key); if it does NOT, the
+                # IntegrityError came from some OTHER constraint (NOT NULL, a
+                # trigger, a PK collision, ...) and must NOT be silently swallowed
+                # -- re-raise so the surrounding handler rolls back and surfaces
+                # it (roborev df5390e).
+                existing = conn.execute(
+                    "SELECT 1 FROM event_log_entries "
+                    "WHERE scope_id = ? AND idempotency_key = ? LIMIT 1",
+                    (hypothesis_id, f"sla-breach:{hypothesis_id}"),
+                ).fetchone()
+                if existing is None:
+                    raise
+                # Genuine duplicate: do NOT consume a sequence number or count it.
                 continue
             next_seq += 1
             inserted += 1

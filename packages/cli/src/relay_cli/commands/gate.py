@@ -615,7 +615,13 @@ def _emit_decision_and_exit(
     RELAY-GATE-INTERNAL envelope and exits 70, exactly like a non-dict 200 body.
     """
     action = decision.get("action")
-    if action not in _VALID_GATE_ACTIONS:
+    # Guard the TYPE before the set-membership test: a JSON-valid but UNHASHABLE
+    # action value (``[]`` / ``{}``) would otherwise raise TypeError on
+    # ``in _VALID_GATE_ACTIONS`` (frozenset hashes the candidate), escaping this
+    # structured fail-closed path into the generic uncaught-error handler
+    # (roborev e456398). A non-string action is, by definition, not a valid
+    # §P.1 action -> fail closed.
+    if not isinstance(action, str) or action not in _VALID_GATE_ACTIONS:
         _emit_gate_internal_and_exit(
             f"gate decision has missing or unrecognized action: {action!r} "
             f"(expected one of {sorted(_VALID_GATE_ACTIONS)})",
