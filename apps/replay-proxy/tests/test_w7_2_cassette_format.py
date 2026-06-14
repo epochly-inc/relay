@@ -626,6 +626,100 @@ def test_canonical_request_missing_method_key_quarantines(
 
 
 @pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_non_string_url_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json that is valid JSON with a
+    NON-STRING ``url`` (e.g. an int) MUST raise ``RelayCassetteCorruptError``
+    and quarantine -- NOT an uncaught ``AttributeError`` escaping from
+    ``urlparse(<int>)`` inside ``derive_canonical_key``.
+
+    ``_read_canonical_key_for_fixture`` builds ``CanonicalRequest`` (a frozen
+    dataclass with no runtime type validation) from the sidecar fields, then
+    ``derive_canonical_key`` calls ``urlparse(url)``. When ``url`` is an int,
+    ``urlparse`` raises ``AttributeError`` ('int' has no attribute 'decode'),
+    which was NOT in the iso-010 quarantine catch tuple, so the malformed
+    fixture escaped quarantine.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": 12345,
+                "headers": {},
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    # The malformed cassette MUST have been moved to quarantine.
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_non_string_method_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json that is valid JSON with a
+    NON-STRING ``method`` (e.g. an int) MUST raise
+    ``RelayCassetteCorruptError`` and quarantine -- NOT an uncaught
+    ``AttributeError`` escaping from ``self.method.upper()`` inside
+    ``CanonicalRequest.canonical_method`` (called by ``derive_canonical_key``).
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": 12345,
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {},
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    # The malformed cassette MUST have been moved to quarantine.
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
 def test_canonical_request_invalid_base64_body_quarantines(
     empty_cassette_dir: Path,
     make_replay_fixture: Any,

@@ -155,6 +155,9 @@ export {
   RELAY_EVID_DECIDED_AT_MISSING,
   RELAY_EVID_MISSING_TRUST_ANCHOR,
   RELAY_EVID_SIGCOUNT_EXCEEDED,
+  SIGNER_ROLE_CONTROL_PLANE,
+  SIGNER_ROLE_LOCAL_DEV,
+  SIGNER_ROLE_UNKNOWN,
   TRUST_ANCHOR_CLASS_BYO,
   TRUST_ANCHOR_CLASS_RELAY_INC,
   TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL,
@@ -162,11 +165,13 @@ export {
   VERIFIER_OUTPUT_SCHEMA,
   WARN_LOCAL_DEV_UNSUPPORTED,
   checkArchiveBombLimits,
+  classifySignerRole,
   classifyTrustAnchor,
   validateBundle,
   validateBundleWithArchiveCheck,
 } from "./bundle_validator.js";
 export type {
+  SignerRole,
   TrustAnchorClass,
   ValidateBundleOptions,
   VerifierOutputEnvelope,

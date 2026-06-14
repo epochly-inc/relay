@@ -151,20 +151,65 @@ export type TrustAnchorClass =
   | typeof TRUST_ANCHOR_CLASS_BYO;
 
 /**
+ * Raw-authority URL parser that mirrors Python `urllib.parse.urlparse`'s
+ * `.hostname` / `.path` semantics, used by {@link classifyTrustAnchor}.
+ *
+ * CRITICAL (bug verifier-ts-2): we do NOT use WHATWG `new URL()` here.
+ * WHATWG URL NORMALIZES a backslash to a slash, so a backslash-crafted
+ * authority like `https://relay.epochly.com\evil/.well-known/jwks.json`
+ * would parse to host=`relay.epochly.com` (over-classifying relay_inc),
+ * whereas Python `urlparse` keeps the backslash inside the reg-name and
+ * yields host=`relay.epochly.com\evil` (correctly byo). To stay
+ * byte-for-byte parity with Python we parse the raw authority + path
+ * substrings ourselves (same rationale as `_canonicalHostOf` in
+ * jwks_loader.ts).
+ *
+ * Mirrors urlparse: lowercases the host, splits userinfo at the FINAL
+ * `@`, strips a bracketed IPv6 host's brackets, strips the `:port`
+ * suffix, and excludes the query/fragment from the path. A string with
+ * no `scheme://` authority (e.g. `fork.example`) yields an empty host,
+ * matching Python `urlparse("fork.example").hostname == None`.
+ */
+const _RAW_URL_RE =
+  /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^/?#]*@)?(\[[^\]]*\]|[^/:?#@]*)(?::[0-9]*)?([/?#].*)?$/;
+
+function _urlparseHostPath(url: string): { host: string; path: string } {
+  const m = _RAW_URL_RE.exec(url);
+  if (m === null) {
+    return { host: "", path: "" };
+  }
+  let host = m[1] ?? "";
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+  host = host.toLowerCase();
+  let path = m[2] ?? "";
+  // urlparse .path excludes the query (?) and fragment (#) components.
+  const qi = path.search(/[?#]/);
+  if (qi >= 0) {
+    path = path.slice(0, qi);
+  }
+  return { host, path };
+}
+
+/**
  * Return the `trust_anchor_class` for a bundle-declared `trust_anchor`.
  *
  * Mirrors `relay_verifier.bundle_validator.classify_trust_anchor` so
  * Python and TypeScript verifiers emit the same classification for the
- * same wire value (VAL-V2M08-044).
+ * same wire value (VAL-V2M08-044). Python's `urlparse` is the parity
+ * reference; see {@link _urlparseHostPath}.
  *
  * Returns:
  *   - {@link TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL} when value equals the
  *     `local_dev` sentinel.
  *   - {@link TRUST_ANCHOR_CLASS_RELAY_INC} when value is a URL whose
- *     host is `relay.epochly.com` AND whose path ends with
- *     `/.well-known/jwks.json`. The exact-path check defends against a
- *     producer pointing at an attacker-controlled path on the Relay-Inc
- *     host (e.g. `https://relay.epochly.com/evil`).
+ *     host is EXACTLY `relay.epochly.com` AND whose path is EXACTLY
+ *     `/.well-known/jwks.json` (equality, not a suffix test). The
+ *     exact-path check defends against a producer pointing at an
+ *     attacker-controlled path on the Relay-Inc host (e.g.
+ *     `https://relay.epochly.com/evil` or
+ *     `https://relay.epochly.com/attacker/path/.well-known/jwks.json`).
  *   - {@link TRUST_ANCHOR_CLASS_BYO} for any other non-empty string.
  *   - `""` when value is missing, non-string, or empty; caller emits
  *     {@link RELAY_EVID_MISSING_TRUST_ANCHOR} separately.
@@ -176,21 +221,69 @@ export function classifyTrustAnchor(trustAnchorValue: unknown): TrustAnchorClass
   if (trustAnchorValue === TRUST_ANCHOR_LOCAL_DEV) {
     return TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL;
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(trustAnchorValue);
-  } catch {
-    // Python's urlparse never raises on non-URL strings; it returns an
-    // empty hostname. WHATWG URL throws on non-absolute strings -- treat
-    // those as BYO to preserve Python's "any other non-empty string"
-    // semantics.
-    return TRUST_ANCHOR_CLASS_BYO;
-  }
-  const host = (parsed.hostname || "").trim().toLowerCase();
-  if (host === "relay.epochly.com" && parsed.pathname.endsWith("/.well-known/jwks.json")) {
+  const { host, path } = _urlparseHostPath(trustAnchorValue);
+  if (host === "relay.epochly.com" && path === "/.well-known/jwks.json") {
     return TRUST_ANCHOR_CLASS_RELAY_INC;
   }
   return TRUST_ANCHOR_CLASS_BYO;
+}
+
+// V3M1-F07: signer_role enum (VAL-V3M1-018; spec K line 4427). Parity with
+// Python `bundle_validator.SIGNER_ROLE_*`.
+//
+// Per spec K rule line 4427 ("The signer can only be the control-plane
+// evidence-signer service for hosted bundles. Local OSS bundles can be signed
+// with a local key; the verifier reports the trust path.") the verifier MUST
+// surface a signer_role classification on every output so auditors can
+// attribute the bundle to one of three trust paths. The classification derives
+// ONLY from the bundle's declared trust_anchor value (via trust_anchor_class),
+// never from the JWKS the verifier is configured with: a local_dev bundle stays
+// signer_role='local_dev' even when the verifier runs under the Relay-Inc
+// default anchor (no-auto-promotion guarantee).
+
+/**
+ * Bundle declares the Relay-Inc default trust_anchor URL; the bundle's signer
+ * is attributable to the control-plane evidence-signer service.
+ */
+export const SIGNER_ROLE_CONTROL_PLANE = "control_plane" as const;
+
+/**
+ * Bundle declares `trust_anchor: 'local_dev'`; the bundle's signer is the OSS
+ * local-dev signer. Auditors treat these bundles as informational only.
+ */
+export const SIGNER_ROLE_LOCAL_DEV = "local_dev" as const;
+
+/**
+ * Bundle's declared trust_anchor classifies as BYO (third-party anchor) or is
+ * missing entirely. The verifier cannot attribute the bundle to either trust
+ * path; consumers branching on signer_role see this default rather than an
+ * empty string.
+ */
+export const SIGNER_ROLE_UNKNOWN = "unknown" as const;
+
+export type SignerRole =
+  | typeof SIGNER_ROLE_CONTROL_PLANE
+  | typeof SIGNER_ROLE_LOCAL_DEV
+  | typeof SIGNER_ROLE_UNKNOWN;
+
+/**
+ * Return the signer_role classification for a trust_anchor_class. Pure mapping
+ * (no I/O, no side effects). Mirrors Python `_classify_signer_role`:
+ *   - {@link TRUST_ANCHOR_CLASS_RELAY_INC}       -> {@link SIGNER_ROLE_CONTROL_PLANE}
+ *   - {@link TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL} -> {@link SIGNER_ROLE_LOCAL_DEV}
+ *   - {@link TRUST_ANCHOR_CLASS_BYO}             -> {@link SIGNER_ROLE_UNKNOWN}
+ *   - `""` (missing/non-string anchor)           -> {@link SIGNER_ROLE_UNKNOWN}
+ *   - any other string                           -> {@link SIGNER_ROLE_UNKNOWN}
+ *     (fail-safe default for unrecognised classifications)
+ */
+export function classifySignerRole(trustAnchorClass: string): SignerRole {
+  if (trustAnchorClass === TRUST_ANCHOR_CLASS_RELAY_INC) {
+    return SIGNER_ROLE_CONTROL_PLANE;
+  }
+  if (trustAnchorClass === TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL) {
+    return SIGNER_ROLE_LOCAL_DEV;
+  }
+  return SIGNER_ROLE_UNKNOWN;
 }
 
 export interface ValidateBundleOptions {
@@ -258,6 +351,16 @@ export interface VerifierOutputEnvelope {
    */
   trust_anchor_class: TrustAnchorClass;
   trust_anchor_source: string;
+  /**
+   * VAL-V3M1-018 (spec K line 4427). Signer attribution path derived from the
+   * bundle's declared trust_anchor field (via {@link classifySignerRole}).
+   * Defaults to {@link SIGNER_ROLE_UNKNOWN} so consumers branching on this
+   * field never see an empty string. Emitted on EVERY return path (matching
+   * Python `_new_output` + `validate_bundle` placement) so Python<->TS JCS
+   * byte-parity holds -- signer_role sorts between signer_key_revoked_at and
+   * structure_ok in the canonical envelope.
+   */
+  signer_role: string;
   signer_key_revoked: boolean;
   signer_key_revoked_at: string | null;
   subject_resolution: string;
@@ -291,6 +394,11 @@ function _newOutput(): VerifierOutputEnvelope {
     // error via RELAY-EVID-MISSING-TRUST-ANCHOR).
     trust_anchor_class: "",
     trust_anchor_source: "",
+    // VAL-V3M1-018: signer attribution path derived from the bundle's declared
+    // trust_anchor field. Defaults to SIGNER_ROLE_UNKNOWN so consumers
+    // branching on this field never see an empty string (parity with Python
+    // `_new_output` which seeds SIGNER_ROLE_UNKNOWN).
+    signer_role: SIGNER_ROLE_UNKNOWN,
     signer_key_revoked: false,
     signer_key_revoked_at: null,
     subject_resolution: SUBJECT_RESOLUTION_UNKNOWN,
@@ -528,6 +636,19 @@ export function validateBundle(args: {
   // with. local_dev stays untrusted_local even if the verifier is
   // running under the Relay-Inc default anchor.
   output.trust_anchor_class = classifyTrustAnchor(trustAnchor);
+
+  // --- Signer-role classification (VAL-V3M1-018) ---------------------------
+  // Per spec K rule line 4427 the verifier surfaces a signer_role on every
+  // output. The classification derives ONLY from the bundle's declared
+  // trust_anchor (via trust_anchor_class), never from the JWKS the verifier is
+  // configured with: a local_dev bundle stays signer_role='local_dev' even
+  // when the verifier is running under the Relay-Inc default anchor
+  // (no-auto-promotion guarantee). This is computed BEFORE the
+  // missing-trust-anchor and signature-count early returns so the field is
+  // populated on EVERY return path (parity with Python placement at
+  // bundle_validator.py validate_bundle, which sets signer_role before both
+  // early returns).
+  output.signer_role = classifySignerRole(output.trust_anchor_class);
 
   // --- Missing-trust_anchor rejection (VAL-V2M08-043) ----------------------
   // Fail-closed when the bundle declares no trust_anchor (or declares a

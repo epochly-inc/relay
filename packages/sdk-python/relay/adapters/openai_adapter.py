@@ -27,6 +27,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
+from ..redaction import _canonical_json_stringify
 from ._spans import Span, SpanRecorder
 
 # Sentinel: when system_fingerprint is None, we still emit a deterministic
@@ -125,7 +126,15 @@ def _redact_tool_arguments(raw: str) -> tuple[Any, str]:
     except (ValueError, TypeError):
         parsed = raw
     redacted = _scrub(parsed)
-    canon = json.dumps(redacted, sort_keys=True, default=str).encode("utf-8")
+    # Serialise through the shared JCS canonicalizer (RFC 8785) so the bytes
+    # are byte-identical to the TypeScript adapter's ``canonicalStringify``
+    # (compact separators, ensure_ascii=False). The prior
+    # ``json.dumps(..., sort_keys=True, default=str)`` used default separators
+    # (", " / ": ") and ensure_ascii=True (backslash-u escapes), producing a
+    # DIFFERENT args_hash than TS for the same logical payload and silently
+    # coercing unsupported types via default=str (sdk-python-run-005). JCS
+    # keeps Py/TS args_hash in lockstep and fails closed on unsupported types.
+    canon = _canonical_json_stringify(redacted).encode("utf-8")
     return redacted, hashlib.sha256(canon).hexdigest()
 
 

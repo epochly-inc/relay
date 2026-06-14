@@ -965,12 +965,37 @@ def _read_canonical_key_for_fixture(
     # load_cassette catches and quarantines) rather than silently
     # discarding invalid characters (VAL-ISO-010).
     body_bytes = base64.b64decode(obj.get("body_b64", "") or "", validate=True)
+    method = obj["method"]
+    url = obj["url"]
+    content_type = obj.get("content_type", "") or ""
+    # Validate the string-typed CanonicalRequest fields BEFORE constructing
+    # the (frozen, unvalidated) dataclass. CanonicalRequest performs no
+    # runtime type checking, so a non-string ``url`` / ``method`` /
+    # ``content_type`` would otherwise surface as an uncaught ``AttributeError``
+    # deeper inside ``derive_canonical_key`` -- ``urlparse(<int>)`` raises
+    # ``AttributeError('int' has no attribute 'decode')`` and
+    # ``self.method.upper()`` raises ``AttributeError('int' has no attribute
+    # 'upper')`` -- which is NOT in load_cassette's iso-010 catch tuple and so
+    # bypasses quarantine entirely. Raise ``KeyError`` (already in that catch
+    # tuple) so the malformed sidecar is quarantined like every other
+    # corrupt-field case, keeping the catch tuple narrow per its design
+    # comment (VAL-ISO-010).
+    for field_name, value in (
+        ("method", method),
+        ("url", url),
+        ("content_type", content_type),
+    ):
+        if not isinstance(value, str):
+            raise KeyError(
+                f"canonical request field {field_name!r} MUST be a string; "
+                f"got {type(value).__name__}"
+            )
     req = CanonicalRequest(
-        method=obj["method"],
-        url=obj["url"],
+        method=method,
+        url=url,
         headers=obj.get("headers", {}),
         body_bytes=body_bytes,
-        content_type=obj.get("content_type", "") or "",
+        content_type=content_type,
     )
     return derive_canonical_key(req)
 

@@ -619,5 +619,58 @@ describe("VAL-REDACT-006: policy regex ReDoS guard (load-time rejection + leaf c
       expect(out).toContain("<redacted>");
       expect(out).not.toContain("ABCDEFGHIJKLMNOPQRSTUV");
     });
+
+    // REDACT cluster Bug B (P2 / security): the guard caught a quantifier over a
+    // group whose BODY contained a quantifier ((a+)+) but MISSED a top-level
+    // alternation of OVERLAPPING branches under an UNBOUNDED quantifier
+    // ((a|a)*, (a|a)+, (a|a){2,}). No inner quantifier, so the original
+    // heuristic accepted them, yet (a|a)*b backtracks super-linearly (each `a`
+    // can be consumed by EITHER branch -> 2^n partitions). The 1 MiB clamp does
+    // NOT bound that. The fix rejects an OVERLAPPING alternation (branches share
+    // a possible first character) under an unbounded quantifier, while still
+    // ACCEPTING a DISJOINT alternation ((?:sk-|key_)+, first chars s vs k).
+    // Python<->TS must reject / accept the IDENTICAL set; the live-Node parity
+    // surface is in packages/sdk-python/tests/test_redaction_parity.py.
+    describe("Bug B: overlapping alternation under an unbounded quantifier", () => {
+      for (const pattern of [
+        "(a|a)*b",
+        "(a|a)+b",
+        "(a|a){2,}b",
+        "(?:a|a)*x",
+        "(\\w|a)+b",
+        "(.|a)+b",
+        "(ab|a)*c",
+      ]) {
+        it(`rejects overlapping alternation ${JSON.stringify(pattern)} with RELAY-SDK-017`, () => {
+          let caught: unknown;
+          try {
+            loadRedactionPolicy(redosPolicy(pattern));
+          } catch (err) {
+            caught = err;
+          }
+          expect(caught).toBeInstanceOf(RelayRedactionPolicyError);
+          const e = caught as RelayRedactionPolicyError;
+          expect(e.code).toBe(REDOS_CODE);
+          expect((e.details as { reason?: string }).reason).toBe(REDOS_REASON);
+        });
+      }
+
+      // A DISJOINT alternation under an unbounded quantifier is LINEAR and MUST
+      // load (no two branches share a possible first character). Rejecting it
+      // would disable redaction for the legitimate credential matcher.
+      for (const pattern of ["(?:sk-|key_)+[A-Za-z0-9]{20,}", "(?:abc|def)+x"]) {
+        it(`accepts disjoint alternation ${JSON.stringify(pattern)} at LOAD time`, () => {
+          expect(() => loadRedactionPolicy(redosPolicy(pattern))).not.toThrow();
+        });
+      }
+
+      // An overlapping alternation under a BOUNDED quantifier (? or {n,m}) or
+      // with NO quantifier is not catastrophic and MUST load.
+      for (const pattern of ["(a|a)?b", "(a|a){2,4}b", "(a|a)b"]) {
+        it(`accepts bounded/unquantified alternation ${JSON.stringify(pattern)} at LOAD time`, () => {
+          expect(() => loadRedactionPolicy(redosPolicy(pattern))).not.toThrow();
+        });
+      }
+    });
   });
 });

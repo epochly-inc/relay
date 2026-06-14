@@ -354,15 +354,176 @@ def _interval_quantifier_end(raw_pattern: str, start: int) -> int | None:
     return None
 
 
+def _interval_quantifier_is_unbounded(raw_pattern: str, start: int) -> bool:
+    """Return ``True`` iff a well-formed interval quantifier at ``start`` is
+    OPEN-ENDED (``{n,}``), i.e. it permits an unbounded number of repetitions.
+
+    ``raw_pattern[start]`` MUST be ``{``. A closed interval ``{n}`` / ``{n,m}``
+    is bounded (``False``); only ``{n,}`` (a comma with NO upper bound) is
+    unbounded. Mirrors the TS ``intervalQuantifierIsUnbounded``.
+    """
+    if _interval_quantifier_end(raw_pattern, start) is None:
+        return False
+    j = start + 1
+    n = len(raw_pattern)
+    body_chars: list[str] = []
+    while j < n and raw_pattern[j] != "}":
+        body_chars.append(raw_pattern[j])
+        j += 1
+    body = "".join(body_chars)
+    # ``{n,}`` is open-ended: a comma present AND nothing after it.
+    return "," in body and body.endswith(",")
+
+
+def _branch_first_chars(branch: str) -> frozenset[str] | None:
+    """Return the set of literal characters a top-level alternation BRANCH can
+    begin with, or ``None`` when the branch's first matchable token is BROAD or
+    the branch is NULLABLE (so it must be treated as overlapping any other).
+
+    Used only by :func:`_alternation_overlaps` to decide whether two branches of
+    a quantified alternation can match overlapping input. The analysis is a
+    deterministic, conservative (fail-closed) approximation:
+
+      * A leading literal character yields ``{char}`` (an escaped literal
+        ``\\x`` yields ``{x}`` for an ordinary escaped char; a class-style
+        escape such as ``\\w`` / ``\\d`` / ``\\s`` and their negations is BROAD).
+      * A leading ``.``, character class ``[...]``, or group ``(`` is BROAD
+        (could match many first characters) -> ``None``.
+      * An anchor/zero-width leading token (``^``, ``$``, ``|`` empty branch,
+        or a branch whose first token is itself optional/star -> nullable) is
+        treated as NULLABLE -> ``None`` (overlaps everything).
+
+    Returning ``None`` (BROAD/NULLABLE) forces :func:`_alternation_overlaps` to
+    report overlap, which REJECTS the pattern: the safe direction for a ReDoS
+    guard (a policy author rewrites the regex; redaction never silently leaks).
+    Mirrors the TS ``branchFirstChars``.
+    """
+    if branch == "":
+        # Empty branch (e.g. ``(a|)*``): matches the empty string -> nullable.
+        return None
+    ch = branch[0]
+    if ch == "\\":
+        if len(branch) < 2:
+            # Trailing backslash: malformed; treat as broad (fail-closed).
+            return None
+        esc = branch[1]
+        # Class-style escapes match a SET of characters -> broad.
+        if esc in ("w", "W", "d", "D", "s", "S", "b", "B", "A", "Z"):
+            return None
+        # Ordinary escaped literal (``\\.``, ``\\+``, ``\\\\`` ...): the literal
+        # char itself.
+        return frozenset({esc})
+    if ch in (".", "[", "("):
+        # Wildcard, character class, or a nested group: a broad first token.
+        return None
+    if ch in ("^", "$"):
+        # Zero-width anchor leads the branch: the NEXT token decides, but the
+        # anchor itself is nullable -> treat the branch as nullable (broad).
+        return None
+    if ch in ("*", "+", "?", "{"):
+        # A quantifier with no preceding atom is malformed; fail-closed broad.
+        return None
+    # Plain literal first character.
+    return frozenset({ch})
+
+
+def _split_top_level_alternation(body: str) -> list[str]:
+    """Split a group BODY on its TOP-LEVEL ``|`` alternation separators.
+
+    Nested groups ``(...)``, character classes ``[...]``, and escaped
+    characters ``\\x`` are skipped so a ``|`` inside them is NOT treated as a
+    top-level separator. Returns the list of branch substrings (a single-element
+    list when there is no top-level ``|``). Mirrors the TS
+    ``splitTopLevelAlternation``.
+    """
+    branches: list[str] = []
+    depth = 0
+    i = 0
+    n = len(body)
+    start = 0
+    while i < n:
+        c = body[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "[":
+            i += 1
+            while i < n and body[i] != "]":
+                if body[i] == "\\":
+                    i += 1
+                i += 1
+            i += 1  # consume ']'
+            continue
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            if depth > 0:
+                depth -= 1
+            i += 1
+            continue
+        if c == "|" and depth == 0:
+            branches.append(body[start:i])
+            start = i + 1
+            i += 1
+            continue
+        i += 1
+    branches.append(body[start:])
+    return branches
+
+
+def _alternation_overlaps(body: str) -> bool:
+    """Return ``True`` iff a group BODY is a top-level alternation whose branches
+    can match OVERLAPPING input -- the catastrophic-backtracking shape when the
+    group carries an UNBOUNDED quantifier (REDACT cluster Bug B).
+
+    Two branches overlap when they share a possible first character, or when any
+    branch is BROAD / NULLABLE (see :func:`_branch_first_chars`). A non-empty
+    intersection of first-character sets means at least two branches can consume
+    the same leading character, so a run of that character has an exponential
+    number of branch partitions (e.g. ``(a|a)*`` on ``aaaa...``).
+
+    A body with NO top-level ``|`` (one branch) never overlaps -> ``False``.
+    A DISJOINT alternation (``sk-`` vs ``key_`` -> first chars ``s`` vs ``k``)
+    has empty pairwise intersections -> ``False`` (accepted; linear).
+    Mirrors the TS ``alternationOverlaps``.
+    """
+    branches = _split_top_level_alternation(body)
+    if len(branches) < 2:
+        return False
+    seen: set[str] = set()
+    for branch in branches:
+        first = _branch_first_chars(branch)
+        if first is None:
+            # A broad / nullable branch overlaps with every other branch.
+            return True
+        if seen & first:
+            return True
+        seen |= first
+    return False
+
+
 def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
     """Reject a catastrophic-backtracking (ReDoS) regex BEFORE compilation.
 
     Deterministic static scan of the raw pattern -- no compilation, no
-    execution, no wall clock. The dangerous class is a quantifier applied to a
-    GROUP whose body itself CONTAINS a quantifier (nested quantifiers), e.g.
-    ``(a+)+``, ``(a*)*``, ``(a+)*``, ``(\\w+\\s?)*``, ``(.*a){2,}``. A single
-    quantifier (``a+``, ``[A-Za-z0-9]{20,}``) or an optional inside a group with
-    no OUTER quantifier (``(?i)api[_-]?key``) is linear and accepted.
+    execution, no wall clock. Two dangerous classes are rejected:
+
+      1. A quantifier applied to a GROUP whose body itself CONTAINS a quantifier
+         (nested quantifiers), e.g. ``(a+)+``, ``(a*)*``, ``(a+)*``,
+         ``(\\w+\\s?)*``, ``(.*a){2,}``.
+      2. (REDACT cluster Bug B) A top-level alternation of OVERLAPPING branches
+         under an UNBOUNDED quantifier (``*`` / ``+`` / ``{n,}``), e.g.
+         ``(a|a)*``, ``(a|a)+``, ``(\\w|a)+``. The branches share a possible
+         first character, so a run of that character has exponentially many
+         branch partitions -- catastrophic backtracking even with no inner
+         quantifier. A DISJOINT alternation (``(?:sk-|key_)+``: first chars
+         ``s`` vs ``k``) is linear and accepted.
+
+    A single quantifier (``a+``, ``[A-Za-z0-9]{20,}``), an optional inside a
+    group with no OUTER quantifier (``(?i)api[_-]?key``), or an alternation
+    under a BOUNDED quantifier (``(a|a){2,4}``) is linear and accepted.
 
     Returns ``None`` when the pattern is accepted, else a structured
     ``{"reason": ..., "error": ...}`` dict. Mirrors the TypeScript
@@ -378,8 +539,25 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
             "before compilation"
         ),
     }
+    # REDACT cluster Bug B: an OVERLAPPING top-level alternation under an
+    # UNBOUNDED quantifier (``(a|a)*`` / ``(a|a)+`` / ``(a|a){2,}``) is also
+    # catastrophic backtracking even though no inner quantifier is present.
+    redos_overlap_alternation = {
+        "reason": _REDOS_REASON,
+        "error": (
+            "regex pattern has an overlapping alternation under an unbounded "
+            "quantifier (a group of overlapping branches followed by '*', '+', "
+            "or '{n,}'), e.g. '(a|a)*'; this is a catastrophic-backtracking "
+            "(ReDoS) risk and is rejected before compilation"
+        ),
+    }
     # Per open group: does its body (so far) contain a quantifier?
     group_body_has_quantifier: list[bool] = []
+    # Per open group: does its body (so far) contain a TOP-LEVEL ``|``?
+    group_body_has_alternation: list[bool] = []
+    # Per open group: index of the first body character (just past the open
+    # token). Used to slice the body for overlap analysis when the group closes.
+    group_body_start: list[int] = []
 
     def mark_current_group_quantifier() -> None:
         if group_body_has_quantifier:
@@ -417,7 +595,10 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
                     # A group body follows the prefix; push a frame and let the
                     # matching ``)`` close it normally so a genuine nested
                     # quantifier in the BODY (``(?:a+)+``) is still detected.
+                    # ``end`` is the first body character (just past the prefix).
                     group_body_has_quantifier.append(False)
+                    group_body_has_alternation.append(False)
+                    group_body_start.append(end)
                 else:
                     # Self-terminating directive (``(?flags)`` / ``(?P=name)``):
                     # no quantifiable body and it consumes its own ``)``. Skip
@@ -426,6 +607,16 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
                 i = end
                 continue
             group_body_has_quantifier.append(False)
+            group_body_has_alternation.append(False)
+            group_body_start.append(i + 1)
+            i += 1
+            continue
+        if ch == "|":
+            # A TOP-LEVEL ``|`` for the innermost open group (the alternation
+            # separator). A ``|`` at the very top of the pattern (no open group)
+            # is not a quantifiable-group body, so it is ignored here.
+            if group_body_has_alternation:
+                group_body_has_alternation[-1] = True
             i += 1
             continue
         if ch == ")":
@@ -434,13 +625,40 @@ def _check_regex_redos_safety(raw_pattern: str) -> dict[str, str] | None:
                 if group_body_has_quantifier
                 else False
             )
+            inner_had_alternation = (
+                group_body_has_alternation.pop()
+                if group_body_has_alternation
+                else False
+            )
+            body_start = (
+                group_body_start.pop() if group_body_start else i
+            )
             nxt = raw_pattern[i + 1] if i + 1 < n else None
             group_immediately_quantified = nxt in ("*", "+", "?", "{")
             group_is_quantified = group_immediately_quantified and (
                 nxt != "{" or _interval_quantifier_end(raw_pattern, i + 1) is not None
             )
+            # An UNBOUNDED quantifier is ``*``, ``+``, or an open-ended interval
+            # ``{n,}``. A bounded quantifier (``?`` or ``{n,m}``) caps the
+            # repetition count, so it cannot drive exponential backtracking.
+            group_is_unbounded_quantified = group_is_quantified and (
+                nxt in ("*", "+")
+                or (
+                    nxt == "{"
+                    and _interval_quantifier_is_unbounded(raw_pattern, i + 1)
+                )
+            )
             if inner_had_quantifier and group_is_quantified:
                 return redos
+            # REDACT cluster Bug B: a top-level alternation of OVERLAPPING
+            # branches under an UNBOUNDED quantifier is catastrophic even with
+            # no inner quantifier. Slice the just-closed body and test overlap.
+            if (
+                inner_had_alternation
+                and group_is_unbounded_quantified
+                and _alternation_overlaps(raw_pattern[body_start:i])
+            ):
+                return redos_overlap_alternation
             # Propagate the "contains a quantifier" signal to the ENCLOSING
             # group when either the inner body had a quantifier OR the group
             # itself is quantified, so a deeper nesting (e.g. ``((a+))+``) is
@@ -1817,13 +2035,18 @@ def iter_known_applies_to_fields() -> Iterable[str]:
 # on raw_capture per CLAUDE.md keystone #7.
 #
 # Matcher set:
-#   - json_pointer ``/messages/*/content/text``: prompt content path used by
+#   - json_pointer ``/messages/*/content/text`` AND
+#     ``/messages/*/content/*/text``: prompt content paths used by
 #     chat-completion-style payloads. The ``*`` reference token is a
 #     single-segment wildcard (VAL-REDACT-001) matching any one array index
 #     or object key, so concrete leaf pointers like
-#     ``/messages/0/content/text`` are redacted. See
+#     ``/messages/0/content/text`` (object content shape) are redacted by the
+#     first path, and ``/messages/0/content/0/text`` (the list-of-content-parts
+#     shape used by OpenAI Chat Completions / Anthropic Messages) is redacted
+#     by the second. Covering both shapes is REDACT cluster Bug A. See
 #     :func:`_json_pointer_matches`.
-#   - json_pointer ``/output/text``: agent output path.
+#   - json_pointer ``/output/text`` AND ``/output/*/text``: agent output paths
+#     for both the object and list-of-parts output shapes.
 #   - regex ``(?i)password``: field-value pattern.
 #   - regex ``(?i)api[_-]?key``: field-value pattern.
 #   - regex ``(?i)secret``: field-value pattern.
@@ -1838,13 +2061,13 @@ HOSTED_DEFAULT_POLICY: Final[dict[str, Any]] = {
         {
             "id": "prompt-content",
             "kind": "json_pointer",
-            "paths": ["/messages/*/content/text"],
+            "paths": ["/messages/*/content/text", "/messages/*/content/*/text"],
             "action": "redact",
         },
         {
             "id": "output-content",
             "kind": "json_pointer",
-            "paths": ["/output/text"],
+            "paths": ["/output/text", "/output/*/text"],
             "action": "redact",
         },
         {

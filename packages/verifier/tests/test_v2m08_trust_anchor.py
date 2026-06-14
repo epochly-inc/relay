@@ -57,6 +57,7 @@ from relay_verifier.bundle_validator import (  # noqa: E402
     TRUST_ANCHOR_CLASS_BYO,
     TRUST_ANCHOR_CLASS_RELAY_INC,
     TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL,
+    classify_trust_anchor,
 )
 from relay_verifier.local_signer import (  # noqa: E402
     LOCAL_DEV_CACHE_PREFIX,
@@ -398,6 +399,69 @@ def test_local_dev_cache_key_prefix_isolates_from_default_anchor() -> None:
     # local_dev-prefixed cache key for the Relay-Inc URL.
     with pytest.raises(ValueError):
         local_dev_cache_key("https://relay.epochly.com/.well-known/jwks.json")
+
+
+# ---------------------------------------------------------------------------
+# VAL-V2M08-044 (bug verifier-py-001): attacker-controlled path on the
+# Relay-Inc host must NOT classify as relay_inc. The path component must be
+# matched by EXACT equality against "/.well-known/jwks.json", never a
+# suffix test -- a suffix test lets
+# "https://relay.epochly.com/attacker/path/.well-known/jwks.json" be
+# mislabeled relay_inc (and thus auto-promote signer_role to control_plane).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-044")
+def test_attacker_subpath_on_relay_host_is_byo_not_relay_inc() -> None:
+    """An attacker-controlled subpath that still ends in
+    ``/.well-known/jwks.json`` on the Relay-Inc host MUST classify as
+    ``byo``, not ``relay_inc``. The path is matched by EXACT equality, so
+    only the canonical ``/.well-known/jwks.json`` path qualifies."""
+    # Two attacker variants: a deep nested path and a sibling-prefixed one.
+    for attacker_url in (
+        "https://relay.epochly.com/attacker/path/.well-known/jwks.json",
+        "https://relay.epochly.com/evil/.well-known/jwks.json",
+    ):
+        cls = classify_trust_anchor(attacker_url)
+        assert cls == TRUST_ANCHOR_CLASS_BYO, (
+            f"attacker subpath {attacker_url!r} must classify as "
+            f"{TRUST_ANCHOR_CLASS_BYO!r}, got {cls!r}"
+        )
+        assert cls != TRUST_ANCHOR_CLASS_RELAY_INC
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-044")
+def test_attacker_subpath_bundle_reports_byo_and_unknown_signer_role() -> None:
+    """End-to-end: a bundle declaring an attacker-controlled subpath on
+    the Relay-Inc host MUST surface ``trust_anchor_class='byo'`` and
+    ``signer_role='unknown'`` -- it cannot auto-promote to control_plane."""
+    from relay_verifier.bundle_validator import SIGNER_ROLE_UNKNOWN
+
+    built = build_bundle(
+        trust_anchor=(
+            "https://relay.epochly.com/attacker/path/.well-known/jwks.json"
+        ),
+    )
+    output = validate_bundle(
+        bundle=built.bundle,
+        jwks=built.jwks,
+        trust_anchor_source="byo_flag",
+    )
+    assert output["trust_anchor_class"] == TRUST_ANCHOR_CLASS_BYO, output
+    assert output["signer_role"] == SIGNER_ROLE_UNKNOWN, output
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-044")
+def test_canonical_relay_inc_path_still_classifies_relay_inc() -> None:
+    """Regression guard: the exact-path fix MUST NOT break the canonical
+    Relay-Inc URL, which still classifies as ``relay_inc``."""
+    cls = classify_trust_anchor(
+        "https://relay.epochly.com/.well-known/jwks.json"
+    )
+    assert cls == TRUST_ANCHOR_CLASS_RELAY_INC, cls
 
 
 @pytest.mark.plumbing

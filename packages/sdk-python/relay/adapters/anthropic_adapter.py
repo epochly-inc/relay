@@ -15,11 +15,11 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from collections.abc import Iterator
 from typing import Any
 
+from ..redaction import _canonical_json_stringify
 from ._spans import Span, SpanRecorder
 from .openai_adapter import _scrub  # reuse the same secret-scrubber
 
@@ -80,9 +80,17 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
 
 
 def _redact_tool_input(value: Any) -> tuple[Any, str]:
-    """Redact Anthropic tool input and compute its args_hash."""
+    """Redact Anthropic tool input and compute its args_hash.
+
+    Serialises through the shared JCS canonicalizer (RFC 8785) so the bytes
+    are byte-identical to the TypeScript adapter's ``canonicalStringify``
+    (compact separators, ensure_ascii=False), keeping the Py/TS args_hash in
+    lockstep (sdk-python-run-005). The prior
+    ``json.dumps(..., sort_keys=True, default=str)`` diverged from TS on
+    separators + non-ASCII escaping and silently coerced unsupported types.
+    """
     redacted = _scrub(value)
-    canon = json.dumps(redacted, sort_keys=True, default=str).encode("utf-8")
+    canon = _canonical_json_stringify(redacted).encode("utf-8")
     return redacted, hashlib.sha256(canon).hexdigest()
 
 
@@ -265,15 +273,42 @@ class _StreamWrapper:
         if not isinstance(event_type, str):
             event_type = ""
 
-        # Aggregate usage from message_delta events if present.
-        usage = _get(event, "usage")
-        if usage is not None:
-            in_tok = _get(usage, "input_tokens")
-            out_tok = _get(usage, "output_tokens")
-            if isinstance(in_tok, int):
-                self._cum_input += in_tok
-            if isinstance(out_tok, int):
-                self._cum_output += out_tok
+        # Usage aggregation MUST mirror the TypeScript adapter's
+        # ``ingestEvent`` (VAL-ISO-020) exactly so Py/TS report identical
+        # token counts. Anthropic's streaming usage is NOT a running sum:
+        #
+        #   * ``message_start`` carries usage on ``event.message.usage`` (the
+        #     authoritative input token count plus a small initial output
+        #     SEED). We read input from there and ASSIGN the output seed.
+        #   * ``message_delta`` carries usage on ``event.usage`` whose
+        #     ``output_tokens`` is the authoritative CUMULATIVE final output
+        #     count, not a per-event increment. We ASSIGN it (never ``+=``)
+        #     so the running total is not double-counted with the seed.
+        #
+        # Summing every event (the prior behaviour) inflated output and never
+        # populated input (it read ``event.usage`` only, which is absent on
+        # ``message_start``). Assigning cumulative snapshots is correct.
+        if event_type == "message_start":
+            message = _get(event, "message")
+            usage = _get(message, "usage")
+            if usage is not None:
+                in_tok = _get(usage, "input_tokens")
+                out_tok = _get(usage, "output_tokens")
+                if isinstance(in_tok, int):
+                    self._cum_input += in_tok
+                if isinstance(out_tok, int):
+                    self._cum_output = out_tok
+        elif event_type == "message_delta":
+            usage = _get(event, "usage")
+            if usage is not None:
+                out_tok = _get(usage, "output_tokens")
+                if isinstance(out_tok, int):
+                    self._cum_output = out_tok
+                # Only update input from a delta if it actually carries one;
+                # never clobber the message_start seed to 0.
+                in_tok = _get(usage, "input_tokens")
+                if isinstance(in_tok, int) and in_tok != 0:
+                    self._cum_input = in_tok
 
         self._recorder.new_span(
             "stream_chunk",

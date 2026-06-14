@@ -37,8 +37,8 @@ const HOSTED_DEFAULT_POLICY: Record<string, unknown> = {
   dpa_ref: null,
   approver_user_id: null,
   matchers: [
-    { id: "prompt-content", kind: "json_pointer", paths: ["/messages/*/content/text"], action: "redact" },
-    { id: "output-content", kind: "json_pointer", paths: ["/output/text"], action: "redact" },
+    { id: "prompt-content", kind: "json_pointer", paths: ["/messages/*/content/text", "/messages/*/content/*/text"], action: "redact" },
+    { id: "output-content", kind: "json_pointer", paths: ["/output/text", "/output/*/text"], action: "redact" },
     { id: "password-field", kind: "regex", pattern: "(?i)password", action: "redact" },
     { id: "api-key-field", kind: "regex", pattern: "(?i)api[_-]?key", action: "redact" },
     { id: "secret-field", kind: "regex", pattern: "(?i)secret", action: "redact" },

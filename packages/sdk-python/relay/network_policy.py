@@ -243,6 +243,19 @@ def _classify(host: str) -> tuple[str, str] | None:
     """
     if not host:
         return None
+    # Normalize BEFORE any IP/metadata classification: a destination wrapped in
+    # whitespace ("10.0.0.1 ", "\t169.254.169.254\n") or carrying a trailing
+    # FQDN-root dot ("169.254.169.254." / "169.254.169.254..") is dialed by the
+    # resolver as the bare address, but ipaddress.ip_address / inet_aton reject
+    # the decorated form -- so without this the literal would MISS the metadata /
+    # RFC1918 / loopback checks and fall through the hostname denylist as a
+    # NON-match (ALLOWED): an SSRF default-deny bypass. Strip surrounding
+    # whitespace and trailing dots up front (no resolvable host has either, so
+    # this never over-blocks a public destination). This also normalizes the
+    # URL-derived host from _extract_host through the same chokepoint.
+    host = host.strip().rstrip(".")
+    if not host:
+        return None
     # Cloud-metadata literal match takes precedence over link-local so
     # 169.254.169.254 attributes correctly.
     if host in CLOUD_METADATA_IPS:

@@ -8,11 +8,13 @@ matchers:
   kind: json_pointer
   paths:
   - /messages/*/content/text
+  - /messages/*/content/*/text
   action: redact
 - id: output-content
   kind: json_pointer
   paths:
   - /output/text
+  - /output/*/text
   action: redact
 - id: password-field
   kind: regex

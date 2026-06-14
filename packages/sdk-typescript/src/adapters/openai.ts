@@ -192,7 +192,17 @@ function scrubSecretShapeInner(
     if (Array.isArray(value)) {
       return value.map((v) => scrubSecretShapeInner(v, depth + 1, seen));
     }
-    const out: Record<string, unknown> = {};
+    // Null-prototype target so an OWN "__proto__" key round-trips as a real
+    // own enumerable property instead of mutating the prototype (which would
+    // silently DROP the field). A tool can emit args JSON with a "__proto__"
+    // key; after JSON.parse it is an own key, and Python's _scrub keeps it as
+    // a normal dict key. Matching that preserves Py<->TS canonical-wire byte
+    // parity (sdk-ts-01). canonicalStringify / JSON.stringify enumerate own
+    // enumerable keys, so a null-prototype object serialises identically.
+    const out: Record<string, unknown> = Object.create(null) as Record<
+      string,
+      unknown
+    >;
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       if (isSecretKey(k)) {
         out[k] = "[REDACTED]";

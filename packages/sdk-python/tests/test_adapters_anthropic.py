@@ -298,3 +298,105 @@ def test_anthropic_adapter_model_signature_is_stable_across_calls(
     ]
     assert len(sigs) == 2
     assert sigs[0] == sigs[1]
+
+
+# ---------------------------------------------------------------------------
+# VAL-ISO-020: streaming usage aggregation must not double-count output
+# tokens and must seed input tokens from message_start (Py<->TS parity).
+#
+# Mirrors packages/sdk-typescript/test/w4_5_anthropic_adapter.test.ts
+# describe("VAL-ISO-020: ..."). Anthropic's message_delta usage.output_tokens
+# is the AUTHORITATIVE CUMULATIVE final output count, not a per-event
+# increment; message_start carries the input token count plus a small initial
+# output seed. The adapter must ASSIGN (not add) the cumulative output and
+# read input from event.message.usage on message_start.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-020")
+def test_anthropic_streaming_does_not_double_count_output_tokens() -> None:
+    """message_delta cumulative output_tokens is authoritative (assign, not
+    add); input is seeded once from message_start.
+
+    Real stream: message_start{input=40, output=2}, two message_delta
+    cumulative snapshots (80 then 150). Correct: input=40, output=150. The
+    pre-fix Python summed every event (output 2+80+150=232) and never read
+    event.message.usage (input 0)."""
+    recorder = SpanRecorder()
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={
+                "id": "msg_dbl_count",
+                "model": "claude-3-5-sonnet",
+                "usage": {"input_tokens": 40, "output_tokens": 2},
+            },
+        ),
+        _AnthroEvent(
+            type="content_block_start",
+            index=0,
+            content_block=_TextBlock(type="text", text=""),
+        ),
+        # First message_delta: cumulative output so far = 80.
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": None},
+            usage=_AnthroUsage(input_tokens=0, output_tokens=80),
+        ),
+        # Second message_delta: cumulative final output = 150 (NOT +150).
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": "end_turn"},
+            usage=_AnthroUsage(input_tokens=0, output_tokens=150),
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    it = client.messages.create(
+        model="claude-3-5-sonnet",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": "stream"}],
+        stream=True,
+    )
+    list(it)
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    # input seeded from message_start only.
+    assert parent.attributes["input_tokens"] == 40
+    # output is the LAST cumulative message_delta value, NOT 2+80+150=232.
+    assert parent.attributes["output_tokens"] == 150
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-020")
+def test_anthropic_streaming_seed_not_clobbered_without_delta_usage() -> None:
+    """When no message_delta carries a usage block, the message_start output
+    seed must NOT be clobbered to 0, and input stays seeded."""
+    recorder = SpanRecorder()
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={
+                "id": "msg_no_delta_usage",
+                "model": "claude-3-5-sonnet",
+                "usage": {"input_tokens": 9, "output_tokens": 3},
+            },
+        ),
+        # message_delta with no usage block: must not clobber the seed to 0.
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": "end_turn"},
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    it = client.messages.create(
+        model="claude-3-5-sonnet",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": "x"}],
+        stream=True,
+    )
+    list(it)
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert parent.attributes["input_tokens"] == 9
+    assert parent.attributes["output_tokens"] == 3

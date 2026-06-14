@@ -49,8 +49,8 @@ const HOSTED_DEFAULT_POLICY: Record<string, unknown> = {
   dpa_ref: null,
   approver_user_id: null,
   matchers: [
-    { id: "prompt-content", kind: "json_pointer", paths: ["/messages/*/content/text"], action: "redact" },
-    { id: "output-content", kind: "json_pointer", paths: ["/output/text"], action: "redact" },
+    { id: "prompt-content", kind: "json_pointer", paths: ["/messages/*/content/text", "/messages/*/content/*/text"], action: "redact" },
+    { id: "output-content", kind: "json_pointer", paths: ["/output/text", "/output/*/text"], action: "redact" },
     { id: "password-field", kind: "regex", pattern: "(?i)password", action: "redact" },
     { id: "api-key-field", kind: "regex", pattern: "(?i)api[_-]?key", action: "redact" },
     { id: "secret-field", kind: "regex", pattern: "(?i)secret", action: "redact" },
@@ -156,5 +156,61 @@ describe("VAL-REDACT-001 TS parity: json_pointer single-segment * wildcard", () 
     expect(redacted).toEqual({
       messages: { "*": { content: { text: "<redacted>" } } },
     });
+  });
+});
+
+// REDACT cluster Bug A (P2 / security): the default policy only declared the
+// object content shape ``/messages/*/content/text``. The standard chat shape
+// used by OpenAI Chat Completions and Anthropic Messages is a LIST of content
+// PARTS: ``content: [{type: "text", text: ...}]`` whose leaf pointer is
+// ``/messages/0/content/0/text`` (6 segments) -- the 5-segment matcher path
+// never matched it, so prompt text LEAKED verbatim. The fix adds the sibling
+// matcher path ``/messages/*/content/*/text`` (and ``/output/*/text``). The TS
+// HOSTED_DEFAULT_POLICY inlined here is updated to match the YAML/Python source.
+describe("REDACT cluster Bug A: array-of-content-parts chat shape is redacted", () => {
+  it("redacts messages[*].content[j].text (OpenAI Chat Completions / Anthropic Messages)", () => {
+    const engine = hostedEngine();
+    const payload = {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "my private medical diagnosis is X" }],
+        },
+      ],
+    };
+    const body = Buffer.from(redactCapturePayload(engine, payload)).toString("utf8");
+    // RED at base: the 5-segment matcher never matched the 6-segment array-of-
+    // parts pointer, so the private text leaked verbatim.
+    expect(body).not.toContain("my private medical diagnosis is X");
+    expect(body).toContain("<redacted>");
+  });
+
+  it("redacts BOTH content shapes (object content.text AND array content[j].text) in one payload", () => {
+    const engine = hostedEngine();
+    const redacted = engine.redact({
+      messages: [
+        { role: "user", content: { text: "object shape ssn 111-11-1111" } },
+        {
+          role: "user",
+          content: [{ type: "text", text: "array shape ssn 222-22-2222" }],
+        },
+      ],
+    });
+    expect(redacted).toEqual({
+      messages: [
+        { role: "user", content: { text: "<redacted>" } },
+        // The ``type`` sibling stays verbatim: /messages/1/content/0/type does
+        // not match /messages/*/content/*/text (last segment differs).
+        { role: "user", content: [{ type: "text", text: "<redacted>" }] },
+      ],
+    });
+  });
+
+  it("redacts the array-of-parts OUTPUT shape output[j].text (/output/*/text)", () => {
+    const engine = hostedEngine();
+    const redacted = engine.redact({
+      output: [{ type: "text", text: "agent leaked 333-33-3333" }],
+    });
+    expect(redacted).toEqual({ output: [{ type: "text", text: "<redacted>" }] });
   });
 });

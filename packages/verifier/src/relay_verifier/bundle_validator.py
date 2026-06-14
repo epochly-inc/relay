@@ -342,10 +342,12 @@ def classify_trust_anchor(trust_anchor_value: Any) -> str:
       * :data:`TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL` -- value equals the
         ``local_dev`` sentinel.
       * :data:`TRUST_ANCHOR_CLASS_RELAY_INC` -- value is a URL whose
-        host is ``relay.epochly.com`` AND whose path ends with
-        ``/.well-known/jwks.json``. The exact-path check defends against
-        a producer that points at an attacker-controlled path on the
-        Relay-Inc host (e.g. ``https://relay.epochly.com/evil``).
+        host is ``relay.epochly.com`` AND whose path is EXACTLY
+        ``/.well-known/jwks.json``. The exact-path check (equality, not
+        a suffix test) defends against a producer that points at an
+        attacker-controlled path on the Relay-Inc host (e.g.
+        ``https://relay.epochly.com/evil`` or
+        ``https://relay.epochly.com/attacker/path/.well-known/jwks.json``).
       * :data:`TRUST_ANCHOR_CLASS_BYO` -- any other non-empty string.
       * ``""`` -- value is missing, non-string, or empty. The caller
         emits :data:`RELAY_EVID_MISSING_TRUST_ANCHOR` separately.
@@ -362,9 +364,7 @@ def classify_trust_anchor(trust_anchor_value: Any) -> str:
     except ValueError:
         return TRUST_ANCHOR_CLASS_BYO
     host = (parsed.hostname or "").strip().lower()
-    if host == "relay.epochly.com" and parsed.path.endswith(
-        "/.well-known/jwks.json"
-    ):
+    if host == "relay.epochly.com" and parsed.path == "/.well-known/jwks.json":
         return TRUST_ANCHOR_CLASS_RELAY_INC
     return TRUST_ANCHOR_CLASS_BYO
 

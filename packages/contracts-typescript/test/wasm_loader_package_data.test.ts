@@ -176,24 +176,50 @@ describe("WS-G loader package data: npm pack ships the loader AND the wasm", () 
   // Compute the tarball file list ONCE for the whole block: `npm pack` spawns a
   // subprocess, so caching it keeps the suite fast and avoids redundant spawns.
   let packedPaths: string[] | null = null;
+
+  // Synchronous backoff without a busy-spin (execFileSync is sync, so we cannot
+  // await): block this thread for `ms` via Atomics.wait on a throwaway buffer.
+  function sleepSync(ms: number): void {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  }
+
   function packedFilePaths(): string[] {
     if (packedPaths !== null) {
       return packedPaths;
     }
-    const stdout = execFileSync(
-      "npm",
-      ["pack", "--dry-run", "--json"],
-      {
-        cwd: PACKAGE_ROOT,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      },
+    // `npm pack --dry-run --json` spawns an npm subprocess that, when several npm
+    // processes run concurrently (e.g. a `--workspaces` test run), intermittently
+    // fails to parse its own output and exits non-zero with
+    // {"error":{"code":"EOF","summary":"did not encounter expected EOF"}} -- a
+    // transient npm race, NOT a packaging defect (the test passes in isolation).
+    // Retry a few times with a short backoff so the deterministic packaging
+    // assertion is not flaky under load.
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        const stdout = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+          cwd: PACKAGE_ROOT,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        const parsed = JSON.parse(stdout) as PackedResult[];
+        const entry = parsed[0];
+        const files = entry?.files ?? [];
+        if (files.length === 0) {
+          throw new Error("npm pack --dry-run returned an empty file list");
+        }
+        packedPaths = files.map((f) => f.path);
+        return packedPaths;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 4) {
+          sleepSync(200 * (attempt + 1));
+        }
+      }
+    }
+    throw new Error(
+      `npm pack --dry-run --json failed after 5 attempts (transient npm race?): ${String(lastErr)}`,
     );
-    const parsed = JSON.parse(stdout) as PackedResult[];
-    const entry = parsed[0];
-    const files = entry?.files ?? [];
-    packedPaths = files.map((f) => f.path);
-    return packedPaths;
   }
 
   test("npm pack --dry-run includes both the wasm package data AND the loader package data", () => {

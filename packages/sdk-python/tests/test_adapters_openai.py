@@ -616,3 +616,78 @@ def test_scrub_mixed_int_and_string_keys_args_hash_stable() -> None:
     _, h1 = _redact_tool_input(tool_input)
     _, h2 = _redact_tool_input(dict(tool_input))
     assert h1 == h2
+
+
+# ---------------------------------------------------------------------------
+# sdk-python-run-005 (P2): tool-call args_hash MUST be byte-identical Py<->TS.
+#
+# The adapters previously canonicalized via json.dumps(redacted,
+# sort_keys=True, default=str), whose default separators (", " / ": ") and
+# ensure_ascii=True escaping diverge from the TypeScript ``canonicalStringify``
+# (compact separators, ensure_ascii=False) -- so the SAME logical tool-call
+# args produced DIFFERENT args_hash values across the two SDKs, breaking the
+# keystone Py<->TS parity invariant. The fix routes both adapters through the
+# shared JCS canonicalizer ``relay.redaction._canonical_json_stringify``.
+#
+# Expected hashes below are produced by the TS ``canonicalStringify`` +
+# SHA-256 over the SAME redacted payloads (computed from
+# packages/sdk-typescript/src/adapters/anthropic.ts / openai.ts), so this
+# test pins the cross-language wire bytes. Covers an ASCII payload AND a
+# non-ASCII payload (the case that the old ensure_ascii=True path corrupted).
+# ---------------------------------------------------------------------------
+
+# TS canonicalStringify({"city":"Paris","count":3,"unit":"celsius"}) ->
+# '{"city":"Paris","count":3,"unit":"celsius"}'; sha256 of those bytes:
+_TS_ARGS_HASH_ASCII = (
+    "e7a10193123f4f1bd82032a0acc942094726848c8a1cee601a6d9be84efaecac"
+)
+# TS canonicalStringify({"emoji":"\U0001F680","note":"café ... résumé"})
+# emits the code points as literal UTF-8 (ensure_ascii=False); sha256:
+_TS_ARGS_HASH_UNICODE = (
+    "f4c2d95659ffa625097e66bba5bf4f5896ce1734c941ecc5a428e620281e6605"
+)
+
+
+def test_openai_args_hash_matches_typescript_ascii() -> None:
+    """The OpenAI adapter args_hash equals the TS-produced hash for a plain
+    ASCII tool-call arguments string."""
+    from relay.adapters.openai_adapter import _redact_tool_arguments
+
+    raw = '{"city": "Paris", "unit": "celsius", "count": 3}'
+    _, args_hash = _redact_tool_arguments(raw)
+    assert args_hash == _TS_ARGS_HASH_ASCII
+
+
+def test_openai_args_hash_matches_typescript_unicode() -> None:
+    """The OpenAI adapter args_hash equals the TS-produced hash for a
+    non-ASCII tool-call arguments string. The old json.dumps path used
+    ensure_ascii=True (\\uXXXX escapes), diverging from TS; the JCS path
+    emits literal UTF-8 like JSON.stringify."""
+    from relay.adapters.openai_adapter import _redact_tool_arguments
+
+    raw = '{"note": "café — résumé", "emoji": "\U0001f680"}'
+    _, args_hash = _redact_tool_arguments(raw)
+    assert args_hash == _TS_ARGS_HASH_UNICODE
+
+
+def test_anthropic_args_hash_matches_typescript_unicode() -> None:
+    """The Anthropic adapter args_hash equals the TS-produced hash for the
+    same non-ASCII tool input (Anthropic receives a live dict, not a JSON
+    string)."""
+    from relay.adapters.anthropic_adapter import _redact_tool_input
+
+    tool_input = {"note": "café — résumé", "emoji": "\U0001f680"}
+    _, args_hash = _redact_tool_input(tool_input)
+    assert args_hash == _TS_ARGS_HASH_UNICODE
+
+
+def test_redact_tool_input_raises_typeerror_on_unsupported_value() -> None:
+    """The JCS canonicalizer fails CLOSED (TypeError) on a value type it
+    cannot serialise, where the old default=str silently coerced it. For
+    JSON-shaped tool args (post json.loads) this path is never hit, but a
+    live dict carrying a non-JSON value (e.g. a set) must not silently hash
+    a lossy string form."""
+    from relay.adapters.anthropic_adapter import _redact_tool_input
+
+    with pytest.raises(TypeError):
+        _redact_tool_input({"weird": {1, 2, 3}})
