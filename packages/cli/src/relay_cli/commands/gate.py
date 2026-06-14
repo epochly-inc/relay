@@ -261,8 +261,7 @@ def cmd_gate_evaluate(
             _emit_gate_internal_and_exit(
                 "gate fixture body is not a JSON object", ""
             )
-        _emit_decision_envelope(decision, start_time)
-        raise typer.Exit(code=_exit_for_action(decision.get("action", "accept")))
+        _emit_decision_and_exit(decision, start_time, "")
 
     # Step 1: POST /v1/gates/{id}/drafts
     draft_resp = _post_draft(
@@ -383,8 +382,7 @@ def cmd_gate_evaluate(
         _emit_gate_internal_and_exit(
             "resolved decision payload is not a JSON object", draft_id
         )
-    _emit_decision_envelope(payload, start_time)
-    raise typer.Exit(code=_exit_for_action(payload.get("action", "accept")))
+    _emit_decision_and_exit(payload, start_time, draft_id)
 
 
 def _post_draft(
@@ -583,14 +581,48 @@ def _emit_decision_envelope(decision: dict[str, Any], start_time: float) -> None
     })
 
 
-def _exit_for_action(action: str) -> int:
+def _exit_for_action(action: object) -> int:
     if action == "accept":
         return EXIT_SUCCESS
     if action == "block":
         return EXIT_4XX_BLOCK
     if action == "remediate":
         return EXIT_4XX_REMEDIATE
-    return EXIT_SUCCESS
+    # An unrecognized / missing / null action is a MALFORMED decision from the
+    # control plane, NOT an implicit accept. Fail CLOSED: never let an unknown
+    # action pass the merge gate as exit 0 (re-hunt gate-evaluate fail-open;
+    # keystone #2 -- a pass without a valid decision is not a pass). Callers use
+    # _emit_decision_and_exit which surfaces the structured internal-error
+    # envelope; this is the defense-in-depth floor for any direct caller.
+    return EXIT_UNCAUGHT_INTERNAL
+
+
+# The §P.1 gate-decision action enum. Anything outside this set (or absent) is a
+# malformed decision and is handled fail-closed by _emit_decision_and_exit.
+_VALID_GATE_ACTIONS: frozenset[str] = frozenset({"accept", "block", "remediate"})
+
+
+def _emit_decision_and_exit(
+    decision: dict[str, Any], start_time: float, draft_id: str
+) -> None:
+    """Emit the §P.2 decision envelope and exit with the §P.1 action code.
+
+    The single chokepoint for resolving a decision dict into a terminal outcome.
+    A decision whose ``action`` is missing or not in the §P.1 enum
+    {accept, block, remediate} is MALFORMED -- it must NOT be fabricated into an
+    ``accept`` envelope with exit 0 (the fail-open defect, re-hunt
+    gate-evaluate). Such a decision instead emits the structured
+    RELAY-GATE-INTERNAL envelope and exits 70, exactly like a non-dict 200 body.
+    """
+    action = decision.get("action")
+    if action not in _VALID_GATE_ACTIONS:
+        _emit_gate_internal_and_exit(
+            f"gate decision has missing or unrecognized action: {action!r} "
+            f"(expected one of {sorted(_VALID_GATE_ACTIONS)})",
+            draft_id,
+        )
+    _emit_decision_envelope(decision, start_time)
+    raise typer.Exit(code=_exit_for_action(action))
 
 
 __all__ = ["GATE_EVALUATE_SCHEMA", "cmd_gate_evaluate"]

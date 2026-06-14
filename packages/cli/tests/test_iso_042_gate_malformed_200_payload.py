@@ -218,6 +218,81 @@ def test_polling_well_formed_dict_block_resolves_exit_1(
     assert len(payload["failed_assertions"]) == 1
 
 
+# ---------------------------------------------------------------------------
+# Gate fail-open on unknown/missing action (re-hunt gate-evaluate, HIGH).
+# A dict decision whose `action` is missing or not in {accept,block,remediate}
+# must NOT silently become exit 0 (accept): _exit_for_action's catch-all
+# returned EXIT_SUCCESS and the action default fabricated "accept", so a
+# malformed/unexpected decision PASSED the CI merge gate. It must fail CLOSED
+# with the structured RELAY-GATE-INTERNAL envelope (exit 70), like any other
+# malformed-decision case (keystone #2: a pass without a valid decision is not
+# a pass).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-042")
+@pytest.mark.parametrize(
+    "decision",
+    [
+        # Unrecognized action value (typo / unknown / spec-foreign).
+        {"gate_decision_id": "gd-x", "action": "invalid", "round": 1},
+        {"gate_decision_id": "gd-x", "action": "deny", "round": 1},
+        {"gate_decision_id": "gd-x", "action": "", "round": 1},
+        {"gate_decision_id": "gd-x", "action": None, "round": 1},
+        # Action field entirely ABSENT (previously fabricated as "accept").
+        {"gate_decision_id": "gd-x", "round": 1, "failed_assertions": []},
+    ],
+)
+def test_polling_unknown_or_missing_action_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    decision: dict[str, Any],
+) -> None:
+    """A dict decision with an unknown/missing action MUST fail CLOSED
+    (exit 70, RELAY-GATE-INTERNAL), never exit 0 (accept)."""
+    _seed_draft_and_decision(
+        monkeypatch, draft_id="draft-failopen", decision_body=decision
+    )
+    with pytest.raises(typer.Exit) as exc:
+        gate_mod.cmd_gate_evaluate(gate_id="g-failopen")
+    assert exc.value.exit_code == EXIT_UNCAUGHT_INTERNAL, (
+        f"unknown/missing action MUST fail closed (exit {EXIT_UNCAUGHT_INTERNAL}), "
+        f"got {exc.value.exit_code} for decision={decision!r}"
+    )
+    captured = capsys.readouterr()
+    last_line = captured.err.strip().splitlines()[-1]
+    envelope = json.loads(last_line)
+    assert envelope["code"] == "RELAY-GATE-INTERNAL"
+    assert envelope["blocked_surface"] == "rly gate evaluate"
+    # CRITICAL: the success envelope (exit 0, action=accept) MUST NOT be emitted.
+    assert '"action":"accept"' not in captured.out
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-042")
+def test_remediate_action_resolves_exit_2(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: a well-formed remediate decision still resolves to exit 2."""
+    decision = {
+        "gate_decision_id": "gd-rem",
+        "action": "remediate",
+        "round": 2,
+        "failed_assertions": [{"id": "VAL-Y", "reason": "clock_skew"}],
+    }
+    _seed_draft_and_decision(
+        monkeypatch, draft_id="draft-rem", decision_body=decision
+    )
+    with pytest.raises(typer.Exit) as exc:
+        gate_mod.cmd_gate_evaluate(gate_id="g-rem")
+    assert exc.value.exit_code == 2
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out.strip().splitlines()[-1])
+    assert payload["action"] == "remediate"
+
+
 def _rly_env(tmp_path: Path, extra: dict[str, str]) -> dict[str, str]:
     env = os.environ.copy()
     env["RELAY_CLI_INVOCATIONS_DB_PATH"] = str(tmp_path / "inv.sqlite3")
