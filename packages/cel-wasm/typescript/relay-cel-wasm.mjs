@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 // crate/target/ tree. From this loader's directory
 // (packages/cel-wasm/typescript/) the vendored copy is two levels up then into
 // contracts-typescript/src/_wasm/. Both copies are byte-identical (same pinned
-// sha 431d966b...); a Python+TS sha-drift guard catches any divergence.
+// sha 49a6a6a2...); a Python+TS sha-drift guard catches any divergence.
 function packageDataWasmPath() {
   const here = dirname(fileURLToPath(import.meta.url));
   return normalize(
@@ -127,9 +127,13 @@ export class RelayCel {
    * instantiates with an EMPTY import object), a Cloudflare-Workers-shaped path
    * (no worker_threads, no Worker.terminate) gets a portable, deterministic
    * RELAY-CEL-003 from the budget rather than from a wall-clock thread-kill. The
-   * field is added to the request ONLY when it is a positive SAFE integer, so
-   * an absent / 0 / negative / non-int value leaves the request JSON
-   * byte-identical to the no-fuel form (0 is the wasm-side disabled sentinel).
+   * field is added to the request ONLY when it is a positive SAFE integer. An
+   * absent / null / 0 / negative-INTEGER value leaves the request JSON
+   * byte-identical to the no-fuel form (0 / negative is the wasm-side disabled
+   * sentinel); a DEFINED NON-INTEGER value (a string / object / bool, or a
+   * fractional / NaN / Infinity number) FAILS CLOSED with a RangeError, mirroring
+   * the Python loader's int-only contract -- a non-integer would otherwise be
+   * SILENTLY DROPPED, leaving the eval UNBOUNDED (fail-open).
    *
    * FAIL CLOSED on an out-of-u64 budget: the wasm reads fuel_budget with serde
    * as_u64().unwrap_or(0), so a POSITIVE value the JSON serializes OUTSIDE u64
@@ -150,7 +154,13 @@ export class RelayCel {
    */
   async eval(expr, bindings, options) {
     const { memory, alloc, eval: evalFn, dealloc } = this.#exports;
-    const req = bindings ? { expr, bindings } : { expr };
+    // Mirror the Python loader's `if bindings:` shape: include `bindings` ONLY
+    // when non-empty, so an empty-bindings eval builds a request byte-identical
+    // to the no-bindings form (the wasm treats {} and absent identically, but
+    // keeping the request shape itself byte-identical across hosts removes a
+    // latent Py<->TS divergence at the loader boundary).
+    const req =
+      bindings && Object.keys(bindings).length > 0 ? { expr, bindings } : { expr };
     if (options) {
       if (options.container) {
         req.container = options.container;
@@ -164,21 +174,45 @@ export class RelayCel {
       // default). Accept either the camelCase opts key (fuelBudget) or the
       // snake_case wire-name key (fuel_budget).
       const fuel = options.fuelBudget ?? options.fuel_budget;
-      if (typeof fuel === "number" && fuel > 0) {
-        // FAIL CLOSED on an out-of-u64 / non-safe-integer positive budget: such a
-        // value (e.g. 1e21, or 2**53) serializes outside u64, so the wasm's
-        // as_u64().unwrap_or(0) would read 0 -- silently DISABLING the budget and
-        // letting a fuel-exhausting expression run unbounded. Throw a RangeError so
-        // the misconfig surfaces instead of being masked. Number.isSafeInteger is
-        // the exact ceiling (MAX_SAFE_INTEGER 2**53 - 1 < u64 max 2**64 - 1).
-        if (!Number.isSafeInteger(fuel)) {
+      if (fuel !== undefined && fuel !== null) {
+        // FAIL CLOSED on a DEFINED non-integer budget, mirroring the Python
+        // loader's `type(fuel_budget) is not int -> raise`. The old
+        // `typeof fuel === "number"` guard SILENTLY DROPPED a non-number truthy
+        // budget (a string / object / bool), leaving the eval UNBOUNDED -- a
+        // fail-OPEN divergence from Python's fail-CLOSED ValueError (a "budget set"
+        // misconfig would become "unbounded", defeating the timeout). A non-number,
+        // or a non-integer / NaN / Infinity number, is a misconfig: surface it.
+        if (typeof fuel !== "number" || !Number.isInteger(fuel)) {
+          // Describe the offending budget by its TYPEOF only: `typeof` never
+          // throws for any input, whereas JSON.stringify (a BigInt / circular
+          // object) AND String() (a null-prototype object / a hostile toString)
+          // CAN throw, which would replace this documented fail-closed RangeError
+          // with a formatter TypeError. The type is the actionable diagnostic
+          // (pass an integer number).
           throw new RangeError(
-            `fuel budget ${fuel} is not a safe integer (must be a positive ` +
-              `integer <= ${Number.MAX_SAFE_INTEGER}); a larger/non-integer value ` +
-              "would serialize outside u64 and SILENTLY DISABLE the budget in the wasm",
+            `fuel budget must be an integer; got a ${typeof fuel}. A non-integer ` +
+              "value would be dropped (leaving the eval UNBOUNDED) -- fail closed to " +
+              "surface the misconfig, mirroring the Python loader's int-only contract",
           );
         }
-        req.fuel_budget = fuel;
+        if (fuel > 0) {
+          // FAIL CLOSED on an out-of-u64 / non-safe-integer positive budget: such a
+          // value (e.g. 1e21, or 2**53) serializes outside u64, so the wasm's
+          // as_u64().unwrap_or(0) would read 0 -- silently DISABLING the budget and
+          // letting a fuel-exhausting expression run unbounded. Throw a RangeError so
+          // the misconfig surfaces instead of being masked. Number.isSafeInteger is
+          // the exact ceiling (MAX_SAFE_INTEGER 2**53 - 1 < u64 max 2**64 - 1).
+          if (!Number.isSafeInteger(fuel)) {
+            throw new RangeError(
+              `fuel budget ${fuel} is not a safe integer (must be a positive ` +
+                `integer <= ${Number.MAX_SAFE_INTEGER}); a larger/non-integer value ` +
+                "would serialize outside u64 and SILENTLY DISABLE the budget in the wasm",
+            );
+          }
+          req.fuel_budget = fuel;
+        }
+        // An integer <= 0 is the disabled sentinel: no field added, byte-identical
+        // to the no-fuel request, matching the Python loader's non-positive path.
       }
     }
     const inp = this.#enc.encode(JSON.stringify(req));

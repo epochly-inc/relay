@@ -22,7 +22,7 @@ Wire form (lib.rs:22-31, verified file:line):
     list      {"t":"list","v":[...]}  order preserved        (lib.rs:1147-1150)
     map       {"t":"map","v":[[k,v],...]} sorted by key_sort_string (lib.rs:1151-1162)
     type      {"t":"type","v":"<cel-go type name>"}          (lib.rs:1295)
-    duration  {"t":"duration","v":"<secs>.<09-nanos>"}       (lib.rs:1283)
+    duration  {"t":"duration","v":"[-]<secs>.<09-nanos>"}    (value_to_typed Duration arm)
     timestamp {"t":"timestamp","v":"<RFC3339-Z>"}            (lib.rs:1290)
 
 THE WIRE FORM IS FROZEN. M6 WS-I changed only the HOST-SIDE TYPE LAYER: the
@@ -424,8 +424,9 @@ def py_to_typed(value: Any) -> dict[str, Any]:
     if isinstance(value, CelTypeValue):
         return {"t": "type", "v": value.name}
 
-    # duration -- datetime.timedelta -> "<secs>.<09-nanos>" (lib.rs:1278-1283).
-    # Classified before the numeric/collection branches.
+    # duration -- datetime.timedelta -> "[-]<secs>.<09-nanos>" (the sign rides on
+    # the WHOLE value; see _encode_duration and the crate value_to_typed Duration
+    # arm). Classified before the numeric/collection branches.
     if isinstance(value, datetime.timedelta):
         return {"t": "duration", "v": _encode_duration(value)}
 
@@ -652,29 +653,18 @@ def _encode_uint(value: Any) -> str:
 
 def _encode_duration(value: datetime.timedelta) -> str:
     """Encode a ``datetime.timedelta`` as the wasm wire form
-    ``"<secs>.<09-nanos>"`` (lib.rs:1278-1283).
+    ``"[-]<secs>.<09-nanos>"`` (lib.rs ``value_to_typed`` Duration arm).
 
-    Faithful port of the Rust serializer:
-    ``secs = d.num_seconds()`` (truncates TOWARD ZERO),
-    ``nanos = (d - seconds(secs)).num_nanoseconds()``,
-    ``format!("{secs}.{:09}", nanos.abs())`` -- so the sign is carried on the
-    ``secs`` part ONLY, and the fractional part is the ABSOLUTE nanoseconds
-    zero-padded to 9 digits.
-
-    ROBOREV finding C (HIGH) -- fail closed on an unrepresentable sign. Because
-    the sign rides on ``secs`` alone, a sub-second NEGATIVE duration (``secs ==
-    0``, e.g. -0.25s) has NO place to carry its sign: the naive encode emits
-    ``"0.250000000"`` (POSITIVE), which a decoder reads back as +0.25s -- silent
-    sign corruption. The pinned wasm binary serializes with the identical
-    sign-lossy ``format!`` (lib.rs:1283), so we CANNOT invent a sign-preserving
-    wire form without diverging from the wasm (byte-parity keystone #16 would
-    break) and we MUST NOT change the crate. So we FAIL CLOSED: a duration whose
-    SIGNED total cannot be faithfully represented by this wire form raises a
-    structured :class:`RelayCelEngineError` (RELAY-CEL-009 /
-    RELAY-CEL-ENGINE-REQUEST) -- matching the codec's existing fail-closed
-    posture (a value the wire form cannot carry is a request/marshaling error,
-    never a silent corruption). The TS codec applies the IDENTICAL guard, so Py
-    and TS stay byte-symmetric (both reject the same inputs).
+    Faithful port of the Rust serializer (post crate-1 audit fix): the second
+    count comes from ``num_seconds()`` (truncates TOWARD ZERO) and the sign is
+    carried on the WHOLE value, not on ``secs`` alone. For a duration in the open
+    interval ``(-1s, 0s)`` ``secs == 0``, so the sign lives only in the
+    sub-second remainder; the wire form prefixes a leading ``'-'`` (e.g. -0.25s
+    -> ``"-0.250000000"``) and the fractional part is the ABSOLUTE nanoseconds
+    zero-padded to 9 digits. Byte-identical to the historical form for every
+    duration OUTSIDE ``(-1s, 0s)``, and now sign-correct inside it -- matching
+    the pinned wasm serializer so ``typed_to_py`` / ``py_to_typed`` stay
+    byte-symmetric with the crate over the same wire form (keystone #16).
 
     ``timedelta`` stores microsecond resolution, so a sub-microsecond duration
     is not representable host-side; within the representable (microsecond)
@@ -691,21 +681,11 @@ def _encode_duration(value: datetime.timedelta) -> str:
         else -((-total_ns) // 1_000_000_000)
     )
     rem_ns = total_ns - secs * 1_000_000_000
-    # Fail closed: a negative total with a zero seconds component cannot carry
-    # its sign in "<secs>.<09-nanos>" (the sign lives on secs only). Encoding it
-    # would silently flip -0.25s to +0.25s. Reject rather than corrupt.
-    if total_ns < 0 and secs == 0:
-        raise RelayCelEngineError(
-            "duration with a sub-second negative magnitude "
-            f"({total_ns} ns total) is not representable in the wasm "
-            "'<secs>.<09-nanos>' wire form: the sign rides on the integer "
-            "seconds component, which is 0 here, so the value would silently "
-            "encode as POSITIVE. Refusing to corrupt the binding (the pinned "
-            "wasm serializer is identically sign-lossy; this fails closed "
-            "rather than diverge from it).",
-            subtype=SUBTYPE_ENGINE_REQUEST,
-        )
-    return f"{secs}.{abs(rem_ns):09d}"
+    # Sign on the WHOLE value (matching the wasm value_to_typed fix): negative iff
+    # the total is negative. For a (-1s, 0s) duration secs == 0 so the sign rides
+    # only on the leading '-'; abs() the seconds and nanos magnitudes.
+    sign = "-" if total_ns < 0 else ""
+    return f"{sign}{abs(secs)}.{abs(rem_ns):09d}"
 
 
 def _timedelta_total_nanos(td: datetime.timedelta) -> int:
@@ -940,12 +920,12 @@ def _require_bool_v(typed: dict[str, Any]) -> bool:
 
 
 def _decode_duration(v: str) -> datetime.timedelta:
-    """Decode a ``duration`` tag's ``"<secs>.<nanos>"`` wire string into a
+    """Decode a ``duration`` tag's ``"[-]<secs>.<nanos>"`` wire string into a
     ``datetime.timedelta``.
 
-    Faithful port of Rust ``split_secs_nanos`` (lib.rs:1468-1485): split on the
-    first '.', parse the integer seconds, pad/truncate the fractional part to 9
-    digits for nanoseconds, and apply the seconds' sign to the nanos. The
+    Faithful port of Rust ``split_secs_nanos`` (post crate-1 audit fix): split on
+    the first '.', parse the integer seconds, pad/truncate the fractional part to
+    9 digits for nanoseconds, and apply the WHOLE-VALUE sign to the nanos. The
     resulting ``timedelta`` holds microsecond resolution, so sub-microsecond
     nanos are truncated (toward zero) -- the same representable-domain limit
     the encode side documents.
@@ -960,7 +940,11 @@ def _decode_duration(v: str) -> datetime.timedelta:
         nanos = int(nano_digits) if nano_digits else 0
     except ValueError as exc:
         raise ValueError(f"typed_to_py: bad duration nanos in {v!r}") from exc
-    if secs < 0:
+    # Apply the sign from the WHOLE string, not just ``secs < 0``: a duration in
+    # (-1s, 0s) serializes as "-0.<nanos>", whose secs field parses to 0 (the sign
+    # lives only on the leading '-'), so a ``secs < 0`` test would miss it and
+    # decode a negative sub-second duration as positive (mirrors lib.rs).
+    if v.startswith("-"):
         nanos = -nanos
     # Truncate nanos toward zero into the microsecond domain (timedelta
     # resolution); exact for every wire value in the microsecond domain.

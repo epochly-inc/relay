@@ -26,7 +26,7 @@ The expression and the exhausting budget mirror the crate's own native
 
 tier-1 plumbing (runs offline against the committed pinned wasm; the default
 loader path resolves the crate/target release wasm, identical sha256 to the
-package-data pin `431d966b...`). Set CEL_WASM to override the wasm path.
+package-data pin `49a6a6a2...`). Set CEL_WASM to override the wasm path.
 """
 from __future__ import annotations
 

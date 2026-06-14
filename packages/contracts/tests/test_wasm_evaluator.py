@@ -32,6 +32,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
 from __future__ import annotations
 
+import datetime
 import threading
 import time
 from typing import Any
@@ -87,6 +88,24 @@ def test_default_construction_accepts_udfs_keyword():
     # root cause resolved by M7 P7EDGE fuel metering.
     ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
     assert ev.evaluate("1 + 2") == 3
+
+
+@pytest.mark.plumbing
+def test_negative_subsecond_duration_round_trips_end_to_end():
+    # roborev 8227bc4 (HIGH): the host codec (py_to_typed to encode bindings,
+    # typed_to_py to decode results -- the path evaluate() uses) must carry the
+    # sign of a sub-second NEGATIVE duration. Echo a -0.5s timedelta binding
+    # through the real wasm: encode -> "-0.500000000" -> wasm -> decode -> -0.5s.
+    # The old host codec failed closed on the encode and silently flipped the sign
+    # on the decode (the host mirror of the crate-1 wasm bug). This closes the
+    # production path the audit + roborev flagged: a contract assertion evaluating
+    # to a negative sub-second duration. (A duration VALUE binding is allowed under
+    # the Relay profile; only duration()/timestamp() CALLS are fenced.)
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
+    neg_half_second = datetime.timedelta(microseconds=-500_000)
+    result = ev.evaluate("d", bindings={"d": neg_half_second})
+    assert result == neg_half_second, result
+    assert result.total_seconds() == -0.5, result
 
 
 @pytest.mark.plumbing

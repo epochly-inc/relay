@@ -5,7 +5,6 @@ use crate::{ExecutionError, Value};
 use chrono::TimeZone;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::ops::{Add, Sub};
 use std::sync::LazyLock;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,14 +30,21 @@ impl Timestamp {
         rhs: chrono::Duration,
         rhs_for_err: Value,
     ) -> Result<Self, ExecutionError> {
-        let result = self.0.add(rhs);
-        if result > *MAX_TIMESTAMP || result < *MIN_TIMESTAMP {
-            return Err(ExecutionError::Overflow(
-                "add",
-                (self as &dyn Val).try_into().unwrap_or(Value::Null),
-                rhs_for_err,
-            ));
-        }
+        // Use chrono's CHECKED add: the `+` operator panics on a representation
+        // overflow (e.g. a host duration BINDING of ~285M years), which would trap
+        // the wasm reactor (RELAY-CEL-PANIC) instead of returning the clean
+        // cel-spec Overflow. A chrono None and a cel-spec MIN/MAX overshoot both
+        // map to the same RELAY-CEL-004 Overflow.
+        let result = match self.0.checked_add_signed(rhs) {
+            Some(r) if r <= *MAX_TIMESTAMP && r >= *MIN_TIMESTAMP => r,
+            _ => {
+                return Err(ExecutionError::Overflow(
+                    "add",
+                    (self as &dyn Val).try_into().unwrap_or(Value::Null),
+                    rhs_for_err,
+                ));
+            }
+        };
         Ok(Self(result))
     }
 }
@@ -128,14 +134,20 @@ impl Comparer for Timestamp {
 impl Subtractor for Timestamp {
     fn sub<'a>(&'a self, rhs: &'_ dyn Val) -> Result<Cow<'a, dyn Val>, ExecutionError> {
         if let Some(rhs) = rhs.downcast_ref::<CelDuration>() {
-            let result = self.0.sub(*rhs.inner());
-            if result > *MAX_TIMESTAMP || result < *MIN_TIMESTAMP {
-                return Err(ExecutionError::Overflow(
-                    "sub",
-                    (self as &dyn Val).try_into().unwrap_or(Value::Null),
-                    (rhs as &dyn Val).try_into().unwrap_or(Value::Null),
-                ));
-            }
+            // Checked sub: chrono's `-` operator panics on a representation
+            // underflow (a huge host duration BINDING), which would trap the wasm;
+            // map both the chrono None and the cel-spec MIN/MAX overshoot to the
+            // same RELAY-CEL-004 Overflow.
+            let result = match self.0.checked_sub_signed(*rhs.inner()) {
+                Some(r) if r <= *MAX_TIMESTAMP && r >= *MIN_TIMESTAMP => r,
+                _ => {
+                    return Err(ExecutionError::Overflow(
+                        "sub",
+                        (self as &dyn Val).try_into().unwrap_or(Value::Null),
+                        (rhs as &dyn Val).try_into().unwrap_or(Value::Null),
+                    ));
+                }
+            };
             Ok(Cow::<dyn Val>::Owned(Box::new(Self(result))))
         } else if let Some(rhs) = rhs.downcast_ref::<Self>() {
             // Relay fork (G13): timestamp - timestamp -> duration, but the

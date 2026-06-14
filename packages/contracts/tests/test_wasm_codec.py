@@ -310,7 +310,7 @@ def test_typed_to_py_rejects_unknown_tag():
 #
 # The wasm value_to_typed (lib.rs:1248-1297) emits these tags:
 #   type      {"t":"type","v":"<cel-go type name>"}     (lib.rs:1295)
-#   duration  {"t":"duration","v":"<secs>.<09-nanos>"}  (lib.rs:1283)
+#   duration  {"t":"duration","v":"[-]<secs>.<09-nanos>"} (value_to_typed Duration arm)
 #   timestamp {"t":"timestamp","v":"<RFC3339-Z>"}       (lib.rs:1290)
 # These reach the host: `type(x)` is NOT fenced under relay_profile so it can
 # arrive on the success envelope, and duration/timestamp VALUES (not the fenced
@@ -361,8 +361,9 @@ def test_round_trip_type_tag_is_byte_identical(name):
 
 @pytest.mark.plumbing
 def test_typed_to_py_duration_tag_is_timedelta():
-    # lib.rs:1283 emits {"t":"duration","v":"<secs>.<09-nanos>"}; the host
-    # decodes it to a native datetime.timedelta.
+    # the wasm value_to_typed Duration arm emits
+    # {"t":"duration","v":"[-]<secs>.<09-nanos>"}; the host decodes it to a
+    # native datetime.timedelta.
     decoded = typed_to_py({"t": "duration", "v": "5.000000000"})
     assert type(decoded) is datetime.timedelta
     assert decoded.total_seconds() == 5.0
@@ -383,8 +384,9 @@ def test_typed_to_py_duration_tag_is_timedelta():
 def test_round_trip_duration_tag_microsecond_domain(wire, total_seconds):
     # Round-trip within the host-representable (microsecond) domain: decode
     # then re-encode reproduces the wasm canonical wire form byte-for-byte. The
-    # encode mirrors lib.rs:1279-1283 exactly (secs trunc toward zero, then
-    # f"{secs}.{abs(rem_nanos):09}", sign carried on secs only).
+    # encode mirrors the crate value_to_typed Duration arm: secs from
+    # num_seconds() (trunc toward zero) + the sub-second remainder, with the sign
+    # on the WHOLE value (a leading '-'), not on secs alone.
     decoded = typed_to_py({"t": "duration", "v": wire})
     assert type(decoded) is datetime.timedelta
     assert decoded.total_seconds() == total_seconds
@@ -393,33 +395,31 @@ def test_round_trip_duration_tag_microsecond_domain(wire, total_seconds):
 
 @pytest.mark.plumbing
 @pytest.mark.parametrize(
-    "micros_total",
+    "micros_total,wire",
     [
-        -250_000,  # -0.25s   (sub-second negative: secs == 0, sign on the frac)
-        -1,  # -1 microsecond, the smallest representable sub-second negative
-        -999_999,  # -0.999999s, just under -1s, still secs == 0
-        -500_000,  # -0.5s
+        (-250_000, "-0.250000000"),  # -0.25s (sub-second negative: secs == 0)
+        (-1, "-0.000001000"),  # -1 microsecond, the smallest sub-second negative
+        (-999_999, "-0.999999000"),  # -0.999999s, just under -1s, still secs == 0
+        (-500_000, "-0.500000000"),  # -0.5s
     ],
 )
-def test_py_to_typed_subsecond_negative_duration_fails_closed(micros_total):
-    # ROBOREV finding C (HIGH): the wasm wire form "<secs>.<09-nanos>" carries the
-    # sign ONLY on the integer seconds part. For a sub-second NEGATIVE duration
-    # (secs == 0, e.g. -0.25s) the sign is unrepresentable, so the old encode
-    # produced "0.250000000" (POSITIVE) and the decoder read it back as +0.25s --
-    # silent sign corruption. The wire form CANNOT represent the value, so the
-    # encoder FAILS CLOSED with a structured RELAY-CEL-009 /
-    # RELAY-CEL-ENGINE-REQUEST error rather than corrupting it. (Sign-preserving
-    # the wire form is impossible without changing the pinned wasm binary, which
-    # produces the identical sign-lossy form; failing closed keeps Py and TS
-    # byte-identical and matches the existing fail-closed posture.)
+def test_py_to_typed_subsecond_negative_duration_round_trips(micros_total, wire):
+    # The crate-1 audit fix taught the wasm serializer/deserializer to carry the
+    # sign over the open interval (-1s, 0s) ("-0.<nanos>"). The Python host codec
+    # MUST match (roborev 8227bc4 HIGH): a sub-second NEGATIVE duration (secs == 0,
+    # e.g. -0.25s) now encodes WITH its sign ("-0.250000000"), and decodes back to
+    # the same negative timedelta -- no longer a fail-closed RELAY-CEL-009, and
+    # never the old silent sign corruption to +0.25s. This is the Python mirror of
+    # the wasm fix, keeping typed_to_py / py_to_typed byte-symmetric with the
+    # crate over the same wire form.
     dur = datetime.timedelta(microseconds=micros_total)
     # Sanity: genuinely a sub-second negative (-1s < total < 0).
     assert -1.0 < dur.total_seconds() < 0
-    with pytest.raises(RelayCelEngineError) as exc_info:
-        py_to_typed(dur)
-    err = exc_info.value
-    assert err.code == "RELAY-CEL-009"
-    assert err.subtype == "RELAY-CEL-ENGINE-REQUEST"
+    typed = py_to_typed(dur)
+    assert typed == {"t": "duration", "v": wire}, typed
+    back = typed_to_py(typed)
+    assert type(back) is datetime.timedelta
+    assert back == dur, (back, dur)
 
 
 @pytest.mark.plumbing

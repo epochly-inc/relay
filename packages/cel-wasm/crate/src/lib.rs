@@ -1343,11 +1343,26 @@ fn value_to_typed(v: &Value) -> J {
         }
         #[cfg(feature = "chrono")]
         Value::Duration(d) => {
+            // The typed-canonical duration form is "<secs>.<9-digit-nanos>" with
+            // the sign on the WHOLE value. Derive the second count from
+            // num_seconds() -- NOT num_nanoseconds(), which overflows i64 for any
+            // duration beyond ~292 years (a huge host BINDING) and would
+            // saturate/corrupt it. num_seconds() truncates TOWARD ZERO, so for a
+            // duration in the open interval (-1s, 0s) it is 0 and the sign lives
+            // only in the sub-second remainder; carry the sign from the whole
+            // value (negative iff secs < 0, OR secs == 0 and the remainder is
+            // negative). Byte-identical to the historical form for every duration
+            // OUTSIDE (-1s, 0s) -- including the full second count of a huge
+            // binding -- and now also sign-correct inside it.
             let secs = d.num_seconds();
-            let nanos = (*d - chrono::Duration::seconds(secs))
+            let rem_nanos = (*d - chrono::Duration::seconds(secs))
                 .num_nanoseconds()
                 .unwrap_or(0);
-            json!({"t":"duration","v": format!("{secs}.{:09}", nanos.abs())})
+            let neg = secs < 0 || (secs == 0 && rem_nanos < 0);
+            let sign = if neg { "-" } else { "" };
+            let abs_secs = secs.unsigned_abs();
+            let abs_nanos = rem_nanos.unsigned_abs();
+            json!({"t":"duration","v": format!("{sign}{abs_secs}.{abs_nanos:09}")})
         }
         #[cfg(feature = "chrono")]
         Value::Timestamp(t) => {
@@ -1385,24 +1400,29 @@ fn rfc3339_utc_z(t: &chrono::DateTime<chrono::FixedOffset>) -> String {
 /// precision loss on large durations.
 #[cfg(feature = "chrono")]
 fn format_duration_go(d: &chrono::Duration) -> String {
-    let total_nanos = d.num_nanoseconds().unwrap_or_else(|| {
-        // Saturating fallback for durations beyond i64 nanos (~292 years).
-        // The cel-spec corpus stays well inside this range; this only guards
-        // against a panic on a pathological binding.
-        d.num_seconds().saturating_mul(1_000_000_000)
-    });
-    let neg = total_nanos < 0;
-    let abs = total_nanos.unsigned_abs();
-    let secs = abs / 1_000_000_000;
-    let nanos = abs % 1_000_000_000;
+    // Derive the second count from num_seconds() (truncates TOWARD ZERO; full
+    // range) plus the sub-second remainder -- NOT num_nanoseconds(), which
+    // overflows i64 for any duration beyond ~292 years and would SATURATE a huge
+    // accepted binding (e.g. 9e15 s -> "9223372036.854775807s") instead of its
+    // real value. Mirrors the value_to_typed Duration serializer. The sign rides
+    // on the WHOLE value (negative iff secs < 0, OR secs == 0 and the sub-second
+    // remainder is negative -- the (-1s, 0s) interval). Byte-identical to the
+    // prior form for every in-range duration; correct for a huge binding too.
+    let whole_secs = d.num_seconds();
+    let rem_nanos = (*d - chrono::Duration::seconds(whole_secs))
+        .num_nanoseconds()
+        .unwrap_or(0);
+    let neg = whole_secs < 0 || (whole_secs == 0 && rem_nanos < 0);
     let sign = if neg { "-" } else { "" };
-    if nanos == 0 {
-        format!("{sign}{secs}s")
+    let abs_secs = whole_secs.unsigned_abs();
+    let abs_nanos = rem_nanos.unsigned_abs();
+    if abs_nanos == 0 {
+        format!("{sign}{abs_secs}s")
     } else {
         // Trim trailing zeros from the 9-digit fractional part.
-        let frac = format!("{nanos:09}");
+        let frac = format!("{abs_nanos:09}");
         let frac = frac.trim_end_matches('0');
-        format!("{sign}{secs}.{frac}s")
+        format!("{sign}{abs_secs}.{frac}s")
     }
 }
 
@@ -1511,11 +1531,24 @@ fn typed_to_value(j: &J) -> Result<Value, String> {
                 .get("v")
                 .and_then(|v| v.as_str())
                 .ok_or("duration needs v")?;
-            // Stored form is "<secs>.<nanos>"; reconstruct chrono::Duration.
+            // Stored form is "<secs>.<nanos>"; reconstruct chrono::Duration with a
+            // CHECKED builder. split_secs_nanos does NO range check, and chrono's
+            // Duration::seconds() + `+` PANIC on a value beyond the representable
+            // TimeDelta range (a boundary wire string like
+            // "9223372036854775.900000000") -- a panic would TRAP the wasm reactor
+            // (ENGINE_PANIC / RELAY-CEL-PANIC) instead of the clean bad-binding
+            // error the bindings loop maps a typed_to_value Err to (RELAY-CEL-006),
+            // contradicting the no-panic contract the duration-arithmetic path
+            // holds. nanos is bounded to +/-999_999_999 by split_secs_nanos so
+            // nanoseconds(nanos) cannot panic; only secs construction and the sum
+            // can overflow, and both are checked here.
             let (secs, nanos) = split_secs_nanos(s)?;
-            Ok(Value::Duration(
-                chrono::Duration::seconds(secs) + chrono::Duration::nanoseconds(nanos),
-            ))
+            let base = chrono::Duration::try_seconds(secs)
+                .ok_or("duration seconds out of representable range")?;
+            let dur = base
+                .checked_add(&chrono::Duration::nanoseconds(nanos))
+                .ok_or("duration out of representable range")?;
+            Ok(Value::Duration(dur))
         }
         #[cfg(feature = "chrono")]
         "timestamp" => {
@@ -1545,7 +1578,11 @@ fn split_secs_nanos(s: &str) -> Result<(i64, i64), String> {
     }
     nano_digits.truncate(9);
     let mut nanos: i64 = nano_digits.parse().map_err(|_| format!("bad duration nanos '{s}'"))?;
-    if secs < 0 {
+    // Apply the sign from the WHOLE string, not just `secs < 0`: a duration in
+    // (-1s, 0s) serializes as "-0.<nanos>", whose secs field parses to 0 (the
+    // sign lives only on the leading '-'), so a `secs < 0` test would miss it and
+    // decode a negative sub-second duration as positive.
+    if s.starts_with('-') {
         nanos = -nanos;
     }
     Ok((secs, nanos))

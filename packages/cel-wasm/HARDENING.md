@@ -271,7 +271,7 @@ running unbounded. Key properties that make this the portable edge timeout:
   stays byte-for-byte equal to the pre-WS-J engine (VAL-002). The fuel budget
   adds NO conformance regression: ex-proto stays 100.0% and the reproducible
   build hash is unchanged-by-recipe (`make repro` -> the pinned
-  `431d966b2818ef4539a4f6b78e2903a4d6911c6b6352e256e35531a44f992511`).
+  `49a6a6a2d3b3fcd50479dfae68ea6eace70a40cc30aa574e6584045c261b7c08`).
 - **Loaders thread the budget identically + fail closed.** Both the TS/edge
   loader (`typescript/relay-cel-wasm.mjs`, `fuelBudget`/`fuel_budget` option) and
   the Python loader (`python/relay_cel_wasm.py`, `fuel_budget=`) add the field to
@@ -290,7 +290,7 @@ the fuel envelope onto `RelayCelTimeoutError` lives at
 Verified (WS-J acceptance commands, the cel-wasm CI workflow runs the first
 two): `make -C packages/cel-wasm gate` exit 0 (ex-proto 100.0% + cross-host
 byte-parity); `make -C packages/cel-wasm repro` exit 0 (byte-deterministic ==
-pinned `431d966b...`, 0 embedded machine paths); `make -C packages/cel-wasm
+pinned `49a6a6a2...`, 0 embedded machine paths); `make -C packages/cel-wasm
 ascii-lint` exit 0. The WS-J Python loader fuel-timeout test
 (`tests/test_wsj_fuel_timeout.py`), the TS edge-fuel-timeout vitest, and the
 fuel-exhaustion cross-host envelope-parity plumbing test all green. The cel-wasm
@@ -298,4 +298,67 @@ CI workflow (`.github/workflows/cel-wasm-conformance.yml`) runs the
 `conformance-gate` (`make gate`) and `reproducible-build` (`make repro`) jobs as
 release-blocking required checks, plus the WS-J fuel-exhaustion cross-host parity
 plumbing step in the discipline gate. NO new wasm import, NO trust-anchor key
-material, NO crate/pinned-sha change beyond the already-landed fuel code.
+material.
+
+## Post-cutover audit remediation (DONE + VERIFIED)
+
+A structural review + adversarial audit of the full cutover diff surfaced two
+real crate-level correctness defects (plus three host-level fixes). Both crate
+fixes rebuilt the wasm; the pinned sha moved
+`431d966b... -> 49a6a6a2...` (re-vendored to both package-data copies, re-pinned
+at every site, `make repro` byte-deterministic, `make gate` ex-proto 100.0% +
+cross-host byte-parity 1449 records, verify-self `cel-engine-single-wasm` green).
+
+- **crate-1 (P1): negative sub-second duration dropped its sign.**
+  `value_to_typed`'s `Value::Duration` arm built `secs` from `num_seconds()`
+  (truncates toward zero) and emitted `nanos.abs()`, so a duration in the open
+  interval `(-1s, 0s)` (e.g. `timestamp - timestamp` yielding `-0.5s`) serialized
+  as `"0.500000000"` -- a POSITIVE half-second. The deserializer
+  `split_secs_nanos` had the mirror bug (it negated nanos only when `secs < 0`,
+  but `"-0"` parses to `0`), so a `"-0.5"` BINDING decoded as `+0.5s`. Both now
+  carry the sign from the whole value (serializer derives it from total
+  nanoseconds like `format_duration_go`; deserializer keys on a leading `'-'`).
+  Byte-identical for every duration OUTSIDE `(-1s, 0s)`, so conformance + the
+  corpus golden are unchanged. `tests/test_g13_temporal_arith.py`.
+- **vendor-1 (P1): `timestamp +/- duration` could TRAP the wasm.**
+  `Timestamp::checked_add_duration` / `Subtractor::sub` used chrono's PANICKING
+  `+`/`-` operators; a host duration BINDING with a chrono-representation-
+  overflowing magnitude (~285M years -- the `duration()` builtin caps at ~292y
+  but a typed binding does not) panicked -> `RELAY-CEL-PANIC` instead of the
+  clean `RELAY-CEL-004` Overflow. Both legs now use `checked_add_signed` /
+  `checked_sub_signed`, mapping a chrono `None` to the same Overflow as the
+  cel-spec MIN/MAX range check. `tests/test_g13_temporal_arith.py`.
+- **loaders-1 (P2): TS fuel loader failed OPEN on a non-number budget.** The
+  `.mjs` loader's `typeof fuel === "number"` guard SILENTLY DROPPED a non-number
+  truthy `fuelBudget` (a string / object / bool), leaving the eval UNBOUNDED -- a
+  fail-OPEN divergence from the Python loader's `type(fuel_budget) is not int ->
+  raise`. It now rejects any defined non-integer with a RangeError.
+  `conformance/harness/wsj_edge_fuel_timeout.test.mjs`.
+- **loaders-2 (P2) + ts-host-1 (doc):** the `.mjs` loader now omits an empty
+  `bindings` object (request shape byte-identical to the Python loader); a stale
+  `wasm-evaluator.ts` header comment ("`evaluator.ts`") corrected to
+  `host-guards.ts`.
+- **crate-2 (P2, second-pass audit): duration BINDING deserializer could TRAP
+  the wasm.** The fix for vendor-1 hardened the timestamp-ARITHMETIC path but
+  left `typed_to_value`'s `"duration"` arm reconstructing a binding via chrono's
+  PANICKING `Duration::seconds(secs) + Duration::nanoseconds(nanos)`;
+  `split_secs_nanos` does no range check, so a boundary wire string beyond the
+  representable `TimeDelta` range (e.g. `"9223372036854775.900000000"`) panicked
+  -> `RELAY-CEL-PANIC` -- contradicting the no-panic contract the arithmetic path
+  holds. Not reachable through a shipped evaluator (a `datetime.timedelta` caps
+  ~107x below the boundary and the TS encoder emits no duration wire), but a real
+  unchecked panicking path. Now a CHECKED builder (`try_seconds` + `checked_add`)
+  returns the clean `RELAY-CEL-006` bad-binding error the bindings loop already
+  maps a `typed_to_value` Err to; the exact `TimeDelta::MAX` boundary still
+  round-trips. `tests/test_g13_temporal_arith.py`.
+- **crate-3 (P2/MED, roborev): `string(duration)` SATURATED a huge binding.**
+  `format_duration_go` (the `string(d)` conversion) -- the sibling of the
+  `value_to_typed` serializer crate-1 fixed -- STILL derived its seconds from
+  `num_nanoseconds().unwrap_or_else(saturating_mul)`, so `string(d)` on a huge
+  accepted duration binding (9e15 s) silently saturated to ~292 years
+  (`"9223372036.854775807s"`) instead of `"9000000000000000s"`. (It had even been
+  cited as the "already-correct sibling" during crate-1 -- it was not.) Now
+  derives the second count from `num_seconds()` + the sub-second remainder +
+  whole-value sign, matching `value_to_typed`; byte-identical for every in-range
+  duration (the cel-spec corpus stays well inside i64 nanos, so ex-proto + parity
+  are unchanged). `tests/test_g13_temporal_arith.py`.

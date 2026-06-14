@@ -113,14 +113,34 @@ func refToTyped(v ref.Val) (interface{}, bool) {
 	case types.Null:
 		return map[string]interface{}{"t": "null"}, true
 	case types.Duration:
-		// seconds.nanos
+		// "[-]seconds.nanos" with the sign on the WHOLE value -- matching the crate
+		// serializer (crate/src/lib.rs value_to_typed Duration arm). A Go
+		// time.Duration is int64 nanoseconds, so the total is exact; deriving secs
+		// by truncation (int64(d.Seconds())) and abs()-ing the nanos LOSES the sign
+		// for a duration in the open interval (-1s, 0s) (e.g. -0.25s -> "0.25",
+		// POSITIVE). Carry the sign from the total instead so the oracle agrees
+		// with the (sign-correct) wasm for every duration, not just |d| >= 1s.
+		// Byte-identical to the prior form for every duration OUTSIDE (-1s, 0s).
 		d := vv.Duration
-		secs := int64(d.Seconds())
-		nanos := d.Nanoseconds() - secs*1_000_000_000
-		if nanos < 0 {
-			nanos = -nanos
+		totalNanos := d.Nanoseconds()
+		neg := totalNanos < 0
+		// Magnitude in uint64 to avoid the signed-negation overflow at
+		// math.MinInt64 (the minimum time.Duration, -9223372036.854775808s):
+		// `-math.MinInt64` overflows int64 and would leave the value negative.
+		// uint64(-(n+1))+1 computes |n| exactly for every negative int64.
+		var abs uint64
+		if neg {
+			abs = uint64(-(totalNanos + 1)) + 1
+		} else {
+			abs = uint64(totalNanos)
 		}
-		return map[string]interface{}{"t": "duration", "v": fmt.Sprintf("%d.%09d", secs, nanos)}, true
+		secs := abs / 1_000_000_000
+		nanos := abs % 1_000_000_000
+		sign := ""
+		if neg {
+			sign = "-"
+		}
+		return map[string]interface{}{"t": "duration", "v": fmt.Sprintf("%s%d.%09d", sign, secs, nanos)}, true
 	case types.Timestamp:
 		return map[string]interface{}{"t": "timestamp", "v": vv.Format("2006-01-02T15:04:05Z07:00")}, true
 	case *types.Type:

@@ -28,7 +28,7 @@
 // wasm call and the finiteness / safe-integer guard (RELAY-CEL-006) on the
 // converted result -- and enforcing the wall-clock timeout via a
 // node:worker_threads Worker that is hard-killed (`worker.terminate()`) on
-// budget exceed. The host guards are imported from `evaluator.ts` (reused, NOT
+// budget exceed. The host guards are imported from `host-guards.ts` (reused, NOT
 // reimplemented). A wasm `{ok:false}` engine envelope maps to the dedicated
 // RELAY-CEL-009 `RelayCelEngineError` (never the host 004/006), the wasm's
 // RELAY-CEL-002 profile rejection surfaces as `RelayCelProfileError` with the

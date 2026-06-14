@@ -279,3 +279,165 @@ test("snake_case opts.fuel_budget is accepted as an alias for fuelBudget", async
   assert.equal(out.code, "RELAY-CEL-003");
   assert.equal(out.subtype, "RELAY-CEL-TIMEOUT-001");
 });
+
+// --- loaders-1 (audit P2): FAIL CLOSED on a defined NON-number fuel budget ----
+//
+// The Python loader raises ValueError on any non-int budget (`type(fuel_budget)
+// is not int`: a bool, a float, a string, an object). The TS loader's old
+// `typeof fuel === "number"` guard SILENTLY DROPPED a non-number truthy budget
+// (e.g. the string "8", `true`, `{}`), leaving the eval UNBOUNDED -- a fail-OPEN
+// divergence from the Python fail-CLOSED contract (a "budget set" misconfig
+// becomes "unbounded", defeating the timeout). The loader now rejects any
+// defined-but-non-integer budget with a RangeError, matching Python. The single
+// OUTER guard `typeof fuel !== "number" || !Number.isInteger(fuel)` rejects THREE
+// classes: (a) non-number truthy values (string/bool/object/BigInt); (b) a
+// fractional / NaN / Infinity NUMBER (Number.isInteger is false for all three);
+// (c) an integer-but-non-safe positive (1e21, 2**53) is caught by the INNER
+// isSafeInteger guard. NaN/Infinity matter because `NaN > 0` is false, so without
+// the outer Number.isInteger clause they would slip past as "no field" -> the
+// UNBOUNDED fail-OPEN form; the outer guard fails them CLOSED.
+
+test("loaders-1: a string fuelBudget ('8') FAILS CLOSED with a RangeError (was silently dropped -> unbounded)", async () => {
+  const cel = await RelayCel.load();
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: "8" }),
+    (err) => {
+      assert.ok(
+        err instanceof RangeError,
+        `expected RangeError, got ${err && err.constructor && err.constructor.name}`,
+      );
+      assert.match(err.message, /fuel/i, "the error must name the fuel budget");
+      return true;
+    },
+    "a non-number truthy fuelBudget must FAIL CLOSED (throw), not be silently dropped (which leaves the eval UNBOUNDED -- fail-open vs the Python ValueError contract)",
+  );
+});
+
+test("loaders-1: a boolean fuelBudget (true) FAILS CLOSED (mirrors Python rejecting bool)", async () => {
+  const cel = await RelayCel.load();
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: true }),
+    RangeError,
+    "a boolean fuelBudget must throw (Python: type(True) is bool, not int -> ValueError)",
+  );
+});
+
+test("loaders-1: an object fuelBudget ({}) FAILS CLOSED", async () => {
+  const cel = await RelayCel.load();
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: {} }),
+    RangeError,
+    "a non-number fuelBudget object must throw, not be silently dropped",
+  );
+});
+
+test("loaders-1: the snake_case alias fuel_budget is ALSO fail-closed on a non-number budget", async () => {
+  const cel = await RelayCel.load();
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuel_budget: "8" }),
+    RangeError,
+    "the snake_case alias must be fail-closed on a non-number too (same wasm field)",
+  );
+});
+
+// The fail-closed RangeError message must be built with a NON-THROWING value
+// formatter: JSON.stringify itself THROWS a TypeError for a BigInt or a circular
+// object, which would replace the documented RangeError with a TypeError and lose
+// the diagnostic (roborev 3390681). Both still fail closed (they throw), but the
+// error TYPE the caller / tests assert on must stay RangeError.
+test("loaders-1: a BigInt fuelBudget FAILS CLOSED with a RangeError (not a TypeError from the formatter)", async () => {
+  const cel = await RelayCel.load();
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: 8n }),
+    (err) => {
+      assert.ok(
+        err instanceof RangeError,
+        `expected RangeError, got ${err && err.constructor && err.constructor.name}`,
+      );
+      assert.match(err.message, /fuel/i, "the error must name the fuel budget");
+      return true;
+    },
+    "a BigInt fuelBudget must fail closed with a RangeError; the error formatter must not throw a TypeError on a non-JSON-serialisable value",
+  );
+});
+
+test("loaders-1: a circular-object fuelBudget FAILS CLOSED with a RangeError (not a TypeError from the formatter)", async () => {
+  const cel = await RelayCel.load();
+  const circular = {};
+  circular.self = circular;
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: circular }),
+    (err) => {
+      assert.ok(
+        err instanceof RangeError,
+        `expected RangeError, got ${err && err.constructor && err.constructor.name}`,
+      );
+      return true;
+    },
+    "a circular-object fuelBudget must fail closed with a RangeError, not a TypeError from JSON.stringify",
+  );
+});
+
+test("loaders-1: a null-prototype-object fuelBudget FAILS CLOSED with a RangeError (String() coercion cannot throw)", async () => {
+  const cel = await RelayCel.load();
+  // Object.create(null) has no toString / Symbol.toPrimitive, so String(it)
+  // throws 'Cannot convert object to primitive value' -- the formatter must not.
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: Object.create(null) }),
+    (err) => {
+      assert.ok(
+        err instanceof RangeError,
+        `expected RangeError, got ${err && err.constructor && err.constructor.name}`,
+      );
+      return true;
+    },
+    "a null-prototype-object fuelBudget must fail closed with a RangeError, never a coercion TypeError",
+  );
+});
+
+test("loaders-1: a throwing-toString fuelBudget FAILS CLOSED with a RangeError (formatter must not invoke a hostile hook)", async () => {
+  const cel = await RelayCel.load();
+  const hostile = {
+    toString() {
+      throw new Error("hostile toString");
+    },
+  };
+  await assert.rejects(
+    () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: hostile }),
+    (err) => {
+      assert.ok(
+        err instanceof RangeError,
+        `expected RangeError, got ${err && err.constructor && err.constructor.name}`,
+      );
+      return true;
+    },
+    "a fuelBudget whose toString throws must still fail closed with a RangeError",
+  );
+});
+
+// Class (b): a NUMBER that is not an integer -- fractional, NaN, or Infinity.
+// Number.isInteger is false for all three, so the OUTER guard fails them CLOSED.
+// NaN/Infinity are the dangerous ones: `NaN > 0` and `Infinity` handling could
+// let them slip past a weaker guard into the "no field" UNBOUNDED form, so this
+// pins the fail-CLOSED behavior the outer Number.isInteger clause provides.
+for (const [label, value] of [
+  ["fractional 1.5", 1.5],
+  ["NaN", NaN],
+  ["Infinity", Infinity],
+  ["-Infinity", -Infinity],
+]) {
+  test(`loaders-1: a ${label} fuelBudget FAILS CLOSED with a RangeError (non-integer number)`, async () => {
+    const cel = await RelayCel.load();
+    await assert.rejects(
+      () => cel.eval(EXHAUSTING_EXPR, undefined, { fuelBudget: value }),
+      (err) => {
+        assert.ok(
+          err instanceof RangeError,
+          `expected RangeError, got ${err && err.constructor && err.constructor.name}`,
+        );
+        return true;
+      },
+      `a ${label} fuelBudget must fail closed with a RangeError (not slip past as UNBOUNDED)`,
+    );
+  });
+}
