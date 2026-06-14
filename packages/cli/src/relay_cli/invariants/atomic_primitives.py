@@ -86,33 +86,46 @@ def _is_in_primitive_dir(rel_posix: str) -> bool:
     return _PRIMITIVE_DIR_TOKEN in PurePosixPath(rel_posix).parts
 
 
-def multiline_string_line_numbers(text: str, *, is_python: bool) -> frozenset[int]:
-    """Return the 1-based line numbers covered by a STANDALONE string-expression
-    statement (a docstring or a bare string-literal "comment") in a Python source.
+# A documentation-string span: (start_line, start_col, end_line, end_col),
+# 1-based lines + 0-based columns, half-open on the end column (ast convention).
+DocStringSpan = tuple[int, int, int, int]
 
-    A pattern match (a banned ``db.execute(``, a canonical-row write, ...) on
-    such a line is documentation/prose, not an executable callsite -- e.g. a
-    module docstring that documents a grep guard across several lines.
+
+def documentation_string_spans(
+    text: str, *, is_python: bool
+) -> tuple[DocStringSpan, ...]:
+    """Return the (line, col) SPANS covered by a STANDALONE string-expression
+    statement (a docstring or a bare string-literal "comment") in Python source.
+
+    A pattern match whose position falls INSIDE one of these spans is
+    documentation/prose, not an executable callsite -- e.g. a module docstring
+    that documents a grep guard across several lines.
 
     CRITICAL: this targets ONLY bare string-expression STATEMENTS
     (``ast.Expr`` whose value is a string constant). A string passed to
     ``execute(...)`` is a Call ARGUMENT, and a string assigned to a variable is
     an assignment value -- NEITHER is an ``ast.Expr`` statement, so a
     triple-quoted canonical-table SQL write passed to ``execute(...)`` is NOT
-    suppressed and stays flagged (roborev a2adc74). A naive "every multi-line
-    string token" suppression would mask exactly that executable write.
+    suppressed and stays flagged (roborev a2adc74).
 
-    Non-Python sources (and any source ``ast.parse`` cannot handle) return the
-    empty set -- the per-line comment/backtick heuristics still apply there.
+    Returning COLUMN-precise spans (not whole line numbers) is load-bearing:
+    Python permits several simple statements on one physical line, so
+    ``"comment"; db.execute(q)`` puts a banned call on the SAME line as a bare
+    string statement. A whole-line suppression would mask that executable call;
+    a span check only suppresses a match inside the string's own columns
+    (roborev 9b94c47).
+
+    Non-Python sources (and any source ``ast.parse`` cannot handle) return an
+    empty tuple -- the per-line comment/backtick heuristics still apply there.
     """
     if not is_python:
-        return frozenset()
+        return ()
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         # Unparseable / partial source: fall back to the per-line heuristics.
-        return frozenset()
-    doc_lines: set[int] = set()
+        return ()
+    spans: list[DocStringSpan] = []
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Expr)
@@ -120,10 +133,33 @@ def multiline_string_line_numbers(text: str, *, is_python: bool) -> frozenset[in
             and isinstance(node.value.value, str)
         ):
             const = node.value
-            start = const.lineno
-            end = getattr(const, "end_lineno", start) or start
-            doc_lines.update(range(start, end + 1))
-    return frozenset(doc_lines)
+            start_line = const.lineno
+            start_col = const.col_offset
+            end_line = getattr(const, "end_lineno", start_line) or start_line
+            end_col = getattr(const, "end_col_offset", None)
+            if end_col is None:
+                # No end column available: fall back to the whole tail of the
+                # last line so the string is fully covered (conservative).
+                end_col = 1 << 30
+            spans.append((start_line, start_col, end_line, end_col))
+    return tuple(spans)
+
+
+def position_in_documentation_string(
+    line_no: int, col: int, spans: tuple[DocStringSpan, ...]
+) -> bool:
+    """True iff the (1-based ``line_no``, 0-based ``col``) position lies inside
+    one of the documentation-string ``spans`` (half-open on the end column)."""
+    for start_line, start_col, end_line, end_col in spans:
+        after_start = line_no > start_line or (
+            line_no == start_line and col >= start_col
+        )
+        before_end = line_no < end_line or (
+            line_no == end_line and col < end_col
+        )
+        if after_start and before_end:
+            return True
+    return False
 
 
 def _match_is_documentation(
@@ -214,7 +250,7 @@ def _match_is_documentation(
     # executable code -- e.g. a module docstring that documents a grep guard with
     # a multi-line ``...`` RST span mentioning a canonical-row write pattern. This
     # is computed once per file with a real tokenizer (see
-    # multiline_string_line_numbers) and is the correct replacement for the
+    # documentation_string_spans) and is the correct replacement for the
     # removed backtick-token-counting heuristic, which both produced false
     # negatives (a "``" inside an executable string literal) and could not see
     # cross-line spans (re-hunt cli-inv-1 follow-up: the heuristic-4 removal
@@ -321,11 +357,12 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
         # would be falsely classified as documentation and the keystone-#8
         # violation would be skipped, making this guard vacuous for that line.
         hash_is_comment = path.suffix in (".py", ".pyi")
-        # Lines inside a multi-line string literal (docstring / block string) are
-        # prose, not executable callsites -- computed once per file via the real
-        # tokenizer so a banned token mentioned in a multi-line docstring is not
-        # flagged (the correct replacement for the removed backtick-counting).
-        doc_lines = multiline_string_line_numbers(
+        # Positions inside a standalone documentation-string statement
+        # (docstring / bare string "comment") are prose, not executable
+        # callsites -- computed once per file via AST so a banned token mentioned
+        # in a docstring is not flagged, while a string passed to execute(...) or
+        # a banned call after ``"x"; ...`` on the same line still IS flagged.
+        doc_spans = documentation_string_spans(
             text, is_python=path.suffix in (".py", ".pyi")
         )
         for line_no_minus_one, line in enumerate(text.split("\n")):
@@ -337,7 +374,9 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
                 m.start(),
                 slash_comment=slash_is_comment,
                 hash_comment=hash_is_comment,
-                in_docstring=(line_no_minus_one + 1) in doc_lines,
+                in_docstring=position_in_documentation_string(
+                    line_no_minus_one + 1, m.start(), doc_spans
+                ),
             ):
                 continue
             findings.append(

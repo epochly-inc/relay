@@ -281,19 +281,54 @@ def test_multiline_docstring_mention_is_not_flagged_but_real_call_is(
 
 
 @pytest.mark.fulfills("VAL-ISO-014")
-def test_multiline_string_line_numbers_identifies_docstring_lines() -> None:
+def test_documentation_string_spans_cover_docstring_positions() -> None:
     text = (
         '"""Line1.\n'
         "Line2 with db.execute( mention.\n"
         'Line3."""\n'
         "x = 1\n"
     )
-    doc_lines = atomic_primitives.multiline_string_line_numbers(text, is_python=True)
-    assert doc_lines == frozenset({1, 2, 3}), doc_lines
-    # Non-Python sources get no docstring tracking (empty set).
+    spans = atomic_primitives.documentation_string_spans(text, is_python=True)
+    # The module docstring spans lines 1-3; a match anywhere inside it is prose.
+    assert atomic_primitives.position_in_documentation_string(2, 11, spans) is True
+    assert atomic_primitives.position_in_documentation_string(1, 0, spans) is True
+    # Line 4 (`x = 1`) is NOT inside any documentation string.
+    assert atomic_primitives.position_in_documentation_string(4, 0, spans) is False
+    # Non-Python sources get no docstring tracking (empty tuple).
     assert (
-        atomic_primitives.multiline_string_line_numbers(text, is_python=False)
-        == frozenset()
+        atomic_primitives.documentation_string_spans(text, is_python=False) == ()
+    )
+
+
+@pytest.mark.fulfills("VAL-ISO-014")
+def test_semicolon_statement_after_bare_string_is_not_suppressed(
+    tmp_path: Path,
+) -> None:
+    """Python permits several statements on one physical line. A banned call
+    AFTER a bare string statement (``"x"; db.execute(q)``) must be FLAGGED -- the
+    column-precise span check suppresses only matches INSIDE the string's own
+    columns, not the whole line (roborev 9b94c47)."""
+    src = tmp_path / "packages" / "okpkg" / "src"
+    src.mkdir(parents=True)
+    (src / "semi.py").write_text(
+        '"""Module docstring."""\n'
+        "\n"
+        "\n"
+        "def write(conn, q):\n"
+        '    "a bare string comment"; db.execute(q)\n',  # banned call after ;
+        encoding="utf-8",
+    )
+    _, findings = atomic_primitives.run(tmp_path)
+    flagged = {f.line for f in findings if f.file.endswith("semi.py")}
+    exec_line = (
+        (src / "semi.py").read_text(encoding="utf-8").splitlines().index(
+            '    "a bare string comment"; db.execute(q)'
+        )
+        + 1
+    )
+    assert exec_line in flagged, (
+        "a db.execute( after a bare string statement on the same line MUST be "
+        f"flagged; flagged={flagged!r}"
     )
 
 

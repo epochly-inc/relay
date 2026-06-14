@@ -38,7 +38,8 @@ from verify_self.finding_codes import (
 
 from .atomic_primitives import (
     _match_is_documentation,
-    multiline_string_line_numbers,
+    documentation_string_spans,
+    position_in_documentation_string,
 )
 from .util import (
     Finding,
@@ -140,11 +141,12 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
         # (``.py``/``.pyi``) uses ``//`` as floor division and SQL uses
         # ``--`` for comments, so neither may treat ``//`` as a comment.
         slash_is_comment = path.suffix not in (".py", ".pyi", ".sql")
-        # Lines inside a multi-line string literal (e.g. a module docstring that
-        # documents the grep guard with a multi-line ``...`` RST span mentioning
-        # a canonical run_results / gate_decisions write) are prose, not
-        # executable writes.
-        doc_lines = multiline_string_line_numbers(
+        # Positions inside a standalone documentation-string statement (e.g. a
+        # module docstring that documents the grep guard, mentioning a canonical
+        # run_results / gate_decisions write in prose) are documentation, not
+        # executable writes -- but a canonical write passed to execute(...) or
+        # after ``"x"; ...`` on the same line still IS flagged (column-precise).
+        doc_spans = documentation_string_spans(
             text, is_python=path.suffix in (".py", ".pyi")
         )
         for line_no_minus_one, line in enumerate(text.split("\n")):
@@ -156,7 +158,9 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
                 m.start(),
                 sql=is_sql,
                 slash_comment=slash_is_comment,
-                in_docstring=(line_no_minus_one + 1) in doc_lines,
+                in_docstring=position_in_documentation_string(
+                    line_no_minus_one + 1, m.start(), doc_spans
+                ),
             ):
                 continue
             findings.append(
