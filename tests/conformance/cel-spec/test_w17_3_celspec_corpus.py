@@ -413,10 +413,32 @@ _PARAM_VECTORS = _INCLUDED_VECTORS_FOR_PARAM or [
 _PARAM_IDS = [v.get("vector_id", "<unknown>") for v in _PARAM_VECTORS]
 
 
+@pytest.fixture(scope="module")
+def included_vector_evaluator() -> Any:
+    """One module-scoped wasm evaluator with MAX_TIMEOUT_MS headroom.
+
+    Constructing a fresh evaluator per parametrized vector (hundreds of them)
+    makes each first eval cold-start a wasmtime Store under the 50ms
+    DEFAULT_TIMEOUT_MS wall-clock budget; under full-suite load the
+    ``_run_with_timeout`` thread-spawn jitter intermittently exceeds 50ms on an
+    otherwise-correct vector (a flaky RelayCelTimeoutError -- observed on
+    ``string/starts_with/basic_true``). Reusing ONE evaluator with the 250ms
+    MAX_TIMEOUT_MS cap (the same headroom the W6.5 corpus + W6.1 evaluator tests
+    use for result assertions) removes the flake. Production keeps the 50ms
+    default; this suite asserts the conformance VALUE, not timeout behavior.
+    """
+    from relay_contracts import RELAY_UDFS, make_cel_evaluator
+    from relay_contracts.evaluator import MAX_TIMEOUT_MS
+
+    return make_cel_evaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
+
+
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W17-011")
 @pytest.mark.parametrize("vector", _PARAM_VECTORS, ids=_PARAM_IDS)
-def test_wasm_evaluates_included_vector(vector: dict[str, Any]) -> None:
+def test_wasm_evaluates_included_vector(
+    vector: dict[str, Any], included_vector_evaluator: Any
+) -> None:
     """The wasm engine (relay_cel_wasm, the single CEL backend since M6) MUST
     produce the expected value for every included vector. The expected value
     uses cel-spec's value-kind taxonomy
@@ -427,7 +449,6 @@ def test_wasm_evaluates_included_vector(vector: dict[str, Any]) -> None:
             "VAL-W17-011: no included vectors in profile filter; corpus has not "
             "been populated yet."
         )
-    from relay_contracts import RELAY_UDFS, make_cel_evaluator
 
     def _to_python(value: Any) -> Any:
         """Collapse evaluator results to JSON-roundtrippable Python. The wasm
@@ -449,14 +470,14 @@ def test_wasm_evaluates_included_vector(vector: dict[str, Any]) -> None:
             return {str(k): _to_python(v) for k, v in value.items()}
         raise TypeError(f"unsupported evaluator result type: {type(value).__name__}")
 
-    # Construct via the make_cel_evaluator factory (the ONLY RELAY_CEL_ENGINE
-    # read site, engine.py) so this cel-spec conformance test exercises the
-    # production single-engine path. RELAY_UDFS (the 3 native relay.* UDFs) is
-    # the accepted allowlist. Bindings are plain JSON-native values; the wasm
-    # codec encodes natives onto the typed-canonical wire form directly.
-    ev = make_cel_evaluator(udfs=RELAY_UDFS)
+    # The module-scoped included_vector_evaluator is built via the
+    # make_cel_evaluator factory (the ONLY RELAY_CEL_ENGINE read site, engine.py)
+    # so this cel-spec conformance test exercises the production single-engine
+    # path. RELAY_UDFS (the 3 native relay.* UDFs) is the accepted allowlist.
+    # Bindings are plain JSON-native values; the wasm codec encodes natives onto
+    # the typed-canonical wire form directly.
     bindings = dict(vector.get("bindings") or {})
-    raw = ev.evaluate(vector["expression"], bindings)
+    raw = included_vector_evaluator.evaluate(vector["expression"], bindings)
     actual = _to_python(raw)
     expected = vector["expected_value"]
     assert actual == expected, (
