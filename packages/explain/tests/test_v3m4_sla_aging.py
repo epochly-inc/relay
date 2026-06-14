@@ -380,6 +380,67 @@ def test_sla_breach_non_dedupe_integrity_error_reraises(
     assert count == 0
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M4-011")
+def test_sla_breach_unrelated_row_with_same_key_reraises(
+    conn: sqlite3.Connection,
+) -> None:
+    """If a NON-breach event row already occupies (scope_id, idempotency_key),
+    the breach insert's IntegrityError MUST NOT be treated as an idempotent
+    duplicate -- the existing row is not a reviewer_sla_breached event, so the
+    confirmation query (now scoped by event_type) finds nothing and the error
+    re-raises rather than silently suppressing the breach (roborev d08550b)."""
+    import uuid
+
+    from relay_explain.sla import (
+        _ACTOR_KIND_EXPLAIN_ENGINE,
+        _SCHEMA_EVENT_LOG,
+        _SCOPE_TYPE_HYPOTHESIS,
+        _emit_sla_breach_events,
+    )
+
+    _create_idempotency_index(conn)
+    hyp = "hyp-collide"
+    # Pre-insert an UNRELATED event row occupying the SAME (scope_id,
+    # idempotency_key) the breach would use.
+    conn.execute(
+        "INSERT INTO event_log_entries ("
+        "  event_id, schema_version, project_id, scope_type, scope_id, "
+        "  event_type, actor_kind, actor_id, manifest_commit_hash, payload, "
+        "  occurred_at, ingest_sequence, event_kind, idempotency_key"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            str(uuid.uuid4()),
+            _SCHEMA_EVENT_LOG,
+            "local",
+            _SCOPE_TYPE_HYPOTHESIS,
+            hyp,
+            "explain.some_other_event",  # NOT a breach event
+            _ACTOR_KIND_EXPLAIN_ENGINE,
+            None,
+            None,
+            "{}",
+            "2026-05-18T09:00:00Z",
+            0,
+            "",
+            f"sla-breach:{hyp}",
+        ),
+    )
+    conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        _emit_sla_breach_events(
+            conn, [(hyp, "run", 99)], project_id="local",
+            now_iso="2026-05-18T09:00:00Z",
+        )
+    # The unrelated row did NOT mask the failure; no breach row was written.
+    cnt = conn.execute(
+        "SELECT COUNT(*) FROM event_log_entries WHERE event_type = ?",
+        (EVENT_TYPE_SLA_BREACHED,),
+    ).fetchone()[0]
+    assert cnt == 0
+
+
 # ===========================================================================
 # VAL-V3M4-012: event_log_entries row with required payload fields
 # ===========================================================================

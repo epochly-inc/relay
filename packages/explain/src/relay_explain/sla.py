@@ -302,8 +302,13 @@ def _emit_sla_breach_events(
                 # it (roborev df5390e).
                 existing = conn.execute(
                     "SELECT 1 FROM event_log_entries "
-                    "WHERE scope_id = ? AND idempotency_key = ? LIMIT 1",
-                    (hypothesis_id, f"sla-breach:{hypothesis_id}"),
+                    "WHERE scope_id = ? AND idempotency_key = ? "
+                    "AND event_type = ? LIMIT 1",
+                    (
+                        hypothesis_id,
+                        f"sla-breach:{hypothesis_id}",
+                        EVENT_TYPE_SLA_BREACHED,
+                    ),
                 ).fetchone()
                 if existing is None:
                     raise
