@@ -528,7 +528,7 @@ interface StreamAggregateState {
   cumOutputTokens: number;
   chunkCount: number;
   // Accumulator for streamed tool_calls keyed by call index/id.
-  // Keyed by a COMPOSITE `${choiceIndex} ${toolCallIndexOrId}` string:
+  // Keyed by a COMPOSITE `${choiceIndex} ${toolCallIndexOrId}` string:
   // OpenAI scopes a streamed tool_call's `index` PER CHOICE, so with n>1 two
   // choices can each emit index 0 -- keying on the tool-call index/id alone
   // would merge distinct calls into one corrupted span (Py<->TS parity with

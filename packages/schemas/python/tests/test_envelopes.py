@@ -1237,6 +1237,19 @@ def test_event_log_entry_occurred_at_accepts_utc_z_form() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W1-017")
+def test_event_log_entry_occurred_at_accepts_lowercase_z() -> None:
+    """occurred_at accepts a lowercase 'z' offset (Py<->TS parity): the shared
+    RFC3339_DATETIME_PATTERN allows [Zz], and the TS checkRfc3339WithOffset
+    accepts it, so the Python occurred_at offset pre-check must too (an
+    uppercase-only 'Z' made Python reject a value TS accepts -- opposite verdict).
+    """
+    payload = _base_event_log_entry(occurred_at="2026-05-12t00:00:00z")
+    e = EventLogEntry.model_validate(payload)
+    assert e.occurred_at.tzinfo is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
 def test_event_log_entry_occurred_at_accepts_positive_offset() -> None:
     payload = _base_event_log_entry(occurred_at="2026-05-12T10:00:00+05:30")
     e = EventLogEntry.model_validate(payload)

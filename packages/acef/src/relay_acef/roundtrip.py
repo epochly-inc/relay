@@ -385,6 +385,25 @@ def _encode(value: Any) -> str:
                         f"runtime-divergent canonical bytes and are refused. "
                         f"Re-key the object with BMP-only strings."
                     )
+            # Fail-CLOSED on a key that is NOT already NFC-stable. This encoder
+            # emits the RAW key for wire-stability, but the reference verifiers
+            # (relay_contracts.canonical, relay_verifier.canonical, the TS
+            # canonicalizers) NFC-FOLD emitted keys -- so an NFC-singleton key
+            # (e.g. U+2126 OHM, whose NFC is U+03A9) signed here would be
+            # re-canonicalised to different bytes by those verifiers and fail
+            # digest/signature parity. Refusing non-NFC keys at emit time keeps
+            # a signed bundle verifiable across every encoder (roborev follow-on
+            # on the round-2 acef key-emit fix). Relay's schema-declared bundle
+            # keys are ASCII -- always NFC-stable -- so real bundles are
+            # unaffected.
+            if unicodedata.normalize("NFC", k) != k:
+                raise JCSEncodeError(
+                    f"JCS: non-NFC object key {k!r}; a key whose NFC form "
+                    f"differs from its raw form would be re-canonicalised to "
+                    f"different bytes by the NFC-folding reference verifiers "
+                    f"and break cross-verifier digest/signature parity. "
+                    f"Re-key the object with NFC-normalised strings."
+                )
         items = sorted(items_raw, key=lambda kv: kv[0])
         parts = [_encode_key(k) + ":" + _encode(v) for k, v in items]
         return "{" + ",".join(parts) + "}"

@@ -82,11 +82,14 @@ ULID_PATTERN = r"^[0-9A-HJKMNP-TV-Z]{26}$"
 Ulid = Annotated[str, Field(pattern=ULID_PATTERN)]
 """Canonical Crockford-base32 ULID, exactly 26 uppercase chars."""
 
-# RFC 3339 offset-marker regex: matches the trailing 'Z' or '+/-HH:MM' on a
-# string. Used by EventLogEntry.occurred_at (VAL-W1-017) to reject naive
-# wire-format inputs before Pydantic's datetime coercion silently drops the
-# distinction.
-_RFC3339_OFFSET_RE = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
+# RFC 3339 offset-marker regex: matches the trailing 'Z'/'z' or '+/-HH:MM' on a
+# string. Used by EventLogEntry.occurred_at / capture_clock (VAL-W1-017) to
+# reject naive wire-format inputs before Pydantic's datetime coercion silently
+# drops the distinction. The 'Z' is case-insensitive ([Zz]) to match the shared
+# RFC3339_DATETIME_PATTERN (which accepts [Zz]); an uppercase-only 'Z' here made
+# Python reject a lowercase '...z' that the TS checkRfc3339WithOffset accepts ->
+# an opposite-verdict Py<->TS divergence on occurred_at/capture_clock.
+_RFC3339_OFFSET_RE = re.compile(r"([Zz]|[+-]\d{2}:\d{2})$")
 
 # Minimum length of a canonical RFC 3339 date-time (YYYY-MM-DDTHH:MM:SSZ == 20).
 _RFC3339_MIN_LEN = 20

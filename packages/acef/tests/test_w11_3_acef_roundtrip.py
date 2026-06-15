@@ -1513,174 +1513,59 @@ def test_acef_jcs_refuses_supplementary_plane_object_keys() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W11-016")
-def test_acef_jcs_emits_raw_object_keys_for_nfc_singleton_keys() -> None:
-    """Object KEYS are emitted by the RAW key (no NFC fold) so the emit/parse/
-    emit wire path is a fixed point.
+def test_acef_jcs_refuses_non_nfc_object_keys() -> None:
+    """Object KEYS that are NOT NFC-stable are refused (fail-CLOSED).
 
-    The round-2 #5/#6 fix sorted keys by the RAW key but emitted them via
-    _encode_string, which NFC-folds (U+2126 OHM SIGN -> U+03A9 OMEGA). That is
-    UNSTABLE on the wire: the signer emits raw-sorted/NFC-emitted bytes; the
-    verifier parses the NFC keys and re-sorts by the now-NFC key, producing a
-    DIFFERENT byte stream -> sign/verify byte-divergence. Emitting the RAW key
-    makes emitted-key == sort-key, so the re-parse is a fixed point.
-
-    DELIBERATE DIVERGENCE FROM THE REFERENCE ENCODERS: relay_contracts.canonical
-    (:199) and relay_verifier.canonical (:211) still emit keys via
-    _encode_string (NFC-folded) while sorting by the raw key, so they share the
-    same wire-instability on NFC-singleton keys. ACEF intentionally does NOT
-    match them on these specific keys -- matching them would re-import the
-    instability. The encoder families agree on ASCII keys, which is what
-    Relay's schema-declared bundle keys actually use; this divergence is only
-    observable on synthetic NFC-singleton keys. See the caveat in the W11.3
-    handoff: the reference encoders should be hardened to emit raw keys too
-    (out of scope for the acef-only edit).
+    The encoder emits the RAW key (no NFC fold) so the emit/parse/emit wire path
+    is a fixed point. But the reference verifiers (relay_contracts.canonical,
+    relay_verifier.canonical, the TS canonicalizers) NFC-FOLD emitted keys, so a
+    raw NFC-singleton key (U+2126 OHM, NFC -> U+03A9; U+212B ANGSTROM, NFC ->
+    U+00C5) signed here would be re-canonicalised to DIFFERENT bytes by those
+    verifiers and fail cross-verifier digest/signature parity. So a key whose
+    NFC form differs from its raw form is REFUSED at emit time (roborev
+    follow-on on the round-2 acef raw-key emit). Relay's schema-declared bundle
+    keys are ASCII -- always NFC-stable -- so real bundles are unaffected, and
+    for every ACCEPTED key acef now agrees with the reference encoders.
     """
     from relay_contracts.canonical import jcs_canonicalize as contracts_jcs
     from relay_verifier.canonical import jcs_canonicalize as verifier_jcs
 
-    # U+2126 OHM SIGN (NFC singleton -> U+03A9), U+0400 CYRILLIC IE WITH GRAVE.
-    # Keys built with chr() to keep this source file ASCII-only (CLAUDE.md).
-    ohm = chr(0x2126)
+    # NFC-singleton keys (raw != NFC(raw)) are refused. chr() keeps this source
+    # file ASCII-only (CLAUDE.md).
+    for non_nfc_cp in (0x2126, 0x212B, 0x0340):  # OHM, ANGSTROM, combining grave
+        with pytest.raises(JCSEncodeError):
+            jcs_canonicalize({chr(non_nfc_cp): 1})
+
+    # An NFC-STABLE non-ASCII key (U+0400 CYRILLIC IE WITH GRAVE; its NFC form is
+    # itself) is ACCEPTED and is now byte-identical across all three encoders --
+    # the divergence is gone for accepted keys.
     ie_grave = chr(0x0400)
-    obj = {ohm: 1, ie_grave: 2}
+    assert ie_grave == unicodedata.normalize("NFC", ie_grave)
+    obj = {ie_grave: 2, "a": 1}
     acef_bytes = jcs_canonicalize(obj)
-
-    # ACEF emits the RAW key: SORT by raw key (U+0400 0x0400 < U+2126 0x2126),
-    # EMIT U+2126 OHM raw (UTF-8 e2 84 a6), NOT NFC-folded to U+03A9 (ce a9).
-    # UTF-8: U+0400 -> d0 80.
-    assert acef_bytes == b'{"\xd0\x80":2,"\xe2\x84\xa6":1}'
-
-    # The reference encoders NFC-fold the emitted key (U+2126 -> U+03A9 ce a9),
-    # so they diverge from ACEF on this key -- the documented instability.
-    reference_nfc_folded = b'{"\xd0\x80":2,"\xce\xa9":1}'
-    assert contracts_jcs(obj) == reference_nfc_folded
-    assert verifier_jcs(obj) == reference_nfc_folded
-    assert acef_bytes != contracts_jcs(obj)
-    assert acef_bytes != verifier_jcs(obj)
-
-    # ACEF's raw-key emit is a wire fixed point; the reference encoders are not.
+    assert acef_bytes == contracts_jcs(obj) == verifier_jcs(obj)
+    # And it is a wire fixed point.
     assert jcs_canonicalize(_wire_reparse(acef_bytes)) == acef_bytes
 
-    # A second NFC-singleton: U+212B ANGSTROM SIGN (NFC singleton -> U+00C5).
-    # Raw 'A' (0x41) sorts before U+212B (0x212B); U+212B emitted raw as
-    # UTF-8 e2 84 ab (NOT NFC-folded to U+00C5 -> c3 85).
-    angstrom = {chr(0x212B): 1, "A": 2}
-    angstrom_bytes = jcs_canonicalize(angstrom)
-    assert angstrom_bytes == b'{"A":2,"\xe2\x84\xab":1}'
-    assert jcs_canonicalize(_wire_reparse(angstrom_bytes)) == angstrom_bytes
-    # Reference NFC-folds U+212B -> U+00C5 (c3 85): divergent + unstable.
-    assert contracts_jcs(angstrom) == b'{"A":2,"\xc3\x85":1}'
-    assert angstrom_bytes != contracts_jcs(angstrom)
-
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W11-016")
-def test_acef_jcs_emits_raw_object_keys_for_cjk_compat_keys() -> None:
-    """BMP CJK-compat ideograph KEYS are emitted by the RAW (BMP) key so the
-    wire round-trip is a fixed point AND the key stays BMP on the wire.
+def test_acef_jcs_refuses_cjk_compat_keys() -> None:
+    """BMP CJK-compat ideograph KEYS that NFC-normalise to the supplementary
+    plane are REFUSED (fail-CLOSED), not emitted.
 
-    U+FA6C and U+FACF are BMP CJK-compat ideographs that NFC-normalise to the
-    supplementary plane (U+242EE and U+2284A). Emitting the RAW BMP key keeps
-    the key BMP across the wire (the non-BMP key guard stays satisfied) and
-    makes the re-parse a fixed point.
-
-    DELIBERATE DIVERGENCE: the reference encoders NFC-fold the emitted key,
-    which PUSHES a BMP key into the supplementary plane on the wire (U+FA6C ->
-    U+242EE) -- precisely the runtime-divergent condition the non-BMP guard
-    exists to prevent. ACEF refuses to do this; it emits the BMP key raw.
+    U+FA6C and U+FACF are BMP CJK-compat ideographs whose NFC form is in the
+    supplementary plane (U+242EE / U+2284A). Their raw form is BMP so they pass
+    the non-BMP guard, but raw != NFC -- the NFC-folding reference verifiers
+    would push them to the supplementary plane on the wire (the very condition
+    the non-BMP guard exists to prevent) and re-canonicalise to different bytes,
+    breaking cross-verifier parity. The non-NFC-key guard refuses them at emit
+    time. (Real ACEF bundle keys are ASCII -- always NFC-stable.)
     """
-    from relay_contracts.canonical import jcs_canonicalize as contracts_jcs
-    from relay_verifier.canonical import jcs_canonicalize as verifier_jcs
-
-    # U+FA6C NFC-normalises to U+242EE, U+FACF NFC-normalises to U+2284A.
-    obj = {chr(0xFA6C): 1, chr(0xFACF): 2}
-    acef_bytes = jcs_canonicalize(obj)
-    # Raw BMP keys: U+FA6C (UTF-8 ef a9 ac) < U+FACF (UTF-8 ef ab 8f).
-    assert acef_bytes == b'{"\xef\xa9\xac":1,"\xef\xab\x8f":2}'
-    # Wire fixed point.
-    assert jcs_canonicalize(_wire_reparse(acef_bytes)) == acef_bytes
-    # Reference encoders NFC-fold to supplementary-plane keys -> divergent and
-    # (because the re-parse re-sorts by the supplementary key) unstable.
-    reference_nfc_folded = b'{"\xf0\xa4\x8b\xae":1,"\xf0\xa2\xa1\x8a":2}'
-    assert contracts_jcs(obj) == reference_nfc_folded
-    assert verifier_jcs(obj) == reference_nfc_folded
-    assert acef_bytes != contracts_jcs(obj)
-    assert acef_bytes != verifier_jcs(obj)
-
-
-@pytest.mark.plumbing
-@pytest.mark.fulfills("VAL-W11-016")
-def test_nfc_singleton_key_wire_roundtrip_is_a_fixed_point() -> None:
-    """emit -> parse -> emit on an object with an NFC-singleton KEY MUST be a
-    byte-identical fixed point (the sign/verify wire path).
-
-    The signer emits canonical bytes; the verifier PARSES those bytes and
-    re-canonicalises to recompute the digest. If the encoder sorts keys by
-    their raw code points but EMITS the keys NFC-folded, the first emit and
-    the re-emit produce DIFFERENT bytes for keys whose NFC form sorts
-    differently (e.g. U+2126 OHM SIGN emitted as U+03A9 OMEGA): the signer
-    writes raw-sorted/NFC-emitted bytes, the verifier parses the NFC keys and
-    re-sorts by the (now NFC) key, yielding a different stream -> sign/verify
-    byte-divergence on the wire. The fix emits object KEYS by the RAW key
-    (no NFC fold), so emitted-key == sort-key and the re-parse is a fixed
-    point. String VALUES still NFC-normalise (VAL-W11-020).
-
-    Keys built with chr() to keep this source file ASCII-only (CLAUDE.md).
-    """
-    ohm = chr(0x2126)  # OHM SIGN; NFC singleton -> U+03A9 GREEK CAPITAL OMEGA
-    ie_grave = chr(0x0400)  # CYRILLIC CAPITAL IE WITH GRAVE (BMP, NFC-stable)
-    obj = {ohm: 1, ie_grave: 2}
-
-    first = jcs_canonicalize(obj)
-    # Re-canonicalise via the same parse path emit_bundle/roundtrip use: load
-    # under Decimal scope, NFC-walk, re-emit. We exercise the encoder + the
-    # parse normaliser directly (a bare object is not a full ACEF bundle, so
-    # we do not route through emit_bundle's W11.2 validation here).
-    reparsed = _wire_reparse(first)
-    second = jcs_canonicalize(reparsed)
-    assert first == second, (
-        "NFC-singleton KEY breaks the emit/parse/emit fixed point: "
-        f"first={first!r} second={second!r}"
-    )
-
-    # Raw-key emission: U+0400 (0x0400) sorts before U+2126 (0x2126); the OHM
-    # key is emitted as its RAW U+2126 (UTF-8 e2 84 a6), NOT NFC-folded to
-    # U+03A9 (ce a9). UTF-8: U+0400 -> d0 80.
-    assert first == b'{"\xd0\x80":2,"\xe2\x84\xa6":1}'
-
-    # A second NFC-singleton: U+212B ANGSTROM SIGN (NFC singleton -> U+00C5).
-    angstrom = {chr(0x212B): 1, "A": 2}
-    a_first = jcs_canonicalize(angstrom)
-    a_second = jcs_canonicalize(_wire_reparse(a_first))
-    assert a_first == a_second
-    # Raw 'A' (0x41) sorts before U+212B (0x212B); U+212B emitted raw as
-    # UTF-8 e2 84 ab (NOT NFC-folded to U+00C5 -> c3 85).
-    assert a_first == b'{"A":2,"\xe2\x84\xab":1}'
-
-
-@pytest.mark.plumbing
-@pytest.mark.fulfills("VAL-W11-016")
-def test_cjk_compat_key_wire_roundtrip_is_a_fixed_point() -> None:
-    """emit -> parse -> emit on BMP CJK-compatibility ideograph KEYS is a
-    byte-identical fixed point.
-
-    U+FA6C and U+FACF are BMP CJK-compat ideographs that NFC-normalise to the
-    supplementary plane (U+242EE and U+2284A). Emitting the RAW BMP key keeps
-    the key BMP across the wire (the raw-key non-BMP guard stays satisfied)
-    AND makes the re-parse a fixed point. An NFC-folding emitter would (a)
-    push the key into the supplementary plane on the wire and (b) re-sort by
-    the supplementary code points on the second emit -> divergence.
-    """
-    obj = {chr(0xFA6C): 1, chr(0xFACF): 2}
-    first = jcs_canonicalize(obj)
-    second = jcs_canonicalize(_wire_reparse(first))
-    assert first == second, (
-        "CJK-compat KEY breaks the emit/parse/emit fixed point: "
-        f"first={first!r} second={second!r}"
-    )
-    # Raw-key emission keeps both keys BMP (U+FA6C UTF-8 ef a9 ac,
-    # U+FACF UTF-8 ef ab 8f); sorted by raw key U+FA6C < U+FACF.
-    assert first == b'{"\xef\xa9\xac":1,"\xef\xab\x8f":2}'
+    for cp in (0xFA6C, 0xFACF):
+        assert chr(cp) != unicodedata.normalize("NFC", chr(cp))
+        with pytest.raises(JCSEncodeError):
+            jcs_canonicalize({chr(cp): 1})
 
 
 @pytest.mark.plumbing
