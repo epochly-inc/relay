@@ -1595,8 +1595,15 @@ def _to_string(value: Any) -> str:
     so the same wire input produces byte-equal HMAC digests across
     SDKs. Python's bare ``str(1.0)`` returns ``"1.0"`` while
     ECMA-262 ``String(1.0)`` returns ``"1"``; routing floats through
-    the ECMA-262 number-to-string encoder (``_encode_number`` in
-    ``relay_contracts.canonical``) closes that divergence.
+    the module-local ECMA-262 number-to-string encoder
+    (:func:`_encode_jcs_number`) closes that divergence WITHOUT a
+    dependency on the optional ``relay_contracts`` package -- the
+    ``epochly-relay`` install closure does not include
+    ``epochly-relay-contracts``, so a real end-user install must not
+    rely on it being importable (Round-4 re-hunt HIGH: the prior
+    ``relay_contracts`` import + Python-``repr`` ImportError fallback
+    diverged from JS ``String()`` for ``>= 1e21`` / exponential-notation
+    floats, breaking the HMAC-hash redaction byte parity).
     """
     if isinstance(value, str):
         return value
@@ -1607,33 +1614,19 @@ def _to_string(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, float):
-        # Local import to keep ``relay_contracts`` an optional
-        # dependency at module import time. The redaction hot path
-        # is policy-publish + per-span walk, not the cold-start path.
-        try:
-            from relay_contracts.canonical import _encode_number
-        except ImportError:
-            # Fallback: hand-roll the ECMA-262 ToString(Number)
-            # whole-integer shortcut to preserve TS parity for the
-            # common case (``1.0`` -> ``"1"``).
-            import math as _math
-            if _math.isfinite(value) and value == int(value):
-                return str(int(value))
-            return str(value)
-        # Non-finite floats: mirror ECMA-262 ToString(Number) exactly
-        # so cross-language digests still match.
-        import math as _math
-        if _math.isnan(value):
+        # Coerce via the module-local ECMA-262 ToString encoder so the HMAC
+        # matcher input is byte-identical to the TS engine's String(value)
+        # (pinned byte-equal to relay_contracts.canonical._encode_number by
+        # test_redaction_parity.py, so the two cannot drift). No optional
+        # dependency: this path is live in every install, including end-user
+        # installs without relay_contracts. _encode_jcs_number raises on
+        # non-finite (JCS forbids NaN/Inf), but the hash-matcher path mirrors
+        # JS String(): NaN -> "NaN", +/-Inf -> "Infinity"/"-Infinity".
+        if math.isnan(value):
             return "NaN"
-        if _math.isinf(value):
+        if math.isinf(value):
             return "-Infinity" if value < 0 else "Infinity"
-        try:
-            return _encode_number(value)
-        except Exception:
-            # Out-of-range floats fall back to a TS-parity repr.
-            # ECMA-262 ToString(Number) for finite values that
-            # _encode_number cannot represent is exceedingly rare.
-            return repr(value)
+        return _encode_jcs_number(value)
     return str(value)
 
 
