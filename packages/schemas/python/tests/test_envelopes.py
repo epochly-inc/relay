@@ -2807,3 +2807,140 @@ def test_run_result_accepts_canonical_rfc3339_string() -> None:
         _base_run_result(decided_at="2026-05-12T00:00:00+02:00")
     )
     assert rr_offset.decided_at.utcoffset() is not None
+
+
+# ---------------------------------------------------------------------------
+# MED #8 (re-hunt): Rfc3339Datetime Py<->TS VERDICT parity (P0 keystone).
+#
+# Finding #7 made Python reject int/float epochs and too-short strings, but it
+# still deferred the remaining RFC 3339 grammar to Pydantic's parser while the
+# TS isRfc3339Datetime deferred to Date.parse. Those two acceptance sets DIVERGE
+# in both directions: Date.parse accepts RFC-2822-ish forms
+# ('Mon May 12 2025 00:00:00', 'Wed, 12 May 2025 00:00:00 GMT') and an
+# out-of-range hour ('...T24:00:00Z') that Pydantic rejects; Pydantic accepts a
+# colon-less offset ('+0200') that strict RFC 3339 forbids. Same wire bytes ->
+# opposite verdicts.
+#
+# Fix: BOTH sides enforce ONE shared strict RFC 3339 grammar via an identical
+# regex (required 'T'/'t'/space separator, HH:MM:SS, optional fraction, and a
+# 'Z'/'z' or +/-HH:MM offset with a required colon). This corpus pins the SAME
+# accept/reject verdict in Python and TypeScript for the same wire bytes.
+# ---------------------------------------------------------------------------
+
+# (wire_value, expected_accept) -- the contract the two readers MUST agree on.
+_RFC3339_PARITY_CORPUS: list[tuple[object, bool]] = [
+    # Canonical RFC 3339 values every producer emits -- accept on BOTH sides.
+    ("2026-05-12T00:00:00Z", True),
+    ("2026-05-12T00:00:00+02:00", True),
+    ("2026-05-12T00:00:00-08:00", True),
+    ("2026-05-12T10:00:00+05:30", True),
+    ("2026-05-12T00:00:00.123456Z", True),
+    ("2026-05-12t00:00:00z", True),
+    ("2026-05-12 00:00:00+00:00", True),
+    # Permissive Date.parse extras that strict RFC 3339 forbids -- reject BOTH.
+    ("Mon May 12 2025 00:00:00", False),
+    ("Wed, 12 May 2025 00:00:00 GMT", False),
+    ("2026-05-12T24:00:00Z", False),  # hour 24 out of range
+    ("2026-05-12T00:00:00+0200", False),  # offset missing the ':' separator
+    ("2026-05-12T00:00:00", False),  # naive: no offset
+    # Non-string / too-short forms -- reject BOTH (finding #7 carried forward).
+    (1747008000, False),  # integer Unix epoch
+    (1747008000.5, False),  # float Unix epoch
+    ("2026-05-12", False),  # too short
+]
+
+
+def _python_rfc3339_accepts(value: object) -> bool:
+    """True iff the Python reader accepts ``value`` in a datetime field."""
+    try:
+        RunResult.model_validate(_base_run_result(decided_at=value))
+        return True
+    except ValidationError:
+        return False
+
+
+def _typescript_rfc3339_verdicts(values: list[object]) -> list[bool]:
+    """Run the TS parseRunResult against each candidate ``decided_at`` value.
+
+    Returns a list of accept/reject booleans, one per input, computed by the
+    compiled TS dist via a Node subprocess (mirrors the harness in
+    test_canonical_bytes_parity.py). Skips when Node or the dist are absent.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    repo_root = Path(__file__).resolve().parents[4]
+    ts_dist = repo_root / "packages" / "schemas" / "typescript" / "dist" / "envelopes.js"
+    if node is None or not ts_dist.exists():
+        pytest.skip(
+            "node binary or TS dist (packages/schemas/typescript/dist) absent"
+        )
+
+    base = {
+        "schema_version": "relay.run_result.v1",
+        "run_result_id": _new_uuid(),
+        "run_id": _new_uuid(),
+        "project_id": _new_uuid(),
+        "written_by": "control_plane",
+        "status": "accepted",
+        "evidence_bundle_id": _new_uuid(),
+        "manifest_commit_hash": VALID_MANIFEST_HASH,
+        "actor_identity_hash": VALID_ACTOR_HASH,
+        "decided_at": None,
+        "decision_epoch": 0,
+        "signature": VALID_SIGNATURE,
+        "signature_key_id": VALID_KEY_ID,
+        "error_priority_rule": "first_p0_then_highest_severity_then_earliest_span",
+    }
+    script = (
+        f"import {{ parseRunResult }} from {json.dumps(str(ts_dist))};\n"
+        "let buf='';process.stdin.on('data',c=>buf+=c);"
+        "process.stdin.on('end',()=>{const job=JSON.parse(buf);"
+        "const out=job.values.map(v=>{const p={...job.base,decided_at:v};"
+        "try{parseRunResult(p);return true;}catch(e){return false;}});"
+        "process.stdout.write(JSON.stringify(out));});"
+    )
+    proc = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        input=json.dumps({"base": base, "values": values}, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"node failed: rc={proc.returncode} {proc.stderr!r}")
+    verdicts = json.loads(proc.stdout.strip())
+    assert isinstance(verdicts, list) and len(verdicts) == len(values)
+    return [bool(v) for v in verdicts]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
+@pytest.mark.parametrize("value,expected_accept", _RFC3339_PARITY_CORPUS)
+def test_rfc3339_python_verdict_matches_contract(
+    value: object, expected_accept: bool
+) -> None:
+    """Python reader gives the contract-specified accept/reject for each value."""
+    assert _python_rfc3339_accepts(value) is expected_accept, repr(value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
+def test_rfc3339_python_typescript_verdict_parity() -> None:
+    """Python and TypeScript give the SAME accept/reject verdict for the SAME
+    wire bytes (P0 keystone). Authoritative when Node + TS dist are present."""
+    values = [v for v, _ in _RFC3339_PARITY_CORPUS]
+    expected = [exp for _, exp in _RFC3339_PARITY_CORPUS]
+    py_verdicts = [_python_rfc3339_accepts(v) for v in values]
+    ts_verdicts = _typescript_rfc3339_verdicts(values)
+    divergences = [
+        (values[i], py_verdicts[i], ts_verdicts[i], expected[i])
+        for i in range(len(values))
+        if py_verdicts[i] != ts_verdicts[i] or py_verdicts[i] != expected[i]
+    ]
+    assert not divergences, (
+        "Py<->TS RFC 3339 verdict divergence (value, py, ts, expected):\n"
+        + "\n".join(repr(d) for d in divergences)
+    )

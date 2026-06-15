@@ -51,13 +51,45 @@ const RFC3339_OFFSET_RE = /(Z|[+-]\d{2}:\d{2})$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * RFC 3339 timestamp form (date-time with timezone offset or 'Z'). The
- * full RFC 3339 grammar is permissive; we accept anything Date.parse
- * recognizes plus the canonical 'YYYY-MM-DDTHH:MM:SS[.fff]Z' form.
+ * Strict RFC 3339 date-time grammar (MED #8). MUST define the SAME language as
+ * the Python `RFC3339_DATETIME_PATTERN` mirror
+ * (packages/schemas/python/relay_schemas/envelopes.py) so Python and TypeScript
+ * readers agree accept/reject for identical wire bytes (a P0 keystone).
+ *
+ * Earlier both sides deferred grammar to two DIFFERENT permissive parsers
+ * (Pydantic-RFC3339 vs `Date.parse`) whose acceptance sets diverged in BOTH
+ * directions: `Date.parse` accepts RFC-2822-ish forms
+ * ('Mon May 12 2025 00:00:00', 'Wed, 12 May 2025 00:00:00 GMT') and an
+ * out-of-range hour ('...T24:00:00Z') that Pydantic rejects, while Pydantic
+ * accepted a colon-less offset ('+0200') strict RFC 3339 forbids. This regex
+ * pins ONE grammar and rejects every such permissive extra.
+ *
+ * Grammar (RFC 3339 section 5.6 date-time):
+ *   full-date    = YYYY '-' (01..12) '-' (01..31)
+ *   separator    = 'T' | 't' | ' '   (RFC 3339 allows lower-case 'T' and a space)
+ *   partial-time = (00..23) ':' (00..59) ':' (00..60)  (60 = leap second)
+ *   time-secfrac = optional '.' DIGIT+
+ *   time-offset  = 'Z' | 'z' | ('+'|'-') (00..23) ':' (00..59)  (colon REQUIRED)
+ *
+ * The (non-multiline) `^`/`$` anchors are end-of-string, matching the Python
+ * `\A`/`\Z` anchors exactly so a value such as "...Z\n" is rejected on BOTH
+ * sides byte-for-byte.
+ */
+export const RFC3339_DATETIME_PATTERN =
+  "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])" +
+  "[Tt ]([01]\\d|2[0-3]):[0-5]\\d:([0-5]\\d|60)(\\.\\d+)?" +
+  "([Zz]|[+-]([01]\\d|2[0-3]):[0-5]\\d)$";
+const RFC3339_DATETIME_RE = new RegExp(RFC3339_DATETIME_PATTERN);
+
+/**
+ * True iff `value` is a string matching the strict shared RFC 3339 grammar.
+ * Defers grammar to `RFC3339_DATETIME_RE` (byte-identical to the Python regex);
+ * `Date.parse` is retained only as a finite-instant defense-in-depth check.
  */
 function isRfc3339Datetime(value: unknown): value is string {
   if (typeof value !== "string") return false;
   if (value.length < 20) return false;
+  if (!RFC3339_DATETIME_RE.test(value)) return false;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed);
 }

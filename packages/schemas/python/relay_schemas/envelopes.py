@@ -91,21 +91,50 @@ _RFC3339_OFFSET_RE = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
 # Minimum length of a canonical RFC 3339 date-time (YYYY-MM-DDTHH:MM:SSZ == 20).
 _RFC3339_MIN_LEN = 20
 
+# Strict RFC 3339 date-time grammar (MED #8). The TS ``isRfc3339Datetime`` mirror
+# (packages/schemas/typescript/src/envelopes.ts) MUST define the SAME language so
+# Python and TypeScript readers agree accept/reject for identical wire bytes (a
+# P0 keystone). Earlier the two sides deferred grammar to two DIFFERENT permissive
+# parsers (Pydantic-RFC3339 vs ``Date.parse``) whose acceptance sets diverged in
+# BOTH directions: ``Date.parse`` accepts RFC-2822-ish forms
+# ('Mon May 12 2025 00:00:00', 'Wed, 12 May 2025 00:00:00 GMT') and an
+# out-of-range hour ('...T24:00:00Z') that Pydantic rejects, while Pydantic
+# accepted a colon-less offset ('+0200') strict RFC 3339 forbids. This regex pins
+# ONE grammar on both sides and rejects every such permissive extra.
+#
+# Grammar (RFC 3339 section 5.6 date-time):
+#   full-date  = YYYY '-' (01..12) '-' (01..31)
+#   separator  = 'T' | 't' | ' '   (RFC 3339 allows lower-case 'T' and a space)
+#   partial-time = (00..23) ':' (00..59) ':' (00..60)  (60 = leap second)
+#   time-secfrac = optional '.' DIGIT+
+#   time-offset  = 'Z' | 'z' | ('+'|'-') (00..23) ':' (00..59)  (colon REQUIRED)
+#
+# Anchored with ``\A`` / ``\Z`` (NOT ``^`` / ``$``) because Python's ``$`` matches
+# before a trailing newline whereas a non-multiline JS ``$`` does not; ``\A``/``\Z``
+# match the JS ``^``/``$`` exactly so a value such as "...Z\n" is rejected on BOTH
+# sides byte-for-byte. The two regex source strings define the identical language.
+RFC3339_DATETIME_PATTERN = (
+    r"\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])"
+    r"[Tt ]([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?"
+    r"([Zz]|[+-]([01]\d|2[0-3]):[0-5]\d)"
+)
+_RFC3339_DATETIME_RE = re.compile(r"\A" + RFC3339_DATETIME_PATTERN + r"\Z")
+
 
 def _require_rfc3339_string(value: Any) -> Any:
-    """Reject wire values the TS reader rejects, for Py<->TS parse parity.
+    """Enforce the strict shared RFC 3339 grammar for Py<->TS verdict parity.
 
     The TS ``isRfc3339Datetime`` (packages/schemas/typescript/src/envelopes.ts)
-    requires ``typeof value === "string"`` with length >= 20 that ``Date.parse``
-    can read; an integer Unix epoch (or float/bool) is REJECTED. Pydantic's
-    default datetime coercion instead silently accepts an int/float epoch, so
-    the same wire bytes got opposite verdicts (re-hunt #7). This before-validator
-    enforces the string contract on WIRE input while letting an actual
+    requires ``typeof value === "string"`` matching the SAME
+    ``RFC3339_DATETIME_PATTERN`` regex; an integer Unix epoch (or float/bool) is
+    REJECTED. Pydantic's default datetime coercion instead silently accepts an
+    int/float epoch (re-hunt #7), and deferring the remaining grammar to
+    Pydantic's RFC3339 parser still diverged from the TS ``Date.parse`` in both
+    directions (MED #8). This before-validator enforces the string contract AND
+    the strict RFC 3339 grammar on WIRE input so both readers give the same
+    accept/reject verdict for the same bytes, while letting an actual
     ``datetime`` object (in-process model construction, which has no wire-string
-    equivalent in TS) pass through untouched. The remaining RFC 3339 grammar /
-    parseability is enforced by Pydantic's own string->datetime parse, which
-    rejects non-RFC-3339 strings the way TS rejects ``Date.parse``-unreadable
-    ones.
+    equivalent in TS) pass through untouched.
     """
     if isinstance(value, datetime):
         return value
@@ -114,6 +143,14 @@ def _require_rfc3339_string(value: Any) -> Any:
             raise ValueError(
                 "must be an RFC 3339 date-time string (length >= 20); "
                 f"observed a {len(value)}-char string"
+            )
+        if _RFC3339_DATETIME_RE.match(value) is None:
+            raise ValueError(
+                "must be a strict RFC 3339 date-time string "
+                "(YYYY-MM-DDThh:mm:ss[.fff](Z|+/-hh:mm)); permissive "
+                "Date.parse forms (RFC 2822, hour 24, colon-less offset) are "
+                f"rejected for Py<->TS verdict parity per VAL-W1-017 "
+                f"(observed={value!r})"
             )
         return value
     # int/float epoch, bool, or any other non-string wire value: reject to
