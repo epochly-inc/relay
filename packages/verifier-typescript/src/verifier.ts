@@ -440,6 +440,16 @@ function pyReprStr(s: string): string {
  * Python ``dict.get`` returns ``None`` for a missing key, which is exactly
  * the ``undefined`` case here -- both render ``None``.
  */
+// Mirror CPython ascii(repr(x)) for the operand types that reach the signature-
+// failure reason messages. This is EXACT for strings (pyReprStr) -- the only
+// realistic JWK `kty` domain ("RSA"/"EC"/"OKP") -- and for None/bool. For a
+// NON-string `kty` (a malformed JWKS: a JSON number, or an object), JS Number
+// normalisation (1.0 -> "1") and Object.entries key-order can diverge from
+// Python's float repr / dict insertion order. That residual is a documented
+// BOUNDED limitation (the unbounded "match Python repr of arbitrary JSON types"
+// class): it only affects the human-readable `reason` DIAGNOSTIC bytes (not a
+// signed/canonical surface), only for malformed JWKS that BOTH runtimes reject,
+// and never for a well-formed string `kty`.
 function pyAscii(value: unknown): string {
   if (value === null || value === undefined) {
     return "None";

@@ -360,14 +360,15 @@ def _encode(value: Any) -> str:
         # supplementary plane (e.g. U+FA6C -> U+242EE): the re-parse re-sorts by
         # the now-NFC key, yielding a different byte stream -> sign/verify
         # divergence. _encode_key emits the RAW key bytes; _encode_string still
-        # NFC-normalises string VALUES (VAL-W11-020). NB: the reference
-        # encoders relay_contracts.canonical (:199) and
-        # relay_verifier.canonical (:211) currently emit keys via
-        # _encode_string (NFC-folded) while sorting by the raw key, so they
-        # share the same wire-instability on NFC-singleton keys; this encoder
-        # is deliberately stable and diverges from them ONLY on the (NFC-
-        # singleton / CJK-compat) keys that make them unstable -- Relay's
-        # schema-declared bundle keys are ASCII, where all three agree.
+        # NFC-normalises string VALUES (VAL-W11-020). To avoid diverging from the
+        # reference encoders (relay_contracts.canonical, relay_verifier.canonical,
+        # the TS canonicalizers, which NFC-FOLD emitted keys), this encoder
+        # FAIL-CLOSES on any key whose NFC form differs from its raw form (the
+        # NFC-stability guard below): such a key would be re-canonicalised to
+        # different bytes by those verifiers and break cross-verifier parity. So
+        # every ACCEPTED key is byte-identical across all encoders, and the
+        # wire-unstable NFC-singleton / CJK-compat keys are refused outright.
+        # Relay's schema-declared bundle keys are ASCII -- always NFC-stable.
         #
         # The non-BMP key guard remains: RFC 8785 3.2.3 sorts keys by UTF-16
         # code-unit order; Python str sorts by code point; for the BMP the two
