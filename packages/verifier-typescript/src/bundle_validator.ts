@@ -427,13 +427,71 @@ function _appendWarning(
   output.warnings.push(entry);
 }
 
+/**
+ * Format a string the way CPython's ``repr()`` does, so verifier-output
+ * ``message`` bytes match the Python verifier, which interpolates identifiers
+ * with ``!r`` (re-hunt #11). CPython prefers single quotes, switching to double
+ * quotes only when the string contains a single quote and no double quote;
+ * it backslash-escapes the quote char, backslash, and ``\t``/``\n``/``\r``, and
+ * emits ASCII control bytes (and DEL) as ``\xNN``. All printable ASCII is
+ * emitted verbatim -- the entire realistic operand domain here (artifact ids,
+ * hex digests, dotted namespace keys, bundle field names). Note: CPython
+ * escapes *non-printable* non-ASCII code points (e.g. U+00A0); those do not
+ * occur in these operands, so emitting non-ASCII verbatim matches CPython for
+ * every value this code path produces.
+ */
+function pyReprStr(s: string): string {
+  const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
+  let out = quote;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (ch === quote || ch === "\\") {
+      out += "\\" + ch;
+    } else if (ch === "\t") {
+      out += "\\t";
+    } else if (ch === "\n") {
+      out += "\\n";
+    } else if (ch === "\r") {
+      out += "\\r";
+    } else if (cp < 0x20 || cp === 0x7f) {
+      out += "\\x" + cp.toString(16).padStart(2, "0");
+    } else {
+      out += ch;
+    }
+  }
+  return out + quote;
+}
+
+/**
+ * CPython ``repr()`` for the operand types interpolated with ``!r`` in the
+ * Python verifier's error messages: a string, or a list of strings (e.g.
+ * ``sorted(allowed_keys)``, ``unknown_keys``, ``present_fields``). A list is
+ * rendered ``['a', 'b']`` exactly like Python's ``list.__repr__``.
+ */
+function pyRepr(value: string | readonly string[]): string {
+  if (typeof value === "string") return pyReprStr(value);
+  return "[" + value.map((v) => pyReprStr(v)).join(", ") + "]";
+}
+
 function _appendError(
   output: VerifierOutputEnvelope,
-  args: { reason: string; message: string; code?: string },
+  args: {
+    reason: string;
+    message: string;
+    code?: string;
+    extra?: Record<string, unknown>;
+  },
 ): void {
   const entry: Record<string, unknown> = { reason: args.reason, message: args.message };
   if (args.code) {
     entry["code"] = args.code;
+  }
+  // Forward additional discriminator keys verbatim (e.g. path_violation +
+  // offending_path), matching Python _append_error(**extra) (re-hunt #8).
+  if (args.extra) {
+    for (const [k, v] of Object.entries(args.extra)) {
+      entry[k] = v;
+    }
   }
   output.errors.push(entry);
 }
@@ -773,9 +831,13 @@ export function validateBundle(args: {
               reason: "path_violation",
               message:
                 `claim[${ci}].evidence_refs[${ri}] artifact_id ` +
-                `${JSON.stringify(artifactId)} rejected by path screen ` +
+                `${pyRepr(artifactId)} rejected by path screen ` +
                 `(${pathViolation.path_violation})`,
               code: pathViolation.code,
+              extra: {
+                path_violation: pathViolation.path_violation,
+                offending_path: pathViolation.offending_path,
+              },
             });
             output.digest_ok = false;
             continue;
@@ -791,7 +853,7 @@ export function validateBundle(args: {
               reason: "artifact_unavailable",
               message:
                 `claim[${ci}].evidence_refs[${ri}] artifact ` +
-                `${JSON.stringify(artifactId)} could not be resolved`,
+                `${pyRepr(artifactId)} could not be resolved`,
               code: RELAY_EVID_014,
             });
             output.digest_ok = false;
@@ -803,8 +865,8 @@ export function validateBundle(args: {
               reason: "artifact_digest_mismatch",
               message:
                 `claim[${ci}].evidence_refs[${ri}] artifact ` +
-                `${JSON.stringify(artifactId)} digest mismatch: declared=` +
-                `${JSON.stringify(declaredDigest)} recomputed=${JSON.stringify(recomputed)}`,
+                `${pyRepr(artifactId)} digest mismatch: declared=` +
+                `${pyRepr(declaredDigest)} recomputed=${pyRepr(recomputed)}`,
               code: RELAY_EVID_014,
             });
             output.digest_ok = false;
@@ -883,7 +945,7 @@ export function validateBundle(args: {
               reason: "claim_namespace_unknown",
               message:
                 `claim[${ci}].namespaces contains key(s) outside the closed ` +
-                `set ${JSON.stringify(allowed)}: ${JSON.stringify(unknownKeys)}`,
+                `set ${pyRepr(allowed)}: ${pyRepr(unknownKeys)}`,
               code: RELAY_EVID_NAMESPACE_UNKNOWN,
             });
           }
@@ -910,7 +972,7 @@ export function validateBundle(args: {
               reason: "evidence_ref_artifact_missing_from_manifest",
               message:
                 `claim[${ci}].evidence_refs[${ri}] digest ` +
-                `${JSON.stringify(refDigest)} is not present in the ` +
+                `${pyRepr(refDigest)} is not present in the ` +
                 `bundle's manifest (spec K line 4428); manifest contains ` +
                 `${manifestDigests.size} digest(s)`,
               code: RELAY_EVID_014,
@@ -932,8 +994,8 @@ export function validateBundle(args: {
       _appendError(output, {
         reason: "merkle_root_mismatch",
         message:
-          `declared merkle_root_hex ${JSON.stringify(declaredMerkle)} does not ` +
-          `match recomputed root ${JSON.stringify(recomputedMerkle)}`,
+          `declared merkle_root_hex ${pyRepr(declaredMerkle)} does not ` +
+          `match recomputed root ${pyRepr(recomputedMerkle)}`,
         code: RELAY_EVID_040,
       });
     }
@@ -1002,7 +1064,7 @@ export function validateBundle(args: {
         "anchor (spec section AB); the validator refuses to fall " +
         "back to 'generated_at' or any sibling timestamp because " +
         "the TSA gen_time skew check binds to decided_at " +
-        `specifically. bundle fields present: ${JSON.stringify(presentFields)}`,
+        `specifically. bundle fields present: ${pyRepr(presentFields)}`,
       code: RELAY_EVID_DECIDED_AT_MISSING,
     });
     _appendError(output, {
@@ -1102,7 +1164,7 @@ export function validateBundle(args: {
           _appendWarning(output, {
             reason: "signer_key_revoked_after_sign_time",
             message:
-              `key ${JSON.stringify(primaryKid)} was revoked at ` +
+              `key ${pyRepr(primaryKid)} was revoked at ` +
               `${lifeResult.signer_key_revoked_at}; bundle signed before ` +
               `revocation -- auditor decides acceptance`,
           });

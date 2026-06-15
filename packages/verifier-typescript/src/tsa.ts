@@ -789,9 +789,11 @@ export function validateTsaToken(args: {
   result.skew_seconds = skew;
   if (skew > CLOCK_SKEW_TOLERANCE_SECONDS) {
     result.outcome = "skew";
-    result.reason =
-      `TSA gen_time skew ${skew}s exceeds +/-${CLOCK_SKEW_TOLERANCE_SECONDS}s ` +
-      `tolerance (gen_time=${genTimeRaw}, decided_at=${decidedAt})`;
+    // `reason` is a structured discriminator -- it MUST match the Python
+    // verifier's "tsa_skew_exceeded" (tsa.py:424) byte-for-byte. The skew
+    // magnitude is already surfaced on result.skew_seconds; do not encode the
+    // descriptive text into reason (that diverged from Python -- re-hunt #2).
+    result.reason = "tsa_skew_exceeded";
     result.code = RELAY_EVID_038;
     return result;
   }
