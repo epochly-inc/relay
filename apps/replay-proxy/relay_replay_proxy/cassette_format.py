@@ -440,7 +440,15 @@ def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str
                         name = raw_name
                         break
             elif lower.startswith("content-type:"):
-                part_content_type = line.split(":", 1)[1].strip().lower()
+                # Hash the declared value VERBATIM (no case-fold). Media
+                # type/subtype + parameter names are case-insensitive, but
+                # parameter VALUES (e.g. a case-sensitive ``profile`` URI or a
+                # boundary token) are not, so lowercasing could alias two
+                # genuinely distinct declarations onto one key and serve the
+                # wrong recorded response. Over-distinguishing is safe for
+                # replay fidelity; under-distinguishing is the bug. Match the
+                # part name, which is also hashed verbatim.
+                part_content_type = line.split(":", 1)[1].strip()
         canonical_parts.append((name, part_content_type, body))
     canonical_parts.sort(key=lambda x: x[0])
     h = hashlib.sha256()
