@@ -354,6 +354,119 @@ function _check(args: Partial<SignatureCheck> & Pick<SignatureCheck, "kid" | "al
   };
 }
 
+/**
+ * Format a string the way CPython's ``ascii()`` does, so signature-path
+ * ``reason`` bytes match the Python verifier (roborev HIGH follow-on to
+ * the round-2 #4 bundle_validator fix). The Python verifier now
+ * interpolates attacker-controllable ``alg`` / ``kid`` (and the
+ * ``expected_kty`` / ``actual_kty`` / ``payload_sha256`` operands that
+ * travel alongside them) via ``_py_ascii(...)`` (the builtin ``ascii()``)
+ * instead of ``!r``, because plain ``repr()`` keeps PRINTABLE non-ASCII
+ * verbatim but ESCAPES non-printable non-ASCII (C1 controls, U+00A0,
+ * format/separator chars like U+200B/U+2028/U+FEFF). That "printable"
+ * distinction depends on the Unicode database and is intractable to mirror
+ * byte-for-byte in TS. The pre-fix TS verifier interpolated these operands
+ * with RAW template literals (``'${alg}'``), so a signature whose alg/kid
+ * carried an interior non-printable non-ASCII code point produced
+ * NON-IDENTICAL ``SignatureCheck.reason`` bytes vs Python -- a P0 Py<->TS
+ * parity break on attacker-controllable verifier output.
+ *
+ * Routing both runtimes through the same pure code-point-range rule removes
+ * the distinction: EVERY non-ASCII code point is escaped (``\\xNN`` for
+ * cp<=0xff, ``\\uNNNN`` for cp<=0xffff, ``\\U`` + 8 hex for astral), so they
+ * agree by construction. This is the SAME rule
+ * ``bundle_validator.ts:pyReprStr`` already applies to namespace keys /
+ * artifact ids / digests; it is duplicated here (rather than imported)
+ * because the verifier module must stay free of a bundle_validator import
+ * cycle. For ASCII alg/kid the output is byte-identical to ``repr()`` /
+ * ``!r``, so existing ASCII verdict-parity tests stay unchanged.
+ *
+ * Rule (identical to CPython ``ascii()``): single quotes, switching to
+ * double quotes only when the string contains a single quote and no double
+ * quote; backslash-escape the quote char, backslash, and ``\t``/``\n``/``\r``;
+ * emit ASCII control bytes (cp < 0x20) and DEL (0x7f) and every non-ASCII
+ * code point by the range rule above.
+ */
+function pyReprStr(s: string): string {
+  const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
+  let out = quote;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (ch === quote || ch === "\\") {
+      out += "\\" + ch;
+    } else if (ch === "\t") {
+      out += "\\t";
+    } else if (ch === "\n") {
+      out += "\\n";
+    } else if (ch === "\r") {
+      out += "\\r";
+    } else if (cp < 0x20 || cp === 0x7f) {
+      out += "\\x" + cp.toString(16).padStart(2, "0");
+    } else if (cp >= 0x80) {
+      // Non-ASCII: escape by code-point range exactly like CPython ascii().
+      if (cp <= 0xff) {
+        out += "\\x" + cp.toString(16).padStart(2, "0");
+      } else if (cp <= 0xffff) {
+        out += "\\u" + cp.toString(16).padStart(4, "0");
+      } else {
+        out += "\\U" + cp.toString(16).padStart(8, "0");
+      }
+    } else {
+      out += ch;
+    }
+  }
+  return out + quote;
+}
+
+/**
+ * Mirror CPython's ``ascii(value)`` for the operand types that can appear as
+ * a JWK ``kty`` field after ``JSON.parse``. The Python verifier interpolates
+ * ``actual_kty = candidate_jwk.get("kty")`` (the raw parsed value) via
+ * ``_py_ascii(actual_kty)``; that value is usually a string but a malformed
+ * JWK can carry ``null`` / a number / a boolean / a container. Rendering it
+ * the CPython way keeps the alg-mismatch ``reason`` byte-identical across
+ * runtimes even for a non-string kty:
+ *
+ *   * string  -> ``pyReprStr`` (ascii()-escaped, quoted)
+ *   * null    -> ``None``
+ *   * boolean -> ``True`` / ``False``
+ *   * integer -> decimal digits (``123``)
+ *   * non-integer / non-finite number -> ``String(n)`` (JS and Python agree
+ *     on the common decimal forms a JWK would carry; exotic float repr drift
+ *     is out of the attack surface for a kty)
+ *   * array / object -> element-wise ``ascii([...])`` / ``ascii({...})`` with
+ *     Python's ``', '`` / ``': '`` separators
+ *
+ * Python ``dict.get`` returns ``None`` for a missing key, which is exactly
+ * the ``undefined`` case here -- both render ``None``.
+ */
+function pyAscii(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "None";
+  }
+  if (typeof value === "string") {
+    return pyReprStr(value);
+  }
+  if (typeof value === "boolean") {
+    return value ? "True" : "False";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return "[" + value.map((v) => pyAscii(v)).join(", ") + "]";
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return (
+      "{" +
+      entries.map(([k, v]) => `${pyReprStr(k)}: ${pyAscii(v)}`).join(", ") +
+      "}"
+    );
+  }
+  return pyReprStr(String(value));
+}
+
 export function verifyJwsCompact(
   token: string,
   jwks: JWKS,
@@ -386,7 +499,7 @@ export function verifyJwsCompact(
       kid,
       alg,
       ok: false,
-      reason: `unsupported alg: '${alg}'`,
+      reason: `unsupported alg: ${pyReprStr(alg)}`,
       code: RELAY_VERIFY_UNSUPPORTED_ALG,
     });
   }
@@ -397,7 +510,7 @@ export function verifyJwsCompact(
       kid,
       alg,
       ok: false,
-      reason: `no JWK in trust anchor matches kid '${kid}'`,
+      reason: `no JWK in trust anchor matches kid ${pyReprStr(kid)}`,
     });
   }
 
@@ -407,7 +520,7 @@ export function verifyJwsCompact(
       kid,
       alg,
       ok: false,
-      reason: `alg-mismatch: alg='${alg}' requires kty='${expectedKty}' but JWK has kty='${String(candidate.kty)}'`,
+      reason: `alg-mismatch: alg=${pyReprStr(alg)} requires kty=${pyReprStr(expectedKty)} but JWK has kty=${pyAscii(candidate.kty)}`,
       code: RELAY_VERIFY_ALG_MISMATCH,
     });
   }
@@ -463,7 +576,7 @@ export function verifyJwsDetached(args: {
   if (!allowed.has(alg)) {
     return _check({
       kid, alg, ok: false,
-      reason: `unsupported alg: '${alg}'`,
+      reason: `unsupported alg: ${pyReprStr(alg)}`,
       code: RELAY_VERIFY_UNSUPPORTED_ALG,
     });
   }
@@ -472,7 +585,7 @@ export function verifyJwsDetached(args: {
   if (candidate === null) {
     return _check({
       kid, alg, ok: false,
-      reason: `no JWK in trust anchor matches kid '${kid}'`,
+      reason: `no JWK in trust anchor matches kid ${pyReprStr(kid)}`,
     });
   }
 
@@ -480,7 +593,7 @@ export function verifyJwsDetached(args: {
   if (expectedKty !== null && candidate.kty !== expectedKty) {
     return _check({
       kid, alg, ok: false,
-      reason: `alg-mismatch: alg='${alg}' requires kty='${expectedKty}' but JWK has kty='${String(candidate.kty)}'`,
+      reason: `alg-mismatch: alg=${pyReprStr(alg)} requires kty=${pyReprStr(expectedKty)} but JWK has kty=${pyAscii(candidate.kty)}`,
       code: RELAY_VERIFY_ALG_MISMATCH,
     });
   }
@@ -534,7 +647,7 @@ export function verifyDetachedClaimSignature(args: {
       kid: typeof kidRaw === "string" ? kidRaw : "<unknown>",
       alg: typeof algRaw === "string" ? algRaw : "<unknown>",
       ok: false,
-      reason: `detached payload digest mismatch: header declared sha256='${declaredDigest}' but recomputed sha256='${recomputedDigest}' from claim canonical bytes`,
+      reason: `detached payload digest mismatch: header declared sha256=${pyReprStr(declaredDigest)} but recomputed sha256=${pyReprStr(recomputedDigest)} from claim canonical bytes`,
       code: RELAY_EVID_014,
     });
   }
@@ -629,7 +742,7 @@ function _verifyOneOverBytes(args: {
   if (!args.allowed.has(args.alg)) {
     return _check({
       kid: args.kid, alg: args.alg, ok: false,
-      reason: `unsupported alg: '${args.alg}'`,
+      reason: `unsupported alg: ${pyReprStr(args.alg)}`,
       code: RELAY_VERIFY_UNSUPPORTED_ALG,
     });
   }
@@ -637,14 +750,14 @@ function _verifyOneOverBytes(args: {
   if (candidate === null) {
     return _check({
       kid: args.kid, alg: args.alg, ok: false,
-      reason: `no JWK in trust anchor matches kid '${args.kid}'`,
+      reason: `no JWK in trust anchor matches kid ${pyReprStr(args.kid)}`,
     });
   }
   const expectedKty = _ktyForAlg(args.alg);
   if (expectedKty !== null && candidate.kty !== expectedKty) {
     return _check({
       kid: args.kid, alg: args.alg, ok: false,
-      reason: `alg-mismatch: alg='${args.alg}' requires kty='${expectedKty}' but JWK has kty='${String(candidate.kty)}'`,
+      reason: `alg-mismatch: alg=${pyReprStr(args.alg)} requires kty=${pyReprStr(expectedKty)} but JWK has kty=${pyAscii(candidate.kty)}`,
       code: RELAY_VERIFY_ALG_MISMATCH,
     });
   }
@@ -736,7 +849,7 @@ export function verifyBundleSignature(args: {
       kid,
       alg: algStr,
       ok: false,
-      reason: `unsupported alg: '${algStr}'`,
+      reason: `unsupported alg: ${pyReprStr(algStr)}`,
       code: RELAY_VERIFY_UNSUPPORTED_ALG,
     });
   }
@@ -750,7 +863,7 @@ export function verifyBundleSignature(args: {
       kid,
       alg: algStr,
       ok: false,
-      reason: `alg-mismatch: alg='${algStr}' requires kty='${expectedKty}' but JWK has kty='${String(candidateJwk.kty)}'`,
+      reason: `alg-mismatch: alg=${pyReprStr(algStr)} requires kty=${pyReprStr(expectedKty)} but JWK has kty=${pyAscii(candidateJwk.kty)}`,
       code: RELAY_VERIFY_ALG_MISMATCH,
     });
   }
@@ -828,7 +941,7 @@ export function verifyBundleSignature(args: {
       kid,
       alg: algStr,
       ok: false,
-      reason: `no JWK in trust anchor matches kid '${kid}'`,
+      reason: `no JWK in trust anchor matches kid ${pyReprStr(kid)}`,
     });
   }
 

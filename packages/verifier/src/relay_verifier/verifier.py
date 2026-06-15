@@ -168,6 +168,37 @@ def canonical_json_bytes(obj: Any) -> bytes:
 
 
 # -----------------------------------------------------------------------------
+# ASCII-safe operand formatting for attacker-controllable message bytes
+# -----------------------------------------------------------------------------
+
+
+def _py_ascii(value: Any) -> str:
+    """ASCII-safe repr for attacker-controllable signature-reason operands.
+
+    Equivalent to the builtin ``ascii()``: like ``repr()`` but every non-ASCII
+    code point is escaped (``\\xNN`` for cp<=0xff, ``\\uNNNN`` for cp<=0xffff,
+    ``\\U`` + 8 hex for astral). Plain ``repr()`` (``!r``) keeps PRINTABLE
+    non-ASCII verbatim while escaping non-printable non-ASCII (C1 controls,
+    U+00A0, format/separator chars like U+200B/U+2028/U+FEFF) -- a "printable"
+    distinction that depends on the Unicode database and cannot be mirrored
+    byte-for-byte by the TypeScript verifier
+    (packages/verifier-typescript/src/verifier.ts ``pyReprStr``). The ``alg``
+    and ``kid`` operands interpolated into signature-failure reasons here are
+    attacker-controllable (they come straight off the wire bundle / JWS
+    header), so a divergence on an interior non-printable non-ASCII -- or a
+    printable non-ASCII like U+4E2D that ``repr`` keeps verbatim but ``ascii``
+    escapes -- would make the two verifiers emit non-identical
+    ``SignatureCheck.reason`` bytes for the same wire input (a P0 Py<->TS
+    parity break). Routing every operand through ``ascii()`` removes the
+    distinction: both runtimes escape ALL non-ASCII by the same pure
+    code-point-range rule. For ASCII operands the output is byte-identical to
+    ``repr()``/``!r``, so existing ASCII parity tests are unaffected. This
+    mirrors :func:`relay_verifier.bundle_validator._py_ascii`.
+    """
+    return ascii(value)
+
+
+# -----------------------------------------------------------------------------
 # JWK -> public-key loader (RFC 7517 / 7518 / 8037)
 # -----------------------------------------------------------------------------
 
@@ -413,7 +444,7 @@ def verify_bundle(
                     kid=kid,
                     alg=str(alg) if alg else "<unknown>",
                     ok=False,
-                    reason=f"unsupported alg: {alg!r}",
+                    reason=f"unsupported alg: {_py_ascii(alg)}",
                     code=RELAY_VERIFY_UNSUPPORTED_ALG,
                 )
             )
@@ -436,9 +467,9 @@ def verify_bundle(
                         alg=alg,
                         ok=False,
                         reason=(
-                            f"alg-mismatch: alg={alg!r} requires "
-                            f"kty={expected_kty!r} but JWK has "
-                            f"kty={actual_kty!r}"
+                            f"alg-mismatch: alg={_py_ascii(alg)} requires "
+                            f"kty={_py_ascii(expected_kty)} but JWK has "
+                            f"kty={_py_ascii(actual_kty)}"
                         ),
                         code=RELAY_VERIFY_ALG_MISMATCH,
                     )
@@ -508,7 +539,7 @@ def verify_bundle(
                     kid=kid,
                     alg=alg,
                     ok=False,
-                    reason=f"no JWK in trust anchor matches kid {kid!r}",
+                    reason=f"no JWK in trust anchor matches kid {_py_ascii(kid)}",
                 )
             )
             continue
@@ -768,7 +799,7 @@ def verify_jws_compact(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"unsupported alg: {alg!r}",
+            reason=f"unsupported alg: {_py_ascii(alg)}",
             code=RELAY_VERIFY_UNSUPPORTED_ALG,
         )
 
@@ -779,7 +810,7 @@ def verify_jws_compact(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"no JWK in trust anchor matches kid {kid!r}",
+            reason=f"no JWK in trust anchor matches kid {_py_ascii(kid)}",
         )
 
     # Alg-substitution detection: alg's required kty MUST match the JWK.
@@ -791,8 +822,9 @@ def verify_jws_compact(
             alg=alg,
             ok=False,
             reason=(
-                f"alg-mismatch: alg={alg!r} requires kty={expected_kty!r} "
-                f"but JWK has kty={actual_kty!r}"
+                f"alg-mismatch: alg={_py_ascii(alg)} requires "
+                f"kty={_py_ascii(expected_kty)} "
+                f"but JWK has kty={_py_ascii(actual_kty)}"
             ),
             code=RELAY_VERIFY_ALG_MISMATCH,
         )
@@ -883,7 +915,7 @@ def verify_jws_detached(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"unsupported alg: {alg!r}",
+            reason=f"unsupported alg: {_py_ascii(alg)}",
             code=RELAY_VERIFY_UNSUPPORTED_ALG,
         )
 
@@ -893,7 +925,7 @@ def verify_jws_detached(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"no JWK in trust anchor matches kid {kid!r}",
+            reason=f"no JWK in trust anchor matches kid {_py_ascii(kid)}",
         )
 
     expected_kty = _kty_for_alg(alg)
@@ -904,8 +936,9 @@ def verify_jws_detached(
             alg=alg,
             ok=False,
             reason=(
-                f"alg-mismatch: alg={alg!r} requires kty={expected_kty!r} "
-                f"but JWK has kty={actual_kty!r}"
+                f"alg-mismatch: alg={_py_ascii(alg)} requires "
+                f"kty={_py_ascii(expected_kty)} "
+                f"but JWK has kty={_py_ascii(actual_kty)}"
             ),
             code=RELAY_VERIFY_ALG_MISMATCH,
         )
@@ -1000,8 +1033,8 @@ def verify_detached_claim_signature(
             ok=False,
             reason=(
                 "detached payload digest mismatch: header declared "
-                f"sha256={declared_digest!r} but recomputed "
-                f"sha256={recomputed_digest!r} from claim canonical bytes"
+                f"sha256={_py_ascii(declared_digest)} but recomputed "
+                f"sha256={_py_ascii(recomputed_digest)} from claim canonical bytes"
             ),
             code=RELAY_EVID_014,
         )
@@ -1159,7 +1192,7 @@ def _verify_one_signature_over_bytes(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"unsupported alg: {alg!r}",
+            reason=f"unsupported alg: {_py_ascii(alg)}",
             code=RELAY_VERIFY_UNSUPPORTED_ALG,
         )
     candidate_jwk = _select_jwk(jwks, kid)
@@ -1168,7 +1201,7 @@ def _verify_one_signature_over_bytes(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"no JWK in trust anchor matches kid {kid!r}",
+            reason=f"no JWK in trust anchor matches kid {_py_ascii(kid)}",
         )
     expected_kty = _kty_for_alg(alg)
     actual_kty = candidate_jwk.get("kty")
@@ -1178,8 +1211,9 @@ def _verify_one_signature_over_bytes(
             alg=alg,
             ok=False,
             reason=(
-                f"alg-mismatch: alg={alg!r} requires kty={expected_kty!r} "
-                f"but JWK has kty={actual_kty!r}"
+                f"alg-mismatch: alg={_py_ascii(alg)} requires "
+                f"kty={_py_ascii(expected_kty)} "
+                f"but JWK has kty={_py_ascii(actual_kty)}"
             ),
             code=RELAY_VERIFY_ALG_MISMATCH,
         )
