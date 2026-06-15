@@ -498,6 +498,31 @@ def test_sendfile_on_preconnected_loopback_passes_gate() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W7-088")
+def test_af_unix_socketpair_send_not_denied_under_replay() -> None:
+    """The connected-peer send gate must NOT deny AF_UNIX sends.
+
+    asyncio's event loop wakes itself across threads via a self-pipe -- an
+    AF_UNIX ``socketpair`` whose ``_write_to_self`` calls ``csock.send(b"\\0")``.
+    The connected-peer egress threat (VAL-W7-088) is IP networking only; gating
+    AF_UNIX sends here denies that self-pipe and breaks ALL async I/O (aiohttp,
+    asyncio) run under ``replay_session`` (the failure the replay-proxy aiohttp
+    egress test catches). AF_UNIX target control already happens at connect time.
+    """
+    a, b = socket.socketpair()  # AF_UNIX on POSIX
+    try:
+        with replay_session():
+            try:
+                a.send(b"x")
+                a.sendall(b"y")
+            except RelaySocketDenyError:  # pragma: no cover - failure path
+                pytest.fail("AF_UNIX socketpair send/sendall must not be gated")
+    finally:
+        a.close()
+        b.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
 def test_send_on_unconnected_socket_falls_through() -> None:
     """``send`` on an UNCONNECTED socket falls through to the original.
 

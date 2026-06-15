@@ -439,6 +439,15 @@ def _gate_connected_peer(self: socket.socket, operation: str) -> None:
     evaluate, so we return and let the original method raise its own
     normal OS error.
     """
+    # The connected-peer egress threat is IP networking only (VAL-W7-088).
+    # AF_UNIX (sidecar IPC, the asyncio event loop's self-pipe socketpair,
+    # other local IPC) cannot reach an external network and is already
+    # controlled at connect time via sidecar_unix_path. Gating its
+    # address-less sends here would deny asyncio's internal self-pipe wakeup
+    # (BaseEventLoop._write_to_self -> csock.send(b"\\0")) and break ALL async
+    # I/O (aiohttp, asyncio) run under replay_session. Only gate INET sockets.
+    if self.family not in (socket.AF_INET, socket.AF_INET6):
+        return
     try:
         peer = self.getpeername()
     except OSError:
