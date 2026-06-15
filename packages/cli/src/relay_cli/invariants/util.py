@@ -160,6 +160,15 @@ _BASE_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = (
     "packages/schemas/typescript/node_modules",
 )
 
+# Directory NAMES that are excluded wherever they appear in the tree, not just
+# as a top-level prefix. ``_walk_root`` prunes any path containing one of these
+# as a segment so a nested ``packages/<pkg>/.venv`` (uv-created), a nested
+# ``node_modules``, an installed ``site-packages``, or ``__pycache__`` never
+# leaks third-party source into the invariant scans regardless of depth.
+_EXCLUDED_DIR_SEGMENTS: Final[frozenset[str]] = frozenset(
+    {"__pycache__", ".venv", "node_modules", "site-packages"}
+)
+
 # Subtree prefixes excluded ONLY from the "self-mention" checks
 # (banned-patterns + mocks-in-source + atomic-primitives). These trees
 # legitimately mention every banned literal (the verifier's own source
@@ -382,8 +391,15 @@ def _walk_root(
     for path in candidates:
         if path.suffix not in exts:
             continue
-        # Drop __pycache__ early.
-        if "__pycache__" in path.parts:
+        # Drop virtualenv / vendored-dependency / installed-package / bytecode
+        # subtrees at ANY depth. The prefix-based _is_excluded list only catches
+        # these at the repo root (e.g. top-level ".venv"); a nested
+        # ``packages/<pkg>/.venv`` created by ``uv run`` in a package dir, a
+        # nested ``node_modules``, or an installed ``site-packages`` would
+        # otherwise leak third-party source into every check (false-positive
+        # atomic-primitives / no-todo-fixme on pip's own code), breaking the
+        # keystone gate. A path-segment match excludes them wherever they sit.
+        if _EXCLUDED_DIR_SEGMENTS.intersection(path.parts):
             continue
         yield path
 

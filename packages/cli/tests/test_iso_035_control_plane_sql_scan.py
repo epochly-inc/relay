@@ -26,10 +26,52 @@ from relay_cli.invariants import control_plane_writes
 from relay_cli.invariants.util import (
     CANONICAL_WRITE_EXTRA_EXTS,
     iter_canonical_source_files,
+    iter_source_files,
 )
 from verify_self.finding_codes import (
     RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
 )
+
+
+@pytest.mark.plumbing
+def test_source_enumeration_excludes_nested_venv_and_vendored_dirs(
+    tmp_path: Path,
+) -> None:
+    """A nested ``packages/*/.venv`` (created by ``uv run`` in a package dir),
+    a nested ``node_modules``, and an installed ``site-packages`` tree must be
+    excluded from source enumeration at ANY depth -- not just as a top-level
+    prefix. Otherwise verify-self scans third-party code (e.g. pip's
+    ``open(f, "w")`` / ``# TODO``) and false-positives the atomic-primitives /
+    no-todo-fixme invariants, breaking the keystone gate whenever a developer
+    runs ``uv run`` in a package directory.
+    """
+    # A legitimate Relay source file under a scan root (must be yielded).
+    real = tmp_path / "packages" / "okpkg" / "src" / "module.py"
+    real.parent.mkdir(parents=True)
+    real.write_text("x = 1\n", encoding="utf-8")
+    # Third-party files nested under excluded dir segments (must NOT be yielded).
+    excluded_files = [
+        tmp_path / "packages" / "okpkg" / ".venv" / "lib" / "python3.14"
+        / "site-packages" / "pip" / "_internal" / "configuration.py",
+        tmp_path / "packages" / "okpkg" / "node_modules" / "left-pad"
+        / "index.js",
+        tmp_path / "apps" / "okapp" / "x" / "site-packages" / "evil" / "m.py",
+    ]
+    for f in excluded_files:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        # A banned pattern that WOULD trip atomic-primitives / no-todo if scanned.
+        f.write_text('open(fname, "w")  # TODO: third party\n', encoding="utf-8")
+
+    yielded = {p.resolve() for p in iter_source_files(tmp_path, include_self=True)}
+    assert real.resolve() in yielded, "real source file must be enumerated"
+    for f in excluded_files:
+        assert f.resolve() not in yielded, (
+            f"third-party file under an excluded dir segment was enumerated: {f}"
+        )
+    # Same exclusion holds for the canonical-write iterator (it shares _walk_root).
+    canon = {p.resolve() for p in iter_canonical_source_files(tmp_path)}
+    for f in excluded_files:
+        assert f.resolve() not in canon
 
 
 def _make_clean_tree(root: Path) -> None:
