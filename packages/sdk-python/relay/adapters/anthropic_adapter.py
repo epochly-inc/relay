@@ -401,14 +401,20 @@ class _StreamWrapper:
         elif event_type == "message_delta":
             usage = _get(event, "usage")
             if usage is not None:
+                # message_delta usage.output_tokens is the AUTHORITATIVE
+                # CUMULATIVE final output count; ASSIGN it (never += ). The
+                # isinstance(int) guard means a usage block WITHOUT an integer
+                # output_tokens leaves the message_start seed intact (Py<->TS
+                # parity with the TS asInt-number guard).
                 out_tok = _get(usage, "output_tokens")
                 if isinstance(out_tok, int):
                     self._cum_output = out_tok
-                # Only update input from a delta if it actually carries one;
-                # never clobber the message_start seed to 0.
-                in_tok = _get(usage, "input_tokens")
-                if isinstance(in_tok, int) and in_tok != 0:
-                    self._cum_input = in_tok
+                # input_tokens is read ONLY from message_start (the documented
+                # VAL-ISO-020 design above); the TS adapter never reads input
+                # from a message_delta, so reading it here diverged Py<->TS for
+                # server-tool/web-search streams whose final message_delta
+                # carries a cumulative input count differing from message_start
+                # (round-7 re-hunt HIGH). Do not read input from the delta.
             delta = _get(event, "delta")
             stop_reason = _get(delta, "stop_reason")
             if isinstance(stop_reason, str) and stop_reason:

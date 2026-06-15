@@ -475,6 +475,42 @@ def test_anthropic_streaming_seed_not_clobbered_without_delta_usage() -> None:
     assert parent.attributes["output_tokens"] == 3
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-020")
+def test_anthropic_streaming_input_tokens_from_message_start_only() -> None:
+    """input_tokens is seeded from message_start ONLY; a message_delta carrying
+    a (cumulative) input count -- as server-tool/web-search streams do -- must
+    NOT override the seed. The TS adapter never reads input from a
+    message_delta, so reading it diverged Py<->TS (round-7 re-hunt); both now
+    report the message_start value (output stays cumulative-from-delta)."""
+    recorder = SpanRecorder()
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={
+                "id": "msg_servertool",
+                "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 2679, "output_tokens": 3},
+            },
+        ),
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": "end_turn"},
+            usage=_AnthroUsage(input_tokens=10682, output_tokens=510),
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    list(
+        client.messages.create(
+            model="claude-opus-4-8", max_tokens=10, stream=True, messages=[]
+        )
+    )
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert parent.attributes["input_tokens"] == 2679  # message_start seed, NOT 10682
+    assert parent.attributes["output_tokens"] == 510  # cumulative from delta
+
+
 # ---------------------------------------------------------------------------
 # VAL-W4-039: streamed tool_use reconstructed from input_json_delta fragments
 # (Py<->TS parity with the TypeScript adapter's ingestEvent/finalizeStream).
