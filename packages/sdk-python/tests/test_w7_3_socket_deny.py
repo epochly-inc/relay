@@ -15,6 +15,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import io
 import os
 import socket
 import subprocess
@@ -312,6 +313,210 @@ def test_sock_dgram_sendmsg_no_address_passes_gate() -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+@pytest.mark.skipif(
+    not hasattr(socket.socket, "sendmsg"),
+    reason="socket.sendmsg unavailable on this host (Windows)",
+)
+def test_sock_dgram_sendmsg_no_address_on_preconnected_external_denied() -> None:
+    """A UDP socket connected to a non-loopback peer BEFORE the replay
+    session is entered must still be gated on a no-address ``sendmsg``.
+
+    UDP ``connect`` only records a default peer; it sends no packet. So a
+    caller can connect to ``8.8.8.8`` outside replay mode (no gate active),
+    then ``sendmsg([b'x'])`` once inside the session would egress to that
+    external peer with no destination argument to inspect. The deny gate
+    must consult ``getpeername()`` for the no-address form and raise
+    :class:`RelaySocketDenyError` for a non-allowlisted external peer
+    (HIGH default-deny egress hole; keystone invariant #9 + VAL-W7-088).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Establish the external default peer BEFORE the gate is installed; UDP
+    # connect emits no datagram, so nothing leaves the host here.
+    s.connect((_NON_LOOPBACK_V4, 53))
+    try:
+        with replay_session():
+            with pytest.raises(RelaySocketDenyError) as excinfo:
+                s.sendmsg([b"x"])
+            err = excinfo.value
+            assert err.operation == "sendmsg"
+            assert err.dest_address == _NON_LOOPBACK_V4
+            assert err.dest_port == 53
+    finally:
+        s.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+@pytest.mark.skipif(
+    not hasattr(socket.socket, "sendmsg"),
+    reason="socket.sendmsg unavailable on this host (Windows)",
+)
+def test_sock_dgram_sendmsg_no_address_on_preconnected_loopback_passes_gate() -> (
+    None
+):
+    """A no-address ``sendmsg`` on a loopback-connected socket passes.
+
+    The deny wrapper must not over-block: when ``getpeername()`` resolves
+    to a loopback peer the datagram is permitted past the gate (an
+    OS-level error is fine because no listener exists on the discard
+    port; only :class:`RelaySocketDenyError` is forbidden).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("127.0.0.1", 9))  # loopback default peer
+    try:
+        with replay_session():
+            try:
+                s.sendmsg([b"x"])
+            except RelaySocketDenyError:  # pragma: no cover - failure path
+                pytest.fail("loopback-connected sendmsg must not be denied")
+            except OSError:
+                pass  # No listener on the discard port is fine.
+    finally:
+        s.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+def test_send_on_preconnected_external_denied() -> None:
+    """``send`` on a socket connected to a non-loopback peer BEFORE replay
+    is gated via ``getpeername()``.
+
+    ``send``/``sendall`` take no address argument, so without consulting
+    the connected peer they bypass the deny gate entirely. A UDP socket
+    connected to ``8.8.8.8`` outside replay mode then ``send(b'x')``
+    inside it would egress externally. The gate must raise
+    :class:`RelaySocketDenyError` for the non-allowlisted peer.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect((_NON_LOOPBACK_V4, 53))
+    try:
+        with replay_session():
+            with pytest.raises(RelaySocketDenyError) as excinfo:
+                s.send(b"x")
+            err = excinfo.value
+            assert err.operation == "send"
+            assert err.dest_address == _NON_LOOPBACK_V4
+            assert err.dest_port == 53
+    finally:
+        s.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+def test_sendall_on_preconnected_external_denied() -> None:
+    """``sendall`` shares the no-address connected-peer egress gap with
+    ``send`` and must be gated the same way."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect((_NON_LOOPBACK_V4, 53))
+    try:
+        with replay_session():
+            with pytest.raises(RelaySocketDenyError) as excinfo:
+                s.sendall(b"x")
+            err = excinfo.value
+            assert err.operation == "sendall"
+            assert err.dest_address == _NON_LOOPBACK_V4
+            assert err.dest_port == 53
+    finally:
+        s.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+def test_send_on_preconnected_loopback_passes_gate() -> None:
+    """``send`` on a loopback-connected socket passes the deny gate."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("127.0.0.1", 9))
+    try:
+        with replay_session():
+            try:
+                s.send(b"x")
+            except RelaySocketDenyError:  # pragma: no cover - failure path
+                pytest.fail("loopback-connected send must not be denied")
+            except OSError:
+                pass  # No listener on the discard port is fine.
+    finally:
+        s.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+@pytest.mark.skipif(
+    not hasattr(socket.socket, "sendfile"),
+    reason="socket.socket.sendfile not available on this platform",
+)
+def test_sendfile_on_preconnected_external_denied() -> None:
+    """``sendfile`` is an address-less connected-peer send whose default
+    zero-copy ``os.sendfile`` path bypasses the patched ``send``; it must be
+    gated against the connected peer like ``send``/``sendall`` (VAL-W7-088).
+
+    Mirrors the ``send``/``sendall`` pattern: a ``connect`` to a non-loopback
+    peer (here a UDP socket, where ``connect`` only sets the peer with no
+    handshake) installs the peer, and the deny GATE raises BEFORE the real
+    ``sendfile`` runs (so the SOCK_DGRAM vs SOCK_STREAM distinction is moot --
+    no bytes leave the host).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect((_NON_LOOPBACK_V4, 53))
+    try:
+        with replay_session():
+            with pytest.raises(RelaySocketDenyError) as excinfo:
+                s.sendfile(io.BytesIO(b"x"))
+            err = excinfo.value
+            assert err.operation == "sendfile"
+            assert err.dest_address == _NON_LOOPBACK_V4
+            assert err.dest_port == 53
+    finally:
+        s.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+@pytest.mark.skipif(
+    not hasattr(socket.socket, "sendfile"),
+    reason="socket.socket.sendfile not available on this platform",
+)
+def test_sendfile_on_preconnected_loopback_passes_gate() -> None:
+    """``sendfile`` to a loopback-connected peer passes the deny gate (the
+    wrapper must not over-block)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("127.0.0.1", 9))
+    try:
+        with replay_session():
+            try:
+                s.sendfile(io.BytesIO(b"x"))
+            except RelaySocketDenyError:  # pragma: no cover - failure path
+                pytest.fail("loopback-connected sendfile must not be denied")
+            except (OSError, ValueError):
+                # Past the gate the real sendfile may fail (SOCK_DGRAM / a
+                # BytesIO has no fileno) -- fine; the contract is only that the
+                # deny GATE did not raise for a loopback peer.
+                pass
+    finally:
+        s.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+def test_send_on_unconnected_socket_falls_through() -> None:
+    """``send`` on an UNCONNECTED socket falls through to the original.
+
+    ``getpeername()`` raises ``OSError`` (ENOTCONN) for an unconnected
+    socket; the gate must treat that as "no peer to evaluate" and defer
+    to the original ``send``, which itself raises the normal OS error --
+    never :class:`RelaySocketDenyError`.
+    """
+    with replay_session():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            with pytest.raises(OSError) as excinfo:
+                s.send(b"x")
+            assert not isinstance(excinfo.value, RelaySocketDenyError)
+        finally:
+            s.close()
+
+
+@pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W7-042")
 def test_sock_dgram_connect_external_denied() -> None:
     """UDP ``connect`` (which sets a default peer) is also gated."""
@@ -364,7 +569,10 @@ def test_session_exit_restores_original_socket_methods() -> None:
     pre_connect = socket.socket.connect
     pre_connect_ex = socket.socket.connect_ex
     pre_sendto = socket.socket.sendto
+    pre_send = socket.socket.send
+    pre_sendall = socket.socket.sendall
     pre_sendmsg = getattr(socket.socket, "sendmsg", None)
+    pre_sendfile = getattr(socket.socket, "sendfile", None)
     pre_bind = socket.socket.bind
     pre_create = socket.create_connection
     with replay_session():
@@ -373,8 +581,12 @@ def test_session_exit_restores_original_socket_methods() -> None:
     assert socket.socket.connect is pre_connect
     assert socket.socket.connect_ex is pre_connect_ex
     assert socket.socket.sendto is pre_sendto
+    assert socket.socket.send is pre_send
+    assert socket.socket.sendall is pre_sendall
     if pre_sendmsg is not None:
         assert socket.socket.sendmsg is pre_sendmsg
+    if pre_sendfile is not None:
+        assert socket.socket.sendfile is pre_sendfile
     assert socket.socket.bind is pre_bind
     assert socket.create_connection is pre_create
     assert not is_socket_deny_installed()

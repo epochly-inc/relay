@@ -5,11 +5,16 @@ owns two of the four layers:
 
   Layer 2: ``install_socket_deny`` monkey-patches ``socket.socket`` so
            any non-loopback I/O (``connect``/``connect_ex``/``sendto``/
-           ``sendmsg``/``bind``) raises :class:`RelaySocketDenyError`.
-           ``socket.create_connection`` is patched the same way.
-           ``sendmsg`` carries an explicit destination like ``sendto``
-           (VAL-W7-088) so it is gated too where the platform provides
-           it (absent on Windows). ``socket.getaddrinfo`` is left intact
+           ``sendmsg``/``send``/``sendall``/``bind``) raises
+           :class:`RelaySocketDenyError`. ``socket.create_connection``
+           is patched the same way. ``sendmsg`` carries an explicit
+           destination like ``sendto`` (VAL-W7-088) so it is gated too
+           where the platform provides it (absent on Windows).
+           ``send``/``sendall`` and the no-address form of ``sendmsg``
+           carry NO destination -- they target the socket's connected
+           peer, which may have been set before the session was entered
+           -- so they are gated against that peer via ``getpeername``
+           (VAL-W7-088). ``socket.getaddrinfo`` is left intact
            (informational); the patch catches the resolved-address
            connect via the connect gate. ``uninstall_socket_deny``
            restores every original reference.
@@ -415,6 +420,80 @@ def _raise_deny(
 # ---- patched socket.socket methods ----------------------------------------
 
 
+def _gate_connected_peer(self: socket.socket, operation: str) -> None:
+    """Deny an address-less send when the socket's connected peer is external.
+
+    ``send``/``sendall`` and the no-address form of ``sendmsg`` carry no
+    explicit destination: the datagram/stream targets whatever peer the
+    socket was connected to. That ``connect`` may have happened BEFORE the
+    replay session was entered (UDP ``connect`` emits no packet, so it
+    completes outside the gate), leaving an external default peer that
+    these address-less sends would egress to with no deny check (HIGH
+    default-deny egress hole; keystone invariant #9 + VAL-W7-088).
+
+    We resolve the peer via :meth:`socket.socket.getpeername` and route it
+    through the same :func:`_is_address_allowed` decision as an explicit
+    destination. A non-allowlisted external peer raises
+    :class:`RelaySocketDenyError`. An UNCONNECTED socket --
+    ``getpeername`` raises ``OSError`` (ENOTCONN) -- has no peer to
+    evaluate, so we return and let the original method raise its own
+    normal OS error.
+    """
+    try:
+        peer = self.getpeername()
+    except OSError:
+        # Not connected: no peer to gate. Defer to the original method,
+        # which itself raises the appropriate OSError.
+        return
+    allowed, host, port = _is_address_allowed(self.family, self.type, peer)
+    if not allowed:
+        _raise_deny(
+            operation=operation,
+            family=self.family,
+            socktype=self.type,
+            host=host,
+            port=port,
+            address=peer,
+        )
+
+
+def _denying_send(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
+    """Replacement for ``socket.socket.send``.
+
+    ``send`` takes no destination -- it targets the socket's connected
+    peer -- so it bypasses the address-based deny gates entirely. A
+    socket connected to an external peer before the replay session (UDP
+    ``connect`` sends no packet) would egress here unchecked. We gate the
+    connected peer via :func:`_gate_connected_peer` (VAL-W7-088).
+    """
+    _gate_connected_peer(self, "send")
+    return _socket_originals["send"](self, *args, **kwargs)
+
+
+def _denying_sendall(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
+    """Replacement for ``socket.socket.sendall``.
+
+    Shares the no-address connected-peer egress gap with ``send``; gated
+    the same way via :func:`_gate_connected_peer` (VAL-W7-088).
+    """
+    _gate_connected_peer(self, "sendall")
+    return _socket_originals["sendall"](self, *args, **kwargs)
+
+
+def _denying_sendfile(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
+    """Replacement for ``socket.socket.sendfile``.
+
+    ``sendfile`` is an address-less send to the connected peer; on
+    Linux/macOS its default zero-copy ``os.sendfile`` path bypasses the
+    patched ``socket.send``, so an external egress would slip past the
+    gate. Patching the high-level ``socket.socket.sendfile`` itself gates
+    BOTH the ``os.sendfile`` fast path and the ``send``-based fallback
+    against the connected peer (VAL-W7-088).
+    """
+    _gate_connected_peer(self, "sendfile")
+    return _socket_originals["sendfile"](self, *args, **kwargs)
+
+
 def _denying_connect(self: socket.socket, address: Any) -> Any:
     """Replacement for ``socket.socket.connect``.
 
@@ -507,10 +586,13 @@ def _denying_sendmsg(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
     The CPython builtin ``socket.sendmsg`` accepts positional arguments
     only (it raises ``TypeError`` for keywords), so the destination --
     when supplied -- is always ``args[3]``. When fewer than four
-    positionals are passed the caller omitted the address (the datagram
-    targets the socket's already-gated connected peer); there is no
-    destination to evaluate, so we fall through to the original
-    ``sendmsg`` unchanged.
+    positionals are passed the caller omitted the address; the datagram
+    then targets the socket's connected peer. That ``connect`` may have
+    happened BEFORE the replay session (UDP ``connect`` emits no packet,
+    so it completes outside the gate), so the no-address form is itself an
+    egress vector: we gate the connected peer via
+    :func:`_gate_connected_peer`. An unconnected socket has no peer to
+    evaluate, so it falls through to the original ``sendmsg`` unchanged.
     """
     if len(args) >= 4:
         address: Any = args[3]
@@ -524,6 +606,8 @@ def _denying_sendmsg(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
                 port=port,
                 address=address,
             )
+    else:
+        _gate_connected_peer(self, "sendmsg")
     return _socket_originals["sendmsg"](self, *args, **kwargs)
 
 
@@ -586,12 +670,14 @@ def install_socket_deny(*, sidecar_unix_path: str | None = None) -> None:
     """Patch ``socket`` to deny non-loopback I/O.
 
     Patches ``socket.socket.connect``, ``connect_ex``, ``sendto``,
-    ``sendmsg`` (where the platform provides it), ``bind`` and
-    ``socket.create_connection``. ``socket.getaddrinfo`` is
-    intentionally LEFT INTACT (resolution is informational; the
-    follow-up connect to the resolved address is what trips the gate;
-    DNS UDP datagrams are denied via the SOCK_DGRAM ``sendto`` /
-    ``sendmsg`` paths).
+    ``send``, ``sendall``, ``sendmsg`` (where the platform provides
+    it), ``bind`` and ``socket.create_connection``. ``send``/``sendall``
+    and the no-address ``sendmsg`` carry no destination, so they are
+    gated against the socket's connected peer via ``getpeername``
+    (VAL-W7-088). ``socket.getaddrinfo`` is intentionally LEFT INTACT
+    (resolution is informational; the follow-up connect to the resolved
+    address is what trips the gate; DNS UDP datagrams are denied via the
+    SOCK_DGRAM ``sendto`` / ``sendmsg`` paths).
 
     Args:
         sidecar_unix_path: When non-None, AF_UNIX connects/sends to
@@ -615,11 +701,18 @@ def install_socket_deny(*, sidecar_unix_path: str | None = None) -> None:
         _socket_originals["connect"] = socket.socket.connect
         _socket_originals["connect_ex"] = socket.socket.connect_ex
         _socket_originals["sendto"] = socket.socket.sendto
+        _socket_originals["send"] = socket.socket.send
+        _socket_originals["sendall"] = socket.socket.sendall
         _socket_originals["bind"] = socket.socket.bind
         _socket_originals["create_connection"] = socket.create_connection
         socket.socket.connect = _denying_connect  # type: ignore[method-assign]
         socket.socket.connect_ex = _denying_connect_ex  # type: ignore[method-assign]
         socket.socket.sendto = _denying_sendto  # type: ignore[method-assign,assignment]
+        # ``send`` / ``sendall`` carry NO destination -- they target the
+        # socket's connected peer, which may have been set before the
+        # replay session was entered (VAL-W7-088). Gate the connected peer.
+        socket.socket.send = _denying_send  # type: ignore[method-assign,assignment]
+        socket.socket.sendall = _denying_sendall  # type: ignore[method-assign,assignment]
         socket.socket.bind = _denying_bind  # type: ignore[method-assign]
         socket.create_connection = _denying_create_connection  # type: ignore[assignment]
         # ``sendmsg`` carries an explicit destination just like ``sendto``
@@ -628,6 +721,12 @@ def install_socket_deny(*, sidecar_unix_path: str | None = None) -> None:
         if hasattr(socket.socket, "sendmsg"):
             _socket_originals["sendmsg"] = socket.socket.sendmsg
             socket.socket.sendmsg = _denying_sendmsg  # type: ignore[method-assign,assignment]
+        # ``sendfile`` is an address-less connected-peer send whose default
+        # zero-copy ``os.sendfile`` path bypasses the patched ``send``; gate it
+        # the same way. Guard with hasattr for portability.
+        if hasattr(socket.socket, "sendfile"):
+            _socket_originals["sendfile"] = socket.socket.sendfile
+            socket.socket.sendfile = _denying_sendfile  # type: ignore[method-assign,assignment]
 
 
 def uninstall_socket_deny() -> None:
@@ -644,11 +743,15 @@ def uninstall_socket_deny() -> None:
         socket.socket.connect = _socket_originals["connect"]  # type: ignore[method-assign]
         socket.socket.connect_ex = _socket_originals["connect_ex"]  # type: ignore[method-assign]
         socket.socket.sendto = _socket_originals["sendto"]  # type: ignore[method-assign,assignment]
+        socket.socket.send = _socket_originals["send"]  # type: ignore[method-assign,assignment]
+        socket.socket.sendall = _socket_originals["sendall"]  # type: ignore[method-assign,assignment]
         socket.socket.bind = _socket_originals["bind"]  # type: ignore[method-assign]
         socket.create_connection = _socket_originals["create_connection"]  # type: ignore[assignment]
         # Only present in the originals dict on platforms that have it.
         if "sendmsg" in _socket_originals:
             socket.socket.sendmsg = _socket_originals["sendmsg"]  # type: ignore[method-assign,assignment]
+        if "sendfile" in _socket_originals:
+            socket.socket.sendfile = _socket_originals["sendfile"]  # type: ignore[method-assign,assignment]
         _socket_originals.clear()
         _allowed_sidecar_unix_path = None
 
