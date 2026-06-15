@@ -323,6 +323,48 @@ describe("LOW #11: Run.replayCreate enforces the egress allowlist SSRF guard", (
     await run.close();
   });
 
+  // Round-5 re-hunt: URL-form host extraction MUST match Python urlparse(),
+  // NOT the WHATWG `new URL()` parser. WHATWG treats `\` as a path delimiter and
+  // throws on an embedded space, so it extracted a DIFFERENT host than urlparse
+  // for these forms -- a Py<->TS verdict split and a default-deny SSRF
+  // under-block (TS allowed an entry whose real host urlparse/the HTTP client
+  // dials as internal). After the urlparse-port fix both SDKs agree.
+  it.each([
+    "http://evil.com\\@10.0.0.1/", // urlparse host = 10.0.0.1 (userinfo split at last @)
+    "http://10.0.0.1 /", // urlparse host = "10.0.0.1 " -> _classify strips -> 10.0.0.1
+  ])(
+    "denies a URL whose urlparse host is internal even when WHATWG sees a public host (%s)",
+    async (entry) => {
+      const stub = new StubHttpClient();
+      const run = makeRun(stub);
+      let raised: unknown;
+      try {
+        await run.replayCreate({ caseId: "case-001", egressAllowlist: [entry] });
+      } catch (e) {
+        raised = e;
+      }
+      expect(raised).toBeInstanceOf(EgressDenied);
+      expect((raised as EgressDenied).envelope.denied_reason).toBe("rfc1918");
+      expect(stub.postReplayCalls.length).toBe(0);
+      await run.close();
+    },
+  );
+
+  it("allows a URL whose urlparse host is public even when WHATWG sees an internal host (parity with Python)", async () => {
+    // http://10.0.0.1\@evil.com/ -> urlparse host = evil.com (public). Python
+    // ALLOWS it; the old WHATWG extractor saw 10.0.0.1 and DENIED -- a parity
+    // break in the opposite direction. The fix makes TS allow it like Python.
+    const stub = new StubHttpClient();
+    const run = makeRun(stub);
+    const result = await run.replayCreate({
+      caseId: "case-001",
+      egressAllowlist: ["http://10.0.0.1\\@evil.com/"],
+    });
+    expect(stub.postReplayCalls.length).toBe(1);
+    expect(result["mode"]).toBe("cassette");
+    await run.close();
+  });
+
   it("blocks a NAT64-wrapped loopback (64:ff9b::7f00:1 == 127.0.0.1)", async () => {
     // 64:ff9b::/96 carries the embedded IPv4 in the low 32 bits; the wrapper
     // must unwrap+re-classify exactly like Python `ip in _NAT64_NETWORK`.

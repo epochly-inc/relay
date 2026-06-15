@@ -215,24 +215,58 @@ export class EgressDenied extends Error {
   }
 }
 
-/** Return the host portion of ``entry`` (URL or bare host). Mirrors the
- * Python ``_extract_host``: URL forms delegate to the WHATWG URL parser
- * (whose ``hostname`` strips IPv6 brackets per RFC 3986); bare forms strip a
- * single trailing ``:port`` and the RFC 3986 bracketed-IPv6 authority form. */
+/** Faithful port of Python ``urllib.parse.urlparse(entry).hostname`` for the
+ * URL-form egress-allowlist entries.
+ *
+ * The TS SDK previously used the WHATWG ``new URL()`` parser, but WHATWG and
+ * ``urlparse`` resolve the authority DIFFERENTLY for backslash-in-userinfo and
+ * embedded-space URLs, so ``validateEgressEntries`` (TS) and
+ * ``validate_egress_entries`` (Python) returned OPPOSITE verdicts for the same
+ * caller-supplied entry -- a Py<->TS parity break AND a default-deny SSRF
+ * under-block on the TS side (round-5 re-hunt HIGH). E.g.
+ * ``http://evil.com\@10.0.0.1/``: WHATWG treats ``\`` as a path delimiter so
+ * ``hostname`` is ``evil.com`` (ALLOW), while urlparse keeps ``10.0.0.1`` as the
+ * host (DENY -- and the IP a urlparse-style HTTP client actually dials); and
+ * ``http://10.0.0.1 /``: ``new URL`` THROWS so the old extractor returned ""
+ * (ALLOW) while urlparse yields ``10.0.0.1 `` (DENY after _classify strips it).
+ *
+ * ``urlparse`` does NOT treat ``\`` as a delimiter and does NOT strip
+ * whitespace: netloc = the authority after ``scheme://`` up to the first ``/``,
+ * ``?``, or ``#``; the host is the part after the LAST ``@`` (userinfo split),
+ * with a bracketed IPv6 form or a trailing ``:port`` removed, then lowercased
+ * (the empty case maps to ""). Verified byte-identical to ``urlparse().hostname``
+ * across the divergent + canonical forms. */
+function _urlparseHostname(entry: string): string {
+  const schemeIdx = entry.indexOf("://");
+  const rest = entry.slice(schemeIdx + 3);
+  let end = rest.length;
+  for (const sep of ["/", "?", "#"]) {
+    const i = rest.indexOf(sep);
+    if (i >= 0 && i < end) end = i;
+  }
+  const netloc = rest.slice(0, end);
+  const at = netloc.lastIndexOf("@");
+  const hostinfo = at >= 0 ? netloc.slice(at + 1) : netloc;
+  const openBr = hostinfo.indexOf("[");
+  let hostname: string;
+  if (openBr >= 0) {
+    const bracketed = hostinfo.slice(openBr + 1);
+    const closeBr = bracketed.indexOf("]");
+    hostname = closeBr >= 0 ? bracketed.slice(0, closeBr) : bracketed;
+  } else {
+    const colon = hostinfo.indexOf(":");
+    hostname = colon >= 0 ? hostinfo.slice(0, colon) : hostinfo;
+  }
+  return hostname.toLowerCase();
+}
+
+/** Return the host portion of ``entry`` (URL or bare host). Mirrors the Python
+ * ``_extract_host``: URL forms go through ``_urlparseHostname`` (a faithful
+ * urlparse port, NOT WHATWG ``new URL()`` -- see that function); bare forms
+ * strip a single trailing ``:port`` and the RFC 3986 bracketed-IPv6 form. */
 function _extractHost(entry: string): string {
   if (entry.includes("://")) {
-    try {
-      const parsed = new URL(entry);
-      // WHATWG URL.hostname keeps IPv6 in brackets; strip them so the
-      // classifier sees the bare literal (parity with urlparse().hostname).
-      let host = parsed.hostname;
-      if (host.startsWith("[") && host.endsWith("]")) {
-        host = host.slice(1, -1);
-      }
-      return host;
-    } catch {
-      return "";
-    }
+    return _urlparseHostname(entry);
   }
   let host = entry;
   // RFC 3986 bracketed IPv6 authority form: ``[ipv6]`` or ``[ipv6]:port``.
