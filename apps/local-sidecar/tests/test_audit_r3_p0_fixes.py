@@ -742,3 +742,95 @@ __all__ = [
     "test_bug_a5_build_error_envelope_drops_error_class",
     "test_bug_a5_envelope_response_validates_against_canonical_schema",
 ]
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_idempotency_expired_whole_second_db_row_is_not_replayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-7 roborev coverage: an EXPIRED DB idempotency row must be a MISS
+    (re-execute), not replayed. Guards the parse-based TTL specifically against
+    the lexicographic edge: a WHOLE-SECOND expires_at ("...12:00:00Z") sorts
+    AFTER a fractional-second now cutoff ("...12:00:00.500000Z") in a raw text
+    compare, so a lexicographic filter would wrongly serve this expired row.
+    """
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setenv("RELAY_SIDECAR_IDLE_TIMEOUT_S", "60.0")
+    monkeypatch.setenv("RELAY_SIDECAR_ALLOW_LEGACY_SCOPE_HEADER", "1")
+    monkeypatch.setenv("RELAY_HOME", str(tmp_path / "relay-home"))
+    (tmp_path / "relay-home").mkdir(exist_ok=True)
+    db_path = tmp_path / "sidecar.db"
+    await _bootstrap_db(db_path)
+
+    def _canonical_key(surface: str, user_key: str) -> str:
+        alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+        material = (surface + ":" + user_key).encode("utf-8")
+        digest_bytes = hashlib.sha256(material).digest()
+        leading = int.from_bytes(digest_bytes[:17], "big")
+        leading >>= 136 - 130
+        chars: list[str] = []
+        for _ in range(26):
+            chars.append(alphabet[leading & 0x1F])
+            leading >>= 5
+        return "".join(reversed(chars))
+
+    surface = "PUT /v1/gates/gate-restart"
+    user_key = "01HZX9F8K7M3N4P5Q6R7S8T9V6"
+    canonical_key = _canonical_key(surface, user_key)
+    body_bytes = b'{"name":"g","scope_type":"run"}'
+    request_digest = "sha256-" + hashlib.sha256(body_bytes).hexdigest()
+
+    # Seed an EXPIRED row whose expires_at is a WHOLE-SECOND timestamp (no
+    # microseconds) chronologically in the past.
+    now = datetime.now(tz=UTC)
+    expired_whole_second = (
+        (now - timedelta(hours=1)).replace(microsecond=0).isoformat()
+    ).replace("+00:00", "Z")
+    first_seen = (now - timedelta(hours=25)).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+    async with aiosqlite.connect(str(db_path)) as conn:
+        await conn.execute(
+            "INSERT INTO idempotency_records "
+            "(idempotency_key, schema_version, project_id, request_digest, "
+            " response_status, response_ref, first_seen_at, expires_at, "
+            " surface, response_body, response_headers) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                canonical_key,
+                "relay.idempotency_record.v1",
+                "00000000-0000-0000-0000-000000000000",
+                request_digest,
+                201,
+                None,
+                first_seen,
+                expired_whole_second,
+                surface,
+                '{"id":"gate-restart","status":"ok"}',
+                "{}",
+            ),
+        )
+        await conn.commit()
+
+    app = build_runtime_app(health=_make_health(), sqlite_path=db_path)
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=transport, base_url="http://sidecar.test") as c,
+    ):
+        r = await c.put(
+            "/v1/gates/gate-restart",
+            content=body_bytes,
+            headers={
+                "Content-Type": "application/json",
+                "X-Relay-Scopes": "gates:configure",
+                "Idempotency-Key": user_key,
+            },
+        )
+        # The expired row MUST NOT be replayed (re-executes instead). Whatever
+        # the re-execution returns, it is NOT an idempotent replay of the
+        # seeded 201 row.
+        assert r.headers.get("idempotent-replay") != "true", r.text
