@@ -229,6 +229,89 @@ def test_sock_dgram_sendto_external_denied() -> None:
 
 
 @pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+@pytest.mark.skipif(
+    not hasattr(socket.socket, "sendmsg"),
+    reason="socket.sendmsg unavailable on this host (Windows)",
+)
+def test_sock_dgram_sendmsg_external_denied() -> None:
+    """``socket(AF_INET, SOCK_DGRAM).sendmsg([b'x'], [], 0, ('8.8.8.8', 53))``
+    raises :class:`RelaySocketDenyError`.
+
+    ``sendmsg`` takes an explicit destination as its 4th positional
+    argument (``sendmsg(buffers[, ancdata[, flags[, address]]])``) just
+    like ``sendto``. On an unconnected SOCK_DGRAM socket this is an
+    egress vector that must route through the same deny gate (HIGH #12
+    default-deny egress hole; keystone invariant #9 + VAL-W7-088).
+    """
+    with replay_session():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            with pytest.raises(RelaySocketDenyError) as excinfo:
+                s.sendmsg([b"x"], [], 0, (_NON_LOOPBACK_V4, 53))
+            err = excinfo.value
+            assert err.socktype == "SOCK_DGRAM"
+            assert err.operation == "sendmsg"
+            assert err.dest_address == _NON_LOOPBACK_V4
+            assert err.dest_port == 53
+        finally:
+            s.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+@pytest.mark.skipif(
+    not hasattr(socket.socket, "sendmsg"),
+    reason="socket.sendmsg unavailable on this host (Windows)",
+)
+def test_sock_dgram_sendmsg_loopback_passes_gate() -> None:
+    """``sendmsg`` to a loopback target passes the deny gate.
+
+    The deny wrapper must not over-block: a datagram aimed at loopback
+    is permitted past the gate (an OS-level error is fine because no
+    listener exists; only :class:`RelaySocketDenyError` is forbidden).
+    """
+    with replay_session():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            try:
+                s.sendmsg([b"x"], [], 0, ("127.0.0.1", 9))
+            except RelaySocketDenyError:  # pragma: no cover - failure path
+                pytest.fail("loopback sendmsg must not be denied")
+            except OSError:
+                pass  # No listener on the discard port is fine.
+        finally:
+            s.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
+@pytest.mark.skipif(
+    not hasattr(socket.socket, "sendmsg"),
+    reason="socket.sendmsg unavailable on this host (Windows)",
+)
+def test_sock_dgram_sendmsg_no_address_passes_gate() -> None:
+    """``sendmsg`` with no explicit destination (connected socket form)
+    is not blocked by the deny gate.
+
+    When the address argument is omitted the datagram targets the
+    socket's connected peer; the deny gate has no destination to
+    evaluate, so it must fall through to the original ``sendmsg``
+    rather than raise. The connect that established the peer was
+    already gated, so this is safe.
+    """
+    with replay_session():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            with pytest.raises(OSError):
+                # Not connected -> the original sendmsg raises OSError,
+                # never RelaySocketDenyError.
+                s.sendmsg([b"x"])
+        finally:
+            s.close()
+
+
+@pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W7-042")
 def test_sock_dgram_connect_external_denied() -> None:
     """UDP ``connect`` (which sets a default peer) is also gated."""
@@ -281,6 +364,7 @@ def test_session_exit_restores_original_socket_methods() -> None:
     pre_connect = socket.socket.connect
     pre_connect_ex = socket.socket.connect_ex
     pre_sendto = socket.socket.sendto
+    pre_sendmsg = getattr(socket.socket, "sendmsg", None)
     pre_bind = socket.socket.bind
     pre_create = socket.create_connection
     with replay_session():
@@ -289,6 +373,8 @@ def test_session_exit_restores_original_socket_methods() -> None:
     assert socket.socket.connect is pre_connect
     assert socket.socket.connect_ex is pre_connect_ex
     assert socket.socket.sendto is pre_sendto
+    if pre_sendmsg is not None:
+        assert socket.socket.sendmsg is pre_sendmsg
     assert socket.socket.bind is pre_bind
     assert socket.create_connection is pre_create
     assert not is_socket_deny_installed()

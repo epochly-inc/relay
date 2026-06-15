@@ -5,11 +5,14 @@ owns two of the four layers:
 
   Layer 2: ``install_socket_deny`` monkey-patches ``socket.socket`` so
            any non-loopback I/O (``connect``/``connect_ex``/``sendto``/
-           ``bind``) raises :class:`RelaySocketDenyError`. ``socket.
-           create_connection`` is patched the same way. ``socket.
-           getaddrinfo`` is left intact (informational); the patch
-           catches the resolved-address connect via the connect gate.
-           ``uninstall_socket_deny`` restores every original reference.
+           ``sendmsg``/``bind``) raises :class:`RelaySocketDenyError`.
+           ``socket.create_connection`` is patched the same way.
+           ``sendmsg`` carries an explicit destination like ``sendto``
+           (VAL-W7-088) so it is gated too where the platform provides
+           it (absent on Windows). ``socket.getaddrinfo`` is left intact
+           (informational); the patch catches the resolved-address
+           connect via the connect gate. ``uninstall_socket_deny``
+           restores every original reference.
 
   Layer 4: ``require_instrumented_http_clients`` scans ``sys.modules``
            for uninstrumented HTTP-client modules (``requests``,
@@ -490,6 +493,40 @@ def _denying_sendto(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
     return _socket_originals["sendto"](self, *args, **kwargs)
 
 
+def _denying_sendmsg(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
+    """Replacement for ``socket.socket.sendmsg``.
+
+    ``sendmsg(buffers[, ancdata[, flags[, address]]])`` accepts an
+    explicit destination as its 4th positional argument, exactly like
+    ``sendto``. On an unconnected ``SOCK_DGRAM`` socket this is a UDP
+    egress vector that would otherwise bypass the deny gate entirely
+    (HIGH #12 default-deny egress hole; keystone invariant #9 +
+    VAL-W7-088). We extract that destination and route it through the
+    same :func:`_is_address_allowed` decision as ``sendto``.
+
+    The CPython builtin ``socket.sendmsg`` accepts positional arguments
+    only (it raises ``TypeError`` for keywords), so the destination --
+    when supplied -- is always ``args[3]``. When fewer than four
+    positionals are passed the caller omitted the address (the datagram
+    targets the socket's already-gated connected peer); there is no
+    destination to evaluate, so we fall through to the original
+    ``sendmsg`` unchanged.
+    """
+    if len(args) >= 4:
+        address: Any = args[3]
+        allowed, host, port = _is_address_allowed(self.family, self.type, address)
+        if not allowed:
+            _raise_deny(
+                operation="sendmsg",
+                family=self.family,
+                socktype=self.type,
+                host=host,
+                port=port,
+                address=address,
+            )
+    return _socket_originals["sendmsg"](self, *args, **kwargs)
+
+
 def _denying_bind(self: socket.socket, address: Any) -> Any:
     """Replacement for ``socket.socket.bind``.
 
@@ -549,10 +586,12 @@ def install_socket_deny(*, sidecar_unix_path: str | None = None) -> None:
     """Patch ``socket`` to deny non-loopback I/O.
 
     Patches ``socket.socket.connect``, ``connect_ex``, ``sendto``,
-    ``bind`` and ``socket.create_connection``. ``socket.getaddrinfo`` is
+    ``sendmsg`` (where the platform provides it), ``bind`` and
+    ``socket.create_connection``. ``socket.getaddrinfo`` is
     intentionally LEFT INTACT (resolution is informational; the
     follow-up connect to the resolved address is what trips the gate;
-    DNS UDP datagrams are denied via the SOCK_DGRAM ``sendto`` path).
+    DNS UDP datagrams are denied via the SOCK_DGRAM ``sendto`` /
+    ``sendmsg`` paths).
 
     Args:
         sidecar_unix_path: When non-None, AF_UNIX connects/sends to
@@ -583,6 +622,12 @@ def install_socket_deny(*, sidecar_unix_path: str | None = None) -> None:
         socket.socket.sendto = _denying_sendto  # type: ignore[method-assign,assignment]
         socket.socket.bind = _denying_bind  # type: ignore[method-assign]
         socket.create_connection = _denying_create_connection  # type: ignore[assignment]
+        # ``sendmsg`` carries an explicit destination just like ``sendto``
+        # (VAL-W7-088); patch it too where the platform provides it. It is
+        # absent on Windows, so guard with hasattr to keep the gate portable.
+        if hasattr(socket.socket, "sendmsg"):
+            _socket_originals["sendmsg"] = socket.socket.sendmsg
+            socket.socket.sendmsg = _denying_sendmsg  # type: ignore[method-assign,assignment]
 
 
 def uninstall_socket_deny() -> None:
@@ -601,6 +646,9 @@ def uninstall_socket_deny() -> None:
         socket.socket.sendto = _socket_originals["sendto"]  # type: ignore[method-assign,assignment]
         socket.socket.bind = _socket_originals["bind"]  # type: ignore[method-assign]
         socket.create_connection = _socket_originals["create_connection"]  # type: ignore[assignment]
+        # Only present in the originals dict on platforms that have it.
+        if "sendmsg" in _socket_originals:
+            socket.socket.sendmsg = _socket_originals["sendmsg"]  # type: ignore[method-assign,assignment]
         _socket_originals.clear()
         _allowed_sidecar_unix_path = None
 
