@@ -416,6 +416,39 @@ def test_multipart_content_type_param_value_case_is_significant(
 
 
 @pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_content_type_semicolon_inside_quoted_value_is_significant(
+    make_canonical_request: Any,
+) -> None:
+    """Roborev follow-on: a ``;`` inside a double-quoted parameter value
+    (RFC 2045 quoted-string) is NOT a parameter separator, so two declarations
+    differing only in the CASE of a quoted value's embedded text after the
+    ``;`` (``profile="abc;DEF"`` vs ``profile="abc;def"``) MUST stay distinct,
+    not collide on a stray lowercased fragment from a naive split."""
+    boundary = "----QSEMI8"
+    same_bytes = b"{}"
+    body_upper = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type='application/json; profile="abc;DEF"',
+    )
+    body_lower = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type='application/json; profile="abc;def"',
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_upper, content_type=ct, headers={"content-type": ct}
+    )
+    b = make_canonical_request(
+        body_bytes=body_lower, content_type=ct, headers={"content-type": ct}
+    )
+    assert derive_canonical_key(a) != derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-022")
 def test_multipart_content_type_media_and_param_name_case_insensitive(
     make_canonical_request: Any,
 ) -> None:

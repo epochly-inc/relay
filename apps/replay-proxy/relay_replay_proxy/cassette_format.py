@@ -371,6 +371,32 @@ def _canonicalize_sse_body(body_bytes: bytes) -> str:
     return hashlib.sha256(joined).hexdigest()
 
 
+def _split_unquoted_semicolons(raw: str) -> list[str]:
+    """Split ``raw`` on ``;`` that are NOT inside a double-quoted string.
+
+    RFC 2045 parameter values may be quoted-strings that legally contain a
+    ``;`` (``profile="a;b"``); a naive ``str.split(";")`` would break such a
+    value apart. This single-pass scanner toggles a quote flag on each ``"`` so
+    only top-level semicolons separate parameters. (Backslash-escaping inside a
+    quoted-string is not handled -- it does not occur in provider media-type
+    declarations and would only ever OVER-split, never alias.)
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    in_quote = False
+    for ch in raw:
+        if ch == '"':
+            in_quote = not in_quote
+            buf.append(ch)
+        elif ch == ";" and not in_quote:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
 def _canonical_part_content_type(raw: str) -> str:
     """MIME-canonicalize a multipart part's declared Content-Type for the
     cassette key.
@@ -387,8 +413,13 @@ def _canonical_part_content_type(raw: str) -> str:
     parameter value verbatim, and sort parameters by name so declaration order
     is not significant. Quoted values keep their quotes (the bytes the provider
     declared). Produces e.g. ``application/json;charset=utf-8;profile=AbC``.
+
+    The parameter split is QUOTE-AWARE: a ``;`` inside a double-quoted value
+    (RFC 2045 quoted-string, e.g. ``profile="abc;DEF"``) is NOT a separator, so
+    two declarations differing only in the case of a quoted value's embedded
+    text stay distinct rather than colliding on a stray lowercased fragment.
     """
-    pieces = raw.split(";")
+    pieces = _split_unquoted_semicolons(raw)
     media = pieces[0].strip().lower()
     params: list[tuple[str, str | None]] = []
     for piece in pieces[1:]:
