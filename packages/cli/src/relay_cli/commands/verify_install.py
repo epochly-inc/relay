@@ -504,6 +504,7 @@ def _verify_one_surface(
     kind: str,
     record_path: Path,
     trust_root_override: str | None = None,
+    offline: bool = False,
 ) -> dict[str, Any]:
     """Run digest + sigstore + rekor checks for one install surface.
 
@@ -598,6 +599,7 @@ def _verify_one_surface(
             expected_oidc_issuer=record.oidc_issuer,
             expected_identity=record.oidc_identity,
             artifact_bytes=artifact_bytes,
+            offline=offline,
         )
     except BundleSignatureInvalid as exc:
         return {
@@ -925,6 +927,7 @@ def cmd_verify_install(
                 kind="python",
                 record_path=py_record_path,
                 trust_root_override=None,
+                offline=offline,
             )
         python_check = _maybe_offline_fail(python_check)
 
@@ -947,6 +950,7 @@ def cmd_verify_install(
                 kind="npm",
                 record_path=npm_record_path,
                 trust_root_override=None,
+                offline=offline,
             )
         npm_check = _maybe_offline_fail(npm_check)
 
@@ -969,6 +973,7 @@ def cmd_verify_install(
                 kind="sidecar",
                 record_path=sidecar_record_path,
                 trust_root_override=None,
+                offline=offline,
             )
         sidecar_check = _maybe_offline_fail(sidecar_check)
 
