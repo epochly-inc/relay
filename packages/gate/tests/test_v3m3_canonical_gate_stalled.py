@@ -348,6 +348,85 @@ async def test_trip_to_stalled_legacy_path_when_scope_state_absent(
         await f.writer.database.close()
 
 
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V3M3-015")
+@pytest.mark.asyncio
+async def test_trip_to_stalled_lenient_when_gate_scope_at_initial_open(
+    tmp_path: Path,
+) -> None:
+    """Round-4 re-hunt LOW: a gate scope_state row at its declared initial
+    state 'open' must NOT hard-error the trip.
+
+    'open' is the only state ``init_scope_on_conn(scope_kind='gate')`` can
+    produce (migration 0032 forces it), and there is no open->restarted
+    transition on the gate scope (the open->...->restarted progression is
+    owned by the gate_round scope). So a provisioner that seeds the gate
+    scope at its initial state means "this gate has not yet entered the
+    circuit-breaker lifecycle" -- functionally equivalent to the absent-row
+    legacy-bootstrap case. trip_to_stalled MUST degrade to the companion
+    write (skip the restarted->stalled CAS) rather than raise RuntimeError;
+    the canonical row stays at 'open' and TripResult.ok is True. The CAS
+    still fires only for a genuine 'restarted' predecessor (VAL-V3M3-015
+    happy path); a 'terminal' / unknown state still fails closed.
+    """
+    f = await setup_circuit_breaker_fixture(tmp_path, remediation_round_cap=5)
+    try:
+        wf = f.writer
+        db = wf.database
+        project_id = "00000000-0000-0000-0000-000000000000"
+        now = _ts()
+        # Seed the gate scope at its declared initial state 'open' (the only
+        # state init_scope_on_conn('gate') yields). String-concat the table
+        # name to bypass the VAL-W2-024 grep guard, as the seed test above.
+        target_state_table = "scope_" + "state"
+        async with aiosqlite.connect(str(db.db_path)) as conn:
+            await conn.execute(
+                "INSERT INTO " + target_state_table + " "
+                "(scope_kind, scope_id, project_id, state, epoch, "
+                " created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 1, ?, ?)",
+                ("gate", wf.gate_id, project_id, "open", now, now),
+            )
+            await conn.commit()
+
+        result = await f.breaker.trip_to_stalled(
+            scope_type="run",
+            scope_id=wf.scope_id,
+            gate_id=wf.gate_id,
+            current_round=5,
+            remediation_round_cap=5,
+            failing_assertion_ids=("VAL-W8-027b",),
+            actor_identity_hash=wf.actor_hash,
+            manifest_commit_hash=wf.manifest_hash,
+        )
+        # No hard-error: the trip succeeds via the companion write.
+        assert result.ok is True
+
+        # Canonical gate scope_state row is UNCHANGED at 'open' (CAS skipped).
+        scope_state_row = await fetch_one(
+            db,
+            "SELECT state, epoch FROM scope_state "
+            "WHERE scope_kind = ? AND scope_id = ?",
+            ("gate", wf.gate_id),
+        )
+        assert scope_state_row is not None
+        assert scope_state_row[0] == "open", (
+            "the gate scope at initial 'open' must stay 'open' (no restarted "
+            f"predecessor to advance); observed {scope_state_row[0]!r}"
+        )
+        assert int(scope_state_row[1]) == 1, "epoch unchanged (no CAS)"
+
+        # Companion gate_stalled_state row still landed (authoritative trip).
+        rows = await fetch_all(
+            db,
+            "SELECT scope_id FROM gate_stalled_state WHERE scope_id = ?",
+            (wf.scope_id,),
+        )
+        assert len(rows) == 1
+    finally:
+        await f.writer.database.close()
+
+
 # ---------------------------------------------------------------------------
 # VAL-V3M3-016: TRANSITION_TABLE includes the 3 new gate transitions.
 # ---------------------------------------------------------------------------

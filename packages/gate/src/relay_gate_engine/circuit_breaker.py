@@ -490,7 +490,23 @@ class CircuitBreaker:
             # Already stalled; the canonical CAS would be a no-op via
             # the state engine's idempotent-replay branch. Skip.
             return
+        if current_state == "open":
+            # 'open' is the gate scope's declared initial_state -- the ONLY
+            # state init_scope_on_conn(scope_kind='gate') can produce (migration
+            # 0032 forces it) -- and there is no open->restarted transition on
+            # the gate scope (the open->...->restarted progression is owned by
+            # the gate_round scope). So a gate row at 'open' means "this gate has
+            # not yet entered the circuit-breaker lifecycle", functionally
+            # identical to the absent-row legacy-bootstrap case above. Degrade to
+            # the companion write rather than hard-error: a provisioner that
+            # seeds the gate scope at its initial state must not break the trip.
+            # The restarted->stalled CAS still runs only for a genuine
+            # 'restarted' predecessor (VAL-V3M3-015 happy path) below.
+            return
         if current_state != "restarted":
+            # A non-{open,restarted,stalled} state (e.g. 'terminal' after an
+            # admin terminate) is genuinely inconsistent with a cap-exceeded
+            # trip; fail closed rather than fabricate a transition.
             raise RuntimeError(
                 "circuit_breaker.trip_to_stalled: canonical scope_state "
                 "row for gate scope is at "
