@@ -224,23 +224,27 @@ interface VerifyOutcome {
 }
 
 /**
- * RFC 3161 PKIStatus gate, fail-closed. A TimeStampToken is present only
- * when PKIStatus is granted(0) or grantedWithMods(1); every other value --
- * rejection(2), waiting(3), revocationWarning(4), revocationNotification(5),
- * any out-of-range integer, a missing/undefined status from a malformed
- * TSTInfo, or a large INTEGER decoded as a string by @peculiar/asn1-schema
- * -- MUST be rejected.
+ * RFC 3161 PKIStatus gate, fail-closed. An acceptable TimeStampToken is
+ * present ONLY when PKIStatus is granted(0). Every other value --
+ * grantedWithMods(1), rejection(2), waiting(3), revocationWarning(4),
+ * revocationNotification(5), any out-of-range integer, a missing/undefined
+ * status from a malformed TSTInfo, or a large INTEGER decoded as a string by
+ * @peculiar/asn1-schema -- MUST be rejected.
  *
- * Mirrors the Python posture: rfc3161_client verify.py raises
- * VerificationError("PKIStatus is not GRANTED") for non-granted statuses and
- * PKIStatus(value) raises ValueError for an out-of-range integer; the Python
- * verifier returns outcome="invalid" either way.
+ * grantedWithMods(1) is REJECTED for Py<->TS verdict parity: the Python
+ * verifier delegates to rfc3161_client verify.py:209, which raises
+ * VerificationError("PKIStatus is not GRANTED") for EVERY status != GRANTED(0)
+ * -- including grantedWithMods (the upstream digitorus/timestamp lib does not
+ * validate GRANTED_WITH_MOD). Accepting 1 here would PASS a bundle the Python
+ * verifier FAILS, a keystone-invariant-#11 verdict split. PKIStatus(value)
+ * also raises ValueError for an out-of-range integer; the Python verifier
+ * returns outcome="invalid" in every non-granted case.
  *
- * Uses STRICT identity against the JS numbers 0 and 1 so the string "0", a
- * BigInt(0), NaN, and 0.5 all fail (none is the number 0 or 1).
+ * Uses STRICT identity against the JS number 0 so the string "0", a BigInt(0),
+ * NaN, 0.5, and the number 1 all fail (none is the number 0).
  */
 export function _isAcceptablePkiStatus(statusVal: unknown): boolean {
-  return statusVal === 0 || statusVal === 1;
+  return statusVal === 0;
 }
 
 /**
@@ -286,16 +290,17 @@ function _verifyCryptographicSignature(args: {
     return { ok: false, reason: `tsr_decode_failed: ${(exc as Error).name}` };
   }
 
-  // 2. PKIStatus must indicate granted (== 0) or grantedWithMods (== 1).
-  // PKIStatus is encoded as an INTEGER; @peculiar/asn1-schema decodes small
-  // INTEGERs to a JS number but yields a *string* for values beyond
-  // Number.MAX_SAFE_INTEGER, and a malformed TSTInfo leaves the field
-  // undefined. The gate MUST fail closed on every non-granted shape -- the
-  // prior `typeof statusVal === "number" && ...` form SKIPPED the check
-  // entirely for non-numeric / missing / out-of-range status, letting a
-  // non-granted (or garbage) TSR slip past. Python rejects all of these:
-  // rfc3161_client verify.py raises VerificationError("PKIStatus is not
-  // GRANTED") and PKIStatus(value) raises ValueError on an out-of-range
+  // 2. PKIStatus must indicate granted (== 0). grantedWithMods(1) is REJECTED
+  // for Py<->TS parity: rfc3161_client verify.py:209 raises on EVERY status !=
+  // GRANTED(0) (see _isAcceptablePkiStatus). PKIStatus is encoded as an
+  // INTEGER; @peculiar/asn1-schema decodes small INTEGERs to a JS number but
+  // yields a *string* for values beyond Number.MAX_SAFE_INTEGER, and a
+  // malformed TSTInfo leaves the field undefined. The gate MUST fail closed on
+  // every non-granted shape -- the prior `typeof statusVal === "number" && ...`
+  // form SKIPPED the check entirely for non-numeric / missing / out-of-range
+  // status, letting a non-granted (or garbage) TSR slip past. Python rejects
+  // all of these: rfc3161_client verify.py raises VerificationError("PKIStatus
+  // is not GRANTED") and PKIStatus(value) raises ValueError on an out-of-range
   // integer (parity).
   const statusVal = tsr.status?.status;
   if (!_isAcceptablePkiStatus(statusVal)) {
