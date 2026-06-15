@@ -1250,6 +1250,17 @@ def test_event_log_entry_occurred_at_accepts_lowercase_z() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W1-017")
+def test_replay_fixture_capture_clock_accepts_lowercase_z() -> None:
+    """ReplayFixture.capture_clock shares the same offset pre-check as
+    occurred_at, so it too must accept a lowercase 'z' (Py<->TS parity)."""
+    rf = ReplayFixture.model_validate(
+        _base_replay_fixture(capture_clock="2026-05-12t00:00:00z")
+    )
+    assert rf.capture_clock.tzinfo is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
 def test_event_log_entry_occurred_at_accepts_positive_offset() -> None:
     payload = _base_event_log_entry(occurred_at="2026-05-12T10:00:00+05:30")
     e = EventLogEntry.model_validate(payload)

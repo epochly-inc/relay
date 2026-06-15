@@ -51,10 +51,12 @@ NFC-singleton keys (U+2126 OHM -> U+03A9, U+212B ANGSTROM -> U+00C5) and
 BMP CJK-compat ideographs (U+FA6C -> U+242EE), because the re-parse
 re-sorts by the now-NFC key and emits a different stream. The reference
 encoders relay_contracts.canonical and relay_verifier.canonical still
-emit keys NFC-folded and so share that wire-instability on such keys;
-this module is deliberately stable and diverges from them ONLY on the
-NFC-singleton / CJK-compat keys that make them unstable (Relay's
-schema-declared bundle keys are ASCII, where all three agree).
+emit keys NFC-folded, so to avoid DIVERGING from them this module
+FAIL-CLOSES on any key whose NFC form differs from its raw form (the
+NFC-stability guard in _encode): such a key is refused, never emitted. So
+every ACCEPTED key is byte-identical across all encoders, and the
+wire-unstable NFC-singleton / CJK-compat keys cannot be signed at all
+(Relay's schema-declared bundle keys are ASCII -- always NFC-stable).
 
 String VALUES are NFC-normalised at emit time by _encode_string, so an
 input arriving in NFD (e.g. ``"cafe" + U+0301``) and the same input in
