@@ -5859,6 +5859,12 @@ def run_uvicorn(
         loop="asyncio",
     )
     server = uvicorn.Server(config)
+    # Wire the live Server handle onto app.state BEFORE serving so the SIGUSR1
+    # force-stop and idle-shutdown paths (which read
+    # getattr(app.state, "uvicorn_server", None) to set .should_exit /
+    # .force_exit) can actually terminate this daemon. Without this the handle
+    # is None and those paths are inert (re-hunt #4).
+    app.state.uvicorn_server = server
     server.run()
 
 
