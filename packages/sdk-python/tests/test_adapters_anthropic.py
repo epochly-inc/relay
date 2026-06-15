@@ -400,3 +400,71 @@ def test_anthropic_streaming_seed_not_clobbered_without_delta_usage() -> None:
     [parent] = [s for s in recorder.spans if s.kind == "model_call"]
     assert parent.attributes["input_tokens"] == 9
     assert parent.attributes["output_tokens"] == 3
+
+
+# ---------------------------------------------------------------------------
+# VAL-W4-039: streamed tool_use reconstructed from input_json_delta fragments
+# (Py<->TS parity with the TypeScript adapter's ingestEvent/finalizeStream).
+# Pre-fix the Python streaming wrapper emitted only generic stream_chunk spans
+# and never reconstructed the tool_use block, nor set chunk_count.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W4-039")
+def test_anthropic_streaming_reconstructs_tool_use() -> None:
+    recorder = SpanRecorder()
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={"id": "msg_t", "model": "claude-opus-4-7"},
+        ),
+        _AnthroEvent(
+            type="content_block_start",
+            index=0,
+            content_block=_ToolUseBlock(
+                type="tool_use", id="toolu_9", name="get_weather", input={}
+            ),
+        ),
+        # The tool args arrive as input_json_delta fragments, never as a single
+        # block -- the wrapper must accumulate partial_json across deltas.
+        _AnthroEvent(
+            type="content_block_delta",
+            index=0,
+            delta={"type": "input_json_delta", "partial_json": '{"city": "Par'},
+        ),
+        _AnthroEvent(
+            type="content_block_delta",
+            index=0,
+            delta={"type": "input_json_delta", "partial_json": 'is"}'},
+        ),
+        _AnthroEvent(type="content_block_stop", index=0),
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": "tool_use"},
+            usage=_AnthroUsage(input_tokens=50, output_tokens=12),
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    it = client.messages.create(
+        model="claude-opus-4-7",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": "weather in Paris"}],
+        stream=True,
+    )
+    list(it)
+    tool_spans = [s for s in recorder.spans if s.kind == "tool_call"]
+    assert len(tool_spans) == 1
+    assert tool_spans[0].attributes["tool_name"] == "get_weather"
+    # Args reconstructed from the streamed fragments ('{"city": "Paris"}').
+    assert "Paris" in str(tool_spans[0].attributes["args_redacted"])
+    assert tool_spans[0].attributes["parent_span_id"] == (
+        [s for s in recorder.spans if s.kind == "model_call"][0].span_id
+    )
+    # chunk_count populated on the model_call parent (parity with the TS
+    # finalizeStream, which sets state.chunkCount).
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert parent.attributes["chunk_count"] == len(events)
+    # stop_reason surfaced on the parent (parity with non-stream + TS stream).
+    assert parent.attributes["stop_reason"] == "tool_use"

@@ -691,3 +691,85 @@ def test_redact_tool_input_raises_typeerror_on_unsupported_value() -> None:
 
     with pytest.raises(TypeError):
         _redact_tool_input({"weird": {1, 2, 3}})
+
+
+# ---------------------------------------------------------------------------
+# Py<->TS streaming-usage parity: the streaming wrapper must aggregate token
+# usage from the terminal usage-only chunk (OpenAI with
+# stream_options.include_usage emits a final chunk with empty choices and a
+# populated .usage) and write input/output/total tokens + cost on finalize.
+# Mirrors the TS adapter's ingestChunk/finalizeStream (it accumulates
+# usage.prompt_tokens/completion_tokens). Pre-fix the Python streaming
+# wrapper never read chunk.usage, so every streamed call kept the seed
+# zeros, diverging from the non-stream path and from TypeScript.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeUsageChunk:
+    """Terminal usage-only chunk: empty choices + populated .usage.
+
+    OpenAI with ``stream_options={"include_usage": True}`` emits this as the
+    final SSE chunk (choices is empty, usage carries the totals).
+    """
+
+    id: str
+    model: str
+    system_fingerprint: str | None
+    choices: list[_FakeChunkChoice]
+    usage: _FakeUsage
+
+
+@pytest.mark.plumbing
+def test_openai_streaming_aggregates_usage_on_finalize() -> None:
+    """A streamed sequence ending in a usage-only chunk (prompt=120,
+    completion=30) yields a model_call span with input_tokens=120,
+    output_tokens=30, total_tokens=150, and a nonzero cost mirroring the
+    non-stream path's cost computation."""
+    recorder = SpanRecorder()
+    chunks: list[Any] = [
+        _FakeChunk(
+            id="chatcmpl-u",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[_FakeChunkChoice(index=0, delta=_FakeChunkDelta(content="he"))],
+        ),
+        _FakeChunk(
+            id="chatcmpl-u",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[
+                _FakeChunkChoice(
+                    index=0,
+                    delta=_FakeChunkDelta(content="llo"),
+                    finish_reason="stop",
+                )
+            ],
+        ),
+        # Terminal usage-only chunk: choices empty, usage populated.
+        _FakeUsageChunk(
+            id="chatcmpl-u",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[],
+            usage=_FakeUsage(
+                prompt_tokens=120, completion_tokens=30, total_tokens=150
+            ),
+        ),
+    ]
+    client = wrap_openai(_FakeOpenAIClient(chunks), recorder=recorder)
+    it = client.chat.completions.create(
+        model="gpt-4o-2024-08-06",
+        messages=[{"role": "user", "content": "stream please"}],
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    list(it)
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert parent.attributes["input_tokens"] == 120
+    assert parent.attributes["output_tokens"] == 30
+    assert parent.attributes["total_tokens"] == 150
+    # Cost mirrors the non-stream path exactly (gpt-4o-2024-08-06 pricing).
+    expected_cost = (120 / 1_000_000.0) * 2.50 + (30 / 1_000_000.0) * 10.00
+    assert parent.attributes["total_cost_usd"] == round(expected_cost, 6)
+    assert parent.attributes["total_cost_usd"] > 0.0

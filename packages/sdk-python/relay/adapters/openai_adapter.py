@@ -528,6 +528,12 @@ class _StreamWrapper:
         self._last_model = parent.attributes.get("model", "")
         self._last_fingerprint: str | None = None
         self._aggregated_finish: str | None = None
+        # Token usage is delivered on the terminal usage-only chunk when the
+        # caller sets ``stream_options={"include_usage": True}`` (that chunk
+        # carries empty ``choices`` and a populated ``usage``). Mirrors the
+        # TypeScript adapter, which aggregates usage and writes the token /
+        # cost attributes on finalize. ``None`` until such a chunk is seen.
+        self._usage: Any = None
 
     def __iter__(self) -> _StreamWrapper:
         return self
@@ -543,6 +549,23 @@ class _StreamWrapper:
             )
             self._parent.attributes["duration_ms"] = duration_ms
             self._parent.attributes["finish_reason"] = self._aggregated_finish
+            # Write token usage + cost from the terminal usage chunk, mirroring
+            # the non-stream path (_populate_parent_from_response). Absent a
+            # usage chunk (include_usage not set), the seed zeros are left
+            # untouched -- we never fabricate counts we did not receive.
+            if self._usage is not None:
+                input_tokens = int(_get(self._usage, "prompt_tokens", 0) or 0)
+                output_tokens = int(_get(self._usage, "completion_tokens", 0) or 0)
+                total_tokens = int(
+                    _get(self._usage, "total_tokens", input_tokens + output_tokens)
+                    or 0
+                )
+                self._parent.attributes["input_tokens"] = input_tokens
+                self._parent.attributes["output_tokens"] = output_tokens
+                self._parent.attributes["total_tokens"] = total_tokens
+                self._parent.attributes["total_cost_usd"] = _estimate_cost_usd(
+                    self._last_model, input_tokens, output_tokens
+                )
             raise
 
         # Capture chunk metadata for the model_call parent + emit chunk span.
@@ -558,6 +581,12 @@ class _StreamWrapper:
             fr = _get(choices[0], "finish_reason")
             if isinstance(fr, str) and fr:
                 self._aggregated_finish = fr
+        # Capture token usage when the chunk carries it (the terminal
+        # usage-only chunk under stream_options.include_usage). Kept for the
+        # StopIteration finalize so the model_call parent gets real counts.
+        usage = _get(chunk, "usage")
+        if usage is not None:
+            self._usage = usage
 
         self._recorder.new_span(
             "stream_chunk",

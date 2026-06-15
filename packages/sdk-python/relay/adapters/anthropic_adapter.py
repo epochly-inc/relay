@@ -15,6 +15,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -252,6 +253,13 @@ class _StreamWrapper:
         self._model = model
         self._cum_input = 0
         self._cum_output = 0
+        self._chunk_count = 0
+        self._stop_reason: str | None = None
+        # Streamed tool_use blocks arrive as a content_block_start (carrying the
+        # tool name) followed by input_json_delta fragments (carrying the args
+        # JSON in pieces). Aggregate per block index, mirroring the TS adapter's
+        # toolUsesByIndex, and emit one tool_call span per block on finalize.
+        self._tool_uses: dict[int, dict[str, Any]] = {}
 
     def __iter__(self) -> _StreamWrapper:
         return self
@@ -267,8 +275,38 @@ class _StreamWrapper:
             self._parent.attributes["total_cost_usd"] = _estimate_cost_usd(
                 self._model, self._cum_input, self._cum_output
             )
+            self._parent.attributes["chunk_count"] = self._chunk_count
+            self._parent.attributes["stop_reason"] = self._stop_reason
+            # Emit ONE tool_call span per aggregated streamed tool_use block
+            # (VAL-W4-039), mirroring the TS finalizeStream. The args JSON was
+            # streamed in input_json_delta fragments; parse the concatenation,
+            # falling back to the raw string on a parse error and to the initial
+            # block input when no fragments arrived.
+            for agg in self._tool_uses.values():
+                partial = agg.get("partial_json", "")
+                parsed_input: Any = agg.get("input", {})
+                if partial:
+                    try:
+                        parsed_input = json.loads(partial)
+                    except (ValueError, TypeError):
+                        parsed_input = partial
+                args_red, args_hash = _redact_tool_input(parsed_input)
+                self._recorder.new_span(
+                    "tool_call",
+                    tool_name=str(agg.get("name", "")),
+                    parent_span_id=self._parent.span_id,
+                    args_redacted=args_red,
+                    args_hash=args_hash,
+                    result_hash="",
+                    status="pending",
+                    duration_ms=0.0,
+                    retry_count=0,
+                    side_effect_marker=False,
+                    normalized_error_class=None,
+                )
             raise
 
+        self._chunk_count += 1
         event_type = _get(event, "type", "")
         if not isinstance(event_type, str):
             event_type = ""
@@ -298,6 +336,25 @@ class _StreamWrapper:
                     self._cum_input += in_tok
                 if isinstance(out_tok, int):
                     self._cum_output = out_tok
+        elif event_type == "content_block_start":
+            block = _get(event, "content_block")
+            if _get(block, "type") == "tool_use":
+                idx = _get(event, "index", -1)
+                if isinstance(idx, int) and idx >= 0:
+                    self._tool_uses[idx] = {
+                        "name": _get(block, "name", ""),
+                        "partial_json": "",
+                        "input": _get(block, "input", {}),
+                    }
+        elif event_type == "content_block_delta":
+            idx = _get(event, "index", -1)
+            if isinstance(idx, int) and idx >= 0:
+                delta = _get(event, "delta")
+                if _get(delta, "type") == "input_json_delta":
+                    partial = _get(delta, "partial_json", "")
+                    existing = self._tool_uses.get(idx)
+                    if existing is not None and isinstance(partial, str):
+                        existing["partial_json"] += partial
         elif event_type == "message_delta":
             usage = _get(event, "usage")
             if usage is not None:
@@ -309,6 +366,10 @@ class _StreamWrapper:
                 in_tok = _get(usage, "input_tokens")
                 if isinstance(in_tok, int) and in_tok != 0:
                     self._cum_input = in_tok
+            delta = _get(event, "delta")
+            stop_reason = _get(delta, "stop_reason")
+            if isinstance(stop_reason, str) and stop_reason:
+                self._stop_reason = stop_reason
 
         self._recorder.new_span(
             "stream_chunk",
