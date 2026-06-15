@@ -62,6 +62,7 @@ import contextlib
 import ipaddress
 import os
 import socket
+import ssl
 import sys
 import threading
 from collections.abc import Iterator
@@ -503,6 +504,32 @@ def _denying_sendfile(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
     return _socket_originals["sendfile"](self, *args, **kwargs)
 
 
+def _denying_ssl_send(self: ssl.SSLSocket, *args: Any, **kwargs: Any) -> Any:
+    """Replacement for ``ssl.SSLSocket.send``.
+
+    ``ssl.SSLSocket`` overrides ``send``/``sendall``/``write`` with its own
+    SSL_write-backed implementations, so the ``socket.socket`` patches do NOT
+    cover a TLS connection established BEFORE ``replay_session()`` -- a common
+    HTTPS persistent-connection egress path. Gate the connected peer the same
+    way (VAL-W7-088). asyncio's TLS uses a memory-BIO ``SSLObject`` (not
+    ``SSLSocket``), so this does not touch the event loop.
+    """
+    _gate_connected_peer(self, "ssl_send")
+    return _socket_originals["ssl_send"](self, *args, **kwargs)
+
+
+def _denying_ssl_sendall(self: ssl.SSLSocket, *args: Any, **kwargs: Any) -> Any:
+    """Replacement for ``ssl.SSLSocket.sendall`` (VAL-W7-088)."""
+    _gate_connected_peer(self, "ssl_sendall")
+    return _socket_originals["ssl_sendall"](self, *args, **kwargs)
+
+
+def _denying_ssl_write(self: ssl.SSLSocket, *args: Any, **kwargs: Any) -> Any:
+    """Replacement for ``ssl.SSLSocket.write`` (VAL-W7-088)."""
+    _gate_connected_peer(self, "ssl_write")
+    return _socket_originals["ssl_write"](self, *args, **kwargs)
+
+
 def _denying_connect(self: socket.socket, address: Any) -> Any:
     """Replacement for ``socket.socket.connect``.
 
@@ -736,6 +763,15 @@ def install_socket_deny(*, sidecar_unix_path: str | None = None) -> None:
         if hasattr(socket.socket, "sendfile"):
             _socket_originals["sendfile"] = socket.socket.sendfile
             socket.socket.sendfile = _denying_sendfile  # type: ignore[method-assign,assignment]
+        # ssl.SSLSocket overrides send/sendall/write with SSL_write-backed
+        # methods that bypass the socket.socket patches; gate them too so a TLS
+        # connection opened before replay_session cannot egress (VAL-W7-088).
+        _socket_originals["ssl_send"] = ssl.SSLSocket.send
+        _socket_originals["ssl_sendall"] = ssl.SSLSocket.sendall
+        _socket_originals["ssl_write"] = ssl.SSLSocket.write
+        ssl.SSLSocket.send = _denying_ssl_send  # type: ignore[method-assign,assignment]
+        ssl.SSLSocket.sendall = _denying_ssl_sendall  # type: ignore[method-assign,assignment]
+        ssl.SSLSocket.write = _denying_ssl_write  # type: ignore[method-assign,assignment]
 
 
 def uninstall_socket_deny() -> None:
@@ -761,6 +797,10 @@ def uninstall_socket_deny() -> None:
             socket.socket.sendmsg = _socket_originals["sendmsg"]  # type: ignore[method-assign,assignment]
         if "sendfile" in _socket_originals:
             socket.socket.sendfile = _socket_originals["sendfile"]  # type: ignore[method-assign,assignment]
+        if "ssl_send" in _socket_originals:
+            ssl.SSLSocket.send = _socket_originals["ssl_send"]  # type: ignore[method-assign,assignment]
+            ssl.SSLSocket.sendall = _socket_originals["ssl_sendall"]  # type: ignore[method-assign,assignment]
+            ssl.SSLSocket.write = _socket_originals["ssl_write"]  # type: ignore[method-assign,assignment]
         _socket_originals.clear()
         _allowed_sidecar_unix_path = None
 

@@ -523,6 +523,27 @@ def test_af_unix_socketpair_send_not_denied_under_replay() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W7-088")
+def test_ssl_socket_send_methods_gated_and_restored_under_replay() -> None:
+    """ssl.SSLSocket overrides send/sendall/write with SSL_write-backed methods
+    that bypass the socket.socket patches, so a TLS connection opened BEFORE
+    replay_session() could still egress over a persistent HTTPS connection.
+    install_socket_deny must patch ssl.SSLSocket.send/sendall/write (routing
+    them through the same connected-peer gate) and restore them on exit
+    (VAL-W7-088). The deny decision itself is the shared _gate_connected_peer
+    exercised by the socket.socket tests above.
+    """
+    import ssl
+
+    pre = (ssl.SSLSocket.send, ssl.SSLSocket.sendall, ssl.SSLSocket.write)
+    with replay_session():
+        assert ssl.SSLSocket.send is not pre[0]
+        assert ssl.SSLSocket.sendall is not pre[1]
+        assert ssl.SSLSocket.write is not pre[2]
+    assert (ssl.SSLSocket.send, ssl.SSLSocket.sendall, ssl.SSLSocket.write) == pre
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W7-088")
 def test_send_on_unconnected_socket_falls_through() -> None:
     """``send`` on an UNCONNECTED socket falls through to the original.
 
