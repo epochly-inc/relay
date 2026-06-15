@@ -150,6 +150,35 @@ def test_stale_manifest_returns_409_without_calling_state_engine(
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W2-062")
+def test_malformed_json_body_returns_relay_ing_001_not_500(
+    boundary_app,
+) -> None:
+    """Malformed JSON body -> structured RELAY-ING-001, NOT a bare 500.
+
+    The POST /v1/state/transition handler is the three-anchor handoff
+    entry point and is reachable pre-auth. A malformed JSON body MUST NOT
+    surface as an unhandled starlette HTTP 500 "Internal Server Error";
+    it MUST return the same RELAY-ING-001 envelope the handler already
+    returns for a non-object body, and the state engine MUST NOT be
+    invoked.
+    """
+    app, mock, _db_path = boundary_app
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/state/transition",
+            content=b"{not valid json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code != 500, response.text
+        assert response.status_code == 400, response.text
+        body = response.json()
+        assert body["code"] == "RELAY-ING-001", body
+        # CRITICAL: state engine was never invoked on a malformed body.
+        assert mock.invocations == [], mock.invocations
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-062")
 def test_valid_handoff_does_call_state_engine(boundary_app) -> None:
     """Sanity: valid handoff -> mock IS invoked exactly once."""
     app, mock, db_path = boundary_app

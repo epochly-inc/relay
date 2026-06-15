@@ -186,7 +186,17 @@ def build_state_router(
 
     @router.post("/v1/state/transition")
     async def state_transition(request: Request) -> JSONResponse:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "code": "RELAY-ING-001",
+                    "error_class": "RELAY-ING-001",
+                    "message": "request body must be a JSON object",
+                },
+            )
         if not isinstance(body, dict):
             return JSONResponse(
                 status_code=400,
