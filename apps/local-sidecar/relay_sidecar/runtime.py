@@ -142,6 +142,95 @@ def _sha256_canonical(body: bytes) -> str:
     return "sha256-" + hashlib.sha256(body).hexdigest()
 
 
+# In-memory idempotency-cache bounds (DoS hardening for the same attack
+# class as ``_prune_nonce_store``/``MAX_ISSUED_NONCES`` in health.py and the
+# rate-limit-bucket stale sweep in ``_rate_limit_state`` below). The HTTP
+# ``Idempotency-Key`` is attacker-controlled with effectively unlimited
+# cardinality (26-char Crockford ULID grammar); without bounds an
+# authenticated client can stream distinct keys to grow
+# ``runtime.idempotency_store`` without limit, each entry retaining the full
+# response_body -> authenticated memory-exhaustion DoS. The DB-backed
+# ``idempotency_records`` table already carries a 24h TTL (spec B.2); the
+# in-memory map mirrors the SAME TTL so the two stay consistent (a key still
+# replays its cached response within the window) plus a hard size cap.
+IDEMPOTENCY_RECORD_TTL_S: float = 24 * 60 * 60  # 24h, matches the DB TTL.
+MAX_IDEMPOTENCY_RECORDS: int = 4096  # mirrors MAX_ISSUED_NONCES style.
+
+# Key under which each in-memory idempotency record carries its insertion
+# stamp (``runtime._now_epoch_s()`` value). Read only by the prune helper;
+# ``_response_for_existing`` ignores it, so adding it is response-neutral.
+_IDEMPOTENCY_STORED_AT_KEY: str = "_stored_at_epoch_s"
+
+
+def _prune_idempotency_store(
+    store: dict[str, dict[str, dict[str, Any]]],
+    *,
+    now: float,
+    ttl_s: float = IDEMPOTENCY_RECORD_TTL_S,
+    max_entries: int = MAX_IDEMPOTENCY_RECORDS,
+) -> None:
+    """Bound the in-memory idempotency cache in place (DoS hardening).
+
+    Structurally mirrors ``health._prune_nonce_store``: two reclamation
+    passes, both mutating ``store`` directly. ``store`` is the nested
+    ``surface -> {key -> record}`` map; a record carries its insertion stamp
+    under ``_IDEMPOTENCY_STORED_AT_KEY``.
+
+      1. TTL sweep: drop every record whose age ``now - stored_at`` exceeds
+         ``ttl_s``. The DB-backed row for the same key has the SAME 24h TTL
+         and is itself expired, so retaining the in-memory copy is pure leak
+         (a replay past the TTL re-executes rather than returning stale
+         cache). A record missing the stamp (e.g. a record hydrated from the
+         DB before stamping) is treated as just-inserted (age 0) so it is
+         never dropped by the sweep.
+      2. Size cap: if more than ``max_entries`` records survive the TTL
+         sweep, evict the OLDEST (smallest ``stored_at``) records until the
+         cap holds. This bounds memory even for a client that streams many
+         distinct keys inside the TTL window. Records missing a stamp sort
+         as newest (treated as age 0) so a just-inserted record survives.
+
+    Empty per-surface dicts are removed so the outer map does not retain
+    empty surface shells.
+    """
+
+    def _stored_at(record: dict[str, Any]) -> float:
+        raw = record.get(_IDEMPOTENCY_STORED_AT_KEY)
+        if isinstance(raw, int | float):
+            return float(raw)
+        # Missing/garbage stamp: treat as just-inserted so it is neither
+        # swept by the TTL pass nor preferentially evicted by the cap.
+        return now
+
+    # (1) TTL sweep.
+    for surface in list(store.keys()):
+        per_surface = store[surface]
+        expired_keys = [
+            key
+            for key, record in per_surface.items()
+            if (now - _stored_at(record)) > ttl_s
+        ]
+        for key in expired_keys:
+            del per_surface[key]
+        if not per_surface:
+            del store[surface]
+
+    # (2) Size cap: evict oldest-first across all surfaces until at/under cap.
+    flat = [
+        (surface, key, _stored_at(record))
+        for surface, per_surface in store.items()
+        for key, record in per_surface.items()
+    ]
+    overflow = len(flat) - max_entries
+    if overflow > 0:
+        flat.sort(key=lambda triple: triple[2])  # oldest first
+        for surface, key, _stamp in flat[:overflow]:
+            bucket = store.get(surface)
+            if bucket is not None:
+                bucket.pop(key, None)
+                if not bucket:
+                    del store[surface]
+
+
 # Fields appended to an evidence-bundle record AFTER its canonical digest
 # was computed (see the POST /v1/evidence-bundles create handler). The
 # digest is taken over the record EXCLUDING these mutable/derived/alias
@@ -3810,7 +3899,13 @@ def build_runtime_app(
                 )
                 if db_rec is not None:
                     # Hydrate the in-memory map so subsequent replays in
-                    # this process avoid the DB round-trip.
+                    # this process avoid the DB round-trip. Stamp the
+                    # insertion time so the hydrated copy participates in
+                    # the in-memory TTL sweep / size cap
+                    # (_prune_idempotency_store) like any stored record.
+                    db_rec.setdefault(
+                        _IDEMPOTENCY_STORED_AT_KEY, _now_epoch_s()
+                    )
                     store[key] = db_rec
                     rec = db_rec
             return rec
@@ -3975,7 +4070,20 @@ def build_runtime_app(
             "request_digest": digest,
             "response_status": response_status,
             "response_body": response_body,
+            # DoS hardening: stamp insertion time so the in-memory cache can
+            # be TTL-swept and size-capped by _prune_idempotency_store (the
+            # DB row carries the SAME 24h TTL). Read only by the prune
+            # helper; _response_for_existing ignores it.
+            _IDEMPOTENCY_STORED_AT_KEY: _now_epoch_s(),
         }
+        # Bound the in-memory cache after every store, mirroring the
+        # nonce-store prune (_prune_nonce_store) and the rate-limit bucket
+        # sweep (_rate_limit_state). The just-inserted record above is the
+        # newest entry, so the size-cap eviction (oldest-first) never drops
+        # it and a legitimate immediate replay always finds its result.
+        _prune_idempotency_store(
+            runtime.idempotency_store, now=float(_now_epoch_s())
+        )
         # VAL-IDEMP-002: finalize the in-flight reservation installed by
         # _check_idempotency. The in-memory record is written ABOVE first,
         # so any loser woken by the event immediately finds the stored
@@ -5870,6 +5978,8 @@ def run_uvicorn(
 
 __all__ = [
     "DRAIN_RETRY_AFTER_S",
+    "IDEMPOTENCY_RECORD_TTL_S",
+    "MAX_IDEMPOTENCY_RECORDS",
     "DrainMiddleware",
     "RuntimeState",
     "SIDECAR_DB_FILENAME",
