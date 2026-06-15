@@ -113,30 +113,32 @@ def _trigger_body_enforces(text: str, trigger_name: str) -> bool:
     # after the header terminates this trigger. (No nested BEGIN/END in
     # the gate-decisions guard triggers.)
     #
-    # But a regressed trigger may have lost BOTH its enforcement body AND
-    # its own terminating ``END;`` (body collapsed to ``SELECT 1;``). The
-    # first ``END;`` after the header would then belong to the NEXT
-    # trigger, and the extracted block would borrow that neighbor's
-    # ``RAISE(ABORT)`` -- falsely reporting this neutered trigger as
-    # enforcing (VAL-ISO-036). To prevent borrowing a neighbor's
-    # enforcement primitive, clamp the block end to the FIRST of (this
-    # trigger's own ``END;``) OR (the next ``CREATE TRIGGER`` /
-    # ``DROP TRIGGER`` header). A missing terminator can no longer reach
-    # past the next trigger declaration.
+    # FAIL CLOSED on a malformed/truncated trigger. A regressed trigger may
+    # have lost its own terminating ``END;`` (e.g. body collapsed to
+    # ``SELECT 1;`` with the ``END;`` also dropped). In that case the first
+    # ``END;`` after the header belongs to the NEXT trigger, so the extracted
+    # block would borrow that neighbor's ``RAISE(ABORT)`` and falsely report
+    # this neutered trigger as enforcing (VAL-ISO-036). We therefore treat the
+    # trigger as non-enforcing (-> a finding) unless it has its OWN ``END;``
+    # BEFORE the next ``CREATE TRIGGER`` / ``DROP TRIGGER`` header -- a
+    # precondition for SQLite to create the trigger at all. This keeps the
+    # original fail-closed posture for a missing terminator AND blocks the
+    # neighbor-borrow: a trigger with a ``RAISE(ABORT)`` but no own ``END;``
+    # (which SQLite cannot create) is still reported, not passed.
     search_from = start + len(header)
     end = text.find("END;", start)
+    if end == -1:
+        # No terminator anywhere after the header -- malformed; fail closed.
+        return False
     next_create = text.find("CREATE TRIGGER", search_from)
     next_drop = text.find("DROP TRIGGER", search_from)
-    boundaries = [
-        offset
-        for offset in (end, next_create, next_drop)
-        if offset != -1
-    ]
-    if not boundaries:
-        # No terminator and no following trigger header -- the block runs
-        # to end-of-file; treat the remaining text as this trigger's body.
-        boundaries = [len(text)]
-    block = text[start:min(boundaries)]
+    next_headers = [offset for offset in (next_create, next_drop) if offset != -1]
+    if next_headers and min(next_headers) < end:
+        # This trigger's own ``END;`` is past the next trigger declaration --
+        # it lost its terminator; the first ``END;`` belongs to a neighbor.
+        # Fail closed rather than borrow the neighbor's enforcement primitive.
+        return False
+    block = text[start:end]
     return _ENFORCEMENT_RE.search(block) is not None
 
 

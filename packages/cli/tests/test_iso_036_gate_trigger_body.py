@@ -171,6 +171,52 @@ def test_nonfinal_trigger_loses_body_and_terminator_is_detected(
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-ISO-036")
+def test_nonfinal_trigger_keeps_raise_but_loses_terminator_is_detected(
+    tmp_path: Path,
+) -> None:
+    """A non-final trigger that KEEPS its RAISE(ABORT) but loses ONLY its own
+    ``END;`` must FAIL closed (a finding), not pass.
+
+    Roborev follow-on: a clamp that merely checks whether the truncated block
+    (bounded at the next trigger header) contains RAISE(ABORT) would PASS this
+    trigger -- its own RAISE is before the next header -- even though SQLite
+    cannot create a trigger with no ``END;``. The check must require the
+    trigger's OWN ``END;`` BEFORE the next trigger header; a missing terminator
+    fails closed.
+    """
+    text = _read_canonical_migration()
+    # Drop ONLY the role-check trigger's own terminating ``END;`` -- the
+    # RAISE(ABORT) enforcement line is kept intact.
+    with_terminator = (
+        "    SELECT RAISE(ABORT, 'gate_decisions_role_check: only "
+        "relay_gate_engine role may INSERT into gate_decisions');\n"
+        "END;"
+    )
+    without_terminator = (
+        "    SELECT RAISE(ABORT, 'gate_decisions_role_check: only "
+        "relay_gate_engine role may INSERT into gate_decisions');"
+    )
+    assert with_terminator in text, (
+        "fixture precondition: role-check RAISE + END; present"
+    )
+    mutated = text.replace(with_terminator, without_terminator, 1)
+    # The role-check RAISE survives; only its END; is gone.
+    assert "gate_decisions_role_check: only relay_gate_engine" in mutated
+    _write_migration(tmp_path, mutated)
+    _name, findings = gate_engine_invariants.run(tmp_path)
+    assert any(
+        f.code == RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING
+        and "gate_decisions_role_check" in f.pattern
+        for f in findings
+    ), (
+        "expected a finding for the role-check trigger missing its own END; "
+        "(SQLite-invalid); the check must fail closed, not pass on the RAISE "
+        "before the next header; got " + repr(findings)
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-036")
 def test_missing_trigger_still_detected(tmp_path: Path) -> None:
     """An entirely missing trigger declaration is still a finding.
 
