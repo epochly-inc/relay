@@ -415,6 +415,39 @@ def test_multipart_content_type_param_value_case_is_significant(
     assert derive_canonical_key(a) != derive_canonical_key(b)
 
 
+@pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_content_type_media_and_param_name_case_insensitive(
+    make_canonical_request: Any,
+) -> None:
+    """Roborev follow-on: the media type/subtype and parameter NAMES are
+    case-insensitive (RFC 2045), so the SAME declaration written in a different
+    case (``Application/JSON; Profile=abc`` vs ``application/json; profile=abc``)
+    MUST derive the SAME key -- no spurious replay miss. Only the case-sensitive
+    parameter VALUE distinguishes (asserted by the sibling test)."""
+    boundary = "----MIME7Q"
+    same_bytes = b"{}"
+    body_mixed = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type="Application/JSON; Profile=abc",
+    )
+    body_lower = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type="application/json; profile=abc",
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_mixed, content_type=ct, headers={"content-type": ct}
+    )
+    b = make_canonical_request(
+        body_bytes=body_lower, content_type=ct, headers={"content-type": ct}
+    )
+    assert derive_canonical_key(a) == derive_canonical_key(b)
+
+
 @pytest.mark.fulfills("VAL-W7-031")
 def test_multipart_trailing_newline_serves_correct_response_e2e(
     empty_cassette_dir: Path,

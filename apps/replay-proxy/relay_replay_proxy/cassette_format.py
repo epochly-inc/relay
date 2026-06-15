@@ -371,6 +371,43 @@ def _canonicalize_sse_body(body_bytes: bytes) -> str:
     return hashlib.sha256(joined).hexdigest()
 
 
+def _canonical_part_content_type(raw: str) -> str:
+    """MIME-canonicalize a multipart part's declared Content-Type for the
+    cassette key.
+
+    Per RFC 2045 the media type/subtype and parameter NAMES are
+    case-insensitive, but parameter VALUES are case-sensitive. So:
+
+      * a verbatim hash makes ``Application/JSON`` and ``application/json``
+        (the SAME declaration) derive DIFFERENT keys -> spurious replay miss;
+      * a full lowercase hash makes ``profile=ABC`` and ``profile=abc`` (two
+        DISTINCT declarations) collide -> the wrong recorded response served.
+
+    Fold the type/subtype and each parameter name to lowercase, preserve each
+    parameter value verbatim, and sort parameters by name so declaration order
+    is not significant. Quoted values keep their quotes (the bytes the provider
+    declared). Produces e.g. ``application/json;charset=utf-8;profile=AbC``.
+    """
+    pieces = raw.split(";")
+    media = pieces[0].strip().lower()
+    params: list[tuple[str, str | None]] = []
+    for piece in pieces[1:]:
+        piece = piece.strip()
+        if not piece:
+            continue
+        if "=" in piece:
+            name, value = piece.split("=", 1)
+            params.append((name.strip().lower(), value.strip()))
+        else:
+            # A valueless token (rare/malformed); fold its case like a name.
+            params.append((piece.lower(), None))
+    params.sort(key=lambda kv: (kv[0], kv[1] or ""))
+    out = media
+    for name, value in params:
+        out += f";{name}={value}" if value is not None else f";{name}"
+    return out
+
+
 def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str:
     """Per-part canonicalization of a multipart/form-data body.
 
@@ -440,15 +477,15 @@ def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str
                         name = raw_name
                         break
             elif lower.startswith("content-type:"):
-                # Hash the declared value VERBATIM (no case-fold). Media
-                # type/subtype + parameter names are case-insensitive, but
-                # parameter VALUES (e.g. a case-sensitive ``profile`` URI or a
-                # boundary token) are not, so lowercasing could alias two
-                # genuinely distinct declarations onto one key and serve the
-                # wrong recorded response. Over-distinguishing is safe for
-                # replay fidelity; under-distinguishing is the bug. Match the
-                # part name, which is also hashed verbatim.
-                part_content_type = line.split(":", 1)[1].strip()
+                # MIME-canonicalize: fold the case-insensitive media type +
+                # parameter names but preserve case-sensitive parameter values
+                # (see _canonical_part_content_type). This avoids BOTH
+                # aliasing two distinct declarations (full lowercase) AND
+                # spuriously distinguishing the same declaration written in a
+                # different case (verbatim).
+                part_content_type = _canonical_part_content_type(
+                    line.split(":", 1)[1]
+                )
         canonical_parts.append((name, part_content_type, body))
     canonical_parts.sort(key=lambda x: x[0])
     h = hashlib.sha256()
