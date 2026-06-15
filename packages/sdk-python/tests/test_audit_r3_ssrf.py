@@ -110,6 +110,53 @@ def test_cidr_block_allowlist_entries_classified_by_network_address() -> None:
 
 
 @pytest.mark.plumbing
+def test_ipv4_in_ipv6_transition_cidr_blocks_are_denied() -> None:
+    """A BROAD CIDR over an IPv4-in-IPv6 transition prefix (IPv4-mapped
+    ::ffff:0:0/96, 6to4 2002::/16, NAT64 64:ff9b::/96) must be DENIED.
+
+    A single transition address unwraps + classifies on its embedded IPv4
+    (so ``::ffff:10.0.0.1`` is already caught and ``::ffff:8.8.8.8`` stays
+    allowed), but a broad CIDR over the transition space has a public-looking
+    IPv6 network address while spanning denied embedded IPv4 ranges. Without
+    the transition supernets in ``_DENIED_SUPERNETS`` the overlap check would
+    pass it (SSRF default-deny bypass). The transition supernets themselves and
+    any sub-block must be refused.
+    """
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    for cidr in (
+        "::ffff:0:0/96",  # entire IPv4-mapped space
+        "::ffff:800:0/102",  # ::ffff:8.0.0.0/X sub-block (public-looking network)
+        "2002::/16",  # entire 6to4 space
+        "2002:800::/22",  # 6to4 sub-block
+        "64:ff9b::/96",  # entire NAT64 space
+        "64:ff9b::800:0/102",  # NAT64 sub-block
+    ):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([cidr])
+
+
+@pytest.mark.plumbing
+def test_single_transition_addresses_classify_on_embedded_ipv4() -> None:
+    """A single IPv4-in-IPv6 transition address is denied iff its embedded
+    IPv4 is internal -- a public embedded IPv4 stays ALLOWED (no over-block)."""
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    # Internal embedded IPv4 -> denied.
+    for host in (
+        "::ffff:127.0.0.1",  # IPv4-mapped loopback
+        "::ffff:10.0.0.1",  # IPv4-mapped RFC1918
+        "2002:a00:1::",  # 6to4 wrapping 10.0.0.1
+        "64:ff9b::a00:1",  # NAT64 wrapping 10.0.0.1
+    ):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([host])
+
+    # Public embedded IPv4 -> allowed (single address, no broad CIDR).
+    validate_egress_entries(["::ffff:8.8.8.8"])
+
+
+@pytest.mark.plumbing
 def test_hostname_localhost_bypass_now_blocked() -> None:
     """BUG-B2: literal 'localhost' is rejected with reason 'reserved_hostname'.
 

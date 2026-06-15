@@ -100,12 +100,14 @@ from relay_extensions.emission import EmissionWriter
 #      this matches Python's str compare. Sort key == emitted key, so
 #      emit -> parse -> emit is a byte fixed point on the wire. The
 #      reference encoders relay_contracts.canonical and
-#      relay_verifier.canonical instead emit keys NFC-folded (via
-#      _encode_string) while sorting by the raw key, which is UNSTABLE on
-#      the wire for NFC-singleton keys (U+2126 OHM -> U+03A9, U+212B
-#      ANGSTROM -> U+00C5) and BMP CJK-compat keys that NFC to the
-#      supplementary plane (U+FA6C -> U+242EE); this module deliberately
-#      diverges from them on exactly those keys to stay stable. Relay's
+#      relay_verifier.canonical emit keys NFC-folded (via _encode_string)
+#      while sorting by the raw key, which is UNSTABLE on the wire for
+#      NFC-singleton keys (U+2126 OHM -> U+03A9, U+212B ANGSTROM ->
+#      U+00C5) and BMP CJK-compat keys that NFC to the supplementary
+#      plane (U+FA6C -> U+242EE). To stay parity-identical with those
+#      reference encoders rather than diverge, this module FAIL-CLOSES on
+#      any key whose NFC form differs from its raw form (the NFC-stability
+#      guard in _encode): such a key is refused, never emitted. Relay's
 #      schema-declared bundle keys are ASCII, where all three agree.
 #
 #   2. decimal.Decimal values bypass the float path entirely and are
@@ -113,9 +115,11 @@ from relay_extensions.emission import EmissionWriter
 #      This preserves every digit; no value differs by even one ULP
 #      after roundtrip.
 #
-# String VALUES are emitted literally (UTF-8). RFC 8785 leaves string-
-# value normalisation to the application; W11.3 normalises strings to
-# NFC ON PARSE so the second emit is canonical.
+# String VALUES are NFC-normalised at emit time (via _encode_string), so an
+# NFD input and its NFC equivalent produce identical canonical bytes on the
+# first emit (VAL-W11-020). The parse path also NFC-normalises string VALUES
+# (not keys) so a malformed inbound bundle re-emits canonical value bytes
+# while keeping its keys a wire fixed point.
 
 _ESCAPE_MAP: Final[dict[int, str]] = {
     0x00: "\\u0000", 0x01: "\\u0001", 0x02: "\\u0002", 0x03: "\\u0003",

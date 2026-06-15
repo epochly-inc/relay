@@ -257,6 +257,11 @@ def require_instrumented_http_clients() -> None:
 
 _socket_lock = threading.Lock()
 
+# AF_UNIX is absent on some platforms (older Windows); resolve it once,
+# defensively. ``None`` means no AF_UNIX sockets exist to exempt from the
+# connected-peer gate (see _gate_connected_peer).
+_AF_UNIX: Final = getattr(socket, "AF_UNIX", None)
+
 # Saved originals; populated when the gate is installed and restored on
 # uninstall. Keys are method/function names; values are the original
 # callables. Empty dict means "not currently patched".
@@ -449,7 +454,10 @@ def _gate_connected_peer(self: socket.socket, operation: str) -> None:
     # OTHER family -- AF_INET/AF_INET6 and any network-capable family such as
     # AF_PACKET -- stays gated (narrower than exempting all non-INET, which
     # would let a pre-connected AF_PACKET raw socket egress unchecked).
-    if self.family == socket.AF_UNIX:
+    # ``socket.AF_UNIX`` is absent on some platforms (older Windows), so resolve
+    # it defensively -- an absent constant means no AF_UNIX sockets exist to
+    # exempt, and the gate proceeds for the real INET families.
+    if _AF_UNIX is not None and self.family == _AF_UNIX:
         return
     try:
         peer = self.getpeername()

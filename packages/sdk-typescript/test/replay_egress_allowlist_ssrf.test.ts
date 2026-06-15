@@ -260,6 +260,66 @@ describe("LOW #11: Run.replayCreate enforces the egress allowlist SSRF guard", (
     await run.close();
   });
 
+  // A BROAD CIDR over an IPv4-in-IPv6 transition prefix (IPv4-mapped
+  // ::ffff:0:0/96, 6to4 2002::/16, NAT64 64:ff9b::/96) has a public-looking
+  // IPv6 network address while spanning denied embedded IPv4 ranges. Without
+  // the transition supernets in _DENIED_SUPERNETS the overlap check passes
+  // them (SSRF default-deny bypass). Byte-for-byte parity with the Python
+  // test_ipv4_in_ipv6_transition_cidr_blocks_are_denied.
+  it.each([
+    "::ffff:0:0/96", //        entire IPv4-mapped space
+    "::ffff:800:0/102", //     ::ffff:8.0.0.0/X sub-block (public-looking network)
+    "2002::/16", //            entire 6to4 space
+    "2002:800::/22", //        6to4 sub-block
+    "64:ff9b::/96", //         entire NAT64 space
+    "64:ff9b::800:0/102", //   NAT64 sub-block
+  ])("blocks an IPv4-in-IPv6 transition CIDR-block entry %s", async (cidr) => {
+    const stub = new StubHttpClient();
+    const run = makeRun(stub);
+    let raised: unknown;
+    try {
+      await run.replayCreate({ caseId: "case-001", egressAllowlist: [cidr] });
+    } catch (e) {
+      raised = e;
+    }
+    expect(raised).toBeInstanceOf(EgressDenied);
+    expect(stub.postReplayCalls.length).toBe(0);
+    await run.close();
+  });
+
+  // A SINGLE transition address unwraps + classifies on its embedded IPv4: an
+  // internal embedded IPv4 is denied, a PUBLIC embedded IPv4 stays allowed (no
+  // over-block). Parity with Python test_single_transition_addresses_*.
+  it.each(["::ffff:10.0.0.1", "2002:a00:1::", "64:ff9b::a00:1"])(
+    "blocks a single transition address wrapping an internal IPv4 (%s)",
+    async (host) => {
+      const stub = new StubHttpClient();
+      const run = makeRun(stub);
+      let raised: unknown;
+      try {
+        await run.replayCreate({ caseId: "case-001", egressAllowlist: [host] });
+      } catch (e) {
+        raised = e;
+      }
+      expect(raised).toBeInstanceOf(EgressDenied);
+      expect((raised as EgressDenied).envelope.denied_reason).toBe("rfc1918");
+      expect(stub.postReplayCalls.length).toBe(0);
+      await run.close();
+    },
+  );
+
+  it("allows a single transition address wrapping a PUBLIC IPv4 (::ffff:8.8.8.8)", async () => {
+    const stub = new StubHttpClient();
+    const run = makeRun(stub);
+    const result = await run.replayCreate({
+      caseId: "case-001",
+      egressAllowlist: ["::ffff:8.8.8.8"],
+    });
+    expect(stub.postReplayCalls.length).toBe(1);
+    expect(result["mode"]).toBe("cassette");
+    await run.close();
+  });
+
   it("blocks a NAT64-wrapped loopback (64:ff9b::7f00:1 == 127.0.0.1)", async () => {
     // 64:ff9b::/96 carries the embedded IPv4 in the low 32 bits; the wrapper
     // must unwrap+re-classify exactly like Python `ip in _NAT64_NETWORK`.

@@ -431,19 +431,22 @@ function pyReprStr(s: string): string {
  *   * string  -> ``pyReprStr`` (ascii()-escaped, quoted)
  *   * null    -> ``None``
  *   * boolean -> ``True`` / ``False``
- *   * integer -> decimal digits (``123``)
+ *   * safe integer -> decimal digits (``123``); a JSON integer beyond
+ *     ``Number.MAX_SAFE_INTEGER`` parses lossily as a float and is part of the
+ *     bounded residual below, not exact
  *   * non-integer / non-finite number -> ``String(n)``
  *   * array / object -> element-wise ``ascii([...])`` / ``ascii({...})`` with
  *     Python's ``', '`` / ``': '`` separators
  *
  * BOUNDED residual (the unbounded "match Python repr of arbitrary JSON types"
  * class -- documented, not chased): for a NON-string kty (a malformed JWKS:
- * a JSON float like ``1.0`` / ``1e-07``, or an object), JS number normalisation
- * and ``Object.entries`` key-order can diverge from Python's float repr / dict
- * insertion order. That affects only the human-readable ``reason`` DIAGNOSTIC
- * bytes (not a signed/canonical surface), only for a malformed JWKS that BOTH
- * runtimes reject. Python ``dict.get`` returns ``None`` for a missing key,
- * which is exactly the ``undefined`` case here -- both render ``None``.
+ * a JSON float like ``1.0`` / ``1e-07``, an integer beyond ``2^53``, or an
+ * object), JS number normalisation and ``Object.entries`` key-order can diverge
+ * from Python's exact int / float repr / dict insertion order. That affects only
+ * the human-readable ``reason`` DIAGNOSTIC bytes (not a signed/canonical
+ * surface), only for a malformed JWKS that BOTH runtimes reject. Python
+ * ``dict.get`` returns ``None`` for a missing key, which is exactly the
+ * ``undefined`` case here -- both render ``None``.
  */
 // Mirror CPython ascii(repr(x)) for the operand types that reach the signature-
 // failure reason messages. This is EXACT for strings (pyReprStr) -- the only

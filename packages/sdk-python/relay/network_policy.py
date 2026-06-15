@@ -95,6 +95,14 @@ _DENIED_SUPERNETS: Final[
         "fe80::/10",
         "ff00::/8",
         "2001:db8::/32",
+        # IPv4-in-IPv6 TRANSITION prefixes: a broad CIDR over the IPv4-mapped
+        # (::ffff:0:0/96), 6to4 (2002::/16), or NAT64 (64:ff9b::/96) space can
+        # embed denied IPv4 ranges (e.g. ::ffff:8.0.0.0/102 wraps 10.0.0.0/8)
+        # with a public-looking IPv6 network address. A single transition
+        # address still unwraps + classifies via the direct-classify step; these
+        # entries deny the BROAD transition-form CIDRs the overlap check covers.
+        "::ffff:0:0/96",
+        "2002::/16",
         "64:ff9b::/96",
     )
 )
