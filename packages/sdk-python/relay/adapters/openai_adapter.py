@@ -561,24 +561,35 @@ class _StreamWrapper:
         self._saw_usage = False
         # Streamed tool calls arrive as choices[].delta.tool_calls[] fragments:
         # the first fragment for an index carries id/name, later fragments
-        # append argument-string pieces. Aggregate per call index (mirroring
-        # the TS toolCallsByIndex Map) and emit ONE tool_call span per call on
+        # append argument-string pieces. Aggregate per call (mirroring the TS
+        # toolCallsByIndex Map) and emit ONE tool_call span per call on
         # finalize, never one per chunk (VAL-W4-039).
+        #
+        # The aggregation key is the COMPOSITE (choice.index, tool_call index
+        # or id). OpenAI scopes the tool_call ``index`` PER CHOICE, so with
+        # ``n>1`` two distinct choices can each emit tool-call index 0; keying
+        # on the tool-call index alone would merge those two unrelated calls
+        # into one corrupted span. Including the parent choice index keeps
+        # per-choice index-0 calls distinct.
         self._tool_calls_by_index: dict[Any, dict[str, str]] = {}
 
     def __iter__(self) -> _StreamWrapper:
         return self
 
-    def _accumulate_tool_call_deltas(self, delta: Any) -> None:
-        """Stitch this chunk's ``delta.tool_calls`` fragments into the per-index
+    def _accumulate_tool_call_deltas(self, choice_index: Any, delta: Any) -> None:
+        """Stitch this chunk's ``delta.tool_calls`` fragments into the per-call
         accumulator, mirroring the TS ingestChunk delta.tool_calls loop.
 
-        Each tool-call fragment is keyed by its ``index`` (an int that stays
-        stable across the fragments of one call). When ``index`` is absent we
-        fall back to the call ``id`` string (matching the TS
-        ``getProp(td,"index") ?? asString(getProp(td,"id"),"")``). A fragment
-        with neither a usable index nor id is skipped. ``name`` is set on the
-        first fragment that carries it; ``arguments`` fragments are appended.
+        Each tool-call fragment is keyed by the COMPOSITE
+        ``(choice_index, index_or_id)``. The tool-call ``index`` (an int that
+        stays stable across the fragments of one call) is scoped PER CHOICE,
+        so two choices (``n>1``) can each emit index 0 for unrelated calls;
+        folding the parent ``choice.index`` into the key keeps them distinct.
+        When the tool-call ``index`` is absent we fall back to the call ``id``
+        string (matching the TS ``getProp(td,"index") ?? asString(getProp(td,
+        "id"),"")``). A fragment with neither a usable index nor id is skipped.
+        ``name`` is set on the first fragment that carries it; ``arguments``
+        fragments are appended.
         """
         if delta is None:
             return
@@ -594,10 +605,14 @@ class _StreamWrapper:
             # Skip fragments we cannot key (TS: idx === "" || idx === undefined).
             if idx is None or idx == "":
                 continue
-            existing = self._tool_calls_by_index.get(idx)
+            # Composite key: per-choice tool-call indices are NOT globally
+            # unique, so qualify the tool-call index/id with its parent choice
+            # index. Single-choice (n=1) responses still key uniquely.
+            key = (choice_index, idx)
+            existing = self._tool_calls_by_index.get(key)
             if existing is None:
                 existing = {"name": "", "arguments": ""}
-                self._tool_calls_by_index[idx] = existing
+                self._tool_calls_by_index[key] = existing
             fn = _get(td, "function")
             name_delta = _get(fn, "name")
             if isinstance(name_delta, str) and name_delta:
@@ -677,14 +692,18 @@ class _StreamWrapper:
             fr = _get(choices[0], "finish_reason")
             if isinstance(fr, str) and fr:
                 self._aggregated_finish = fr
-        # Aggregate streamed tool_call fragments per call index across every
-        # choice (mirrors the TS ingestChunk delta.tool_calls loop). The first
-        # fragment for an index carries the id/name; later fragments append
-        # argument-string pieces. We emit nothing here -- finalize emits one
-        # span per aggregated call.
+        # Aggregate streamed tool_call fragments per (choice index, call index)
+        # across every choice (mirrors the TS ingestChunk delta.tool_calls
+        # loop). The first fragment for a call carries the id/name; later
+        # fragments append argument-string pieces. The parent choice index is
+        # folded into the aggregation key because OpenAI scopes the tool-call
+        # index PER CHOICE -- with n>1 two choices can both emit index 0 for
+        # unrelated calls. We emit nothing here -- finalize emits one span per
+        # aggregated call.
         for choice in choices:
+            choice_index = _get(choice, "index")
             delta = _get(choice, "delta")
-            self._accumulate_tool_call_deltas(delta)
+            self._accumulate_tool_call_deltas(choice_index, delta)
         # Accumulate token usage across every usage-bearing chunk, mirroring the
         # TS ingestChunk (cumInputTokens += prompt_tokens; cumOutputTokens +=
         # completion_tokens). OpenAI under stream_options.include_usage delivers

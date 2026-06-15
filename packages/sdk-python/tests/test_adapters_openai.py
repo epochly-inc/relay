@@ -965,6 +965,185 @@ def test_openai_streaming_emits_one_span_per_parallel_tool_call() -> None:
 
 
 @pytest.mark.plumbing
+def test_openai_streaming_keeps_per_choice_index0_tool_calls_distinct() -> None:
+    """n>1 multi-choice parity: OpenAI's tool_call ``index`` is scoped PER
+    CHOICE, so with ``n>1`` two distinct choices can each emit tool-call
+    ``index`` 0. The aggregation key MUST incorporate the parent
+    ``choice.index`` so the two index-0 calls stay distinct rather than
+    merging into ONE corrupted tool_call span.
+
+    Reproducing trigger: ``client.chat.completions.create(..., n=2,
+    stream=True)`` with tools. Choice 0 emits tool-call index 0 named
+    ``get_weather``; choice 1 emits tool-call index 0 named ``get_time``.
+    Pre-fix, both collapsed into a single span whose name/args were the
+    concatenation of two unrelated calls.
+    """
+    recorder = SpanRecorder()
+    chunks: list[Any] = [
+        _FakeToolChunk(
+            id="chatcmpl-n2",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[
+                # Choice 0: tool-call index 0 -> get_weather.
+                _FakeToolChunkChoice(
+                    index=0,
+                    delta=_FakeToolDelta(
+                        tool_calls=[
+                            _FakeToolCallDelta(
+                                index=0,
+                                id="call_w",
+                                function=_FakeToolCallFunctionDelta(
+                                    name="get_weather",
+                                    arguments='{"city": "Paris"}',
+                                ),
+                            )
+                        ]
+                    ),
+                    finish_reason="tool_calls",
+                ),
+                # Choice 1: ALSO tool-call index 0 -> get_time (per-choice scope).
+                _FakeToolChunkChoice(
+                    index=1,
+                    delta=_FakeToolDelta(
+                        tool_calls=[
+                            _FakeToolCallDelta(
+                                index=0,
+                                id="call_t",
+                                function=_FakeToolCallFunctionDelta(
+                                    name="get_time",
+                                    arguments='{"tz": "UTC"}',
+                                ),
+                            )
+                        ]
+                    ),
+                    finish_reason="tool_calls",
+                ),
+            ],
+        ),
+    ]
+    client = wrap_openai(_FakeOpenAIClient(chunks), recorder=recorder)
+    list(
+        client.chat.completions.create(
+            model="gpt-4o-2024-08-06",
+            messages=[{"role": "user", "content": "weather + time?"}],
+            tools=[{"type": "function", "function": {"name": "get_weather"}}],
+            stream=True,
+            n=2,
+        )
+    )
+    tool_spans = [s for s in recorder.spans if s.kind == "tool_call"]
+    # TWO distinct spans, NOT one merged span.
+    assert len(tool_spans) == 2
+    names = sorted(s.attributes["tool_name"] for s in tool_spans)
+    assert names == ["get_time", "get_weather"]
+    # Each span's args belong to exactly one call -- no cross-choice merge.
+    by_name = {s.attributes["tool_name"]: s.attributes["args_redacted"] for s in tool_spans}
+    assert by_name["get_weather"] == {"city": "Paris"}
+    assert by_name["get_time"] == {"tz": "UTC"}
+
+
+@pytest.mark.plumbing
+def test_openai_streaming_per_choice_index0_args_fragments_stitch_within_choice() -> None:
+    """The per-choice key must keep multi-chunk argument fragments for the
+    SAME (choice, index) call stitched together, not split across choices.
+
+    Two chunks, each with two choices (index 0 and 1). Both choices stream
+    tool-call index 0 across the two chunks. The (choice.index, tc.index) key
+    must accumulate choice 0's fragments into one call and choice 1's into a
+    separate call -- four fragments resolve to exactly two correct calls.
+    """
+    recorder = SpanRecorder()
+    chunks: list[Any] = [
+        _FakeToolChunk(
+            id="chatcmpl-n2b",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[
+                _FakeToolChunkChoice(
+                    index=0,
+                    delta=_FakeToolDelta(
+                        tool_calls=[
+                            _FakeToolCallDelta(
+                                index=0,
+                                id="call_w",
+                                function=_FakeToolCallFunctionDelta(
+                                    name="get_weather", arguments='{"city": '
+                                ),
+                            )
+                        ]
+                    ),
+                ),
+                _FakeToolChunkChoice(
+                    index=1,
+                    delta=_FakeToolDelta(
+                        tool_calls=[
+                            _FakeToolCallDelta(
+                                index=0,
+                                id="call_t",
+                                function=_FakeToolCallFunctionDelta(
+                                    name="get_time", arguments='{"tz": '
+                                ),
+                            )
+                        ]
+                    ),
+                ),
+            ],
+        ),
+        _FakeToolChunk(
+            id="chatcmpl-n2b",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[
+                _FakeToolChunkChoice(
+                    index=0,
+                    delta=_FakeToolDelta(
+                        tool_calls=[
+                            _FakeToolCallDelta(
+                                index=0,
+                                function=_FakeToolCallFunctionDelta(
+                                    arguments='"Paris"}'
+                                ),
+                            )
+                        ]
+                    ),
+                    finish_reason="tool_calls",
+                ),
+                _FakeToolChunkChoice(
+                    index=1,
+                    delta=_FakeToolDelta(
+                        tool_calls=[
+                            _FakeToolCallDelta(
+                                index=0,
+                                function=_FakeToolCallFunctionDelta(
+                                    arguments='"UTC"}'
+                                ),
+                            )
+                        ]
+                    ),
+                    finish_reason="tool_calls",
+                ),
+            ],
+        ),
+    ]
+    client = wrap_openai(_FakeOpenAIClient(chunks), recorder=recorder)
+    list(
+        client.chat.completions.create(
+            model="gpt-4o-2024-08-06",
+            messages=[{"role": "user", "content": "weather + time?"}],
+            tools=[{"type": "function", "function": {"name": "get_weather"}}],
+            stream=True,
+            n=2,
+        )
+    )
+    tool_spans = [s for s in recorder.spans if s.kind == "tool_call"]
+    assert len(tool_spans) == 2
+    by_name = {s.attributes["tool_name"]: s.attributes["args_redacted"] for s in tool_spans}
+    assert by_name["get_weather"] == {"city": "Paris"}
+    assert by_name["get_time"] == {"tz": "UTC"}
+
+
+@pytest.mark.plumbing
 def test_openai_streaming_sets_chunk_count_on_parent() -> None:
     """finalize sets chunk_count on the model_call parent equal to the number
     of chunks consumed (TS state.parent.attributes['chunk_count'])."""
