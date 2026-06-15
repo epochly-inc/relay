@@ -2290,6 +2290,62 @@ describe("MED#8 capture_clock enforces the strict RFC 3339 grammar (Py<->TS pari
   }
 });
 
+// Round-5 re-hunt (P0 parity): calendar-invalid but grammar-valid dates. The
+// day-of-month regex class accepts 01..31 for EVERY month and 29 for EVERY
+// year, so it matches impossible dates. Python's Pydantic datetime parse
+// REJECTS them (proleptic Gregorian); JS Date.parse ROLLS THEM OVER to a finite
+// instant and would ACCEPT them. The TS reader MUST apply the same calendar
+// validation so both agree on identical wire bytes. Each literal is mirrored in
+// the Python _RFC3339_PARITY_CORPUS so the two readers stay in lockstep.
+const CALENDAR_INVALID_REJECTS = [
+  "2025-02-30T00:00:00Z", // February never has 30 days
+  "2025-02-29T00:00:00Z", // 2025 is NOT a leap year
+  "2025-04-31T00:00:00Z", // April has 30 days
+  "2025-06-31T00:00:00Z", // June has 30 days
+  "2025-09-31T00:00:00Z", // September has 30 days
+  "2025-11-31T00:00:00Z", // November has 30 days
+  "0000-01-01T00:00:00Z", // year 0000: Python datetime MINYEAR is 1
+];
+
+const CALENDAR_VALID_ACCEPTS = [
+  "2024-02-29T00:00:00Z", // 2024 IS a leap year -> valid
+  "0001-01-01T00:00:00Z", // year 0001 is the MINYEAR boundary -> valid
+  "2025-01-31T00:00:00Z", // 31-day month
+  "2025-04-30T00:00:00Z", // 30-day month
+];
+
+describe("Round-5 calendar-invalid dates rejected on the plain field (Py<->TS parity)", () => {
+  for (const bad of CALENDAR_INVALID_REJECTS) {
+    it(`rejects decided_at ${JSON.stringify(bad)}`, () => {
+      expect(isRunResult(baseRunResult({ decided_at: bad }))).toBe(false);
+      expect(() => parseRunResult(baseRunResult({ decided_at: bad }))).toThrow(
+        /decided_at/,
+      );
+    });
+  }
+  for (const good of CALENDAR_VALID_ACCEPTS) {
+    it(`accepts the real calendar date ${JSON.stringify(good)}`, () => {
+      expect(isRunResult(baseRunResult({ decided_at: good }))).toBe(true);
+    });
+  }
+});
+
+describe("Round-5 calendar-invalid dates rejected on the offset-required field", () => {
+  // Offset-required fields share isRfc3339Datetime, so the same calendar gate
+  // applies (occurred_at uses +HH:MM forms here -- still calendar-impossible).
+  for (const bad of [
+    "2025-02-30T00:00:00+00:00",
+    "2025-04-31T00:00:00-08:00",
+    "0000-01-01T00:00:00Z",
+  ]) {
+    it(`rejects occurred_at ${JSON.stringify(bad)}`, () => {
+      expect(isEventLogEntry(baseEventLogEntry({ occurred_at: bad }))).toBe(
+        false,
+      );
+    });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // VAL-W1-025: replay_fixtures.refresh_policy closed enum + default
 // ---------------------------------------------------------------------------

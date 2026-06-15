@@ -82,9 +82,40 @@ export const RFC3339_DATETIME_PATTERN =
 const RFC3339_DATETIME_RE = new RegExp(RFC3339_DATETIME_PATTERN);
 
 /**
- * True iff `value` is a string matching the strict shared RFC 3339 grammar.
- * Defers grammar to `RFC3339_DATETIME_RE` (byte-identical to the Python regex);
- * `Date.parse` is retained only as a finite-instant defense-in-depth check.
+ * Days in a (1-based) month for a proleptic-Gregorian `year`. Matches Python's
+ * `datetime` calendar exactly (CPython uses the proleptic Gregorian calendar for
+ * every year 1..9999, with the standard Gregorian leap rule). Used to reject
+ * grammar-valid but calendar-impossible dates that the day-of-month regex class
+ * (`01..31` for every month, `29` for every year) cannot catch.
+ */
+function _daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    return leap ? 29 : 28;
+  }
+  // April, June, September, November have 30 days; the rest 31.
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+
+/**
+ * True iff `value` is a string matching the strict shared RFC 3339 grammar AND
+ * naming a real calendar date. Defers grammar to `RFC3339_DATETIME_RE`
+ * (byte-identical to the Python regex); `Date.parse` is retained only as a
+ * finite-instant defense-in-depth check (it rejects the leap-second `:60` case,
+ * which Pydantic also rejects end-to-end).
+ *
+ * Calendar validation (round-5 re-hunt P0 parity fix): the day-of-month regex
+ * class accepts `01..31` for EVERY month and `29` for EVERY year, so it matches
+ * impossible dates (Feb 30, Apr 31, Feb 29 in a non-leap year). JS `Date.parse`
+ * ROLLS these over to a finite instant (Feb 30 -> Mar 2), so the finite-instant
+ * check alone ACCEPTS them -- but Python's Pydantic `datetime` coercion REJECTS
+ * them. We re-validate the literal Y/M/D against the proleptic-Gregorian
+ * calendar so BOTH readers give the same accept/reject verdict for identical
+ * wire bytes (a P0 keystone). Year must be `0001..9999` per Python's
+ * `datetime` MINYEAR/MAXYEAR; `0000` is rejected (no year 0). We do NOT use
+ * `Date.UTC(year, ...)` for the round-trip because it remaps two-digit years
+ * `0..99` to `1900..1999`, which would wrongly reject the valid `0001..0099`
+ * range that Python accepts.
  *
  * End-of-input is matched via the regex's trailing non-multiline `$`, which in
  * ECMAScript is a true end-of-string anchor (unlike Python `$`, it does NOT
@@ -99,6 +130,11 @@ function isRfc3339Datetime(value: unknown): value is string {
   if (value.length < 20) return false;
   const m = RFC3339_DATETIME_RE.exec(value);
   if (m === null || m[0].length !== value.length) return false;
+  // Literal Y-M-D occupy fixed offsets (regex already pinned the structure).
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  if (year < 1 || day > _daysInMonth(year, month)) return false;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed);
 }

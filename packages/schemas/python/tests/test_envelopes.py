@@ -2939,6 +2939,21 @@ _RFC3339_PARITY_CORPUS: list[tuple[object, bool]] = [
     (1747008000, False),  # integer Unix epoch
     (1747008000.5, False),  # float Unix epoch
     ("2026-05-12", False),  # too short
+    # Calendar-invalid but grammar-valid dates (round-5 re-hunt): the
+    # day-of-month regex class accepts 01..31 for EVERY month and 29 for EVERY
+    # year. Python's Pydantic datetime parse REJECTS impossible calendar dates
+    # (proleptic Gregorian); JS Date.parse ROLLS THEM OVER to a finite instant
+    # (Feb 30 -> Mar 2) and would ACCEPT them, so the TS reader must apply the
+    # same calendar validation. Reject on BOTH; a real leap day stays accepted.
+    ("2025-02-30T00:00:00Z", False),  # February never has 30 days
+    ("2025-02-29T00:00:00Z", False),  # 2025 is NOT a leap year
+    ("2024-02-29T00:00:00Z", True),  # 2024 IS a leap year -> valid, accept BOTH
+    ("2025-04-31T00:00:00Z", False),  # April has 30 days
+    ("2025-06-31T00:00:00Z", False),  # June has 30 days
+    ("2025-09-31T00:00:00Z", False),  # September has 30 days
+    ("2025-11-31T00:00:00Z", False),  # November has 30 days
+    ("0000-01-01T00:00:00Z", False),  # year 0000: Python datetime MINYEAR is 1
+    ("0001-01-01T00:00:00Z", True),  # year 0001 is the MINYEAR boundary -> valid
 ]
 
 
