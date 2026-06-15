@@ -237,6 +237,14 @@ export class EgressDenied extends Error {
  * (the empty case maps to ""). Verified byte-identical to ``urlparse().hostname``
  * across the divergent + canonical forms. */
 function _urlparseHostname(entry: string): string {
+  // CPython's urlsplit/urlparse REMOVES every ASCII tab (\t) and newline
+  // (\r, \n) from the URL before splitting (the bpo-43882 / CVE-2022-0391
+  // hardening: _UNSAFE_URL_BYTES_TO_REMOVE). Without this, an entry like
+  // http://169.254.\t169.254/ keeps the embedded tab on the TS side so
+  // _classify no longer recognizes the host as an IP and ALLOWS the metadata
+  // target, while Python strips the tab and DENIES 169.254.169.254 -- a
+  // Py<->TS parity break + SSRF under-block. Strip the same three bytes first.
+  entry = entry.replace(/[\t\r\n]/g, "");
   const schemeIdx = entry.indexOf("://");
   const rest = entry.slice(schemeIdx + 3);
   let end = rest.length;

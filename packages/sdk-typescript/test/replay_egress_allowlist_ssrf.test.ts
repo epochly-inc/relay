@@ -332,6 +332,7 @@ describe("LOW #11: Run.replayCreate enforces the egress allowlist SSRF guard", (
   it.each([
     "http://evil.com\\@10.0.0.1/", // urlparse host = 10.0.0.1 (userinfo split at last @)
     "http://10.0.0.1 /", // urlparse host = "10.0.0.1 " -> _classify strips -> 10.0.0.1
+    "http://10.0.0\t.1/", // CPython urlparse strips the embedded \t -> 10.0.0.1
   ])(
     "denies a URL whose urlparse host is internal even when WHATWG sees a public host (%s)",
     async (entry) => {
