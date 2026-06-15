@@ -422,7 +422,17 @@ def verify_bundle(
             )
             continue
         kid = sig.get("kid")
-        alg = sig.get("alg")
+        # Coerce a non-string alg to "<unknown>" BEFORE it reaches the alg
+        # column or the unsupported-alg reason. The sibling paths
+        # (verify_jws_compact, verify_jws_detached, verify_multi_signatures)
+        # and the TS twin (verifyBundleSignature) all apply this exact
+        # isinstance(str)-else-"<unknown>" coercion; leaving alg raw here made
+        # a malformed bundle's reason/alg bytes diverge Py<->TS (Python rendered
+        # _py_ascii(123) -> "123" while TS rendered '<unknown>'). A genuine
+        # string alg (incl. "") passes through to _py_ascii unchanged so the
+        # existing non-ASCII alg parity (parity-015) is preserved.
+        alg_raw = sig.get("alg")
+        alg = alg_raw if isinstance(alg_raw, str) else "<unknown>"
         signing_input_b64u = sig.get("signing_input_b64u")
         signature_b64u = sig.get("signature_b64u")
         if not isinstance(kid, str) or not kid:
@@ -431,7 +441,7 @@ def verify_bundle(
             result.signature_checks.append(
                 SignatureCheck(
                     kid=f"<sig[{idx}]>",
-                    alg=str(alg) if alg else "<unknown>",
+                    alg=alg,
                     ok=False,
                     reason="signature missing 'kid'",
                 )
@@ -442,7 +452,7 @@ def verify_bundle(
             result.signature_checks.append(
                 SignatureCheck(
                     kid=kid,
-                    alg=str(alg) if alg else "<unknown>",
+                    alg=alg,
                     ok=False,
                     reason=f"unsupported alg: {_py_ascii(alg)}",
                     code=RELAY_VERIFY_UNSUPPORTED_ALG,

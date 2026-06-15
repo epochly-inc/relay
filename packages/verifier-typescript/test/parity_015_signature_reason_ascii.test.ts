@@ -212,6 +212,49 @@ describe("parity-015 verifyBundleSignature reason bytes match Python", () => {
     expect(tsChecks[0]!["reason"]).toBe(pyChecks[0]!["reason"]);
     expect(String(tsChecks[0]!["reason"])).toBe("unsupported alg: 'HS256'");
   });
+
+  // Round-4 re-hunt MEDIUM: a NON-string alg (a malformed bundle) must yield
+  // byte-identical reason + alg across runtimes. Python verify_bundle left
+  // `alg` UNCOERCED and rendered it verbatim (_py_ascii(123) -> "123",
+  // column "123") while the TS twin -- and every sibling path (compact /
+  // detached / multi) on BOTH sides -- coerces a non-string alg to
+  // "<unknown>". The fix coerces verify_bundle's Python alg the same way.
+  test.each([
+    [123, "integer"],
+    [[1, 2], "array"],
+    [{ x: 1 }, "object"],
+    [null, "null"],
+    ["", "empty-string"],
+  ])("non-string alg (%s) reason + alg byte-identical across runtimes", (alg, _label) => {
+    const bundle = {
+      schema_version: "relay.evidence_bundle.v1",
+      trust_anchor: "https://relay.epochly.com/.well-known/jwks.json",
+      decided_at: "2026-05-15T12:00:00Z",
+      claims: [{ id: "c1" }],
+      signatures: [
+        { alg, kid: "k1", signing_input_b64u: "eyJ4IjoxfQ", signature_b64u: "AA" },
+      ],
+    } as Record<string, unknown>;
+
+    const pyChecks = pyBundleReasons(bundle);
+    const tsChecks = tsBundleReasons(bundle);
+
+    expect(pyChecks[0]).toBeDefined();
+    expect(tsChecks[0]).toBeDefined();
+    // The keystone parity surface: identical reason AND alg bytes.
+    expect(tsChecks[0]!["reason"]).toBe(pyChecks[0]!["reason"]);
+    expect(tsChecks[0]!["alg"]).toBe(pyChecks[0]!["alg"]);
+    // The empty string is a valid string (typeof "" === "string"), so it is
+    // rendered as the empty quoted form on both sides; every other non-string
+    // collapses to the <unknown> placeholder.
+    if (_label === "empty-string") {
+      expect(String(tsChecks[0]!["reason"])).toBe("unsupported alg: ''");
+      expect(tsChecks[0]!["alg"]).toBe("");
+    } else {
+      expect(String(tsChecks[0]!["reason"])).toBe("unsupported alg: '<unknown>'");
+      expect(tsChecks[0]!["alg"]).toBe("<unknown>");
+    }
+  });
 });
 
 // ===========================================================================
