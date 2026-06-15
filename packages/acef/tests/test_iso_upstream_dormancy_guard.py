@@ -1,12 +1,12 @@
-"""ACEF upstream dormancy guard (VAL-ISO-004/012/013/031/032).
+"""ACEF upstream dormancy guard (VAL-ISO-004/012/013/031/032/040).
 
 This module is a single fail-closed guard that makes a load-bearing fact
 PROVABLE and ENFORCED: Relay's shipped ACEF path NEVER imports or invokes
 the dormant vendored upstream ``acef`` package under
-``packages/acef/upstream/src/acef/``. Five adversarially-verified findings
-(VAL-ISO-004, -012, -013, -031, -032) describe real bugs in that vendored
-tree. None of them can affect Relay because Relay's shipped path never
-reaches the buggy code. This guard turns that "never reaches" from an
+``packages/acef/upstream/src/acef/``. Six adversarially-verified findings
+(VAL-ISO-004, -012, -013, -031, -032, -040) describe real bugs in that
+vendored tree. None of them can affect Relay because Relay's shipped path
+never reaches the buggy code. This guard turns that "never reaches" from an
 assumption into an enforced invariant: if a future change made any
 Relay-owned module import one of the dormant upstream modules, the guard
 fails closed and the regression is caught before it ships.
@@ -33,10 +33,10 @@ shipped ACEF path performs ONLY:
     evaluation, or bundle merge.
 
 Because Relay's shipped path never invokes per-record payload schema
-validation, tar extraction, freshness-rule evaluation, or bundle merge,
-the five findings' code is unreachable from Relay. Implementing those four
-missing subsystems in Relay-owned code would be banned DEAD CODE (no
-shipped caller). The chosen remediation, per the user decision "GUARD THE
+validation, tar extraction, freshness-rule evaluation, bundle merge, or the
+vendored JWS integrity checker, the six findings' code is unreachable from
+Relay. Implementing those missing subsystems in Relay-owned code would be
+banned DEAD CODE (no shipped caller). The chosen remediation, per the user decision "GUARD THE
 DORMANCY", is this enforcement guard.
 
 Per-finding dormancy mapping (self-explaining)
@@ -83,6 +83,19 @@ corresponding responsibility is named alongside it.
                errors, never on ``"not found" in str(error.message)``. The
                buggy substring branch is never reached.
 
+  VAL-ISO-040  _check_signatures validates only JWS *format* (header alg
+               membership) -- it never reconstructs the signing input nor
+               verifies the signature, so a bundle whose records were edited
+               after signing (hashes/merkle recomputed, original sig retained)
+               passes its integrity phase (fail-OPEN). Convergence re-hunt #12.
+               DORMANT upstream module: acef/validation/integrity_checker.py
+               Relay's shipped JWS verification lives in
+               relay_acef/bundle_verifier.py, which performs REAL cryptographic
+               verification (cryptography ed25519/ES256/RS256 with exact-set
+               alg membership). The buggy ``_check_signatures`` is never
+               reached. The file is byte-immutable under the W11.1 vendor-drift
+               guard, so the fix is dormancy enforcement, not a vendored edit.
+
 What this guard asserts (all fail-closed)
 =========================================
 1. Static import scan: NO Relay-owned source module under the shipped ACEF
@@ -96,7 +109,8 @@ What this guard asserts (all fail-closed)
    (``relay_acef.bundle_verifier``, ``relay_acef.roundtrip``,
    ``relay_extensions.emission``) does NOT pull any dormant upstream module
    (``acef``, ``acef.validation.schema_validator``, ``acef.loader``,
-   ``acef.validation.operators``, ``acef.merge``) into ``sys.modules``.
+   ``acef.validation.operators``, ``acef.merge``,
+   ``acef.validation.integrity_checker``) into ``sys.modules``.
 
 3. Subprocess fail-closed: the shipped entry points import successfully in
    a fresh interpreter in which the name ``acef`` is made UNIMPORTABLE (a
@@ -126,7 +140,7 @@ import pytest
 from relay_acef import package_root, vendor_root
 
 # -----------------------------------------------------------------------------
-# Dormant upstream modules named by the five findings (load-bearing literals).
+# Dormant upstream modules named by the findings (load-bearing literals).
 # -----------------------------------------------------------------------------
 # Keyed by the canonical dotted module name of the dormant upstream module,
 # valued by the findings it backs and the upstream source file (relative to
@@ -148,15 +162,20 @@ DORMANT_UPSTREAM_MODULES: dict[str, dict[str, object]] = {
         "findings": ("VAL-ISO-031",),
         "source": "acef/merge.py",
     },
+    "acef.validation.integrity_checker": {
+        "findings": ("VAL-ISO-040",),
+        "source": "acef/validation/integrity_checker.py",
+    },
 }
 
-# The five finding IDs this single guard satisfies.
+# The finding IDs this single guard satisfies.
 COVERED_FINDINGS: tuple[str, ...] = (
     "VAL-ISO-004",
     "VAL-ISO-012",
     "VAL-ISO-013",
     "VAL-ISO-031",
     "VAL-ISO-032",
+    "VAL-ISO-040",
 )
 
 # The three shipped ACEF entry-point modules. Importing these must NOT drag
@@ -289,7 +308,7 @@ def test_no_relay_owned_module_imports_upstream_acef() -> None:
 
     Statically (AST) scans the shipped ACEF surface and its consumers. If any
     module imported ``acef`` (or reached into ``packages.acef.upstream``), the
-    five findings' buggy code could become reachable from Relay's shipped
+    findings' buggy code could become reachable from Relay's shipped
     path; this guard fails closed and names the offender.
     """
     roots = _relay_owned_scan_roots()
@@ -399,7 +418,7 @@ def test_importing_shipped_entry_points_pulls_no_upstream_acef() -> None:
     Runs in a fresh subprocess (so the assertion is not polluted by other
     tests that may have imported things first), imports the three shipped
     entry points, then asserts that neither the bare ``acef`` package nor any
-    of the four dormant modules appears in ``sys.modules``.
+    of the dormant modules appears in ``sys.modules``.
     """
     dormant = sorted(DORMANT_UPSTREAM_MODULES.keys())
     program = textwrap.dedent(
@@ -527,8 +546,8 @@ def test_shipped_entry_points_import_with_upstream_acef_unimportable() -> None:
 @pytest.mark.fulfills("VAL-ISO-013")
 @pytest.mark.fulfills("VAL-ISO-031")
 @pytest.mark.fulfills("VAL-ISO-032")
-def test_per_finding_mapping_covers_all_five_and_sources_exist() -> None:
-    """All five findings map to a dormant module whose upstream source exists.
+def test_per_finding_mapping_covers_all_findings_and_sources_exist() -> None:
+    """All covered findings map to a dormant module whose upstream source exists.
 
     Keeps the guard self-explaining and honest: every covered finding appears
     in :data:`DORMANT_UPSTREAM_MODULES`, and every named dormant upstream
@@ -554,6 +573,6 @@ def test_per_finding_mapping_covers_all_five_and_sources_exist() -> None:
         f"under upstream/src/: {missing_sources!r}"
     )
     assert mapped_findings == set(COVERED_FINDINGS), (
-        "per-finding mapping does not cover exactly the five findings: "
+        "per-finding mapping does not cover exactly the covered findings: "
         f"mapped={sorted(mapped_findings)!r} expected={sorted(COVERED_FINDINGS)!r}"
     )

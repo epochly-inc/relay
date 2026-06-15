@@ -55,6 +55,7 @@ from typing import Any
 
 import pytest
 from relay_acef.roundtrip import (
+    JCSEncodeError,
     bundle_merkle_root,
     emit_bundle,
     jcs_canonicalize,
@@ -1459,6 +1460,40 @@ def test_acef_float_path_matches_js_string_semantics() -> None:
     assert jcs_canonicalize(0.1) == b"0.1"
     assert jcs_canonicalize(1e21) == b"1e+21"  # JS: String(1e21) === '1e+21'
     assert jcs_canonicalize(123456789.0) == b"123456789"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-003")
+def test_acef_jcs_refuses_supplementary_plane_object_keys() -> None:
+    """RFC 8785 3.2.3 sorts object keys by UTF-16 code-unit sequence; Python
+    str sorts by code point, which diverges for supplementary-plane keys
+    (>= U+10000). Rather than emit code-point-ordered bytes a UTF-16 sorter
+    would order differently, the ACEF encoder fail-CLOSES on such keys --
+    byte-identical *refusal* parity with the authoritative
+    relay_contracts.canonical encoder (re-hunt #3). U+1F600 has UTF-16 units
+    D83D DE00; D83D (0xD83D) sorts BEFORE U+FFFF under UTF-16 but AFTER it
+    under code point, so a code-point sorter produces wrong, divergent bytes.
+    """
+    # The reference encoder refuses; ACEF must refuse identically.
+    from relay_contracts.canonical import (
+        CanonicalEncodingError,
+        jcs_canonicalize as canonical_jcs,
+    )
+
+    obj = {"\U0001F600": 1, "￿": 2}
+    with pytest.raises(CanonicalEncodingError):
+        canonical_jcs(obj)
+    with pytest.raises(JCSEncodeError):
+        jcs_canonicalize(obj)
+    # A non-BMP code point in a VALUE is still permitted (only keys are bound).
+    assert jcs_canonicalize({"k": "\U0001F600"}) == (
+        '{"k":"\U0001F600"}'.encode("utf-8")
+    )
+    # BMP-only keys still encode; for the BMP code-point order equals the
+    # UTF-16 order RFC 8785 mandates.
+    assert jcs_canonicalize({"￿": 2, "a": 1}) == (
+        '{"a":1,"￿":2}'.encode("utf-8")
+    )
 
 
 @pytest.mark.plumbing

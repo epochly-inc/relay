@@ -290,6 +290,24 @@ def _encode(value: Any) -> str:
         # no-op, but the normalisation step ensures keys arriving as
         # NFD (e.g., "café" vs "café") collapse to the same
         # canonical key BEFORE the sort.
+        # RFC 8785 section 3.2.3 sorts object keys by their UTF-16 code-unit
+        # sequence. Python str sorts by code point; for the BMP the two agree,
+        # but for supplementary-plane keys (>= U+10000) they diverge silently,
+        # so a code-point sort emits bytes a UTF-16 sorter would order
+        # differently. The authoritative encoder (relay_contracts.canonical)
+        # fail-CLOSES on such keys; this encoder MUST match it -- refuse
+        # identically rather than emit divergent code-point-ordered bytes
+        # (re-hunt #3). Only object KEYS are bound; values may carry
+        # supplementary-plane characters.
+        for k in value:
+            for ch in str(k):
+                if ord(ch) >= 0x10000:
+                    raise JCSEncodeError(
+                        f"JCS: non-BMP codepoint U+{ord(ch):04X} in object "
+                        f"key {str(k)!r}; supplementary-plane keys produce "
+                        f"runtime-divergent canonical bytes and are refused. "
+                        f"Re-key the object with BMP-only strings."
+                    )
         items = sorted(
             (
                 (unicodedata.normalize("NFC", str(k)), v)
