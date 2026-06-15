@@ -676,6 +676,48 @@ def test_canonical_request_non_string_url_quarantines(
 
 
 @pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_non_object_headers_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json that is valid JSON with a
+    NON-OBJECT ``headers`` (e.g. a list) MUST raise
+    ``RelayCassetteCorruptError`` and quarantine -- NOT an uncaught
+    ``AttributeError`` escaping downstream when ``CanonicalRequest.headers``
+    (built without runtime type validation) is treated as a mapping
+    (re-hunt #13). ``_read_canonical_key_for_fixture`` validated method/url/
+    body_b64/content_type as strings but passed ``headers`` straight through.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": [1, 2, 3],
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
 def test_canonical_request_non_string_method_quarantines(
     empty_cassette_dir: Path,
     make_replay_fixture: Any,

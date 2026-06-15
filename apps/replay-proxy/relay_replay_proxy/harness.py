@@ -103,6 +103,16 @@ _VALID_DRIVERS: Final[frozenset[str]] = frozenset(
 # Env vars exported into the agent subprocess (VAL-W7-006/007/012).
 ENV_HTTPS_PROXY: Final[str] = "HTTPS_PROXY"
 ENV_HTTP_PROXY: Final[str] = "HTTP_PROXY"
+# Lowercase variants are equally honored by requests/urllib/libcurl, so they
+# must be forced to the replay proxy too -- otherwise an inherited lowercase
+# proxy var would route the agent elsewhere (VAL-W7-083 layered default-deny).
+ENV_HTTPS_PROXY_LOWER: Final[str] = "https_proxy"
+ENV_HTTP_PROXY_LOWER: Final[str] = "http_proxy"
+# NO_PROXY (both cases) carves hosts OUT of proxying; an inherited bypass list
+# (or "*") would let the agent reach hosts without traversing the proxy, so it
+# is neutralized rather than forwarded.
+ENV_NO_PROXY: Final[str] = "NO_PROXY"
+ENV_NO_PROXY_LOWER: Final[str] = "no_proxy"
 ENV_SSL_CERT_FILE: Final[str] = "SSL_CERT_FILE"
 ENV_REPLAY_SESSION: Final[str] = "RELAY_REPLAY_SESSION"
 ENV_REPLAY_PROXY_URL: Final[str] = "RELAY_REPLAY_PROXY_URL"
@@ -765,6 +775,13 @@ class HarnessSession:
         # VAL-W7-006 / VAL-W7-007 / VAL-W7-012: required vars set together.
         base[ENV_HTTPS_PROXY] = self._handle.proxy_url
         base[ENV_HTTP_PROXY] = self._handle.proxy_url
+        # Force the lowercase variants too (requests/urllib/libcurl honor them)
+        # and neutralize any inherited NO_PROXY/no_proxy bypass list so the
+        # agent cannot reach a host without traversing the proxy (VAL-W7-083).
+        base[ENV_HTTPS_PROXY_LOWER] = self._handle.proxy_url
+        base[ENV_HTTP_PROXY_LOWER] = self._handle.proxy_url
+        base.pop(ENV_NO_PROXY, None)
+        base.pop(ENV_NO_PROXY_LOWER, None)
         base[ENV_SSL_CERT_FILE] = str(self._handle.ca.cert_path)
         base[ENV_REPLAY_SESSION] = self._handle.session_id
         base[ENV_REPLAY_PROXY_URL] = self._handle.proxy_url
@@ -775,10 +792,16 @@ class HarnessSession:
             if k in {
                 ENV_HTTPS_PROXY,
                 ENV_HTTP_PROXY,
+                ENV_HTTPS_PROXY_LOWER,
+                ENV_HTTP_PROXY_LOWER,
+                ENV_NO_PROXY,
+                ENV_NO_PROXY_LOWER,
                 ENV_SSL_CERT_FILE,
                 ENV_REPLAY_SESSION,
                 ENV_REPLAY_PROXY_URL,
             }:
+                # A caller-supplied NO_PROXY/no_proxy or lowercase proxy var
+                # would re-open the bypass the injection just closed -- drop it.
                 continue
             base[k] = v
         return base

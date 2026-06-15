@@ -995,6 +995,18 @@ def _read_canonical_key_for_fixture(
                 f"canonical request field {field_name!r} MUST be a string; "
                 f"got {type(value).__name__}"
             )
+    # ``headers`` (optional) MUST be an object; CanonicalRequest is a frozen
+    # dataclass with no runtime type validation and derive_canonical_key calls
+    # ``headers.items()``. A non-object headers (list/str/number) would raise an
+    # uncaught AttributeError that escapes the iso-010 quarantine catch tuple.
+    # Raise KeyError (which load_cassette catches + quarantines) instead
+    # (re-hunt #13). Absent headers defaults to an empty mapping.
+    headers = obj.get("headers", {})
+    if not isinstance(headers, dict):
+        raise KeyError(
+            f"canonical request field 'headers' MUST be an object; "
+            f"got {type(headers).__name__}"
+        )
     # validate=True so a non-base64 body_b64 raises binascii.Error (which
     # load_cassette catches and quarantines) rather than silently discarding
     # invalid characters (VAL-ISO-010). ``body_b64`` is now guaranteed a str.
@@ -1002,7 +1014,7 @@ def _read_canonical_key_for_fixture(
     req = CanonicalRequest(
         method=method,
         url=url,
-        headers=obj.get("headers", {}),
+        headers=headers,
         body_bytes=body_bytes,
         content_type=content_type,
     )

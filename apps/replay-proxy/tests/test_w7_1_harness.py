@@ -295,6 +295,35 @@ def test_agent_env_atomically_sets_all_required_vars(
         ENV_REPLAY_PROXY_URL,
     ):
         assert var in env, f"required env var {var} missing from agent env"
+
+
+@pytest.mark.fulfills("VAL-W7-083")
+def test_agent_env_strips_no_proxy_and_overrides_lowercase_proxy(
+    harness: HarnessSession,
+) -> None:
+    """The layered default-deny (VAL-W7-083) forces the agent subprocess
+    through the replay proxy. A hostile/inherited ``NO_PROXY``/``no_proxy``
+    (a bypass list, or ``*``) or a lowercase ``https_proxy``/``http_proxy``
+    pointing elsewhere would let the agent reach hosts WITHOUT the proxy.
+    agent_env must neutralize NO_PROXY (both cases) and force BOTH the upper-
+    and lower-case proxy vars to the replay proxy (re-hunt #9)."""
+    env = harness.agent_env(
+        parent_env={
+            "PATH": "/usr/bin",
+            "NO_PROXY": "example.com,localhost",
+            "no_proxy": "*",
+            "https_proxy": "http://evil.invalid:8080",
+            "http_proxy": "http://evil.invalid:8080",
+        }
+    )
+    proxy = env[ENV_HTTPS_PROXY]
+    assert proxy.startswith("http://127.0.0.1:")
+    # Lowercase variants forced to the replay proxy, NOT the hostile value.
+    assert env["https_proxy"] == proxy
+    assert env["http_proxy"] == proxy
+    # NO_PROXY / no_proxy neutralized so nothing carves out a bypass.
+    assert "NO_PROXY" not in env
+    assert "no_proxy" not in env
     # Parent env still flowed through (PATH was preserved).
     assert env["PATH"] == "/usr/bin"
 
