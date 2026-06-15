@@ -4041,19 +4041,21 @@ def build_runtime_app(
         canonical_key = _canonical_idempotency_key(
             surface=surface, user_key=user_key
         )
-        # Exclude EXPIRED rows: the canonical idempotency_records table carries
-        # a 24h ``expires_at`` (spec B.2). Serving a record past its TTL would
-        # replay a stale response instead of re-executing; filter it out at the
-        # query so an expired row is a genuine miss. ISO-8601 ``...Z`` strings
-        # in UTC are lexicographically ordered, so a string compare is correct.
-        now_iso = datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
+        # The idempotency_records table carries a 24h ``expires_at`` (spec B.2);
+        # serving a record past its TTL would replay a stale response instead of
+        # re-executing. The key is UNIQUE so this returns 0 or 1 row -- fetch it
+        # then enforce the TTL by PARSING the timestamp. A lexicographic string
+        # compare is UNSAFE across mixed fractional/whole-second RFC3339 forms
+        # (e.g. "...00Z" sorts AFTER "...00.5Z"), so an expired row could
+        # otherwise compare as live and be replayed.
+        now_dt = datetime.now(tz=UTC)
         try:
             reader = db.acquire_reader()
             async with reader.execute(
                 "SELECT request_digest, response_status, response_body, "
                 "expires_at FROM idempotency_records "
-                "WHERE idempotency_key = ? AND expires_at > ?",
-                (canonical_key, now_iso),
+                "WHERE idempotency_key = ?",
+                (canonical_key,),
             ) as cur:
                 row = await cur.fetchone()
         except Exception:  # noqa: BLE001
@@ -4061,6 +4063,14 @@ def build_runtime_app(
         if row is None:
             return None
         request_digest, response_status, response_body_text, expires_at = row
+        # TTL check (parsed, not lexicographic). An expired OR unparseable
+        # expires_at is a miss -- re-execute rather than replay a stale/invalid
+        # row (matches the corrupted-body handling below).
+        try:
+            if datetime.fromisoformat(expires_at) <= now_dt:
+                return None
+        except (TypeError, ValueError):
+            return None
         try:
             response_body: Any = (
                 json.loads(response_body_text)
