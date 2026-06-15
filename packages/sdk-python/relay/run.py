@@ -127,7 +127,7 @@ class _LifecycleHTTPClient:
       * ``POST /v1/ingest/runs``           (lifecycle metadata; VAL-W3-009)
       * ``POST /v1/gates/{gate_id}/drafts`` (gate draft; VAL-W3-013)
       * ``GET  /v1/runs/{run_id}/result``   (canonical RunResult; VAL-W3-014)
-      * ``POST /v1/evidence``              (evidence submit; VAL-W3-015)
+      * ``POST /v1/evidence-bundles``      (evidence submit; VAL-W3-015)
     """
 
     def __init__(
@@ -338,8 +338,12 @@ class _LifecycleHTTPClient:
         return self._decode_body(resp)
 
     def post_evidence(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        # Contract route is POST /v1/evidence-bundles (sidecar
+        # runtime.py:4815, openapi.yaml:873). The TS SDK targets the same
+        # path (run.ts:410). The earlier /v1/evidence path was unrouted on
+        # the real sidecar and 404'd (finding #9).
         resp = self._http.post(
-            f"{self._base_url}/v1/evidence",
+            f"{self._base_url}/v1/evidence-bundles",
             content=json.dumps(envelope).encode("utf-8"),
             headers=self._auth_headers(),
         )
@@ -475,6 +479,7 @@ class Run:
         self,
         *,
         run_id: str,
+        case_id: str | None = None,
         egress_allowlist: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a replay case bound to the canonical RunResult.
@@ -484,6 +489,14 @@ class Run:
         ``RELAY-REPLAY-002`` and the SDK raises
         :class:`RelayReplayPrecondition`. The SDK does NOT derive a
         replay case from raw SDK lifecycle.
+
+        The execution is issued against the contract route
+        ``POST /v1/replay-cases/{case_id}/run`` (sidecar
+        runtime.py:2798, openapi.yaml:552), mirroring the TS SDK
+        (run.ts:424). The ``case_id`` is generated client-side as a ULID
+        when not supplied, in parity with the TS ``replayCreate({caseId})``
+        option. The earlier ``/v1/runs/{run_id}/replays`` path was
+        unrouted on the real sidecar (finding #10).
 
         Audit-r3 BUG-B3: when ``egress_allowlist`` is supplied, every
         entry is validated against the SSRF guard at the SDK boundary
@@ -501,8 +514,9 @@ class Run:
             actor_identity_hash=self.actor_identity_hash,
             egress_allowlist=egress_allowlist,
         )
+        case_ref = case_id if case_id else _ulid.new_ulid()
         resp = client._http.post(  # noqa: SLF001 - internal pass-through
-            f"{client.base_url}/v1/runs/{run_id}/replays",
+            f"{client.base_url}/v1/replay-cases/{case_ref}/run",
             content=json.dumps(envelope).encode("utf-8"),
             headers=client._auth_headers(),  # noqa: SLF001
         )

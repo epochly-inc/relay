@@ -121,9 +121,15 @@ def test_evidence_envelope_missing_field_rejected_at_sdk_boundary(
 def test_evidence_submit_sends_complete_envelope(
     server, relay_home_tmp
 ) -> None:
-    """run.submit_evidence sends a complete, well-bound envelope."""
+    """run.submit_evidence sends a complete, well-bound envelope.
+
+    Finding #9: the SDK MUST POST the contract route
+    ``/v1/evidence-bundles`` (apps/local-sidecar runtime.py:4815,
+    packages/schemas/raw/openapi.yaml:873, TS run.ts:410). The earlier
+    ``/v1/evidence`` path was unrouted on the real sidecar and 404'd.
+    """
     server.add_route(
-        "POST", "/v1/evidence",
+        "POST", "/v1/evidence-bundles",
         lambda req: (200, {"accepted": True, "claim_id": "01JG2YCLAIM01234567890"}, {}),
     )
 
@@ -149,8 +155,15 @@ def test_evidence_submit_sends_complete_envelope(
         )
 
     assert resp == {"accepted": True, "claim_id": "01JG2YCLAIM01234567890"}
+    # Finding #9: contract route is /v1/evidence-bundles, not /v1/evidence.
+    assert ("POST", "/v1/evidence-bundles") in [
+        (req.method, req.path) for req in server.requests
+    ]
+    assert ("POST", "/v1/evidence") not in [
+        (req.method, req.path) for req in server.requests
+    ]
     evidence_req = next(
-        req for req in server.requests if req.path == "/v1/evidence"
+        req for req in server.requests if req.path == "/v1/evidence-bundles"
     )
     body = evidence_req.body_json
     # Every required field is present and bound.

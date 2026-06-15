@@ -78,7 +78,10 @@ def test_replay_create_refuses_when_run_result_not_yet_written(
 
     # The SDK MUST have observed the GET /v1/runs/{run_id}/result endpoint
     # (the canonical precondition fetch). It MUST NOT have proceeded to
-    # POST /v1/runs/{run_id}/replays.
+    # the replay-case run endpoint (no POST to any /v1/replay-cases/.../run
+    # path), and it MUST NOT use the legacy unrouted /v1/runs/.../replays
+    # path (finding #10; contract route is POST /v1/replay-cases/{case_id}/run
+    # per runtime.py:2798, openapi.yaml:552, TS run.ts:424).
     paths = [(req.method, req.path) for req in server.requests]
     assert (
         "GET", "/v1/runs/01JG2YINFLIGHT01234567890123/result"
@@ -86,6 +89,12 @@ def test_replay_create_refuses_when_run_result_not_yet_written(
     assert (
         "POST", "/v1/runs/01JG2YINFLIGHT01234567890123/replays"
     ) not in paths
+    assert not any(
+        method == "POST"
+        and path.startswith("/v1/replay-cases/")
+        and path.endswith("/run")
+        for method, path in paths
+    )
 
 
 @pytest.mark.plumbing
@@ -94,8 +103,17 @@ def test_replay_create_proceeds_when_run_result_is_canonical(
     server, relay_home_tmp
 ) -> None:
     """When the canonical run_result IS present, the SDK proceeds to the
-    POST /v1/runs/{run_id}/replays endpoint AND returns the response.
+    contract route POST /v1/replay-cases/{case_id}/run AND returns the
+    response.
+
+    Finding #10: the legacy POST /v1/runs/{run_id}/replays path is
+    unrouted on the real sidecar. Replay-case execution is
+    POST /v1/replay-cases/{case_id}/run (runtime.py:2798,
+    openapi.yaml:552), which the TS SDK also targets (run.ts:424). The
+    SDK generates the case_id client-side (parity with TS
+    ``replayCreate({caseId})``); the caller may also pass it explicitly.
     """
+    case_id = "01JG2YREPLAYCASE0123456789AB"
     canonical_result = {
         "schema_version": "relay.run_result.v1",
         "run_result_id": "01JG2YRR01234567890123ABCDEF",
@@ -104,18 +122,20 @@ def test_replay_create_proceeds_when_run_result_is_canonical(
         "primary_failure_class": "STRUCTURED_OUTPUT_INVALID",
         "written_by": "control_plane",
     }
-    replay_case = {
-        "schema_version": "relay.replay_case.v1",
-        "replay_case_id": "01JG2YREPLAYCASE0123456789AB",
-        "status": "proposed",
+    replay_result = {
+        "schema_version": "relay.replay_result.v1",
+        "replay_result_id": "01JG2YREPLAYRESULT012345678",
+        "case_id": case_id,
+        "outcome": "pending",
+        "written_by": "control_plane",
     }
     server.add_route(
         "GET", "/v1/runs/01JG2YCOMPLETED1234567890123/result",
         lambda req: (200, canonical_result, {}),
     )
     server.add_route(
-        "POST", "/v1/runs/01JG2YCOMPLETED1234567890123/replays",
-        lambda req: (200, replay_case, {}),
+        "POST", f"/v1/replay-cases/{case_id}/run",
+        lambda req: (202, replay_result, {}),
     )
 
     r = Relay(
@@ -128,6 +148,15 @@ def test_replay_create_proceeds_when_run_result_is_canonical(
         flush_policy={"mode": "sync", "on_error": "drop_and_log"},
     )
     with r.run(agent={"name": "replay-agent", "version": "0.1"}) as run:
-        out = run.replay_create(run_id="01JG2YCOMPLETED1234567890123")
+        out = run.replay_create(
+            run_id="01JG2YCOMPLETED1234567890123", case_id=case_id
+        )
 
-    assert out == replay_case
+    assert out == replay_result
+    # The SDK MUST have issued the contract run route and MUST NOT have
+    # used the legacy unrouted /v1/runs/{run_id}/replays path.
+    paths = [(req.method, req.path) for req in server.requests]
+    assert ("POST", f"/v1/replay-cases/{case_id}/run") in paths
+    assert (
+        "POST", "/v1/runs/01JG2YCOMPLETED1234567890123/replays"
+    ) not in paths
