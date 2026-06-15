@@ -112,11 +112,31 @@ def _trigger_body_enforces(text: str, trigger_name: str) -> bool:
     # SQLite trigger bodies are ``BEGIN ... END;`` so the first ``END;``
     # after the header terminates this trigger. (No nested BEGIN/END in
     # the gate-decisions guard triggers.)
+    #
+    # But a regressed trigger may have lost BOTH its enforcement body AND
+    # its own terminating ``END;`` (body collapsed to ``SELECT 1;``). The
+    # first ``END;`` after the header would then belong to the NEXT
+    # trigger, and the extracted block would borrow that neighbor's
+    # ``RAISE(ABORT)`` -- falsely reporting this neutered trigger as
+    # enforcing (VAL-ISO-036). To prevent borrowing a neighbor's
+    # enforcement primitive, clamp the block end to the FIRST of (this
+    # trigger's own ``END;``) OR (the next ``CREATE TRIGGER`` /
+    # ``DROP TRIGGER`` header). A missing terminator can no longer reach
+    # past the next trigger declaration.
+    search_from = start + len(header)
     end = text.find("END;", start)
-    if end == -1:
-        # Malformed / truncated block -- treat as non-enforcing.
-        return False
-    block = text[start:end]
+    next_create = text.find("CREATE TRIGGER", search_from)
+    next_drop = text.find("DROP TRIGGER", search_from)
+    boundaries = [
+        offset
+        for offset in (end, next_create, next_drop)
+        if offset != -1
+    ]
+    if not boundaries:
+        # No terminator and no following trigger header -- the block runs
+        # to end-of-file; treat the remaining text as this trigger's body.
+        boundaries = [len(text)]
+    block = text[start:min(boundaries)]
     return _ENFORCEMENT_RE.search(block) is not None
 
 
