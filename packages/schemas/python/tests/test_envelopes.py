@@ -2038,6 +2038,74 @@ def test_replay_fixture_capture_clock_rejects_naive_datetime_object() -> None:
     assert "capture_clock" in str(excinfo.value)
 
 
+# -----------------------------------------------------------------------------
+# MED #8 follow-on: the offset-required datetime fields (occurred_at,
+# capture_clock) MUST enforce the SAME strict RFC 3339 grammar as the plain
+# fields and give the SAME accept/reject verdict as the TS reader for identical
+# wire bytes (Py<->TS verdict parity, a P0 keystone). The TS twin
+# (checkRfc3339WithOffset, packages/schemas/typescript/src/envelopes.ts)
+# previously only required a trailing offset tail plus a Date.parse-permissive
+# finiteness check, so it accepted RFC-2822-ish strings carrying an offset tail,
+# hour 24, missing seconds, colon-less offsets, and a trailing newline that the
+# Python anchored ``Rfc3339Datetime`` regex (\A..\Z) rejects. These constants
+# are the byte-for-byte mirror of STRICT_OFFSET_REJECTS / STRICT_OFFSET_ACCEPTS
+# in packages/schemas/typescript/test/envelopes.test.ts.
+# -----------------------------------------------------------------------------
+
+_STRICT_OFFSET_REJECTS = [
+    "Mon May 12 2025 00:00:00",
+    "Mon, 12 May 2025 00:00:00 +02:00",
+    "2026-05-12T24:00:00Z",
+    "2026-05-12T00:00Z",
+    "2026-05-12T00:00:00+0200",
+    "2026-05-12T00:00:00Z\n",
+    "2026-05-12T00:00:00+02:00\n",
+]
+
+_STRICT_OFFSET_ACCEPTS = [
+    "2026-05-12T00:00:00Z",
+    "2026-05-12T10:00:00+05:30",
+    "2026-05-12T00:00:00-08:00",
+    "2026-05-12T00:00:00.123456+00:00",
+]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
+@pytest.mark.parametrize("bad", _STRICT_OFFSET_REJECTS)
+def test_event_log_entry_occurred_at_rejects_date_parse_permissive(bad: str) -> None:
+    payload = _base_event_log_entry(occurred_at=bad)
+    with pytest.raises(ValidationError) as excinfo:
+        EventLogEntry.model_validate(payload)
+    assert "occurred_at" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
+@pytest.mark.parametrize("good", _STRICT_OFFSET_ACCEPTS)
+def test_event_log_entry_occurred_at_accepts_canonical_offset(good: str) -> None:
+    e = EventLogEntry.model_validate(_base_event_log_entry(occurred_at=good))
+    assert e.occurred_at.tzinfo is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+@pytest.mark.parametrize("bad", _STRICT_OFFSET_REJECTS)
+def test_replay_fixture_capture_clock_rejects_date_parse_permissive(bad: str) -> None:
+    payload = _base_replay_fixture(capture_clock=bad)
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "capture_clock" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+@pytest.mark.parametrize("good", _STRICT_OFFSET_ACCEPTS)
+def test_replay_fixture_capture_clock_accepts_canonical_offset(good: str) -> None:
+    rf = ReplayFixture.model_validate(_base_replay_fixture(capture_clock=good))
+    assert rf.capture_clock.tzinfo is not None
+
+
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W1-024")
 def test_replay_fixture_capture_clock_round_trip_preserves_offset() -> None:

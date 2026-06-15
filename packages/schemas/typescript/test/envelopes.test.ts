@@ -2206,6 +2206,91 @@ describe("VAL-W1-024 replay_fixtures.capture_clock RFC 3339 + offset required", 
 });
 
 // ---------------------------------------------------------------------------
+// MED #8 follow-on: the offset-required datetime fields (occurred_at,
+// capture_clock) MUST enforce the SAME strict RFC 3339 grammar as the plain
+// fields, NOT a Date.parse-permissive trailing-offset check. Earlier
+// checkRfc3339WithOffset only verified an offset tail (Z|+/-HH:MM) plus
+// Date.parse, so it accepted Date.parse-permissive forms that Python's
+// anchored strict regex (Rfc3339Datetime) rejects -- a Py<->TS verdict
+// divergence (a P0 keystone). It also must reject a trailing newline so a
+// value such as "...Z\n" is rejected on BOTH sides byte-for-byte.
+//
+// Each rejected literal below is also a `def`-mirrored Python test in
+// packages/schemas/python/tests/test_envelopes.py so the two readers give
+// the SAME accept/reject verdict for identical wire bytes.
+// ---------------------------------------------------------------------------
+
+// Forms with an RFC-3339-ish offset tail that the permissive Date.parse path
+// accepted but the strict shared regex (and Python) reject.
+const STRICT_OFFSET_REJECTS = [
+  // No offset tail at all and a non-RFC-3339 (RFC-2822 / Date.parse) shape.
+  "Mon May 12 2025 00:00:00",
+  // RFC-2822-ish WITH a colon offset tail: passes a naive offset-tail check
+  // and Date.parse, but is not strict RFC 3339.
+  "Mon, 12 May 2025 00:00:00 +02:00",
+  // Hour 24 with a 'Z' tail: Date.parse coerces it to a finite instant, but
+  // strict RFC 3339 caps the hour at 23.
+  "2026-05-12T24:00:00Z",
+  // Missing the seconds component but with a 'Z' tail.
+  "2026-05-12T00:00Z",
+  // Colon-less offset: Date.parse-permissive, strict RFC 3339 forbids it.
+  "2026-05-12T00:00:00+0200",
+  // Trailing newline after a canonical timestamp: MUST be rejected on both
+  // sides (Python anchors with \Z; TS must use a true end-of-input check).
+  "2026-05-12T00:00:00Z\n",
+  "2026-05-12T00:00:00+02:00\n",
+];
+
+const STRICT_OFFSET_ACCEPTS = [
+  "2026-05-12T00:00:00Z",
+  "2026-05-12T10:00:00+05:30",
+  "2026-05-12T00:00:00-08:00",
+  "2026-05-12T00:00:00.123456+00:00",
+];
+
+describe("MED#8 occurred_at enforces the strict RFC 3339 grammar (Py<->TS parity)", () => {
+  for (const bad of STRICT_OFFSET_REJECTS) {
+    it(`rejects ${JSON.stringify(bad)}`, () => {
+      expect(
+        isEventLogEntry(baseEventLogEntry({ occurred_at: bad })),
+      ).toBe(false);
+      expect(() =>
+        parseEventLogEntry(baseEventLogEntry({ occurred_at: bad })),
+      ).toThrow(/occurred_at/);
+    });
+  }
+
+  for (const good of STRICT_OFFSET_ACCEPTS) {
+    it(`accepts the canonical RFC 3339 + offset form ${JSON.stringify(good)}`, () => {
+      expect(
+        isEventLogEntry(baseEventLogEntry({ occurred_at: good })),
+      ).toBe(true);
+    });
+  }
+});
+
+describe("MED#8 capture_clock enforces the strict RFC 3339 grammar (Py<->TS parity)", () => {
+  for (const bad of STRICT_OFFSET_REJECTS) {
+    it(`rejects ${JSON.stringify(bad)}`, () => {
+      expect(
+        isReplayFixture(baseReplayFixture({ capture_clock: bad })),
+      ).toBe(false);
+      expect(() =>
+        parseReplayFixture(baseReplayFixture({ capture_clock: bad })),
+      ).toThrow(/capture_clock/);
+    });
+  }
+
+  for (const good of STRICT_OFFSET_ACCEPTS) {
+    it(`accepts the canonical RFC 3339 + offset form ${JSON.stringify(good)}`, () => {
+      expect(
+        isReplayFixture(baseReplayFixture({ capture_clock: good })),
+      ).toBe(true);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // VAL-W1-025: replay_fixtures.refresh_policy closed enum + default
 // ---------------------------------------------------------------------------
 

@@ -85,11 +85,20 @@ const RFC3339_DATETIME_RE = new RegExp(RFC3339_DATETIME_PATTERN);
  * True iff `value` is a string matching the strict shared RFC 3339 grammar.
  * Defers grammar to `RFC3339_DATETIME_RE` (byte-identical to the Python regex);
  * `Date.parse` is retained only as a finite-instant defense-in-depth check.
+ *
+ * End-of-input is matched via the regex's trailing non-multiline `$`, which in
+ * ECMAScript is a true end-of-string anchor (unlike Python `$`, it does NOT
+ * match before a final line terminator), mirroring Python's `\Z`. To keep that
+ * contract robust against a future maintainer attaching the `m` flag (under
+ * which `$` would match before a trailing newline and "...Z\n" would slip
+ * through, diverging from Python), we additionally compare the full-match
+ * length to the input length so a trailing newline is always rejected.
  */
 function isRfc3339Datetime(value: unknown): value is string {
   if (typeof value !== "string") return false;
   if (value.length < 20) return false;
-  if (!RFC3339_DATETIME_RE.test(value)) return false;
+  const m = RFC3339_DATETIME_RE.exec(value);
+  if (m === null || m[0].length !== value.length) return false;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed);
 }
@@ -982,17 +991,27 @@ function checkRfc3339WithOffset(
       value,
     );
   }
-  // Reject naive RFC 3339 (no 'Z' and no '+/-HH:MM' tail).
-  if (RFC3339_OFFSET_RE.exec(value) === null) {
-    throw new ValidationError(
-      field,
-      "RFC 3339 timestamp MUST carry a timezone offset (Z or +/-HH:MM) per VAL-W1-017",
-      value,
-    );
-  }
-  // Verify the overall string parses to a finite Date instant.
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) {
+  // Enforce the SAME strict shared grammar as the plain RFC 3339 fields
+  // (checkRfc3339 / checkRfc3339Nullable) so the offset-required fields
+  // (occurred_at, capture_clock) agree accept/reject with Python's anchored
+  // Rfc3339Datetime regex for identical wire bytes (Py<->TS verdict parity, a
+  // P0 keystone). Earlier this checker only required a trailing offset tail
+  // plus Date.parse, so it accepted Date.parse-permissive forms (RFC-2822-ish
+  // strings carrying an offset tail, hour 24, missing seconds, colon-less
+  // offsets, a trailing newline) that Python rejects. isRfc3339Datetime defers
+  // to RFC3339_DATETIME_RE, whose non-multiline `$` is a true end-of-input
+  // anchor in ECMAScript (so "...Z\n" is rejected, matching Python's `\Z`).
+  if (!isRfc3339Datetime(value)) {
+    // Distinguish the naive-but-otherwise-well-formed case (no 'Z' and no
+    // '+/-HH:MM' tail) so the operator gets the specific VAL-W1-017 message,
+    // even though the strict grammar already mandates the offset.
+    if (RFC3339_OFFSET_RE.exec(value) === null) {
+      throw new ValidationError(
+        field,
+        "RFC 3339 timestamp MUST carry a timezone offset (Z or +/-HH:MM) per VAL-W1-017",
+        value,
+      );
+    }
     throw new ValidationError(
       field,
       "must be an RFC 3339 date-time string with a timezone offset",
