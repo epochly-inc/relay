@@ -97,8 +97,16 @@ def test_cidr_block_allowlist_entries_classified_by_network_address() -> None:
     for cidr in ("10.0.0.0/8", "192.168.0.0/16", "127.0.0.0/8", "fc00::/7"):
         with pytest.raises(EgressDenied):
             validate_egress_entries([cidr])
-    # A CIDR over a public network address is allowed (no exception).
+    # BROAD supernets with a public-looking network address that nevertheless
+    # CONTAIN internal ranges must also be denied (overlap, not just the network
+    # address): 8.0.0.0/6 contains 10/8; 64.0.0.0/2 contains 127/8; /0 / /1 span
+    # everything.
+    for broad in ("0.0.0.0/0", "8.8.8.8/0", "8.8.8.0/1", "8.0.0.0/6", "64.0.0.0/2"):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([broad])
+    # A CIDR fully within public space is allowed (no exception).
     validate_egress_entries(["8.8.8.0/24"])
+    validate_egress_entries(["8.0.0.0/8"])  # 8/8 is entirely public
 
 
 @pytest.mark.plumbing

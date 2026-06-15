@@ -504,6 +504,80 @@ function _classifyIpv6(host: string): readonly [string, string] | null {
   return null;
 }
 
+/** Parse a CIDR ("a.b.c.d/p" or "ipv6/p") into its inclusive integer range. */
+function _cidrToRange(
+  cidr: string,
+): { v: 4 | 6; first: bigint; last: bigint } | null {
+  const slash = cidr.indexOf("/");
+  if (slash < 0) return null;
+  const addr = cidr.slice(0, slash);
+  const prefixStr = cidr.slice(slash + 1);
+  if (!/^\d+$/.test(prefixStr)) return null;
+  const prefix = Number(prefixStr);
+  const kind = isIP(addr);
+  if (kind === 4) {
+    if (prefix > 32) return null;
+    const i = _ipv4ToInt(addr);
+    if (i === null) return null;
+    const ai = BigInt(i >>> 0);
+    const hostBits = BigInt(32 - prefix);
+    const first = hostBits === 32n ? 0n : (ai >> hostBits) << hostBits;
+    const last = first | ((1n << hostBits) - 1n);
+    return { v: 4, first, last };
+  }
+  if (kind === 6) {
+    if (prefix > 128) return null;
+    const hextets = _ipv6Hextets(addr);
+    if (hextets === null) return null;
+    const ai = _ipv6ToInt(hextets);
+    const hostBits = BigInt(128 - prefix);
+    const first = hostBits === 128n ? 0n : (ai >> hostBits) << hostBits;
+    const last = first | ((1n << hostBits) - 1n);
+    return { v: 6, first, last };
+  }
+  return null;
+}
+
+// Special-purpose / non-global ranges a CIDR allowlist entry must not OVERLAP
+// (byte-for-byte the Python network_policy._DENIED_SUPERNETS list). A broad CIDR
+// supernet can contain these with a public-looking network address.
+const _DENIED_SUPERNETS: ReadonlyArray<{
+  v: 4 | 6;
+  first: bigint;
+  last: bigint;
+  cidr: string;
+}> = (
+  [
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.0.0.0/24",
+    "192.0.2.0/24",
+    "192.168.0.0/16",
+    "198.18.0.0/15",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+    "255.255.255.255/32",
+    "::1/128",
+    "::/128",
+    "fc00::/7",
+    "fe80::/10",
+    "ff00::/8",
+    "2001:db8::/32",
+    "64:ff9b::/96",
+  ] as const
+).map((c) => {
+  const r = _cidrToRange(c);
+  /* c8 ignore next */
+  if (r === null) throw new Error(`bad denied supernet literal: ${c}`);
+  return { v: r.v, first: r.first, last: r.last, cidr: c };
+});
+
 /** Return ``[denied_reason, denied_cidr]`` or ``null`` if ``host`` is not
  * denied by the SSRF guard. Mirrors the Python ``_classify`` chokepoint:
  * normalise surrounding whitespace + trailing FQDN-root dots, match the
@@ -519,11 +593,23 @@ function _classify(host: string): readonly [string, string] | null {
   }
   // CIDR-block entry (e.g. "10.0.0.0/8", "fc00::/7"): the replay sandbox accepts
   // CIDR allowlist entries, so a private/reserved RANGE must be denied like a
-  // single internal address (else allowlisting "10.0.0.0/8" authorizes the whole
-  // private block). Classify the network/address portion through this same guard
-  // -- byte-for-byte mirror of the Python `_classify` CIDR branch.
+  // single internal address. Byte-for-byte mirror of the Python `_classify`
+  // CIDR branch.
   if (host.includes("/")) {
-    return _classify(host.split("/", 1)[0] ?? "");
+    // (1) network/address portion internal -> denied (the common case).
+    const direct = _classify(host.split("/", 1)[0] ?? "");
+    if (direct !== null) return direct;
+    // (2) a BROAD CIDR supernet can CONTAIN internal ranges with a public-looking
+    // network address (8.0.0.0/6 contains 10.0.0.0/8). Deny any CIDR that
+    // OVERLAPS a special-purpose range (mirrors Python _DENIED_SUPERNETS).
+    const range = _cidrToRange(host);
+    if (range === null) return null;
+    for (const d of _DENIED_SUPERNETS) {
+      if (d.v === range.v && range.first <= d.last && d.first <= range.last) {
+        return ["rfc1918", d.cidr];
+      }
+    }
+    return null;
   }
   const kind = isIP(host);
   if (kind === 4) {

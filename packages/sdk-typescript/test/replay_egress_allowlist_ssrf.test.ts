@@ -219,7 +219,19 @@ describe("LOW #11: Run.replayCreate enforces the egress allowlist SSRF guard", (
   // CIDR-block allowlist entries over an internal network are denied (parity
   // with Python network_policy._classify CIDR branch); a public-network CIDR
   // is allowed.
-  it.each(["10.0.0.0/8", "192.168.0.0/16", "127.0.0.0/8", "fc00::/7"])(
+  it.each([
+    "10.0.0.0/8",
+    "192.168.0.0/16",
+    "127.0.0.0/8",
+    "fc00::/7",
+    // Broad supernets with a public-looking network address that CONTAIN
+    // internal ranges (overlap, not just the network address).
+    "0.0.0.0/0",
+    "8.8.8.8/0",
+    "8.8.8.0/1",
+    "8.0.0.0/6",
+    "64.0.0.0/2",
+  ])(
     "blocks an internal CIDR-block allowlist entry %s",
     async (cidr) => {
       const stub = new StubHttpClient();

@@ -64,6 +64,41 @@ _RFC1918_NETWORKS: Final[tuple[ipaddress.IPv4Network, ...]] = (
     ipaddress.IPv4Network("192.168.0.0/16"),
 )
 
+# Special-purpose / non-global ranges a CIDR allowlist entry must not OVERLAP.
+# A broad CIDR supernet (e.g. 8.0.0.0/6, 0.0.0.0/0) can contain these even when
+# its network address looks public, so the CIDR branch of _classify denies any
+# entry overlapping one of them. Mirrored byte-for-byte in the TS SDK
+# (run.ts _DENIED_SUPERNETS) for Py<->TS verdict parity.
+_DENIED_SUPERNETS: Final[
+    tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]
+] = tuple(
+    ipaddress.ip_network(c)
+    for c in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "255.255.255.255/32",
+        "::1/128",
+        "::/128",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+        "2001:db8::/32",
+        "64:ff9b::/96",
+    )
+)
+
 # Link-local IPv4 range.
 _LINK_LOCAL_V4: Final[ipaddress.IPv4Network] = ipaddress.IPv4Network(
     "169.254.0.0/16"
@@ -263,12 +298,28 @@ def _classify(host: str) -> tuple[str, str] | None:
     # CIDR-block entry (e.g. "10.0.0.0/8", "fc00::/7"): the replay sandbox
     # accepts CIDR allowlist entries, so a private/reserved RANGE must be denied
     # like a single internal address -- otherwise allowlisting "10.0.0.0/8"
-    # authorizes the whole private block (SSRF default-deny bypass). Classify
-    # the network/address portion through this same guard (split rather than
-    # ipaddress.ip_network so the TS SDK can mirror it byte-for-byte). A bare
-    # "/" with no IP-shaped left side falls through to the hostname denylist.
+    # authorizes the whole private block (SSRF default-deny bypass).
     if "/" in host:
-        return _classify(host.split("/", 1)[0])
+        # (1) Classify the network/address portion directly: a specific subnet
+        # whose network address is internal (10.0.0.0/8, fc00::/7) is denied,
+        # and this is the common case.
+        direct = _classify(host.split("/", 1)[0])
+        if direct is not None:
+            return direct
+        # (2) A BROAD CIDR can be a SUPERNET that CONTAINS internal ranges even
+        # with a public-looking network address (8.0.0.0/6 contains 10.0.0.0/8;
+        # 64.0.0.0/2 contains 127.0.0.0/8; 0.0.0.0/0 contains everything).
+        # is_global does NOT catch these (it checks subnet-OF, not contains), so
+        # deny any CIDR that OVERLAPS a special-purpose range. The supernet list
+        # is mirrored byte-for-byte in the TS SDK for Py<->TS verdict parity.
+        try:
+            net = ipaddress.ip_network(host, strict=False)
+        except ValueError:
+            return None
+        for denied in _DENIED_SUPERNETS:
+            if isinstance(net, type(denied)) and net.overlaps(denied):
+                return ("rfc1918", str(denied))
+        return None
     # IPv4 / IPv6 range checks.
     try:
         ip = ipaddress.ip_address(host)
