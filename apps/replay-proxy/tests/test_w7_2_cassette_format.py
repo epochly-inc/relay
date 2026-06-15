@@ -290,6 +290,163 @@ def test_canonical_key_is_deterministic_multipart_branch(
     assert derive_canonical_key(a) == derive_canonical_key(b)
 
 
+def _multipart_body(
+    boundary: str,
+    *,
+    name: str,
+    part_body: bytes,
+    content_type: str | None = None,
+) -> bytes:
+    """Assemble a single-part multipart/form-data body.
+
+    ``part_body`` is the exact content of the part; the framing CRLF that
+    RFC 7578 inserts between the body and the next ``--boundary`` delimiter
+    is appended here (NOT part of ``part_body``). When ``part_body`` itself
+    ends in ``\\n`` that newline is genuine content and MUST survive
+    canonicalization.
+    """
+    ct_line = (
+        f"Content-Type: {content_type}\r\n".encode() if content_type else b""
+    )
+    return (
+        f"--{boundary}\r\n".encode()
+        + f'Content-Disposition: form-data; name="{name}"\r\n'.encode()
+        + ct_line
+        + b"\r\n"
+        + part_body
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+
+
+@pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_trailing_newline_in_part_body_yields_distinct_key(
+    make_canonical_request: Any,
+) -> None:
+    """Defect (A): a genuine trailing newline in a part body MUST NOT be
+    stripped along with the single framing CRLF.
+
+    ``b"transcribe THIS audio"`` and ``b"transcribe THIS audio\\n"`` are
+    distinct uploads; their canonical keys MUST differ so a later request
+    is not served a response recorded for the OTHER payload.
+    """
+    boundary = "----A1B2C3"
+    body_no_nl = _multipart_body(
+        boundary, name="prompt", part_body=b"transcribe THIS audio"
+    )
+    body_with_nl = _multipart_body(
+        boundary, name="prompt", part_body=b"transcribe THIS audio\n"
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_no_nl,
+        content_type=ct,
+        headers={"content-type": ct},
+    )
+    b = make_canonical_request(
+        body_bytes=body_with_nl,
+        content_type=ct,
+        headers={"content-type": ct},
+    )
+    assert derive_canonical_key(a) != derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_distinct_content_type_yields_distinct_key(
+    make_canonical_request: Any,
+) -> None:
+    """Defect (B): two uploads identical except a part's declared
+    Content-Type (audio/wav vs audio/mpeg over the SAME bytes) MUST produce
+    DISTINCT canonical keys, honoring the documented contract that the
+    part's Content-Type is fed into the per-part digest.
+    """
+    boundary = "----A1B2C3"
+    same_bytes = b"RIFFxxxxWAVEfmt "
+    body_wav = _multipart_body(
+        boundary, name="file", part_body=same_bytes, content_type="audio/wav"
+    )
+    body_mpeg = _multipart_body(
+        boundary, name="file", part_body=same_bytes, content_type="audio/mpeg"
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_wav,
+        content_type=ct,
+        headers={"content-type": ct},
+    )
+    b = make_canonical_request(
+        body_bytes=body_mpeg,
+        content_type=ct,
+        headers={"content-type": ct},
+    )
+    assert derive_canonical_key(a) != derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-031")
+def test_multipart_trailing_newline_serves_correct_response_e2e(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """Defect (A) end-to-end: two multipart uploads differing only by a
+    trailing newline in a part body MUST be addressable as DISTINCT cassette
+    records; a lookup for one MUST NOT serve the OTHER's recorded response.
+    """
+    boundary = "----A1B2C3"
+    ct = f"multipart/form-data; boundary={boundary}"
+
+    body_no_nl = _multipart_body(
+        boundary, name="prompt", part_body=b"transcribe THIS audio"
+    )
+    body_with_nl = _multipart_body(
+        boundary, name="prompt", part_body=b"transcribe THIS audio\n"
+    )
+    req_no_nl = make_canonical_request(
+        body_bytes=body_no_nl, content_type=ct, headers={"content-type": ct}
+    )
+    req_with_nl = make_canonical_request(
+        body_bytes=body_with_nl, content_type=ct, headers={"content-type": ct}
+    )
+
+    fid_no_nl = "00000000-0000-4000-8000-0000000000a1"
+    fid_with_nl = "00000000-0000-4000-8000-0000000000a2"
+    resp_no_nl = b'{"text":"response for the no-newline upload"}'
+    resp_with_nl = b'{"text":"response for the trailing-newline upload"}'
+
+    fixture_no_nl = make_replay_fixture(
+        fixture_id=fid_no_nl,
+        output_digest="sha256-" + hashlib.sha256(resp_no_nl).hexdigest(),
+        output_ref=f"file://bodies/{fid_no_nl}.body",
+    )
+    fixture_with_nl = make_replay_fixture(
+        fixture_id=fid_with_nl,
+        output_digest="sha256-" + hashlib.sha256(resp_with_nl).hexdigest(),
+        output_ref=f"file://bodies/{fid_with_nl}.body",
+    )
+
+    key_no_nl = _record_one(
+        empty_cassette_dir,
+        fixture=fixture_no_nl,
+        request=req_no_nl,
+        response_bytes=resp_no_nl,
+    )
+    key_with_nl = _record_one(
+        empty_cassette_dir,
+        fixture=fixture_with_nl,
+        request=req_with_nl,
+        response_bytes=resp_with_nl,
+    )
+    assert key_no_nl != key_with_nl
+
+    index = load_cassette(empty_cassette_dir / CASSETTE_FILENAME)
+    assert len(index) == 2
+
+    rec_no_nl = index.lookup(derive_canonical_key(req_no_nl))
+    rec_with_nl = index.lookup(derive_canonical_key(req_with_nl))
+    assert rec_no_nl is not None and rec_with_nl is not None
+    assert rec_no_nl.response_bytes == resp_no_nl
+    assert rec_with_nl.response_bytes == resp_with_nl
+
+
 @pytest.mark.fulfills("VAL-W7-022")
 def test_canonical_key_is_deterministic_sse_branch(
     make_canonical_request: Any,

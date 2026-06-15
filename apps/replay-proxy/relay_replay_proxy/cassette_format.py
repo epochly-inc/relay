@@ -389,7 +389,7 @@ def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str
     # Multipart bodies use \r\n line endings per RFC 7578; we tolerate
     # bare \n for tests that hand-roll bodies.
     parts_raw = body_bytes.split(delim)
-    canonical_parts: list[tuple[str, bytes]] = []
+    canonical_parts: list[tuple[str, str, bytes]] = []
     for part in parts_raw:
         # Skip the preamble (before the first delimiter) and the closing
         # ``--<boundary>--`` marker.
@@ -402,13 +402,31 @@ def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str
             header_block, _, body = part.partition(b"\n\n")
         if not body:
             continue
-        # Trim trailing line ending the body block always carries.
-        body = body.rstrip(b"\r\n")
-        # Extract the part name from Content-Disposition.
+        # Strip EXACTLY the single framing line ending that RFC 7578
+        # inserts between the part body and the next ``--<boundary>``
+        # delimiter -- NOT every trailing CR/LF. ``rstrip(b"\r\n")`` would
+        # collapse genuine trailing content newlines, aliasing distinct
+        # uploads (e.g. b"hello" and b"hello\n") onto the same key and
+        # serving the wrong recorded response. Remove the canonical
+        # ``\r\n`` framing when present; otherwise tolerate a bare ``\n``
+        # for hand-rolled bodies. Only ONE suffix is removed so a part
+        # whose genuine content ends in ``\n`` keeps that newline.
+        body = (
+            body.removesuffix(b"\r\n")
+            if body.endswith(b"\r\n")
+            else body.removesuffix(b"\n")
+        )
+        # Extract the part name from Content-Disposition AND the part's
+        # declared Content-Type. Both participate in the per-part digest
+        # so two uploads that differ only in declared media type (e.g.
+        # audio/wav vs audio/mpeg over identical bytes) yield DISTINCT
+        # canonical keys, honoring the documented contract (VAL-W7-022).
         name = "_unnamed"
+        part_content_type = ""
         for header_line in header_block.split(b"\n"):
             line = header_line.strip().decode("utf-8", errors="replace")
-            if line.lower().startswith("content-disposition:"):
+            lower = line.lower()
+            if lower.startswith("content-disposition:"):
                 for chunk in line.split(";"):
                     chunk = chunk.strip()
                     if chunk.lower().startswith("name="):
@@ -421,11 +439,15 @@ def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str
                             raw_name = raw_name[1:-1]
                         name = raw_name
                         break
-        canonical_parts.append((name, body))
+            elif lower.startswith("content-type:"):
+                part_content_type = line.split(":", 1)[1].strip().lower()
+        canonical_parts.append((name, part_content_type, body))
     canonical_parts.sort(key=lambda x: x[0])
     h = hashlib.sha256()
-    for name, body in canonical_parts:
+    for name, part_content_type, body in canonical_parts:
         h.update(name.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(part_content_type.encode("utf-8"))
         h.update(b"\x00")
         h.update(body)
         h.update(b"\x00")
