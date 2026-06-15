@@ -87,6 +87,21 @@ def test_ipv4_multicast_unspecified_and_documentation_rejected() -> None:
 
 
 @pytest.mark.plumbing
+def test_cidr_block_allowlist_entries_classified_by_network_address() -> None:
+    """A CIDR block whose network/address is internal must be DENIED -- the
+    replay sandbox accepts CIDR allowlist entries, so allowlisting a private
+    range (e.g. 10.0.0.0/8, fc00::/7) would otherwise authorize the whole block
+    (SSRF default-deny bypass). A public-network CIDR stays ALLOWED."""
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    for cidr in ("10.0.0.0/8", "192.168.0.0/16", "127.0.0.0/8", "fc00::/7"):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([cidr])
+    # A CIDR over a public network address is allowed (no exception).
+    validate_egress_entries(["8.8.8.0/24"])
+
+
+@pytest.mark.plumbing
 def test_hostname_localhost_bypass_now_blocked() -> None:
     """BUG-B2: literal 'localhost' is rejected with reason 'reserved_hostname'.
 

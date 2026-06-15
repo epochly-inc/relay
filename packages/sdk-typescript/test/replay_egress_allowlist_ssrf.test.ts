@@ -216,6 +216,38 @@ describe("LOW #11: Run.replayCreate enforces the egress allowlist SSRF guard", (
     await run.close();
   });
 
+  // CIDR-block allowlist entries over an internal network are denied (parity
+  // with Python network_policy._classify CIDR branch); a public-network CIDR
+  // is allowed.
+  it.each(["10.0.0.0/8", "192.168.0.0/16", "127.0.0.0/8", "fc00::/7"])(
+    "blocks an internal CIDR-block allowlist entry %s",
+    async (cidr) => {
+      const stub = new StubHttpClient();
+      const run = makeRun(stub);
+      let raised: unknown;
+      try {
+        await run.replayCreate({ caseId: "case-001", egressAllowlist: [cidr] });
+      } catch (e) {
+        raised = e;
+      }
+      expect(raised).toBeInstanceOf(EgressDenied);
+      expect(stub.postReplayCalls.length).toBe(0);
+      await run.close();
+    },
+  );
+
+  it("allows a public-network CIDR allowlist entry (8.8.8.0/24)", async () => {
+    const stub = new StubHttpClient();
+    const run = makeRun(stub);
+    const result = await run.replayCreate({
+      caseId: "case-001",
+      egressAllowlist: ["8.8.8.0/24"],
+    });
+    expect(stub.postReplayCalls.length).toBe(1);
+    expect(result["mode"]).toBe("cassette");
+    await run.close();
+  });
+
   it("blocks a NAT64-wrapped loopback (64:ff9b::7f00:1 == 127.0.0.1)", async () => {
     // 64:ff9b::/96 carries the embedded IPv4 in the low 32 bits; the wrapper
     // must unwrap+re-classify exactly like Python `ip in _NAT64_NETWORK`.

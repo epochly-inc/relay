@@ -260,6 +260,15 @@ def _classify(host: str) -> tuple[str, str] | None:
     # 169.254.169.254 attributes correctly.
     if host in CLOUD_METADATA_IPS:
         return ("cloud_metadata", host)
+    # CIDR-block entry (e.g. "10.0.0.0/8", "fc00::/7"): the replay sandbox
+    # accepts CIDR allowlist entries, so a private/reserved RANGE must be denied
+    # like a single internal address -- otherwise allowlisting "10.0.0.0/8"
+    # authorizes the whole private block (SSRF default-deny bypass). Classify
+    # the network/address portion through this same guard (split rather than
+    # ipaddress.ip_network so the TS SDK can mirror it byte-for-byte). A bare
+    # "/" with no IP-shaped left side falls through to the hostname denylist.
+    if "/" in host:
+        return _classify(host.split("/", 1)[0])
     # IPv4 / IPv6 range checks.
     try:
         ip = ipaddress.ip_address(host)

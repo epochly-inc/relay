@@ -517,6 +517,14 @@ function _classify(host: string): readonly [string, string] | null {
   if (_CLOUD_METADATA_IPS.has(host)) {
     return ["cloud_metadata", host];
   }
+  // CIDR-block entry (e.g. "10.0.0.0/8", "fc00::/7"): the replay sandbox accepts
+  // CIDR allowlist entries, so a private/reserved RANGE must be denied like a
+  // single internal address (else allowlisting "10.0.0.0/8" authorizes the whole
+  // private block). Classify the network/address portion through this same guard
+  // -- byte-for-byte mirror of the Python `_classify` CIDR branch.
+  if (host.includes("/")) {
+    return _classify(host.split("/", 1)[0] ?? "");
+  }
   const kind = isIP(host);
   if (kind === 4) {
     return _classifyIpv4(host);
