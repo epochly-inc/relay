@@ -2768,3 +2768,42 @@ def test_error_envelope_rejects_unknown_field() -> None:
         ErrorEnvelope.model_validate(payload)
     msg = str(excinfo.value).lower()
     assert "unknown_field" in str(excinfo.value) or "extra" in msg
+
+
+# ---------------------------------------------------------------------------
+# VAL-W1-017 (re-hunt #7): datetime fields are strict like the TS reader.
+# The TS checkRfc3339 requires typeof === "string" (length >= 20) -- an integer
+# Unix epoch (or float/bool) is REJECTED. Pydantic's default coercion accepted
+# an int epoch, so the same wire bytes got opposite Py/TS verdicts.
+# ---------------------------------------------------------------------------
+
+
+def test_run_result_rejects_integer_epoch_decided_at() -> None:
+    """An integer Unix epoch in a datetime field is rejected (Py<->TS parity)."""
+    with pytest.raises(ValidationError):
+        RunResult.model_validate(_base_run_result(decided_at=1747008000))
+
+
+def test_run_result_rejects_float_epoch_and_bool_decided_at() -> None:
+    with pytest.raises(ValidationError):
+        RunResult.model_validate(_base_run_result(decided_at=1747008000.0))
+    with pytest.raises(ValidationError):
+        RunResult.model_validate(_base_run_result(decided_at=True))
+
+
+def test_run_result_rejects_too_short_datetime_string() -> None:
+    """The TS reader requires length >= 20; a bare date string is rejected."""
+    with pytest.raises(ValidationError):
+        RunResult.model_validate(_base_run_result(decided_at="2026-05-12"))
+
+
+def test_run_result_accepts_canonical_rfc3339_string() -> None:
+    """Every currently-valid RFC 3339 wire value still parses (no regression)."""
+    rr = RunResult.model_validate(
+        _base_run_result(decided_at="2026-05-12T00:00:00Z")
+    )
+    assert rr.decided_at.year == 2026
+    rr_offset = RunResult.model_validate(
+        _base_run_result(decided_at="2026-05-12T00:00:00+02:00")
+    )
+    assert rr_offset.decided_at.utcoffset() is not None

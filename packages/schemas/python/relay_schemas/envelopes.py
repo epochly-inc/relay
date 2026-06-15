@@ -44,6 +44,7 @@ from uuid import UUID
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     PrivateAttr,
@@ -86,6 +87,49 @@ Ulid = Annotated[str, Field(pattern=ULID_PATTERN)]
 # wire-format inputs before Pydantic's datetime coercion silently drops the
 # distinction.
 _RFC3339_OFFSET_RE = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
+
+# Minimum length of a canonical RFC 3339 date-time (YYYY-MM-DDTHH:MM:SSZ == 20).
+_RFC3339_MIN_LEN = 20
+
+
+def _require_rfc3339_string(value: Any) -> Any:
+    """Reject wire values the TS reader rejects, for Py<->TS parse parity.
+
+    The TS ``isRfc3339Datetime`` (packages/schemas/typescript/src/envelopes.ts)
+    requires ``typeof value === "string"`` with length >= 20 that ``Date.parse``
+    can read; an integer Unix epoch (or float/bool) is REJECTED. Pydantic's
+    default datetime coercion instead silently accepts an int/float epoch, so
+    the same wire bytes got opposite verdicts (re-hunt #7). This before-validator
+    enforces the string contract on WIRE input while letting an actual
+    ``datetime`` object (in-process model construction, which has no wire-string
+    equivalent in TS) pass through untouched. The remaining RFC 3339 grammar /
+    parseability is enforced by Pydantic's own string->datetime parse, which
+    rejects non-RFC-3339 strings the way TS rejects ``Date.parse``-unreadable
+    ones.
+    """
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        if len(value) < _RFC3339_MIN_LEN:
+            raise ValueError(
+                "must be an RFC 3339 date-time string (length >= 20); "
+                f"observed a {len(value)}-char string"
+            )
+        return value
+    # int/float epoch, bool, or any other non-string wire value: reject to
+    # match the TS reader (which requires a string).
+    raise ValueError(
+        "must be an RFC 3339 date-time string, not a "
+        f"{type(value).__name__} (an integer/float Unix epoch is rejected for "
+        "Py<->TS parse parity per VAL-W1-017)"
+    )
+
+
+# Strict RFC 3339 date-time field type: enforces the TS wire contract (string,
+# length >= 20, RFC-3339-parseable) so Python and TypeScript readers agree on
+# accept/reject for the same wire bytes. Use in place of a bare ``datetime`` on
+# every canonical envelope field. Nullable fields use ``Rfc3339Datetime | None``.
+Rfc3339Datetime = Annotated[datetime, BeforeValidator(_require_rfc3339_string)]
 
 
 # -----------------------------------------------------------------------------
@@ -344,7 +388,7 @@ class RunResult(_RelayEnvelope):
     evidence_bundle_id: UUID | None = None
     manifest_commit_hash: Sha256Hash
     actor_identity_hash: Sha256Hash
-    decided_at: datetime
+    decided_at: Rfc3339Datetime
     decision_epoch: NonNegativeEpoch = 0
     signature: str
     signature_key_id: str
@@ -389,7 +433,7 @@ class GateDecision(_RelayEnvelope):
     evidence_bundle_id: UUID
     cascade_on_block: bool = True
     decided_by: Literal["gate_engine"]
-    decided_at: datetime
+    decided_at: Rfc3339Datetime
     manifest_commit_hash: Sha256Hash
     actor_identity_hash: Sha256Hash
     signature: str
@@ -439,7 +483,7 @@ class GateDecisionDraft(_RelayEnvelope):
     worker_id: UUID
     manifest_commit_hash: Sha256Hash
     actor_identity_hash: Sha256Hash
-    submitted_at: datetime
+    submitted_at: Rfc3339Datetime
     resolved_gate_decision_id: UUID | None = None
     draft_kind: Literal["submitted", "dry_run_unsigned"] = "submitted"
     resolution_state: Literal[
@@ -450,7 +494,7 @@ class GateDecisionDraft(_RelayEnvelope):
         "cancelled",
         "duplicate_submission",
     ] = "pending"
-    cancelled_at: datetime | None = None
+    cancelled_at: Rfc3339Datetime | None = None
     cancellation_reason: str | None = None
 
     @model_validator(mode="after")
@@ -495,7 +539,7 @@ class GateRound(_RelayEnvelope):
     scope_type: str
     scope_id: UUID
     round: PositiveRound
-    initiated_at: datetime
+    initiated_at: Rfc3339Datetime
     initiated_by: Literal["control_plane", "cron", "user", "remediation"]
     initiation_reason: str | None = None
     gate_decision_id: UUID | None = None
@@ -519,8 +563,8 @@ class Actor(_RelayEnvelope):
 
     identity_hash: Sha256Hash
     kind: Literal["human", "bot", "worker", "reviewer"]
-    created_at: datetime
-    revoked_at: datetime | None = None
+    created_at: Rfc3339Datetime
+    revoked_at: Rfc3339Datetime | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -549,8 +593,8 @@ class ManifestVersion(_RelayEnvelope):
     signed_by: str | None = None
     signature: str | None = None
     signature_key_id: str | None = None
-    effective_at: datetime
-    effective_until: datetime | None = None
+    effective_at: Rfc3339Datetime
+    effective_until: Rfc3339Datetime | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -574,8 +618,8 @@ class _ScopeStateBase(_RelayEnvelope):
     scope_id: UUID
     project_id: UUID
     epoch: NonNegativeEpoch
-    created_at: datetime
-    updated_at: datetime
+    created_at: Rfc3339Datetime
+    updated_at: Rfc3339Datetime
 
 
 class RunScopeState(_ScopeStateBase):
@@ -736,8 +780,8 @@ class IdempotencyRecord(_RelayEnvelope):
     request_digest: Sha256Hash
     response_status: NonNegativeEpoch
     response_ref: str | None = None
-    first_seen_at: datetime
-    expires_at: datetime
+    first_seen_at: Rfc3339Datetime
+    expires_at: Rfc3339Datetime
 
 
 # -----------------------------------------------------------------------------
@@ -785,7 +829,7 @@ class EventLogEntry(_RelayEnvelope):
     actor_id: UUID | None = None
     manifest_commit_hash: Sha256Hash | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
-    occurred_at: datetime
+    occurred_at: Rfc3339Datetime
     ingest_sequence: NonNegativeEpoch
 
     # Private sidecar storing the original wire-format string for occurred_at
@@ -959,7 +1003,7 @@ class EvidenceBundle(_RelayEnvelope):
     manifest_commit_hash: Sha256Hash | None = None
     object_ref: str
     supersedes_bundle_id: UUID | None = None
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 # ---------------------------------------------------------------------------
@@ -1132,13 +1176,13 @@ class EvidenceClaim(_RelayEnvelope):
         "cron",
     ]
     actor_identity_hash: Sha256Hash
-    occurred_at: datetime
+    occurred_at: Rfc3339Datetime
     manifest_commit_hash: Sha256Hash
     signer_key_id: str
     signature: NonEmptyStr
     supersedes_claim_id: UUID | None = None
     namespaces: dict[str, Any] | None = None
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
     # ---------------------------------------------------------------------
     # Back-compat construction shim (VAL-V3M1-015).
@@ -1253,9 +1297,9 @@ class ReplayCase(_RelayEnvelope):
     expected_assertion_ids: list[NonEmptyStr] = Field(default_factory=list)
     human_reviewed: bool = False
     reviewer_email: str | None = None
-    reviewed_at: datetime | None = None
+    reviewed_at: Rfc3339Datetime | None = None
     status: Literal["proposed", "approved", "retired"] = "proposed"
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 class ReplayFixture(_RelayEnvelope):
@@ -1286,7 +1330,7 @@ class ReplayFixture(_RelayEnvelope):
     provider: str | None = None
     model: str | None = None
     model_signature: str | None = None
-    capture_clock: datetime
+    capture_clock: Rfc3339Datetime
     refresh_policy: Literal[
         "invalidate_on_signature_change",
         "hold_forever",
@@ -1300,7 +1344,7 @@ class ReplayFixture(_RelayEnvelope):
         "approval_required",
     ]
     allowed_in_replay: bool = False
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
     _capture_clock_raw: str | None = PrivateAttr(default=None)
 
@@ -1517,7 +1561,7 @@ class RedactionPolicy(_RelayEnvelope):
     dpa_ref: str | None = None
     approver_user_id: UUID | None = None
     matchers: list[_RedactionPolicyMatcherUnion] = Field(default_factory=list)
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
     @model_validator(mode="after")
     def _check_raw_capture_requires_dpa_and_approver(self) -> RedactionPolicy:
@@ -1619,8 +1663,8 @@ class GatePolicy(_RelayEnvelope):
     baseline_selector: dict[str, Any] | None = None
     flaky_quarantine_policy: dict[str, Any] | None = None
     blocking_severity: Literal["p0_only", "p0_p1", "any_failure"] = "p0_only"
-    effective_at: datetime
-    effective_until: datetime | None = None
+    effective_at: Rfc3339Datetime
+    effective_until: Rfc3339Datetime | None = None
 
 
 class ContractResult(_RelayEnvelope):
@@ -1643,7 +1687,7 @@ class ContractResult(_RelayEnvelope):
     raw_signature_hash: str | None = None
     repair_attempt: int = 0
     evaluation_engine_version: str
-    evaluated_at: datetime
+    evaluated_at: Rfc3339Datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1678,8 +1722,8 @@ class AssertionDefinition(_RelayEnvelope):
         "retired",
     ] = "draft"
     current_version: int = 1
-    created_at: datetime
-    updated_at: datetime
+    created_at: Rfc3339Datetime
+    updated_at: Rfc3339Datetime
 
 
 class ReplayResult(_RelayEnvelope):
@@ -1705,7 +1749,7 @@ class ReplayResult(_RelayEnvelope):
     side_effect_attempts: int = 0
     side_effect_approved: int = 0
     evidence_bundle_id: UUID | None = None
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 class Manifest(_RelayEnvelope):
@@ -1722,7 +1766,7 @@ class Manifest(_RelayEnvelope):
     manifest_id: UUID
     project_id: UUID
     name: str
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 class Incident(_RelayEnvelope):
@@ -1742,12 +1786,12 @@ class Incident(_RelayEnvelope):
     severity: Literal["sev1", "sev2", "sev3", "sev4"]
     state: Literal["open", "mitigated", "closed", "suppressed"] = "open"
     affected_run_ids: list[UUID] = Field(default_factory=list)
-    first_seen_at: datetime
-    last_seen_at: datetime
+    first_seen_at: Rfc3339Datetime
+    last_seen_at: Rfc3339Datetime
     owner_email: str | None = None
     postmortem_ref: str | None = None
     promoted_to_regression: bool = False
-    created_at: datetime | None = None
+    created_at: Rfc3339Datetime | None = None
 
 
 class RootCauseHypothesis(_RelayEnvelope):
@@ -1772,7 +1816,7 @@ class RootCauseHypothesis(_RelayEnvelope):
         Literal["accept", "reject", "modify", "pending"] | None
     ) = None
     promoted_to_replay_case_id: UUID | None = None
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 class Span(_RelayEnvelope):
@@ -1801,8 +1845,8 @@ class Span(_RelayEnvelope):
     ]
     name: str
     status: str
-    started_at: datetime
-    ended_at: datetime | None = None
+    started_at: Rfc3339Datetime
+    ended_at: Rfc3339Datetime | None = None
     error_class: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -1918,11 +1962,11 @@ class EvidenceLegalHold(_RelayEnvelope):
     reason: str
     legal_matter_ref: str | None = None
     imposed_by_user_id: UUID
-    counsel_signoff_at: datetime | None = None
+    counsel_signoff_at: Rfc3339Datetime | None = None
     counsel_signoff_by: str | None = None
     state: Literal["active", "released"] = "active"
-    imposed_at: datetime
-    released_at: datetime | None = None
+    imposed_at: Rfc3339Datetime
+    released_at: Rfc3339Datetime | None = None
     released_by_user_id: UUID | None = None
 
 
@@ -1949,7 +1993,7 @@ class EvidenceBundleRegistry(_RelayEnvelope):
     subject_redacted_after_signing: bool = False
     redaction_event_ref: str | None = None
     legal_hold_id: UUID | None = None
-    last_state_change_at: datetime
+    last_state_change_at: Rfc3339Datetime
 
 
 # ---------------------------------------------------------------------------
@@ -2013,7 +2057,7 @@ class TransparencyLogEntry(_RelayEnvelope):
     evidence_bundle_id: UUID
     bundle_digest: str
     signer_key_id: str
-    appended_at: datetime
+    appended_at: Rfc3339Datetime
     tree_root_after: str
     inclusion_proof_ref: str | None = None
 
@@ -2067,7 +2111,7 @@ class HumanOversightEvent(_RelayEnvelope):
     decision: str | None = None
     rationale: str | None = None
     evidence_refs: list[Any] = Field(default_factory=list)
-    occurred_at: datetime
+    occurred_at: Rfc3339Datetime
 
 
 class DataQualityCheck(_RelayEnvelope):
@@ -2102,7 +2146,7 @@ class DataQualityCheck(_RelayEnvelope):
     threshold_value: float | None = None
     evaluator: str
     evidence_refs: list[Any] = Field(default_factory=list)
-    performed_at: datetime
+    performed_at: Rfc3339Datetime
 
 
 class DataProvenanceRecord(_RelayEnvelope):
@@ -2129,7 +2173,7 @@ class DataProvenanceRecord(_RelayEnvelope):
         "user_generated",
     ]
     license_ref: str | None = None
-    acquired_at: datetime | None = None
+    acquired_at: Rfc3339Datetime | None = None
     acquired_by_user_id: UUID | None = None
     notes: str | None = None
     evidence_refs: list[Any] = Field(default_factory=list)
