@@ -166,7 +166,16 @@ def test_stale_manifest_hash_returns_context_not_rehydrated(tmp_path) -> None:
         assert second.status_code == 409, second.text
         body = second.json()
         assert body["code"] == "RELAY-SIDECAR-008", body
-        assert body["error_class"] == "RELAY-SIDECAR-CONTEXT-NOT-REHYDRATED", body
+        # Canonical ErrorEnvelope (spec B.4): closed schema; the descriptive
+        # error_class token is forbidden. ``code`` carries the W1-compliant
+        # RELAY-SIDECAR-008 anchor for the CONTEXT-NOT-REHYDRATED condition.
+        assert "error_class" not in body, body
+        assert body["schema_version"] == "relay.error.v1", body
+        assert body["http_status"] == 409, body
+        assert body["blocked_surface"] == "state_transition", body
+        assert body["retry_advice"] == "after_fix", body
+        assert body["request_id"], body
+        assert body["trace_id"], body
         # State unchanged (still 'captured', epoch still 1).
         verify_conn = sqlite3.connect(str(tmp_path / "sidecar.db"))
         try:

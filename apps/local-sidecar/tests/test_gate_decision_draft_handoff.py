@@ -126,7 +126,14 @@ def test_failed_handoff_scope_id_returns_relay_gate_021(tmp_path) -> None:
         assert response.status_code == 409, response.text
         body = response.json()
         assert body["code"] == "RELAY-GATE-021", body
-        assert body["error_class"] == "RELAY-GATE-021", body
+        # Canonical ErrorEnvelope (spec B.4): closed schema, no error_class.
+        assert "error_class" not in body, body
+        assert body["schema_version"] == "relay.error.v1", body
+        assert body["http_status"] == 409, body
+        assert body["blocked_surface"] == "state_transition", body
+        assert body["retry_advice"] == "do_not_retry", body
+        assert body["request_id"], body
+        assert body["trace_id"], body
         assert _gate_decisions_count(tmp_path / "sidecar.db", scope_id) == 0
 
 
@@ -156,6 +163,13 @@ def test_failed_handoff_unknown_actor_returns_relay_gate_021(tmp_path) -> None:
         assert response.status_code == 409
         body = response.json()
         assert body["code"] == "RELAY-GATE-021", body
+        assert "error_class" not in body, body
+        assert body["schema_version"] == "relay.error.v1", body
+        assert body["http_status"] == 409, body
+        assert body["blocked_surface"] == "state_transition", body
+        assert body["retry_advice"] == "do_not_retry", body
+        assert body["request_id"], body
+        assert body["trace_id"], body
         assert _gate_decisions_count(tmp_path / "sidecar.db", scope_id) == 0
 
 
@@ -182,4 +196,11 @@ def test_failed_handoff_unknown_manifest_returns_relay_gate_021(tmp_path) -> Non
         assert response.status_code == 409
         body = response.json()
         assert body["code"] == "RELAY-GATE-021", body
+        assert "error_class" not in body, body
+        assert body["schema_version"] == "relay.error.v1", body
+        assert body["http_status"] == 409, body
+        assert body["blocked_surface"] == "state_transition", body
+        assert body["retry_advice"] == "do_not_retry", body
+        assert body["request_id"], body
+        assert body["trace_id"], body
         assert _gate_decisions_count(tmp_path / "sidecar.db", scope_id) == 0

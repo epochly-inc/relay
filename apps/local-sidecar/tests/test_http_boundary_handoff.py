@@ -26,10 +26,13 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from relay_schemas.envelopes import ErrorEnvelope
 from relay_sidecar.db import SidecarDatabase
 from relay_sidecar.state_engine import StateTransitionResult
 from relay_sidecar.state_engine.http_endpoint import (
     StateEngineProtocol,
+    _context_envelope,
+    _gate_021_envelope,
     build_state_router,
 )
 
@@ -207,3 +210,124 @@ def test_valid_handoff_does_call_state_engine(boundary_app) -> None:
         assert call["scope_kind"] == "run"
         assert call["scope_id"] == scope_id
         assert call["event"] == "ingest.run_received"
+
+
+# ---------------------------------------------------------------------------
+# ErrorEnvelope conformance (fix: route declares ErrorEnvelope for 400/409 in
+# packages/schemas/raw/openapi.yaml, so every error body on this route MUST
+# validate against the canonical ErrorEnvelope model, which is
+# additionalProperties:false and forbids the legacy ``error_class`` field).
+# ---------------------------------------------------------------------------
+
+
+def _assert_error_envelope(body: dict[str, Any]) -> ErrorEnvelope:
+    """Validate ``body`` against the canonical ErrorEnvelope model.
+
+    ErrorEnvelope (relay_schemas.envelopes) is ``extra="forbid"`` and
+    requires schema_version/code/http_status/blocked_surface/retry_advice/
+    request_id/trace_id. The legacy ``error_class`` field is rejected.
+    """
+    # error_class is forbidden by the closed envelope schema.
+    assert "error_class" not in body, body
+    env = ErrorEnvelope.model_validate(body)
+    assert env.schema_version == "relay.error.v1"
+    assert env.blocked_surface == "state_transition"
+    assert env.request_id
+    assert env.trace_id
+    return env
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-062")
+def test_malformed_json_body_is_error_envelope_compliant(boundary_app) -> None:
+    """Malformed JSON -> 400 body validates against ErrorEnvelope (no error_class)."""
+    app, _mock, _db_path = boundary_app
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/state/transition",
+            content=b"{not valid json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 400, response.text
+        body = response.json()
+        env = _assert_error_envelope(body)
+        assert env.code == "RELAY-ING-001"
+        assert env.http_status == 400
+        assert env.retry_advice == "after_fix"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-062")
+def test_missing_anchor_body_is_error_envelope_compliant(boundary_app) -> None:
+    """Missing required anchor -> 400 body validates against ErrorEnvelope."""
+    app, mock, _db_path = boundary_app
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/state/transition",
+            json={"scope_kind": "run"},  # missing scope_id and the rest
+        )
+        assert response.status_code == 400, response.text
+        body = response.json()
+        env = _assert_error_envelope(body)
+        assert env.code == "RELAY-ING-001"
+        assert env.http_status == 400
+        assert env.retry_advice == "after_fix"
+        assert mock.invocations == [], mock.invocations
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-062")
+def test_stale_handoff_gate_021_is_error_envelope_compliant(boundary_app) -> None:
+    """Stale handoff -> 409 RELAY-GATE-021 body validates against ErrorEnvelope."""
+    app, _mock, db_path = boundary_app
+    with TestClient(app) as client:
+        identity_hash = "sha256-" + "a" * 64
+        _seed_actor(db_path, identity_hash=identity_hash)
+        scope_id = str(uuid.uuid4())
+        response = client.post(
+            "/v1/state/transition",
+            json={
+                "scope_kind": "run",
+                "scope_id": scope_id,
+                "expected_from": "pending",
+                "event": "ingest.run_received",
+                "actor": {"kind": "sdk", "identity_hash": identity_hash},
+                "manifest_commit_hash": "sha256-" + "9" * 64,  # not registered
+                "run_id": scope_id,
+            },
+        )
+        assert response.status_code == 409, response.text
+        body = response.json()
+        env = _assert_error_envelope(body)
+        assert env.code == "RELAY-GATE-021"
+        assert env.http_status == 409
+        assert env.retry_advice == "do_not_retry"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-062")
+def test_gate_021_envelope_helper_is_error_envelope_compliant() -> None:
+    """``_gate_021_envelope`` output validates against ErrorEnvelope directly."""
+    body = _gate_021_envelope(reason="manifest_not_active")
+    env = _assert_error_envelope(body)
+    assert env.code == "RELAY-GATE-021"
+    assert env.http_status == 409
+    assert env.retry_advice == "do_not_retry"
+    assert env.details == {"reason": "manifest_not_active"}
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-056")
+def test_context_envelope_helper_is_error_envelope_compliant() -> None:
+    """``_context_envelope`` output validates against ErrorEnvelope directly."""
+    body = _context_envelope(
+        observed_hash="sha256-" + "c" * 64,
+        pinned_hash="sha256-" + "b" * 64,
+    )
+    env = _assert_error_envelope(body)
+    assert env.code == "RELAY-SIDECAR-008"
+    assert env.http_status == 409
+    assert env.retry_advice == "after_fix"
+    assert env.details is not None
+    assert env.details["observed_manifest_commit_hash"] == "sha256-" + "c" * 64
+    assert env.details["pinned_manifest_commit_hash"] == "sha256-" + "b" * 64
