@@ -38,6 +38,7 @@
  */
 
 import * as crypto from "node:crypto";
+import { isIP } from "node:net";
 
 import { FlushPolicy } from "./flush.js";
 import { AsyncFlushDispatcher } from "./flush.js";
@@ -125,6 +126,408 @@ export const REPLAY_POLICIES: ReadonlySet<string> = new Set([
 ]);
 
 export type ReplayPolicy = "replay_in_sandbox" | "block_in_replay" | "external_irreversible";
+
+// ---------------------------------------------------------------------------
+// SDK-boundary SSRF egress-allowlist guard (parity with the Python SDK
+// packages/sdk-python/relay/network_policy.py::validate_egress_entries,
+// exercised by Run.replayCreate's egressAllowlist option).
+//
+// The replay-case submit path validates every caller-supplied
+// egress-allowlist entry and rejects any host that falls inside an RFC 1918
+// private range, the IPv4 link-local block (169.254.0.0/16), the IPv4
+// loopback block (127.0.0.0/8), the multicast / unspecified / reserved
+// ranges, an IPv6 internal range, one of the well-known cloud-metadata
+// endpoints, or the reserved-hostname denylist. Rejected entries surface as
+// EgressDenied carrying a structured envelope whose keys are stable
+// wire-format names (code / http_status / denied_entry / denied_reason /
+// denied_cidr) -- byte-identical to the Python EgressDenied.envelope.
+//
+// ASCII-only per CLAUDE.md "ASCII-Safe Source".
+// ---------------------------------------------------------------------------
+
+/** Wire code for an egress-allowlist entry denied by the SSRF guard.
+ *
+ * Word-form code per the precedent set by ``RELAY-EVID-SIGCOUNT-EXCEEDED``;
+ * mirrors the Python ``relay.network_policy.RELAY_REPLAY_SSRF`` constant so
+ * an operator running the same agent on Node or Python sees the same code. */
+export const RELAY_REPLAY_SSRF_CODE = "RELAY-REPLAY-SSRF";
+
+const _EGRESS_DENIED_HTTP_STATUS = 400;
+
+/** Well-known cloud-metadata endpoints (spec AI line 5664). The link-local
+ * /16 catches IPv4 cloud metadata as a separate ``link_local`` reason; this
+ * set upgrades the most-targeted endpoints to ``cloud_metadata`` so an
+ * operator's detection routing can distinguish them. Mirrors the Python
+ * ``CLOUD_METADATA_IPS`` frozenset. */
+const _CLOUD_METADATA_IPS: ReadonlySet<string> = new Set([
+  "169.254.169.254", // AWS EC2, GCP, Azure, OpenStack
+  "100.100.100.200", // Alibaba Cloud
+  "fd00:ec2::254", // AWS IPv6 metadata
+]);
+
+/** Exact reserved-hostname denylist (mirrors ``_HOSTNAME_DENYLIST_EXACT``). */
+const _HOSTNAME_DENYLIST_EXACT: ReadonlySet<string> = new Set([
+  "localhost",
+  "metadata",
+  "metadata.google.internal",
+  "instance-data.ec2.internal",
+  "kubernetes",
+  "kubernetes.default.svc",
+]);
+
+/** Reserved-hostname suffix denylist (mirrors ``_HOSTNAME_DENYLIST_SUFFIXES``). */
+const _HOSTNAME_DENYLIST_SUFFIXES: readonly string[] = [
+  ".local",
+  ".internal",
+  ".svc",
+  ".svc.cluster.local",
+  ".localhost",
+];
+
+/** Structured rejection envelope carried by {@link EgressDenied}. The key
+ * set is byte-identical to the Python ``EgressDenied.envelope`` so the wire
+ * shape an operator serialises is the same across SDKs. */
+export interface EgressDeniedEnvelope {
+  readonly code: string;
+  readonly http_status: number;
+  readonly denied_entry: string;
+  readonly denied_reason: string;
+  readonly denied_cidr: string;
+}
+
+/**
+ * Raised when an egress-allowlist entry is denied by the SDK-boundary SSRF
+ * guard (parity with ``relay.network_policy.EgressDenied``).
+ *
+ * The structured rejection envelope is on {@link envelope}; the human
+ * message echoes ``denied_entry`` so the error is self-explanatory in logs.
+ */
+export class EgressDenied extends Error {
+  readonly envelope: EgressDeniedEnvelope;
+  constructor(envelope: EgressDeniedEnvelope) {
+    super(
+      `egress entry ${JSON.stringify(envelope.denied_entry)} denied by SSRF guard ` +
+        `(reason=${envelope.denied_reason})`,
+    );
+    this.name = "EgressDenied";
+    this.envelope = envelope;
+    Object.setPrototypeOf(this, EgressDenied.prototype);
+  }
+}
+
+/** Return the host portion of ``entry`` (URL or bare host). Mirrors the
+ * Python ``_extract_host``: URL forms delegate to the WHATWG URL parser
+ * (whose ``hostname`` strips IPv6 brackets per RFC 3986); bare forms strip a
+ * single trailing ``:port`` and the RFC 3986 bracketed-IPv6 authority form. */
+function _extractHost(entry: string): string {
+  if (entry.includes("://")) {
+    try {
+      const parsed = new URL(entry);
+      // WHATWG URL.hostname keeps IPv6 in brackets; strip them so the
+      // classifier sees the bare literal (parity with urlparse().hostname).
+      let host = parsed.hostname;
+      if (host.startsWith("[") && host.endsWith("]")) {
+        host = host.slice(1, -1);
+      }
+      return host;
+    } catch {
+      return "";
+    }
+  }
+  let host = entry;
+  // RFC 3986 bracketed IPv6 authority form: ``[ipv6]`` or ``[ipv6]:port``.
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]");
+    if (end > 0) {
+      return host.slice(1, end);
+    }
+    return host;
+  }
+  // ``host:port`` -- a single colon means it is not an IPv6 literal (which
+  // carries multiple colons), so strip the trailing port.
+  if (host.includes(":") && (host.match(/:/g) ?? []).length === 1) {
+    host = host.split(":", 1)[0] as string;
+  }
+  return host;
+}
+
+/** Canonicalise a numeric-IPv4 literal (integer / hex / octal / short-form)
+ * the SAME WAY the libc resolver (``inet_aton``) does, or ``null`` if
+ * ``host`` is not such a literal. Mirrors the Python
+ * ``_canonical_numeric_ipv4``: these encodings are dialled by the OS
+ * resolver / HTTP client but rejected by a strict dotted-decimal parser, so
+ * left unhandled they would bypass the default-deny screen. This only
+ * NORMALISES; the caller must still classify the result so a numeric form
+ * resolving to a PUBLIC IP stays allowed exactly like its dotted twin. */
+function _canonicalNumericIpv4(host: string): string | null {
+  if (!host) return null;
+  const parts = host.split(".");
+  // Alpha-guard: only ASCII digits, dots, and a leading ``0x``/``0X`` hex
+  // prefix per part are permitted, so a real DNS name never coerces onto the
+  // numeric path. inet_aton accepts at most 4 parts.
+  if (parts.length > 4) return null;
+  const values: bigint[] = [];
+  for (const part of parts) {
+    if (part === "") {
+      // Empty part (leading/trailing/double dot) -- not a clean numeric
+      // literal. inet_aton rejects these, so bail out.
+      return null;
+    }
+    const lowered = part.toLowerCase();
+    let value: bigint;
+    if (lowered.startsWith("0x")) {
+      const body = lowered.slice(2);
+      if (body === "" || /[^0-9a-f]/.test(body)) return null;
+      value = BigInt(`0x${body}`);
+    } else if (lowered.startsWith("0") && lowered.length > 1) {
+      // Octal (leading zero), per inet_aton.
+      if (/[^0-7]/.test(lowered)) return null;
+      value = BigInt(`0o${lowered}`);
+    } else {
+      if (/[^0-9]/.test(lowered)) return null;
+      value = BigInt(lowered);
+    }
+    values.push(value);
+  }
+  // inet_aton part semantics: the final part fills the remaining low octets;
+  // each leading part is exactly one octet (must be <= 255). The integer
+  // 1-part form fills all four octets.
+  let packed: bigint;
+  const n = values.length;
+  if (n === 1) {
+    packed = values[0] as bigint;
+    if (packed > 0xffffffffn) return null;
+  } else {
+    packed = 0n;
+    for (let i = 0; i < n - 1; i += 1) {
+      const octet = values[i] as bigint;
+      if (octet > 0xffn) return null;
+      packed |= octet << BigInt(8 * (3 - i));
+    }
+    const last = values[n - 1] as bigint;
+    // inet_aton: the (n-1) leading parts are one octet each (top bits), and
+    // the LAST part fills the remaining low 32-8*(n-1) bits = 8*(5-n).
+    // (The earlier 8*(4-n) was off by one octet: for n===4 it yielded 0 bits,
+    // rejecting any last octet >=1 so 0177.0.0.1 / 0x7f.0.0.1 escaped the
+    // numeric canonicalization and bypassed the SSRF screen -- round-2 #11.)
+    const remainingBits = 8 * (5 - n);
+    if (last >= 1n << BigInt(remainingBits)) return null;
+    packed |= last;
+  }
+  const a = Number((packed >> 24n) & 0xffn);
+  const b = Number((packed >> 16n) & 0xffn);
+  const c = Number((packed >> 8n) & 0xffn);
+  const d = Number(packed & 0xffn);
+  return `${a}.${b}.${c}.${d}`;
+}
+
+/** Parse a dotted-decimal IPv4 literal to its 32-bit integer, or ``null``. */
+function _ipv4ToInt(host: string): number | null {
+  if (isIP(host) !== 4) return null;
+  const parts = host.split(".");
+  let value = 0;
+  for (const part of parts) {
+    value = value * 256 + Number(part);
+  }
+  return value >>> 0;
+}
+
+/** Classify a dotted-decimal IPv4 host. Mirrors the IPv4 arm of the Python
+ * ``_classify``: RFC 1918, link-local /16, loopback /8, multicast,
+ * unspecified, the CGNAT-equivalent private remainder, and the reserved
+ * remainder keep their specific reason codes so downstream alerting routes
+ * correctly. A public IPv4 returns ``null`` (allowed). */
+function _classifyIpv4(host: string): readonly [string, string] | null {
+  const v = _ipv4ToInt(host);
+  if (v === null) return null;
+  const inNet = (net: number, prefix: number): boolean => {
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    return ((v & mask) >>> 0) === ((net & mask) >>> 0);
+  };
+  if (inNet(0x0a000000, 8)) return ["rfc1918", "10.0.0.0/8"];
+  if (inNet(0xac100000, 12)) return ["rfc1918", "172.16.0.0/12"];
+  if (inNet(0xc0a80000, 16)) return ["rfc1918", "192.168.0.0/16"];
+  if (inNet(0xa9fe0000, 16)) return ["link_local", "169.254.0.0/16"];
+  if (inNet(0x7f000000, 8)) return ["loopback", "127.0.0.0/8"];
+  if (inNet(0xe0000000, 4)) return ["multicast", "224.0.0.0/4"];
+  if (inNet(0x00000000, 8)) return ["reserved", "0.0.0.0/8"];
+  // CGNAT 100.64.0.0/10 -- Python tags it ``is_private``.
+  if (inNet(0x64400000, 10)) return ["rfc1918", "private"];
+  // Remaining reserved ranges Python flags via ``is_reserved``: 192.0.0.0/24,
+  // 198.18.0.0/15 (benchmarking), 240.0.0.0/4 (future use), 255.255.255.255.
+  if (inNet(0xc0000000, 24)) return ["reserved", "ipv4_reserved"];
+  if (inNet(0xc6120000, 15)) return ["reserved", "ipv4_reserved"];
+  if (inNet(0xf0000000, 4)) return ["reserved", "ipv4_reserved"];
+  return null;
+}
+
+/** Expand an IPv6 literal to its 8 16-bit hextets as bigint, or ``null``. */
+function _ipv6Hextets(host: string): bigint[] | null {
+  if (isIP(host) !== 6) return null;
+  let h = host;
+  // An IPv4-mapped / transition trailer (e.g. ``::ffff:1.2.3.4``) is handled
+  // by the caller via dedicated unwrap helpers; for the generic hextet
+  // expansion convert a trailing dotted-IPv4 group into two hextets.
+  const lastColon = h.lastIndexOf(":");
+  const trailer = h.slice(lastColon + 1);
+  if (trailer.includes(".")) {
+    const v = _ipv4ToInt(trailer);
+    if (v === null) return null;
+    const hi = (v >>> 16) & 0xffff;
+    const lo = v & 0xffff;
+    h = `${h.slice(0, lastColon + 1)}${hi.toString(16)}:${lo.toString(16)}`;
+  }
+  const doubleColon = h.indexOf("::");
+  let groups: string[];
+  if (doubleColon >= 0) {
+    const [left, right] = h.split("::");
+    const leftParts = left ? left.split(":") : [];
+    const rightParts = right ? right.split(":") : [];
+    const fill = 8 - leftParts.length - rightParts.length;
+    if (fill < 0) return null;
+    groups = [...leftParts, ...Array(fill).fill("0"), ...rightParts];
+  } else {
+    groups = h.split(":");
+  }
+  if (groups.length !== 8) return null;
+  return groups.map((g) => BigInt(parseInt(g === "" ? "0" : g, 16)));
+}
+
+/** Assemble an IPv6 literal's 128-bit integer from its hextets. */
+function _ipv6ToInt(hextets: bigint[]): bigint {
+  let value = 0n;
+  for (const hx of hextets) {
+    value = (value << 16n) | hx;
+  }
+  return value;
+}
+
+/** Classify an IPv6 host. Mirrors the IPv6 arm of the Python ``_classify``,
+ * including unwrap-and-reclassify for IPv4-mapped (``::ffff:a.b.c.d``),
+ * 6to4 (2002::/16), NAT64 (64:ff9b::/96), and the deprecated
+ * IPv4-compatible (``::/96``) transition forms so an embedded internal /
+ * metadata IPv4 cannot tunnel past the guard, while an embedded PUBLIC IPv4
+ * stays allowed. */
+function _classifyIpv6(host: string): readonly [string, string] | null {
+  const hextets = _ipv6Hextets(host);
+  if (hextets === null) return null;
+  const value = _ipv6ToInt(hextets);
+  const low32 = Number(value & 0xffffffffn) >>> 0;
+  const embeddedIpv4 = (v: number): string =>
+    `${(v >>> 24) & 0xff}.${(v >>> 16) & 0xff}.${(v >>> 8) & 0xff}.${v & 0xff}`;
+  // IPv4-mapped ``::ffff:a.b.c.d`` -- bits 32..47 == 0xffff, high bits 0.
+  const high96 = value >> 32n;
+  if (high96 === 0xffffn) {
+    return _classify(embeddedIpv4(low32));
+  }
+  // 6to4 2002::/16 -- embedded IPv4 in bits 16..47.
+  if ((value >> 112n) === 0x2002n) {
+    const v = Number((value >> 80n) & 0xffffffffn) >>> 0;
+    return _classify(embeddedIpv4(v));
+  }
+  // NAT64 64:ff9b::/96 -- embedded IPv4 in the low 32 bits. high96 is the
+  // TOP 96 bits (value >> 32n), so the /96 prefix is 0x64ff9b shifted into the
+  // high 32 bits of that window (0x64ff9b << 64), NOT the bare 0x64ff9b (which
+  // never matched, so 64:ff9b::7f00:1 wrapping 127.0.0.1 was ALLOWED -- round-2
+  // #11). Mirrors Python `ip in _NAT64_NETWORK` (membership in 64:ff9b::/96).
+  if (high96 === 0x64ff9bn << 64n) {
+    return _classify(embeddedIpv4(low32));
+  }
+  // Native specials before the IPv4-compatible ::/96 unwrap so they keep
+  // their own reason codes.
+  // Link-local fe80::/10.
+  if ((value >> 118n) === (0xfe80n >> 6n)) {
+    return ["link_local", "fe80::/10"];
+  }
+  // ULA fc00::/7 and loopback ::1 -- Python ``is_private``.
+  if (value === 1n) return ["rfc1918", "fc00::/7"];
+  if ((value >> 121n) === (0xfc00n >> 9n)) return ["rfc1918", "fc00::/7"];
+  // Multicast ff00::/8.
+  if ((value >> 120n) === 0xffn) return ["multicast", "ff00::/8"];
+  // Unspecified ::.
+  if (value === 0n) return ["reserved", "::/128"];
+  // Deprecated IPv4-compatible ::/96 (high 96 bits zero, not the specials
+  // above) -- unwrap the embedded IPv4.
+  if (high96 === 0n) {
+    return _classify(embeddedIpv4(low32));
+  }
+  return null;
+}
+
+/** Return ``[denied_reason, denied_cidr]`` or ``null`` if ``host`` is not
+ * denied by the SSRF guard. Mirrors the Python ``_classify`` chokepoint:
+ * normalise surrounding whitespace + trailing FQDN-root dots, match the
+ * cloud-metadata literals first, then IPv4 / IPv6 ranges (including
+ * numeric-form normalisation and IPv4-in-IPv6 unwrap), then the
+ * reserved-hostname denylist. */
+function _classify(host: string): readonly [string, string] | null {
+  if (!host) return null;
+  host = host.trim().replace(/\.+$/, "");
+  if (!host) return null;
+  if (_CLOUD_METADATA_IPS.has(host)) {
+    return ["cloud_metadata", host];
+  }
+  const kind = isIP(host);
+  if (kind === 4) {
+    return _classifyIpv4(host);
+  }
+  if (kind === 6) {
+    return _classifyIpv6(host);
+  }
+  // Not a literal IP per the strict parser. First, the numeric-IPv4
+  // encodings the libc resolver accepts (integer / hex / octal / short-form):
+  // canonicalise and re-classify so e.g. ``2130706433`` is rejected as
+  // 127.0.0.1 while ``134744072`` stays allowed as the public 8.8.8.8.
+  const canonical = _canonicalNumericIpv4(host);
+  if (canonical !== null && canonical !== host) {
+    return _classify(canonical);
+  }
+  // Hostname denylist. Normalise: lowercase + strip a single trailing dot.
+  let normalized = host.toLowerCase();
+  if (normalized.endsWith(".")) {
+    normalized = normalized.slice(0, -1);
+  }
+  if (_HOSTNAME_DENYLIST_EXACT.has(normalized)) {
+    return ["reserved_hostname", normalized];
+  }
+  for (const suffix of _HOSTNAME_DENYLIST_SUFFIXES) {
+    if (normalized.endsWith(suffix)) {
+      return ["reserved_hostname", suffix];
+    }
+  }
+  // Hostname not in the denylist. General hostname-based SSRF is out of
+  // scope for this SDK-boundary guard (it requires DNS-pinning policy owned
+  // by the replay-sandbox network primitive).
+  return null;
+}
+
+/**
+ * Validate every entry in ``entries`` against the SSRF guard. Throws
+ * {@link EgressDenied} on the FIRST rejected entry (short-circuit, parity
+ * with the Python ``validate_egress_entries``); returns silently if every
+ * entry passes. The thrown error carries a structured ``envelope`` ready to
+ * serialise directly into an HTTP rejection body.
+ */
+export function validateEgressEntries(entries: readonly string[]): void {
+  for (const entry of entries) {
+    if (typeof entry !== "string" || entry === "") {
+      continue;
+    }
+    const host = _extractHost(entry);
+    const classification = _classify(host);
+    if (classification === null) {
+      continue;
+    }
+    const [deniedReason, deniedCidr] = classification;
+    throw new EgressDenied({
+      code: RELAY_REPLAY_SSRF_CODE,
+      http_status: _EGRESS_DENIED_HTTP_STATUS,
+      denied_entry: entry,
+      denied_reason: deniedReason,
+      denied_cidr: deniedCidr,
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Span types
@@ -462,6 +865,14 @@ export interface ReplayCreateOptions {
   runId?: string;
   mode?: "cassette" | "live";
   acknowledgeDegradedApproximation?: boolean;
+  /**
+   * Optional egress allowlist for the replay case. Every entry is screened
+   * by the SDK-boundary SSRF guard ({@link validateEgressEntries}) BEFORE
+   * any HTTP I/O. A rejected entry throws {@link EgressDenied}; the request
+   * is not sent. Parity with the Python SDK ``replay_create`` option of the
+   * same name (packages/sdk-python/relay/run.py).
+   */
+  egressAllowlist?: string[];
 }
 
 /**
@@ -685,6 +1096,15 @@ export class Run {
         },
       );
     }
+    // SDK-boundary SSRF screen (parity with the Python SDK
+    // build_replay_case_envelope -> validate_egress_entries). Every
+    // caller-supplied egress-allowlist entry is validated BEFORE any HTTP
+    // I/O (including the getRunResult preflight); a rejected entry throws
+    // EgressDenied and the request is not sent.
+    const egressAllowlist = options.egressAllowlist ?? [];
+    if (egressAllowlist.length > 0) {
+      validateEgressEntries(egressAllowlist);
+    }
     const caseId = options.caseId ?? newUlid();
     const runIdRef = options.runId ?? this.runId;
     // Pre-flight: confirm the canonical RunResult exists (parity with
@@ -699,6 +1119,7 @@ export class Run {
       mode,
       manifest_commit_hash: this.manifestCommitHash,
       actor_identity_hash: this.actorIdentityHash,
+      egress_allowlist: egressAllowlist,
       ...(mode === "live"
         ? { acknowledge_degraded_approximation: true }
         : {}),
