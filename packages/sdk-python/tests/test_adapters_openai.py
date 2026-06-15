@@ -773,3 +773,282 @@ def test_openai_streaming_aggregates_usage_on_finalize() -> None:
     expected_cost = (120 / 1_000_000.0) * 2.50 + (30 / 1_000_000.0) * 10.00
     assert parent.attributes["total_cost_usd"] == round(expected_cost, 6)
     assert parent.attributes["total_cost_usd"] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Streamed tool_calls (HIGH #1): a streaming completion that emits
+# choices[].delta.tool_calls[] must aggregate the per-index id/name/arguments
+# deltas and emit exactly ONE tool_call span per aggregated call on finalize,
+# mirroring the TS openai.ts ingestChunk/finalizeStream (VAL-W4-039). The
+# Python stream path previously dropped delta.tool_calls entirely, so a
+# streamed tool-using call recorded ZERO tool_call spans.
+#
+# chunk_count parity (MED #2): finalize must set chunk_count on the model_call
+# parent equal to the number of chunks consumed (TS sets
+# state.parent.attributes['chunk_count'] = state.chunkCount).
+#
+# total_tokens parity (MED #3): TS finalizeStream FORCES
+# total_tokens = prompt_tokens + completion_tokens (ignoring any provider
+# total). A terminal usage chunk whose total disagrees with the sum must
+# yield total_tokens == prompt + completion.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeToolCallFunctionDelta:
+    """Streamed function delta: name and arguments arrive in fragments."""
+
+    name: str | None = None
+    arguments: str | None = None
+
+
+@dataclass
+class _FakeToolCallDelta:
+    """One element of delta.tool_calls, keyed by ``index``."""
+
+    index: int
+    id: str | None = None
+    type: str | None = None
+    function: _FakeToolCallFunctionDelta | None = None
+
+
+@dataclass
+class _FakeToolDelta:
+    """A choices[].delta carrying streamed tool_calls fragments."""
+
+    content: str | None = None
+    tool_calls: list[_FakeToolCallDelta] | None = None
+
+
+@dataclass
+class _FakeToolChunkChoice:
+    index: int
+    delta: _FakeToolDelta
+    finish_reason: str | None = None
+
+
+@dataclass
+class _FakeToolChunk:
+    id: str
+    model: str
+    system_fingerprint: str | None
+    choices: list[_FakeToolChunkChoice]
+
+
+@pytest.mark.plumbing
+def test_openai_streaming_emits_one_tool_call_span_per_aggregated_call() -> None:
+    """Streamed delta.tool_calls fragments aggregate per index into a single
+    tool_call span carrying the stitched name and args, mirroring TS
+    finalizeStream. The args secret must be redacted at the boundary."""
+    recorder = SpanRecorder()
+    chunks: list[Any] = [
+        # Call index 0: name arrives first, then arguments in two fragments.
+        _FakeToolChunk(
+            id="chatcmpl-t",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[
+                _FakeToolChunkChoice(
+                    index=0,
+                    delta=_FakeToolDelta(
+                        tool_calls=[
+                            _FakeToolCallDelta(
+                                index=0,
+                                id="call_001",
+                                type="function",
+                                function=_FakeToolCallFunctionDelta(
+                                    name="get_weather", arguments='{"city": '
+                                ),
+                            )
+                        ]
+                    ),
+                )
+            ],
+        ),
+        _FakeToolChunk(
+            id="chatcmpl-t",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[
+                _FakeToolChunkChoice(
+                    index=0,
+                    delta=_FakeToolDelta(
+                        tool_calls=[
+                            _FakeToolCallDelta(
+                                index=0,
+                                function=_FakeToolCallFunctionDelta(
+                                    arguments='"Paris", "api_key": "sk-123"}'
+                                ),
+                            )
+                        ]
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+        ),
+    ]
+    client = wrap_openai(_FakeOpenAIClient(chunks), recorder=recorder)
+    it = client.chat.completions.create(
+        model="gpt-4o-2024-08-06",
+        messages=[{"role": "user", "content": "weather in Paris?"}],
+        tools=[{"type": "function", "function": {"name": "get_weather"}}],
+        stream=True,
+    )
+    list(it)
+    tool_spans = [s for s in recorder.spans if s.kind == "tool_call"]
+    parents = [s for s in recorder.spans if s.kind == "model_call"]
+    assert len(parents) == 1
+    # Exactly ONE tool_call span per aggregated call (not one per chunk).
+    assert len(tool_spans) == 1
+    span = tool_spans[0]
+    assert span.attributes["tool_name"] == "get_weather"
+    assert span.attributes["parent_span_id"] == parents[0].span_id
+    # Stitched args: city=Paris, with the credential redacted.
+    args_red = span.attributes["args_redacted"]
+    assert args_red["city"] == "Paris"
+    assert args_red["api_key"] == "[REDACTED]"
+    assert "sk-123" not in str(args_red)
+    assert isinstance(span.attributes["args_hash"], str)
+    assert len(span.attributes["args_hash"]) == 64
+    assert span.attributes["status"] == "pending"
+    assert span.attributes["side_effect_marker"] is False
+
+
+@pytest.mark.plumbing
+def test_openai_streaming_emits_one_span_per_parallel_tool_call() -> None:
+    """Two parallel streamed tool calls (distinct indices) aggregate into two
+    separate tool_call spans, mirroring TS toolCallsByIndex."""
+    recorder = SpanRecorder()
+    chunks: list[Any] = [
+        _FakeToolChunk(
+            id="chatcmpl-p",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[
+                _FakeToolChunkChoice(
+                    index=0,
+                    delta=_FakeToolDelta(
+                        tool_calls=[
+                            _FakeToolCallDelta(
+                                index=0,
+                                id="call_a",
+                                function=_FakeToolCallFunctionDelta(
+                                    name="get_weather", arguments='{"city": "Paris"}'
+                                ),
+                            ),
+                            _FakeToolCallDelta(
+                                index=1,
+                                id="call_b",
+                                function=_FakeToolCallFunctionDelta(
+                                    name="get_time", arguments='{"tz": "UTC"}'
+                                ),
+                            ),
+                        ]
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+        ),
+    ]
+    client = wrap_openai(_FakeOpenAIClient(chunks), recorder=recorder)
+    list(
+        client.chat.completions.create(
+            model="gpt-4o-2024-08-06",
+            messages=[{"role": "user", "content": "weather + time?"}],
+            stream=True,
+        )
+    )
+    tool_spans = [s for s in recorder.spans if s.kind == "tool_call"]
+    assert len(tool_spans) == 2
+    names = sorted(s.attributes["tool_name"] for s in tool_spans)
+    assert names == ["get_time", "get_weather"]
+
+
+@pytest.mark.plumbing
+def test_openai_streaming_sets_chunk_count_on_parent() -> None:
+    """finalize sets chunk_count on the model_call parent equal to the number
+    of chunks consumed (TS state.parent.attributes['chunk_count'])."""
+    recorder = SpanRecorder()
+    chunks: list[Any] = [
+        _FakeChunk(
+            id="chatcmpl-c",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[_FakeChunkChoice(index=0, delta=_FakeChunkDelta(content="a"))],
+        ),
+        _FakeChunk(
+            id="chatcmpl-c",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[_FakeChunkChoice(index=0, delta=_FakeChunkDelta(content="b"))],
+        ),
+        _FakeChunk(
+            id="chatcmpl-c",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[
+                _FakeChunkChoice(
+                    index=0,
+                    delta=_FakeChunkDelta(content="c"),
+                    finish_reason="stop",
+                )
+            ],
+        ),
+    ]
+    client = wrap_openai(_FakeOpenAIClient(chunks), recorder=recorder)
+    list(
+        client.chat.completions.create(
+            model="gpt-4o-2024-08-06",
+            messages=[{"role": "user", "content": "stream"}],
+            stream=True,
+        )
+    )
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert parent.attributes["chunk_count"] == 3
+
+
+@pytest.mark.plumbing
+def test_openai_streaming_total_tokens_is_input_plus_output_parity() -> None:
+    """Py<->TS parity: TS finalizeStream FORCES total_tokens =
+    prompt_tokens + completion_tokens, ignoring any provider total. A terminal
+    usage chunk whose total (999) disagrees with the sum (120 + 30 = 150) must
+    yield total_tokens == 150, not 999."""
+    recorder = SpanRecorder()
+    chunks: list[Any] = [
+        _FakeChunk(
+            id="chatcmpl-tt",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[
+                _FakeChunkChoice(
+                    index=0,
+                    delta=_FakeChunkDelta(content="hi"),
+                    finish_reason="stop",
+                )
+            ],
+        ),
+        _FakeUsageChunk(
+            id="chatcmpl-tt",
+            model="gpt-4o-2024-08-06",
+            system_fingerprint="fp_44709d6fcb",
+            choices=[],
+            # Provider total deliberately disagrees with prompt+completion.
+            usage=_FakeUsage(
+                prompt_tokens=120, completion_tokens=30, total_tokens=999
+            ),
+        ),
+    ]
+    client = wrap_openai(_FakeOpenAIClient(chunks), recorder=recorder)
+    list(
+        client.chat.completions.create(
+            model="gpt-4o-2024-08-06",
+            messages=[{"role": "user", "content": "stream"}],
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+    )
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert parent.attributes["input_tokens"] == 120
+    assert parent.attributes["output_tokens"] == 30
+    # NOT 999: total is forced to the sum for Py<->TS parity.
+    assert parent.attributes["total_tokens"] == 150
