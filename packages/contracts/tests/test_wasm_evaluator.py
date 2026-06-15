@@ -467,6 +467,22 @@ def test_decode_wasm_003_envelope_without_timeout_subtype_is_engine_anomaly(bad_
     assert not isinstance(exc.value, RelayCelTimeoutError)
 
 
+@pytest.mark.plumbing
+def test_decode_wasm_ok_envelope_without_value_is_engine_anomaly():
+    """An {ok:true} envelope missing the 'value' field must raise a structured
+    RelayCelEngineError (RELAY-CEL-009 / ENGINE-REQUEST), never a bare KeyError
+    escaping the host facade -- the module's documented 'never a bare exception'
+    invariant + parity with the TS decodeWasmEnvelope path (re-hunt #10)."""
+    ev = WasmCelEvaluator(timeout_ms=MAX_TIMEOUT_MS)
+    with pytest.raises(RelayCelEngineError) as exc:
+        ev._decode_envelope({"ok": True})
+    assert exc.value.code == "RELAY-CEL-009"
+    assert exc.value.subtype == SUBTYPE_ENGINE_REQUEST
+    # A structured RelayCelError, not a bare KeyError, not a timeout.
+    assert isinstance(exc.value, RelayCelError)
+    assert not isinstance(exc.value, RelayCelTimeoutError)
+
+
 # ---------------------------------------------------------------------------
 # Binding-encode failures surface as structured RelayCelError, never a bare
 # Python exception. The host facade encodes each caller binding through

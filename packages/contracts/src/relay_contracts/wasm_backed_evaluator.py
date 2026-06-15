@@ -817,6 +817,16 @@ class WasmCelEvaluator:
             )
 
         if envelope.get("ok") is True:
+            # An ok=true envelope MUST carry "value"; a raw subscript would leak
+            # a bare KeyError out of the host facade (violating the module's
+            # "never a bare exception" invariant + TS decodeWasmEnvelope parity).
+            # Treat an absent "value" as an engine-request anomaly (re-hunt #10).
+            if "value" not in envelope:
+                raise RelayCelEngineError(
+                    "wasm engine returned an ok=true envelope with no 'value' "
+                    "field",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                )
             value = typed_to_py(envelope["value"])
             # Host-side finiteness / safe-integer guard on the converted result.
             _check_finite(value)
