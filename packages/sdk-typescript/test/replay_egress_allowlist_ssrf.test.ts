@@ -327,6 +327,24 @@ describe("LOW #11: Run.replayCreate enforces the egress allowlist SSRF guard", (
     await run.close();
   });
 
+  // Round-7 re-hunt: the denied_cidr envelope byte for an IPv4-mapped overlap
+  // entry MUST equal Python's str(ip_network("::ffff:0:0/96")) == the DOTTED
+  // "::ffff:0.0.0.0/96" (CPython renders the IPv4-mapped /96 dotted). The
+  // EgressDenied envelope is a declared byte-identical Py<->TS contract.
+  it("reports denied_cidr in Python's dotted IPv4-mapped form (::ffff:0.0.0.0/96)", async () => {
+    const stub = new StubHttpClient();
+    const run = makeRun(stub);
+    let raised: unknown;
+    try {
+      await run.replayCreate({ caseId: "case-001", egressAllowlist: ["::ffff:800:0/102"] });
+    } catch (e) {
+      raised = e;
+    }
+    expect(raised).toBeInstanceOf(EgressDenied);
+    expect((raised as EgressDenied).envelope.denied_cidr).toBe("::ffff:0.0.0.0/96");
+    await run.close();
+  });
+
   // A SINGLE transition address unwraps + classifies on its embedded IPv4: an
   // internal embedded IPv4 is denied, a PUBLIC embedded IPv4 stays allowed (no
   // over-block). Parity with Python test_single_transition_addresses_*.

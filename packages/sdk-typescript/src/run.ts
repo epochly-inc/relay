@@ -620,12 +620,15 @@ const _DENIED_SUPERNETS: ReadonlyArray<{
     "ff00::/8",
     "2001:db8::/32",
     // IPv4-in-IPv6 transition prefixes: a broad CIDR over IPv4-mapped
-    // (::ffff:0:0/96), 6to4 (2002::/16), NAT64 (64:ff9b::/96), or the deprecated
-    // IPv4-compatible (::/96) space can embed denied IPv4 ranges with a
-    // public-looking IPv6 network address (e.g. ::800:0/102 spans ::a00:0 ==
+    // (::ffff:0.0.0.0/96), 6to4 (2002::/16), NAT64 (64:ff9b::/96), or the
+    // deprecated IPv4-compatible (::/96) space can embed denied IPv4 ranges with
+    // a public-looking IPv6 network address (e.g. ::800:0/102 spans ::a00:0 ==
     // 10.0.0.0). Mirrors the Python _DENIED_SUPERNETS transition entries; ::/96
-    // subsumes the ::1/128 and ::/128 specials above.
-    "::ffff:0:0/96",
+    // subsumes the ::1/128 and ::/128 specials above. The IPv4-mapped entry is
+    // written in DOTTED form (::ffff:0.0.0.0/96, not ::ffff:0:0/96) so the
+    // denied_cidr envelope byte matches Python's str(ip_network(...)) -- CPython
+    // renders the IPv4-mapped /96 dotted; both forms parse to the same range.
+    "::ffff:0.0.0.0/96",
     "2002::/16",
     "64:ff9b::/96",
     "::/96",

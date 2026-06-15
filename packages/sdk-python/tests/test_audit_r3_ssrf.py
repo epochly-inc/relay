@@ -142,6 +142,34 @@ def test_ipv4_in_ipv6_transition_cidr_blocks_are_denied() -> None:
 
 
 @pytest.mark.plumbing
+def test_bracketed_host_url_does_not_crash_and_matches_ts() -> None:
+    """Round-7 re-hunt: a URL-form entry with a bracketed authority must NOT
+    crash the SSRF screen with an uncaught ValueError (CPython 3.12+ urlparse
+    raises on bracketed-IPv4 / empty-bracket / malformed-bracket). The function
+    contract is silent-allow or EgressDenied. The TS SDK strips brackets and
+    classifies the inner string; Python now falls back to the same lenient
+    extraction, so both SDKs give byte-identical verdicts (no raw ValueError).
+    """
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    # Bracketed authority resolving to an internal IP -> DENIED (not crash).
+    for host in ("https://[10.0.0.1]/", "https://[::1]extra]/"):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([host])
+
+    # Bracketed authority resolving to a public IP / non-IP / empty -> ALLOWED
+    # (no crash, no EgressDenied) -- matches the TS SDK verdict exactly.
+    validate_egress_entries(
+        [
+            "https://[1.2.3.4]/",  # bracketed public IPv4
+            "https://[]/",  # empty bracket
+            "https://[not-an-ip]/",  # non-IP bracket content
+            "http://foo[bar/",  # stray/malformed bracket
+        ]
+    )
+
+
+@pytest.mark.plumbing
 def test_single_transition_addresses_classify_on_embedded_ipv4() -> None:
     """A single IPv4-in-IPv6 transition address is denied iff its embedded
     IPv4 is internal -- a public embedded IPv4 stays ALLOWED (no over-block)."""

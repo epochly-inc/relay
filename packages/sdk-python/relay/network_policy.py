@@ -176,6 +176,42 @@ class EgressDenied(Exception):
         )
 
 
+def _lenient_url_hostname(entry: str) -> str:
+    """Lenient URL host extraction that never raises -- byte-identical to the
+    TS SDK's ``_urlparseHostname`` (packages/sdk-typescript/src/run.ts).
+
+    Used only as the fallback when CPython's strict ``urlparse`` raises
+    ``ValueError`` on a bracketed-IPv4 / empty-bracket / malformed-bracket
+    authority. Mirrors urlparse's algorithm MINUS the bracket-content
+    validation: strip ASCII tab/CR/LF (CPython urlsplit hardening), take the
+    netloc as the authority after ``scheme://`` up to the first ``/``/``?``/
+    ``#``, take the host as the part after the LAST ``@`` (userinfo split),
+    strip a bracketed form (inner only) or a trailing ``:port``, and lowercase.
+    Strips brackets without validating their contents, exactly like the TS
+    port, so both SDKs classify the same inner string.
+    """
+    cleaned = entry.replace("\t", "").replace("\r", "").replace("\n", "")
+    scheme_idx = cleaned.find("://")
+    rest = cleaned[scheme_idx + 3:]
+    end = len(rest)
+    for sep in ("/", "?", "#"):
+        i = rest.find(sep)
+        if i >= 0 and i < end:
+            end = i
+    netloc = rest[:end]
+    at = netloc.rfind("@")
+    hostinfo = netloc[at + 1:] if at >= 0 else netloc
+    open_br = hostinfo.find("[")
+    if open_br >= 0:
+        bracketed = hostinfo[open_br + 1:]
+        close_br = bracketed.find("]")
+        hostname = bracketed[:close_br] if close_br >= 0 else bracketed
+    else:
+        colon = hostinfo.find(":")
+        hostname = hostinfo[:colon] if colon >= 0 else hostinfo
+    return hostname.lower()
+
+
 def _extract_host(entry: str) -> str:
     """Return the host portion of ``entry`` (URL or bare host).
 
@@ -196,9 +232,22 @@ def _extract_host(entry: str) -> str:
         pure host literal).
     """
     if "://" in entry:
-        parsed = urlparse(entry)
-        host = parsed.hostname or ""
-        return host
+        try:
+            parsed = urlparse(entry)
+            host = parsed.hostname or ""
+            return host
+        except ValueError:
+            # CPython 3.12+ urlparse (._check_bracketed_host) RAISES on a
+            # bracketed-IPv4 (``https://[10.0.0.1]/``), an empty/non-IP bracket
+            # (``https://[]/``), or a malformed/stray bracket
+            # (``http://foo[bar/``). The TS SDK's hand-rolled _urlparseHostname
+            # never validates bracket contents -- it strips the brackets and
+            # classifies the inner string -- so an unguarded urlparse here both
+            # CRASHES the SSRF screen (the contract is silent-allow or
+            # EgressDenied, never a raw ValueError) AND diverges from the TS
+            # verdict. Fall back to the SAME lenient, never-throwing bracket
+            # extraction the TS port uses so both SDKs agree byte-for-byte.
+            return _lenient_url_hostname(entry)
     # Bare host -- may carry an optional port and IPv6 bracket form.
     host = entry
     # RFC 3986 bracketed IPv6 authority form: ``[ipv6]`` or
