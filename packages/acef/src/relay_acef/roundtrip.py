@@ -41,12 +41,17 @@ defined as SHA-256 of the empty string (deterministic empty-tree
 convention; matches the verifier's empty-bundle behaviour).
 
 NFC normalisation (RFC 8785 section 3.2.3 + unicodedata.normalize):
-JSON object keys are key-sorted by raw code-unit sequence AFTER NFC
-normalisation. String VALUES are also NFC-normalised on emit so that an
-input arriving in NFD (e.g. ``"cafe" + U+0301``) and the same input in
-NFC (``"cafe-acute"``) produce identical canonical bytes on the very
-first emit (VAL-W11-020). The parse path also NFC-normalises so a
-malformed inbound bundle (NFD on the wire) re-emits as NFC bytes.
+JSON object keys are SORTED by their RAW (un-normalised) code-point
+sequence, byte-for-byte identical to the reference encoders
+relay_contracts.canonical and relay_verifier.canonical (NFC-normalising
+the SORT key would diverge from them on NFC-singleton and CJK-compat
+keys, breaking the Py<->TS sign/verify parity keystone). String content
+-- both KEY bytes and VALUE bytes -- is NFC-normalised at emit time by
+_encode_string, so an input arriving in NFD (e.g. ``"cafe" + U+0301``)
+and the same input in NFC (``"cafe-acute"``) produce identical canonical
+bytes on the very first emit (VAL-W11-020). The parse path NFC-normalises
+string VALUES so a malformed inbound bundle (NFD on the wire) re-emits
+as NFC bytes.
 
 Decimal precision (RFC 8785 section 3.2.2 numbers via ECMA-262
 Number.toString): numeric values that arrive as :class:`decimal.Decimal`
@@ -77,12 +82,15 @@ from relay_extensions.emission import EmissionWriter
 # bool/None/list/dict/str/int/float, with two W11.3-specific extensions
 # required by VAL-W11-020 and VAL-W11-021:
 #
-#   1. unicodedata.normalize("NFC", k) is applied to every dict KEY
-#      before sorting. RFC 8785 section 3.2.3 mandates UTF-16 code-unit
-#      sort order; for the BMP this matches Python's str compare. NFC
-#      normalisation is required because keys arriving in different
-#      normal forms (e.g., NFD with combining marks) would otherwise
-#      sort differently from the same key in NFC.
+#   1. Object keys are SORTED by their RAW (un-normalised) code-point
+#      sequence -- byte-identical to relay_contracts.canonical and
+#      relay_verifier.canonical. RFC 8785 section 3.2.3 mandates UTF-16
+#      code-unit sort order; for the BMP this matches Python's str
+#      compare. NFC normalisation of the SORT key is deliberately NOT
+#      applied: it would diverge from the reference encoders on
+#      NFC-singleton keys (U+2126 OHM, U+212B ANGSTROM) and BMP
+#      CJK-compat keys that NFC to the supplementary plane. Emitted KEY
+#      bytes are still NFC (via _encode_string), matching the reference.
 #
 #   2. decimal.Decimal values bypass the float path entirely and are
 #      emitted via str(Decimal) with the "+" exponent prefix stripped.
@@ -285,11 +293,6 @@ def _encode(value: Any) -> str:
         parts = [_encode(item) for item in value]
         return "[" + ",".join(parts) + "]"
     if isinstance(value, dict):
-        # NFC-normalise keys before sorting (RFC 8785 section 3.2.3 +
-        # Unicode Standard Annex #15). For BMP-only keys NFC is a
-        # no-op, but the normalisation step ensures keys arriving as
-        # NFD (e.g., "café" vs "café") collapse to the same
-        # canonical key BEFORE the sort.
         # RFC 8785 section 3.2.3 sorts object keys by their UTF-16 code-unit
         # sequence. Python str sorts by code point; for the BMP the two agree,
         # but for supplementary-plane keys (>= U+10000) they diverge silently,
@@ -299,22 +302,27 @@ def _encode(value: Any) -> str:
         # identically rather than emit divergent code-point-ordered bytes
         # (re-hunt #3). Only object KEYS are bound; values may carry
         # supplementary-plane characters.
-        for k in value:
-            for ch in str(k):
+        #
+        # Keys are sorted AND emitted by the RAW key (str(k)) with NO NFC
+        # normalisation, byte-for-byte identical to relay_contracts.canonical
+        # (:187,198) and relay_verifier.canonical (:210). NFC-normalising the
+        # key would diverge from those reference encoders on NFC-singleton
+        # keys (U+2126 OHM -> U+03A9, U+212B ANGSTROM -> U+00C5, the combining
+        # U+0340/U+0341) and on BMP CJK-compat ideographs that NFC to the
+        # supplementary plane (e.g. U+FA6C -> U+242EE) -- breaking the Py<->TS
+        # sign/verify parity keystone. _encode_string still NFC-normalises
+        # string VALUES (VAL-W11-020); only KEY normalisation is dropped.
+        items_raw = [(str(k), v) for k, v in value.items()]
+        for k, _v in items_raw:
+            for ch in k:
                 if ord(ch) >= 0x10000:
                     raise JCSEncodeError(
                         f"JCS: non-BMP codepoint U+{ord(ch):04X} in object "
-                        f"key {str(k)!r}; supplementary-plane keys produce "
+                        f"key {k!r}; supplementary-plane keys produce "
                         f"runtime-divergent canonical bytes and are refused. "
                         f"Re-key the object with BMP-only strings."
                     )
-        items = sorted(
-            (
-                (unicodedata.normalize("NFC", str(k)), v)
-                for k, v in value.items()
-            ),
-            key=lambda kv: kv[0],
-        )
+        items = sorted(items_raw, key=lambda kv: kv[0])
         parts = [_encode_string(k) + ":" + _encode(v) for k, v in items]
         return "{" + ",".join(parts) + "}"
     raise JCSEncodeError(

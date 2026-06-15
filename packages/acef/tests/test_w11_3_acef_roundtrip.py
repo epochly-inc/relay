@@ -1498,6 +1498,91 @@ def test_acef_jcs_refuses_supplementary_plane_object_keys() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-CANON-003")
+def test_acef_jcs_object_keys_match_reference_on_nfc_singleton_keys() -> None:
+    """Object-KEY handling MUST match the authoritative encoders byte-for-byte.
+
+    The reference encoders (relay_contracts.canonical, relay_verifier.canonical)
+    sort AND emit object keys by the RAW key (``str(k)``) with NO NFC
+    normalisation of the key (RFC 8785 3.2.3 sorts the keys as supplied).
+    A signer that NFC-normalised keys before sorting/emitting would produce a
+    different byte stream, so a bundle signed via one encoder and verified via
+    another fails -- a P0 break of the cross-runtime parity keystone.
+
+    NFC-singleton keys make the divergence observable: U+2126 OHM SIGN is an
+    NFC singleton for U+03A9 GREEK CAPITAL OMEGA. Sorting by the raw key puts
+    U+0400 (0x0400) before U+2126 (0x2126); sorting by the NFC-normalised key
+    puts U+03A9 (0x03A9) before U+0400 (0x0400) -- opposite order AND different
+    emitted key bytes.
+    """
+    from relay_contracts.canonical import jcs_canonicalize as contracts_jcs
+    from relay_verifier.canonical import jcs_canonicalize as verifier_jcs
+
+    # U+2126 OHM SIGN (NFC singleton -> U+03A9), U+0400 CYRILLIC IE WITH GRAVE.
+    # Keys built with chr() to keep this source file ASCII-only (CLAUDE.md).
+    ohm = chr(0x2126)
+    ie_grave = chr(0x0400)
+    obj = {ohm: 1, ie_grave: 2}
+    acef_bytes = jcs_canonicalize(obj)
+    assert acef_bytes == contracts_jcs(obj), (
+        "ACEF JCS object-key bytes diverge from relay_contracts.canonical: "
+        f"acef={acef_bytes!r} contracts={contracts_jcs(obj)!r}"
+    )
+    assert acef_bytes == verifier_jcs(obj), (
+        "ACEF JCS object-key bytes diverge from relay_verifier.canonical: "
+        f"acef={acef_bytes!r} verifier={verifier_jcs(obj)!r}"
+    )
+    # Reference behaviour: SORT by the RAW key (U+0400 0x0400 sorts before
+    # U+2126 0x2126), then EMIT each key via _encode_string which NFC-folds
+    # the U+2126 OHM SINGLETON to U+03A9 OMEGA on output (all three encoders
+    # NFC-normalise emitted key bytes; only the SORT key was diverging). The
+    # bug was the SORT key, not the emit form. UTF-8: U+0400 -> d0 80,
+    # U+03A9 OMEGA -> ce a9.
+    assert acef_bytes == b'{"\xd0\x80":2,"\xce\xa9":1}'
+
+    # A second NFC-singleton: U+212B ANGSTROM SIGN (NFC singleton -> U+00C5).
+    # SORT by the raw key places U+0041 'A' (0x0041) before U+212B (0x212B);
+    # EMIT NFC-folds U+212B to U+00C5. An NFC-key SORT (the bug) would instead
+    # compare U+00C5 (0x00C5) and order it before 'A', flipping the output.
+    # UTF-8: 'A' -> 41, U+00C5 -> c3 85.
+    angstrom = {chr(0x212B): 1, "A": 2}
+    assert jcs_canonicalize(angstrom) == contracts_jcs(angstrom)
+    assert jcs_canonicalize(angstrom) == verifier_jcs(angstrom)
+    assert jcs_canonicalize(angstrom) == b'{"A":2,"\xc3\x85":1}'
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-003")
+def test_acef_jcs_object_keys_match_reference_on_cjk_compat_keys() -> None:
+    """BMP CJK-compat ideograph keys MUST sort+emit by the RAW (BMP) key.
+
+    U+FA6C and U+FACF are BMP CJK-compatibility ideographs. Both NFC-normalise
+    to supplementary-plane characters (U+242EE and U+2284A respectively). The
+    raw-key non-BMP guard passes (the keys are BMP), so the encoder proceeds.
+    The reference encoders sort by the RAW BMP keys: U+FA6C (0xFA6C) < U+FACF
+    (0xFACF). If the encoder instead sorts by the NFC-normalised key it sorts
+    by supplementary code points U+2284A < U+242EE -- the OPPOSITE order. Under
+    a code-point vs UTF-16 sort these supplementary keys also diverge across
+    runtimes. ACEF MUST match the reference byte-for-byte.
+    """
+    from relay_contracts.canonical import jcs_canonicalize as contracts_jcs
+    from relay_verifier.canonical import jcs_canonicalize as verifier_jcs
+
+    # Build the RAW BMP compat-ideograph keys via chr() (ASCII-only source):
+    #   U+FA6C NFC-normalises to U+242EE, U+FACF NFC-normalises to U+2284A.
+    obj = {chr(0xFA6C): 1, chr(0xFACF): 2}
+    acef_bytes = jcs_canonicalize(obj)
+    assert acef_bytes == contracts_jcs(obj), (
+        "ACEF JCS CJK-compat-key bytes diverge from relay_contracts.canonical: "
+        f"acef={acef_bytes!r} contracts={contracts_jcs(obj)!r}"
+    )
+    assert acef_bytes == verifier_jcs(obj), (
+        "ACEF JCS CJK-compat-key bytes diverge from relay_verifier.canonical: "
+        f"acef={acef_bytes!r} verifier={verifier_jcs(obj)!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CANON-003")
 def test_raw_float_score_roundtrip_is_byte_stable() -> None:
     """The exact VAL-CANON-003 trigger: emit -> parse -> emit on a bundle
     whose eval-dataset-result ``score`` is a RAW Python float (1e-7) MUST
