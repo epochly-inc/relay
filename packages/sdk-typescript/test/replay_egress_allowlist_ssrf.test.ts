@@ -216,6 +216,43 @@ describe("LOW #11: Run.replayCreate enforces the egress allowlist SSRF guard", (
     await run.close();
   });
 
+  // Round-6 re-hunt: a 1-part numeric IPv4 literal whose value exceeds
+  // 0xffffffff is MASKED to its low 32 bits by inet_aton / getaddrinfo (the
+  // resolver the replay client uses), e.g. 7147006462 -> 169.254.169.254 and
+  // 0x17f000001 -> 127.0.0.1. The guard previously REJECTED the overflow form
+  // (returned null -> treated as non-IP -> ALLOWED) while Python (inet_aton)
+  // masks + denies -- a Py<->TS verdict split + SSRF under-block. The masked
+  // internal/metadata IP must be DENIED.
+  it.each([
+    ["7147006462", "cloud_metadata"], //  -> 169.254.169.254
+    ["0x17f000001", "loopback"], //        -> 127.0.0.1
+  ])("blocks an overflow 1-part numeric IPv4 that masks to internal %s (%s)", async (host, reason) => {
+    const stub = new StubHttpClient();
+    const run = makeRun(stub);
+    let raised: unknown;
+    try {
+      await run.replayCreate({ caseId: "case-001", egressAllowlist: [host] });
+    } catch (e) {
+      raised = e;
+    }
+    expect(raised).toBeInstanceOf(EgressDenied);
+    expect((raised as EgressDenied).envelope.denied_reason).toBe(reason);
+    expect(stub.postReplayCalls.length).toBe(0);
+    await run.close();
+  });
+
+  it("allows an overflow 1-part numeric IPv4 that masks to a PUBLIC IP (4429711368 -> 8.8.8.8)", async () => {
+    const stub = new StubHttpClient();
+    const run = makeRun(stub);
+    const result = await run.replayCreate({
+      caseId: "case-001",
+      egressAllowlist: ["4429711368"], // & 0xffffffff == 8.8.8.8
+    });
+    expect(stub.postReplayCalls.length).toBe(1);
+    expect(result["mode"]).toBe("cassette");
+    await run.close();
+  });
+
   // CIDR-block allowlist entries over an internal network are denied (parity
   // with Python network_policy._classify CIDR branch); a public-network CIDR
   // is allowed.

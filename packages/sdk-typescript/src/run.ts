@@ -337,8 +337,16 @@ function _canonicalNumericIpv4(host: string): string | null {
   let packed: bigint;
   const n = values.length;
   if (n === 1) {
-    packed = values[0] as bigint;
-    if (packed > 0xffffffffn) return null;
+    // inet_aton / getaddrinfo MASK a 1-part value to its low 32 bits rather
+    // than reject the overflow (verified: 7147006462 -> 169.254.169.254,
+    // 0x17f000001 -> 127.0.0.1, 4294967296 -> 0.0.0.0). Returning null here
+    // made _classify treat the entry as a non-IP and ALLOW it, while the OS
+    // resolver the replay HTTP client uses reaches the masked internal /
+    // metadata IP -- a Py<->TS verdict split (Python delegates to inet_aton,
+    // which masks + denies) and an SSRF default-deny under-block. Mask to
+    // match the resolver, then re-classify on the true resolved IP (an
+    // overflow form masking to a public IP stays allowed).
+    packed = (values[0] as bigint) & 0xffffffffn;
   } else {
     packed = 0n;
     for (let i = 0; i < n - 1; i += 1) {
