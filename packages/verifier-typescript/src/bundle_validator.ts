@@ -428,17 +428,26 @@ function _appendWarning(
 }
 
 /**
- * Format a string the way CPython's ``repr()`` does, so verifier-output
- * ``message`` bytes match the Python verifier, which interpolates identifiers
- * with ``!r`` (re-hunt #11). CPython prefers single quotes, switching to double
+ * Format a string the way CPython's ``ascii()`` does, so verifier-output
+ * ``message`` bytes match the Python verifier (HIGH #4). The Python side now
+ * interpolates attacker-controllable identifiers via ``_py_ascii(...)`` (the
+ * builtin ``ascii()``) instead of ``!r``, because plain ``repr()`` keeps
+ * PRINTABLE non-ASCII verbatim but ESCAPES non-printable non-ASCII (C1
+ * controls, U+00A0, format/separator chars like U+200B/U+2028/U+FEFF). That
+ * "printable" distinction depends on the Unicode database and is intractable to
+ * mirror byte-for-byte in TS. ``ascii()`` removes the distinction: EVERY
+ * non-ASCII code point is escaped by a pure range rule, so both runtimes agree
+ * by construction.
+ *
+ * Rule (identical to CPython ``ascii()``): single quotes, switching to double
  * quotes only when the string contains a single quote and no double quote;
- * it backslash-escapes the quote char, backslash, and ``\t``/``\n``/``\r``, and
- * emits ASCII control bytes (and DEL) as ``\xNN``. All printable ASCII is
- * emitted verbatim -- the entire realistic operand domain here (artifact ids,
- * hex digests, dotted namespace keys, bundle field names). Note: CPython
- * escapes *non-printable* non-ASCII code points (e.g. U+00A0); those do not
- * occur in these operands, so emitting non-ASCII verbatim matches CPython for
- * every value this code path produces.
+ * backslash-escape the quote char, backslash, and ``\t``/``\n``/``\r``; emit
+ * ASCII control bytes (cp < 0x20) and DEL (0x7f) as ``\xNN``; emit every
+ * non-ASCII code point as ``\xNN`` (cp <= 0xff), ``\uNNNN`` (cp <= 0xffff), or
+ * ``\U`` + 8 hex (astral). Printable ASCII (0x20..0x7e) is emitted verbatim, so
+ * the output is unchanged for the ASCII operand domain (artifact ids, hex
+ * digests, dotted namespace keys, bundle field names) and existing ASCII parity
+ * tests stay byte-identical.
  */
 function pyReprStr(s: string): string {
   const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
@@ -455,6 +464,15 @@ function pyReprStr(s: string): string {
       out += "\\r";
     } else if (cp < 0x20 || cp === 0x7f) {
       out += "\\x" + cp.toString(16).padStart(2, "0");
+    } else if (cp >= 0x80) {
+      // Non-ASCII: escape by code-point range exactly like CPython ascii().
+      if (cp <= 0xff) {
+        out += "\\x" + cp.toString(16).padStart(2, "0");
+      } else if (cp <= 0xffff) {
+        out += "\\u" + cp.toString(16).padStart(4, "0");
+      } else {
+        out += "\\U" + cp.toString(16).padStart(8, "0");
+      }
     } else {
       out += ch;
     }

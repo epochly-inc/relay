@@ -208,6 +208,30 @@ _ALLOWED_NAMESPACE_KEYS: Final[frozenset[str]] = frozenset({"x-relay"})
 # source-grep guard).
 
 
+def _py_ascii(value: Any) -> str:
+    """ASCII-safe repr for attacker-controllable message operands (HIGH #4).
+
+    Equivalent to the builtin ``ascii()``: like ``repr()`` but every non-ASCII
+    code point is escaped (``\\xNN`` for cp<=0xff, ``\\uNNNN`` for cp<=0xffff,
+    ``\\U`` + 8 hex for astral). Plain ``repr()`` keeps PRINTABLE non-ASCII
+    verbatim while escaping non-printable non-ASCII (C1 controls, U+00A0,
+    format/separator chars like U+200B/U+2028/U+FEFF) -- a "printable"
+    distinction that depends on the Unicode database and cannot be mirrored
+    byte-for-byte by the TypeScript verifier (packages/verifier-typescript
+    bundle_validator.ts ``pyReprStr``). Message operands here -- namespace
+    keys, artifact ids, digests, field names -- are attacker-controllable, so
+    a divergence on an interior non-printable non-ASCII code point would make
+    the two verifiers emit non-identical ``message`` bytes for the same wire
+    input (a P0 Py<->TS parity break). Routing every operand through
+    ``ascii()`` removes the distinction: both runtimes escape ALL non-ASCII by
+    the same pure code-point-range rule. For ASCII operands the output is
+    byte-identical to ``repr()``/``!r``, so existing ASCII parity tests are
+    unaffected. Lists (e.g. ``unknown_keys``) render element-wise identically
+    to ``ascii([...])`` because ``ascii()`` recurses into the container.
+    """
+    return ascii(value)
+
+
 @dataclass
 class ValidateBundleOptions:
     """Caller-supplied options that gate per-policy behaviors.
@@ -663,7 +687,7 @@ def validate_bundle(
                         reason="path_violation",
                         message=(
                             f"claim[{ci}].evidence_refs[{ri}] artifact_id "
-                            f"{artifact_id!r} rejected by path screen "
+                            f"{_py_ascii(artifact_id)} rejected by path screen "
                             f"({path_violation['path_violation']})"
                         ),
                         code=path_violation["code"],
@@ -682,7 +706,7 @@ def validate_bundle(
                         reason="artifact_unavailable",
                         message=(
                             f"claim[{ci}].evidence_refs[{ri}] artifact "
-                            f"{artifact_id!r} could not be resolved"
+                            f"{_py_ascii(artifact_id)} could not be resolved"
                         ),
                         code=RELAY_EVID_014,
                     )
@@ -695,8 +719,8 @@ def validate_bundle(
                         reason="artifact_digest_mismatch",
                         message=(
                             f"claim[{ci}].evidence_refs[{ri}] artifact "
-                            f"{artifact_id!r} digest mismatch: declared="
-                            f"{declared_digest!r} recomputed={recomputed!r}"
+                            f"{_py_ascii(artifact_id)} digest mismatch: declared="
+                            f"{_py_ascii(declared_digest)} recomputed={_py_ascii(recomputed)}"
                         ),
                         code=RELAY_EVID_014,
                     )
@@ -760,8 +784,8 @@ def validate_bundle(
                             message=(
                                 f"claim[{ci}].namespaces contains key(s) "
                                 f"outside the closed set "
-                                f"{sorted(_ALLOWED_NAMESPACE_KEYS)!r}: "
-                                f"{unknown_keys!r}"
+                                f"{_py_ascii(sorted(_ALLOWED_NAMESPACE_KEYS))}: "
+                                f"{_py_ascii(unknown_keys)}"
                             ),
                             code=RELAY_EVID_NAMESPACE_UNKNOWN,
                         )
@@ -789,7 +813,7 @@ def validate_bundle(
                             reason="evidence_ref_artifact_missing_from_manifest",
                             message=(
                                 f"claim[{ci}].evidence_refs[{ri}] digest "
-                                f"{ref_digest!r} is not present in the "
+                                f"{_py_ascii(ref_digest)} is not present in the "
                                 f"bundle's manifest (spec K line 4428); "
                                 f"manifest contains "
                                 f"{len(manifest_digests)} digest(s)"
@@ -809,8 +833,8 @@ def validate_bundle(
                 output,
                 reason="merkle_root_mismatch",
                 message=(
-                    f"declared merkle_root_hex {declared_merkle!r} does not "
-                    f"match recomputed root {recomputed_merkle!r}"
+                    f"declared merkle_root_hex {_py_ascii(declared_merkle)} does not "
+                    f"match recomputed root {_py_ascii(recomputed_merkle)}"
                 ),
                 code=RELAY_EVID_040,
             )
@@ -891,7 +915,7 @@ def validate_bundle(
                 "anchor (spec section AB); the validator refuses to fall "
                 "back to 'generated_at' or any sibling timestamp because "
                 "the TSA gen_time skew check binds to decided_at "
-                f"specifically. bundle fields present: {present_fields!r}"
+                f"specifically. bundle fields present: {_py_ascii(present_fields)}"
             ),
             code=RELAY_EVID_DECIDED_AT_MISSING,
         )
@@ -1003,7 +1027,7 @@ def validate_bundle(
                     output,
                     reason="signer_key_revoked_after_sign_time",
                     message=(
-                        f"key {primary_kid!r} was revoked at "
+                        f"key {_py_ascii(primary_kid)} was revoked at "
                         f"{life_result.signer_key_revoked_at}; bundle signed "
                         f"before revocation -- auditor decides acceptance"
                     ),

@@ -193,6 +193,98 @@ describe("parity-014 resolver-stage error messages match Python byte-for-byte", 
 });
 
 // ===========================================================================
+// HIGH #4: non-ASCII operand escaping parity (claim_namespace_unknown).
+//
+// The Python verifier interpolated identifiers with !r (CPython repr), which
+// keeps PRINTABLE non-ASCII verbatim but ESCAPES non-printable non-ASCII
+// (C1 controls, U+00A0, format/separator chars like U+200B/U+2028/U+FEFF, and
+// non-BMP non-printables). The TS pyReprStr only escaped cp<0x20 and 0x7f,
+// emitting every non-ASCII byte verbatim -> the message bytes diverged for any
+// operand carrying an interior non-printable non-ASCII code point. Namespace
+// keys are attacker-controllable, so the divergence is reachable on the wire.
+//
+// Fix (parity-by-construction): BOTH sides now escape EVERY non-ASCII code
+// point by the CPython ascii() rule (cp<=0xff -> \xNN, <=0xffff -> \uNNNN,
+// else \U + 8 hex). For a printable non-ASCII char (U+4E2D, U+1F600) the two
+// runtimes still agree because both now escape it. These tests drive the REAL
+// Python validate_bundle and the REAL TS validateBundle over the same wire
+// bundle and assert byte-identical claim_namespace_unknown messages.
+// ===========================================================================
+
+function bundleWithNamespaceKey(key: string): Record<string, unknown> {
+  return {
+    schema_version: "relay.evidence_bundle.v1",
+    trust_anchor: "https://relay.epochly.com/.well-known/jwks.json",
+    decided_at: "2026-05-15T12:00:00Z",
+    claims: [{ id: "c1", namespaces: { [key]: {} } }],
+    signatures: [PLACEHOLDER_SIG],
+  };
+}
+
+describe("parity-014 claim_namespace_unknown non-ASCII operand bytes match Python", () => {
+  test("interior U+200B (ZWSP) in a namespace key: message byte-identical", () => {
+    // A printable label with an embedded zero-width space -- repr() would
+    // escape it as \u200b while the old TS emitted the literal ZWSP.
+    const key = "x\u200ba";
+    const bundle = bundleWithNamespaceKey(key);
+
+    const pyErr = findByReason(
+      pyValidateErrors(bundle, {}),
+      "claim_namespace_unknown",
+    );
+    const tsErr = findByReason(
+      tsValidateErrors(bundle, {}),
+      "claim_namespace_unknown",
+    );
+
+    expect(pyErr).toBeDefined();
+    expect(tsErr).toBeDefined();
+    expect(tsErr!["message"]).toBe(pyErr!["message"]);
+    // Both must render the ZWSP escaped, never as the literal byte.
+    expect(String(tsErr!["message"])).toContain("'x\\u200ba'");
+  });
+
+  test("non-BMP U+1F600 in a namespace key: message byte-identical (\\U escape)", () => {
+    const key = "x\u{1f600}y";
+    const bundle = bundleWithNamespaceKey(key);
+
+    const pyErr = findByReason(
+      pyValidateErrors(bundle, {}),
+      "claim_namespace_unknown",
+    );
+    const tsErr = findByReason(
+      tsValidateErrors(bundle, {}),
+      "claim_namespace_unknown",
+    );
+
+    expect(pyErr).toBeDefined();
+    expect(tsErr).toBeDefined();
+    expect(tsErr!["message"]).toBe(pyErr!["message"]);
+    // CPython ascii() renders a non-BMP code point as \U + 8 hex.
+    expect(String(tsErr!["message"])).toContain("'x\\U0001f600y'");
+  });
+
+  test("C1 control U+0080 and U+00A0 in a namespace key: message byte-identical", () => {
+    const key = "x\u0080\u00a0z";
+    const bundle = bundleWithNamespaceKey(key);
+
+    const pyErr = findByReason(
+      pyValidateErrors(bundle, {}),
+      "claim_namespace_unknown",
+    );
+    const tsErr = findByReason(
+      tsValidateErrors(bundle, {}),
+      "claim_namespace_unknown",
+    );
+
+    expect(pyErr).toBeDefined();
+    expect(tsErr).toBeDefined();
+    expect(tsErr!["message"]).toBe(pyErr!["message"]);
+    expect(String(tsErr!["message"])).toContain("'x\\x80\\xa0z'");
+  });
+});
+
+// ===========================================================================
 // #2: TSA gen_time skew reason is the structured "tsa_skew_exceeded"
 // ===========================================================================
 
