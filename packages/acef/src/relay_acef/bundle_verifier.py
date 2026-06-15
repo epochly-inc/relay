@@ -215,6 +215,9 @@ def _load_public_key_from_jwk(jwk: dict[str, Any]) -> Any:
 
     Supports Ed25519 (kty=OKP, crv=Ed25519), P-256 (kty=EC, crv=P-256),
     and RSA (kty=RSA). Raises ValueError on unsupported/missing fields.
+    An RSA modulus < 2048 bits is rejected per the spec L.1 allow-list,
+    mirroring relay_verifier.verifier and the TSA chain inspector's
+    MIN_RSA_BITS, so a weak key in the trusted JWKS cannot verify RS256.
 
     NOTE: this is only ever called with a JWK taken from the TRUSTED
     JWKS, never with a header-embedded key (VAL-CRYPTO-004).
@@ -252,6 +255,11 @@ def _load_public_key_from_jwk(jwk: dict[str, Any]) -> Any:
             raise ValueError("RSA JWK missing 'n' or 'e'")
         n = int.from_bytes(_b64u_decode(n_s), "big")
         e = int.from_bytes(_b64u_decode(e_s), "big")
+        if n.bit_length() < 2048:
+            raise ValueError(
+                f"RSA modulus is {n.bit_length()} bits; spec L.1 allow-list "
+                "rejects modulus < 2048 bits"
+            )
         numbers = rsa.RSAPublicNumbers(e=e, n=n)
         return numbers.public_key()
     raise ValueError(f"unsupported JWK kty: {kty!r}")
