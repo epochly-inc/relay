@@ -1,10 +1,10 @@
-"""ACEF upstream dormancy guard (VAL-ISO-004/012/013/031/032/040).
+"""ACEF upstream dormancy guard (VAL-ISO-004/012/013/031/032/043).
 
 This module is a single fail-closed guard that makes a load-bearing fact
 PROVABLE and ENFORCED: Relay's shipped ACEF path NEVER imports or invokes
 the dormant vendored upstream ``acef`` package under
 ``packages/acef/upstream/src/acef/``. Six adversarially-verified findings
-(VAL-ISO-004, -012, -013, -031, -032, -040) describe real bugs in that
+(VAL-ISO-004, -012, -013, -031, -032, -043) describe real bugs in that
 vendored tree. None of them can affect Relay because Relay's shipped path
 never reaches the buggy code. This guard turns that "never reaches" from an
 assumption into an enforced invariant: if a future change made any
@@ -83,7 +83,7 @@ corresponding responsibility is named alongside it.
                errors, never on ``"not found" in str(error.message)``. The
                buggy substring branch is never reached.
 
-  VAL-ISO-040  _check_signatures validates only JWS *format* (header alg
+  VAL-ISO-043  _check_signatures validates only JWS *format* (header alg
                membership) -- it never reconstructs the signing input nor
                verifies the signature, so a bundle whose records were edited
                after signing (hashes/merkle recomputed, original sig retained)
@@ -163,7 +163,7 @@ DORMANT_UPSTREAM_MODULES: dict[str, dict[str, object]] = {
         "source": "acef/merge.py",
     },
     "acef.validation.integrity_checker": {
-        "findings": ("VAL-ISO-040",),
+        "findings": ("VAL-ISO-043",),
         "source": "acef/validation/integrity_checker.py",
     },
 }
@@ -175,7 +175,7 @@ COVERED_FINDINGS: tuple[str, ...] = (
     "VAL-ISO-013",
     "VAL-ISO-031",
     "VAL-ISO-032",
-    "VAL-ISO-040",
+    "VAL-ISO-043",
 )
 
 # The three shipped ACEF entry-point modules. Importing these must NOT drag
@@ -303,6 +303,7 @@ def _scan_root_for_upstream_imports(root: Path) -> list[str]:
 @pytest.mark.fulfills("VAL-ISO-013")
 @pytest.mark.fulfills("VAL-ISO-031")
 @pytest.mark.fulfills("VAL-ISO-032")
+@pytest.mark.fulfills("VAL-ISO-043")
 def test_no_relay_owned_module_imports_upstream_acef() -> None:
     """Zero Relay-owned source modules import the dormant upstream ``acef``.
 
@@ -412,6 +413,7 @@ def test_static_scan_catches_an_injected_dormant_import(tmp_path: Path) -> None:
 @pytest.mark.fulfills("VAL-ISO-013")
 @pytest.mark.fulfills("VAL-ISO-031")
 @pytest.mark.fulfills("VAL-ISO-032")
+@pytest.mark.fulfills("VAL-ISO-043")
 def test_importing_shipped_entry_points_pulls_no_upstream_acef() -> None:
     """Importing the shipped ACEF entry points loads no dormant upstream module.
 
@@ -469,6 +471,7 @@ def test_importing_shipped_entry_points_pulls_no_upstream_acef() -> None:
 @pytest.mark.fulfills("VAL-ISO-013")
 @pytest.mark.fulfills("VAL-ISO-031")
 @pytest.mark.fulfills("VAL-ISO-032")
+@pytest.mark.fulfills("VAL-ISO-043")
 def test_shipped_entry_points_import_with_upstream_acef_unimportable() -> None:
     """Shipped entry points import in an interpreter where ``acef`` is banned.
 
@@ -546,6 +549,7 @@ def test_shipped_entry_points_import_with_upstream_acef_unimportable() -> None:
 @pytest.mark.fulfills("VAL-ISO-013")
 @pytest.mark.fulfills("VAL-ISO-031")
 @pytest.mark.fulfills("VAL-ISO-032")
+@pytest.mark.fulfills("VAL-ISO-043")
 def test_per_finding_mapping_covers_all_findings_and_sources_exist() -> None:
     """All covered findings map to a dormant module whose upstream source exists.
 
