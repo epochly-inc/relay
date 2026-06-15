@@ -288,6 +288,10 @@ class _StreamWrapper:
         except StopIteration:
             duration_ms = (time.monotonic() - self._start_t) * 1000.0
             self._parent.attributes["duration_ms"] = duration_ms
+            # Surface the resolved streamed model (TS finalizeStream sets
+            # parent.attributes["model"] = state.model) so model + model_signature
+            # agree with the non-stream path and the TS adapter.
+            self._parent.attributes["model"] = self._model
             self._parent.attributes["input_tokens"] = self._cum_input
             self._parent.attributes["output_tokens"] = self._cum_output
             self._parent.attributes["total_cost_usd"] = _estimate_cost_usd(
@@ -360,6 +364,13 @@ class _StreamWrapper:
             _mid = _get(message, "id", "")
             if isinstance(_mid, str) and _mid:
                 self._response_id = _mid
+            # Refresh the model from the streamed provider model so the finalized
+            # model + model_signature reflect the RESOLVED model, not the request
+            # arg (TS: if (model !== "") state.model = model). A resolved model
+            # name or an empty request model would otherwise diverge from TS.
+            _smodel = _get(message, "model", "")
+            if isinstance(_smodel, str) and _smodel:
+                self._model = _smodel
             usage = _get(message, "usage")
             if usage is not None:
                 in_tok = _get(usage, "input_tokens")

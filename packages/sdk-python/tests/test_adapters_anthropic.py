@@ -8,7 +8,6 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -345,6 +344,33 @@ def test_anthropic_streaming_model_signature_carries_message_id(
     [span] = [s for s in recorder.spans if s.kind == "model_call"]
     assert span.attributes["model_signature"] == "anthropic:claude-opus-4-7:msg_s"
     assert span.attributes["response_id"] == "msg_s"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W4-033")
+def test_anthropic_streaming_refreshes_model_from_message_start() -> None:
+    """The streamed message_start may carry a RESOLVED model that differs from
+    the request arg; finalize must reflect it in both model and
+    model_signature (TS: state.model = message.model), or Py<->TS diverges."""
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={"id": "msg_r", "model": "claude-opus-4-7-20260101"},
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    recorder = SpanRecorder()
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    for _ in client.messages.create(
+        model="claude-opus-4-7", max_tokens=1, stream=True, messages=[]
+    ):
+        pass
+    [span] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert span.attributes["model"] == "claude-opus-4-7-20260101"
+    assert (
+        span.attributes["model_signature"]
+        == "anthropic:claude-opus-4-7-20260101:msg_r"
+    )
 
 
 # ---------------------------------------------------------------------------
