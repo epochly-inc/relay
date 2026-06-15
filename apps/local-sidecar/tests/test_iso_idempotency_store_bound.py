@@ -117,3 +117,30 @@ def test_db_ttl_matches_in_memory_ttl() -> None:
     # Sanity: the prune helper and constants are exported from runtime.
     assert callable(rt_mod._prune_idempotency_store)
     assert MAX_IDEMPOTENCY_RECORDS > 0
+
+
+@pytest.mark.plumbing
+def test_hydrated_stored_at_derives_stamp_from_expires_at() -> None:
+    """A DB-hydrated record's in-memory insertion stamp is ``expires_at - TTL``
+    so it expires in the cache exactly when its DB row does (roborev follow-on:
+    hydrated rows must NOT be stamped 'fresh' and over-retained). A missing or
+    unparseable expires_at falls back to ``now``."""
+    from datetime import UTC, datetime, timedelta
+
+    now = 2_000_000.0
+    # A row expiring in 1h -> stamp = (now_wall + 1h) - 24h, i.e. ~23h in the
+    # past relative to its expiry; the in-memory copy expires when the DB does.
+    expiry_dt = datetime.now(tz=UTC) + timedelta(hours=1)
+    expires_at = expiry_dt.isoformat().replace("+00:00", "Z")
+    stamp = rt_mod._hydrated_stored_at(expires_at, now)
+    expected = expiry_dt.timestamp() - IDEMPOTENCY_RECORD_TTL_S
+    assert abs(stamp - expected) < 1e-6
+    # Such a stamp is already > TTL old, so the in-memory TTL check would treat
+    # the record as expiring at the DB expiry, not 24h after hydration.
+    assert (expiry_dt.timestamp() - stamp) == pytest.approx(
+        IDEMPOTENCY_RECORD_TTL_S
+    )
+    # Missing / garbage expires_at -> fresh stamp (safe fallback).
+    assert rt_mod._hydrated_stored_at(None, now) == now
+    assert rt_mod._hydrated_stored_at("not-a-date", now) == now
+    assert rt_mod._hydrated_stored_at("", now) == now

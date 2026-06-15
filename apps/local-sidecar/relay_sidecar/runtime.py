@@ -231,6 +231,29 @@ def _prune_idempotency_store(
                     del store[surface]
 
 
+def _hydrated_stored_at(expires_at: Any, now: float) -> float:
+    """Insertion stamp for a DB-hydrated idempotency record.
+
+    A row hydrated from ``idempotency_records`` must expire in the in-memory
+    cache exactly WHEN its DB row does -- not 24h after hydration -- so the
+    in-memory TTL stays consistent with the authoritative DB ``expires_at``.
+    Since ``expires_at == stored_at + TTL``, the in-memory stamp is
+    ``expires_at - TTL``. Falls back to ``now`` (a fresh stamp) on a missing or
+    unparseable ``expires_at`` -- a safe degradation that, at worst, slightly
+    delays eviction without serving a past-TTL row (the DB query already
+    filtered expired rows).
+    """
+    if isinstance(expires_at, str) and expires_at:
+        try:
+            return (
+                datetime.fromisoformat(expires_at).timestamp()
+                - IDEMPOTENCY_RECORD_TTL_S
+            )
+        except ValueError:
+            return now
+    return now
+
+
 # Fields appended to an evidence-bundle record AFTER its canonical digest
 # was computed (see the POST /v1/evidence-bundles create handler). The
 # digest is taken over the record EXCLUDING these mutable/derived/alias
@@ -3890,23 +3913,45 @@ def build_runtime_app(
             DB-backed table). Returns None on a genuine miss."""
             # In-memory map: surface -> {key: {digest, status, body}}.
             store = runtime.idempotency_store.setdefault(surface, {})
+            now_s = float(_now_epoch_s())
             rec = store.get(key)
+            if rec is not None:
+                # Enforce the in-memory TTL on SERVE: an entry past its 24h TTL
+                # must be a miss (re-execute) rather than replay a stale
+                # response. _prune_idempotency_store only runs after stores, so
+                # a hit between prunes could otherwise return an expired record.
+                stamp = rec.get(_IDEMPOTENCY_STORED_AT_KEY)
+                if (
+                    isinstance(stamp, int | float)
+                    and (now_s - float(stamp)) > IDEMPOTENCY_RECORD_TTL_S
+                ):
+                    del store[key]
+                    rec = None
             if rec is None:
                 # BUG-A2 fix: cache miss falls back to the DB-backed table
-                # using the SAME canonical_key derivation as the writer.
+                # using the SAME canonical_key derivation as the writer. The DB
+                # query already excludes expired rows.
                 db_rec = await _lookup_idempotency_db(
                     surface=surface, user_key=key
                 )
                 if db_rec is not None:
-                    # Hydrate the in-memory map so subsequent replays in
-                    # this process avoid the DB round-trip. Stamp the
-                    # insertion time so the hydrated copy participates in
-                    # the in-memory TTL sweep / size cap
-                    # (_prune_idempotency_store) like any stored record.
-                    db_rec.setdefault(
-                        _IDEMPOTENCY_STORED_AT_KEY, _now_epoch_s()
+                    # Stamp the hydrated copy with the DB row's real insertion
+                    # time (expires_at - TTL) so it expires in-memory exactly
+                    # when the DB row does, not 24h later.
+                    expires_at = db_rec.pop("expires_at", None)
+                    db_rec[_IDEMPOTENCY_STORED_AT_KEY] = _hydrated_stored_at(
+                        expires_at, now_s
                     )
                     store[key] = db_rec
+                    # Bound the map after hydration too (the store path is not
+                    # the only way a record enters the in-memory cache).
+                    _prune_idempotency_store(
+                        runtime.idempotency_store, now=now_s
+                    )
+                    # Return the freshly-fetched record even if the size cap
+                    # evicted it from the in-memory map: it is a valid (DB
+                    # source-of-truth) response, so replay it rather than
+                    # re-execute.
                     rec = db_rec
             return rec
 
@@ -3996,19 +4041,26 @@ def build_runtime_app(
         canonical_key = _canonical_idempotency_key(
             surface=surface, user_key=user_key
         )
+        # Exclude EXPIRED rows: the canonical idempotency_records table carries
+        # a 24h ``expires_at`` (spec B.2). Serving a record past its TTL would
+        # replay a stale response instead of re-executing; filter it out at the
+        # query so an expired row is a genuine miss. ISO-8601 ``...Z`` strings
+        # in UTC are lexicographically ordered, so a string compare is correct.
+        now_iso = datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
         try:
             reader = db.acquire_reader()
             async with reader.execute(
-                "SELECT request_digest, response_status, response_body "
-                "FROM idempotency_records WHERE idempotency_key = ?",
-                (canonical_key,),
+                "SELECT request_digest, response_status, response_body, "
+                "expires_at FROM idempotency_records "
+                "WHERE idempotency_key = ? AND expires_at > ?",
+                (canonical_key, now_iso),
             ) as cur:
                 row = await cur.fetchone()
         except Exception:  # noqa: BLE001
             return None
         if row is None:
             return None
-        request_digest, response_status, response_body_text = row
+        request_digest, response_status, response_body_text, expires_at = row
         try:
             response_body: Any = (
                 json.loads(response_body_text)
@@ -4023,6 +4075,10 @@ def build_runtime_app(
             "request_digest": request_digest,
             "response_status": int(response_status),
             "response_body": response_body,
+            # Transient: consumed by _lookup_existing to stamp the hydrated
+            # in-memory copy so it expires WHEN the DB row does (popped before
+            # the record is cached).
+            "expires_at": expires_at,
         }
 
     async def _store_idempotency(

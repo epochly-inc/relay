@@ -320,7 +320,17 @@ async def test_bug_a2_check_idempotency_consults_db_on_cache_miss(
         "sha256-" + hashlib.sha256(body_bytes).hexdigest()
     )
 
-    # Pre-seed the DB row (representing a successful prior run).
+    # Pre-seed the DB row (representing a successful prior run). expires_at MUST
+    # be in the FUTURE -- the cache-miss DB lookup now filters out expired rows
+    # (an expired record must re-execute, not replay a stale response), so a
+    # hardcoded past date would (correctly) be treated as a miss. Compute it
+    # dynamically from wall-clock + the 24h TTL so the row stays non-expired and
+    # the test is not a time-bomb.
+    _seed_now = datetime.now(tz=UTC)
+    _seed_first_seen_at = _seed_now.isoformat().replace("+00:00", "Z")
+    _seed_expires_at = (_seed_now + timedelta(hours=24)).isoformat().replace(
+        "+00:00", "Z"
+    )
     response_body_json = '{"id":"gate-restart","status":"ok"}'
     async with aiosqlite.connect(str(db_path)) as conn:
         await conn.execute(
@@ -337,8 +347,8 @@ async def test_bug_a2_check_idempotency_consults_db_on_cache_miss(
                 request_digest,
                 201,
                 None,
-                "2026-05-18T00:00:00Z",
-                "2026-05-19T00:00:00Z",
+                _seed_first_seen_at,
+                _seed_expires_at,
                 surface,
                 response_body_json,
                 "{}",
