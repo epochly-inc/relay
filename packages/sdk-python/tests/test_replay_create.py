@@ -160,3 +160,118 @@ def test_replay_create_proceeds_when_run_result_is_canonical(
     assert (
         "POST", "/v1/runs/01JG2YCOMPLETED1234567890123/replays"
     ) not in paths
+    # An explicit case_id runs that case DIRECTLY -- the SDK MUST NOT
+    # invent a new case via POST /v1/replay-cases (finding follow-on:
+    # the create step is only for the auto-generate path).
+    assert ("POST", "/v1/replay-cases") not in paths
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-014")
+def test_replay_create_without_case_id_creates_then_runs(
+    server, relay_home_tmp
+) -> None:
+    """No case_id supplied: the SDK MUST perform the real sidecar
+    create-then-run flow.
+
+    Follow-on finding: the sidecar's run endpoint
+    (runtime.py:2798/2830) returns 404 when ``case_id`` is not already in
+    ``runtime.replay_cases``. Auto-generating a client-side ULID and
+    POSTing straight to ``/v1/replay-cases/{ulid}/run`` therefore 404s
+    end-to-end. The correct flow is:
+
+      1. GET /v1/runs/{run_id}/result          (canonical precondition)
+      2. POST /v1/replay-cases                 (create; returns case_id)
+      3. POST /v1/replay-cases/{case_id}/run   (execute the created case)
+
+    in that order. The case_id used in the run POST MUST be the one the
+    sidecar returned from the create response, NOT a client-invented id.
+    """
+    source_run_id = "01JG2YCOMPLETED1234567890123"
+    returned_case_id = "case-deadbeefdeadbeefdeadbeefdeadbeef"
+    canonical_result = {
+        "schema_version": "relay.run_result.v1",
+        "run_result_id": "01JG2YRR01234567890123ABCDEF",
+        "run_id": source_run_id,
+        "status": "blocked",
+        "primary_failure_class": "STRUCTURED_OUTPUT_INVALID",
+        "written_by": "control_plane",
+    }
+    create_response = {
+        "replay_case_id": returned_case_id,
+        "case_id": returned_case_id,
+        "schema_version": "relay.replay_case.v1",
+    }
+    replay_result = {
+        "schema_version": "relay.replay_result.v1",
+        "replay_result_id": "01JG2YREPLAYRESULT012345678",
+        "case_id": returned_case_id,
+        "outcome": "pending",
+        "written_by": "control_plane",
+    }
+    server.add_route(
+        "GET", f"/v1/runs/{source_run_id}/result",
+        lambda req: (200, canonical_result, {}),
+    )
+    server.add_route(
+        "POST", "/v1/replay-cases",
+        lambda req: (201, create_response, {}),
+    )
+    server.add_route(
+        "POST", f"/v1/replay-cases/{returned_case_id}/run",
+        lambda req: (202, replay_result, {}),
+    )
+
+    r = Relay(
+        project_key=_VALID_KEY,
+        relay_home=relay_home_tmp,
+        actor_identity_hash=_ACTOR,
+        manifest_commit_hash=_MANIFEST,
+        redaction_policy_version="v1",
+        endpoint_url=server.base_url,
+        flush_policy={"mode": "sync", "on_error": "drop_and_log"},
+    )
+    with r.run(agent={"name": "replay-agent", "version": "0.1"}) as run:
+        out = run.replay_create(run_id=source_run_id)
+
+    assert out == replay_result
+
+    # Assert the three calls happened IN ORDER (filter to the replay
+    # surfaces; the lifecycle ingest envelopes are interleaved and
+    # irrelevant here).
+    replay_calls = [
+        (req.method, req.path)
+        for req in server.requests
+        if req.path.startswith("/v1/runs/") and req.path.endswith("/result")
+        or req.path.startswith("/v1/replay-cases")
+    ]
+    assert replay_calls == [
+        ("GET", f"/v1/runs/{source_run_id}/result"),
+        ("POST", "/v1/replay-cases"),
+        ("POST", f"/v1/replay-cases/{returned_case_id}/run"),
+    ]
+
+    # The create body MUST identify the source run via the sidecar's
+    # required ``from_run_id`` field (runtime.py:2645), NOT a client-only
+    # alias. Without this the create handler returns 422 RELAY-ING-001.
+    create_req = next(
+        req
+        for req in server.requests
+        if req.method == "POST" and req.path == "/v1/replay-cases"
+    )
+    assert create_req.body_json.get("from_run_id") == source_run_id
+
+    # The run POST MUST carry the three-anchor manifest_commit_hash the
+    # sidecar run handler requires (runtime.py:2863); without it the run
+    # handler returns 422 RELAY-ING-001.
+    run_req = next(
+        req
+        for req in server.requests
+        if req.method == "POST"
+        and req.path == f"/v1/replay-cases/{returned_case_id}/run"
+    )
+    assert run_req.body_json.get("manifest_commit_hash") == _MANIFEST
+
+    # The legacy unrouted path MUST NOT be used.
+    paths = [(req.method, req.path) for req in server.requests]
+    assert ("POST", f"/v1/runs/{source_run_id}/replays") not in paths

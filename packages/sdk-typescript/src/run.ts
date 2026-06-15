@@ -333,10 +333,28 @@ function _ipv4ToInt(host: string): number | null {
 }
 
 /** Classify a dotted-decimal IPv4 host. Mirrors the IPv4 arm of the Python
- * ``_classify``: RFC 1918, link-local /16, loopback /8, multicast,
- * unspecified, the CGNAT-equivalent private remainder, and the reserved
- * remainder keep their specific reason codes so downstream alerting routes
- * correctly. A public IPv4 returns ``null`` (allowed). */
+ * ``_classify`` EXACTLY, including its branch ORDER, so the TS allow/deny
+ * verdict AND the (denied_reason, denied_cidr) envelope bytes are identical
+ * to ``ipaddress.ip_address(host)``-driven classification on CPython
+ * 3.12 / 3.13 / 3.14:
+ *
+ *   1. RFC 1918 explicit (10/8, 172.16/12, 192.168/16)  -> rfc1918 / <cidr>
+ *   2. link-local 169.254.0.0/16                         -> link_local / ...
+ *   3. is_loopback   127.0.0.0/8                         -> loopback / ...
+ *   4. is_multicast  224.0.0.0/4                         -> multicast / ...
+ *   5. is_unspecified (0.0.0.0 ONLY, not the whole /8)   -> reserved / 0.0.0.0/8
+ *   6. is_private (the full ipaddress private set)       -> rfc1918 / private
+ *   7. is_reserved (240.0.0.0/4 -- unreachable: caught by 6) -> reserved / ...
+ *
+ * Round-2 follow-on (roborev MED): the previous tail (a) DENIED CGNAT
+ * 100.64.0.0/10 as rfc1918, but Python's ``is_private`` and ``is_reserved``
+ * are BOTH False for 100.64.0.0/10 on 3.12/3.13/3.14, so Python ALLOWS it --
+ * the TS deny was a parity break (over-block); and (b) labelled the
+ * documentation / benchmarking / 240.0.0.0/4 / 192.0.0.0/24 /
+ * 255.255.255.255 blocks ``reserved`` / ``ipv4_reserved``, but Python tags
+ * every one of them ``is_private`` (the private check precedes the reserved
+ * check), so the parity-correct reason/cidr is ``rfc1918`` / ``private``.
+ * A public IPv4 returns ``null`` (allowed). */
 function _classifyIpv4(host: string): readonly [string, string] | null {
   const v = _ipv4ToInt(host);
   if (v === null) return null;
@@ -344,20 +362,37 @@ function _classifyIpv4(host: string): readonly [string, string] | null {
     const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
     return ((v & mask) >>> 0) === ((net & mask) >>> 0);
   };
+  // (1) RFC 1918 explicit -- keep the specific matched CIDR.
   if (inNet(0x0a000000, 8)) return ["rfc1918", "10.0.0.0/8"];
   if (inNet(0xac100000, 12)) return ["rfc1918", "172.16.0.0/12"];
   if (inNet(0xc0a80000, 16)) return ["rfc1918", "192.168.0.0/16"];
+  // (2) link-local.
   if (inNet(0xa9fe0000, 16)) return ["link_local", "169.254.0.0/16"];
+  // (3) loopback.
   if (inNet(0x7f000000, 8)) return ["loopback", "127.0.0.0/8"];
+  // (4) multicast.
   if (inNet(0xe0000000, 4)) return ["multicast", "224.0.0.0/4"];
-  if (inNet(0x00000000, 8)) return ["reserved", "0.0.0.0/8"];
-  // CGNAT 100.64.0.0/10 -- Python tags it ``is_private``.
-  if (inNet(0x64400000, 10)) return ["rfc1918", "private"];
-  // Remaining reserved ranges Python flags via ``is_reserved``: 192.0.0.0/24,
-  // 198.18.0.0/15 (benchmarking), 240.0.0.0/4 (future use), 255.255.255.255.
-  if (inNet(0xc0000000, 24)) return ["reserved", "ipv4_reserved"];
-  if (inNet(0xc6120000, 15)) return ["reserved", "ipv4_reserved"];
-  if (inNet(0xf0000000, 4)) return ["reserved", "ipv4_reserved"];
+  // (5) unspecified -- ONLY 0.0.0.0 (Python ``is_unspecified``). Interior
+  // 0.0.0.0/8 addresses (e.g. 0.0.0.5) are ``is_private``, handled at (6).
+  if (v === 0) return ["reserved", "0.0.0.0/8"];
+  // (6) The remaining IANA private blocks Python tags via ``is_private``
+  // (``ipaddress``'s _private_networks): the 0.0.0.0/8 remainder, the IETF
+  // protocol-assignment 192.0.0.0/24, the documentation TEST-NET-1/2/3
+  // (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24), the benchmarking
+  // 198.18.0.0/15, and the future-use 240.0.0.0/4 (which also covers the
+  // 255.255.255.255 limited broadcast). All tag ``rfc1918`` / ``private`` --
+  // ``is_private`` runs BEFORE ``is_reserved`` in CPython, so the future-use
+  // /4 never reaches the reserved label.
+  if (inNet(0x00000000, 8)) return ["rfc1918", "private"]; // 0.0.0.0/8 remainder
+  if (inNet(0xc0000000, 24)) return ["rfc1918", "private"]; // 192.0.0.0/24
+  if (inNet(0xc0000200, 24)) return ["rfc1918", "private"]; // 192.0.2.0/24 TEST-NET-1
+  if (inNet(0xc6336400, 24)) return ["rfc1918", "private"]; // 198.51.100.0/24 TEST-NET-2
+  if (inNet(0xcb007100, 24)) return ["rfc1918", "private"]; // 203.0.113.0/24 TEST-NET-3
+  if (inNet(0xc6120000, 15)) return ["rfc1918", "private"]; // 198.18.0.0/15 benchmarking
+  if (inNet(0xf0000000, 4)) return ["rfc1918", "private"]; // 240.0.0.0/4 future use
+  // CGNAT 100.64.0.0/10 is is_private == False AND is_reserved == False on
+  // CPython 3.12/3.13/3.14, so it is NOT denied here (parity: Python allows
+  // it). A public IPv4 falls through to null.
   return null;
 }
 
@@ -433,21 +468,36 @@ function _classifyIpv6(host: string): readonly [string, string] | null {
   if (high96 === 0x64ff9bn << 64n) {
     return _classify(embeddedIpv4(low32));
   }
-  // Native specials before the IPv4-compatible ::/96 unwrap so they keep
-  // their own reason codes.
+  // Native specials in the SAME branch order as Python's IPv6 ``_classify``
+  // arm: link-local, then ``is_private`` (which subsumes the documentation,
+  // loopback, and unspecified blocks below), then multicast, then the
+  // IPv4-compatible ::/96 unwrap, so the allow/deny verdict AND the
+  // (denied_reason, denied_cidr) bytes match CPython 3.12/3.13/3.14.
+  //
   // Link-local fe80::/10.
   if ((value >> 118n) === (0xfe80n >> 6n)) {
     return ["link_local", "fe80::/10"];
   }
-  // ULA fc00::/7 and loopback ::1 -- Python ``is_private``.
-  if (value === 1n) return ["rfc1918", "fc00::/7"];
-  if ((value >> 121n) === (0xfc00n >> 9n)) return ["rfc1918", "fc00::/7"];
+  // ``is_private`` blocks Python tags ``rfc1918`` / ``fc00::/7``: ULA
+  // fc00::/7, loopback ``::1``, the IPv6 documentation 2001:db8::/32, and --
+  // critically -- the unspecified ``::`` (``is_private`` runs BEFORE
+  // ``is_unspecified`` in CPython, so ``::`` is fc00::/7, NOT reserved/::/128:
+  // the previous ``["reserved", "::/128"]`` was a byte-parity break in this
+  // same finding's class). Only these stable, uniformly-private prefixes are
+  // matched here; the irregular per-sub-block private carve-outs inside
+  // 2001::/23, 100::/64, and 3fff::/20 (where adjacent sub-blocks flip
+  // global<->private across CPython's IANA special-registry) are intentionally
+  // NOT hand-rolled to avoid introducing fresh divergences for their global
+  // sub-blocks.
+  if (value === 0n) return ["rfc1918", "fc00::/7"]; // ``::`` unspecified
+  if (value === 1n) return ["rfc1918", "fc00::/7"]; // ``::1`` loopback
+  if ((value >> 96n) === 0x20010db8n) return ["rfc1918", "fc00::/7"]; // 2001:db8::/32
+  if ((value >> 121n) === (0xfc00n >> 9n)) return ["rfc1918", "fc00::/7"]; // fc00::/7
   // Multicast ff00::/8.
   if ((value >> 120n) === 0xffn) return ["multicast", "ff00::/8"];
-  // Unspecified ::.
-  if (value === 0n) return ["reserved", "::/128"];
   // Deprecated IPv4-compatible ::/96 (high 96 bits zero, not the specials
-  // above) -- unwrap the embedded IPv4.
+  // above) -- unwrap the embedded IPv4. ``::`` and ``::1`` are already handled
+  // above as private, so only genuine IPv4-compatible wrappers reach here.
   if (high96 === 0n) {
     return _classify(embeddedIpv4(low32));
   }
@@ -609,6 +659,15 @@ export interface RunHttpClient {
   postEvidence(envelope: EvidenceEnvelope): Promise<Record<string, unknown>>;
   postReplayCaseRun(
     caseId: string,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
+  /**
+   * Create a replay case (POST /v1/replay-cases). Required by
+   * replayCreate() when no explicit caseId is supplied (the sidecar run
+   * endpoint 404s for a case it never created). Optional on the interface so
+   * stubs that only exercise the explicit-caseId path need not implement it.
+   */
+  postReplayCaseCreate?(
     body: Record<string, unknown>,
   ): Promise<Record<string, unknown>>;
 }
@@ -825,6 +884,19 @@ export class FetchRunHttpClient implements RunHttpClient {
   ): Promise<Record<string, unknown>> {
     const idempotency = newUlid();
     const resp = await this.fetchImpl(`${this.baseUrl}/v1/replay-cases/${caseId}/run`, {
+      method: "POST",
+      headers: this.headers(idempotency),
+      body: JSON.stringify(body),
+    });
+    await this.raiseForError(resp);
+    return this.parseJson(resp);
+  }
+
+  async postReplayCaseCreate(
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const idempotency = newUlid();
+    const resp = await this.fetchImpl(`${this.baseUrl}/v1/replay-cases`, {
       method: "POST",
       headers: this.headers(idempotency),
       body: JSON.stringify(body),
@@ -1101,20 +1173,62 @@ export class Run {
     // caller-supplied egress-allowlist entry is validated BEFORE any HTTP
     // I/O (including the getRunResult preflight); a rejected entry throws
     // EgressDenied and the request is not sent.
-    const egressAllowlist = options.egressAllowlist ?? [];
+    //
+    // TOCTOU (roborev HIGH): snapshot the caller's array NOW, by value, and
+    // validate + send ONLY this private copy. The previous code aliased
+    // ``options.egressAllowlist`` by reference and reused that same array to
+    // build the POST body AFTER the awaited getRunResult() preflight -- so a
+    // caller (or a concurrent mutator) could append an unvalidated internal
+    // host between validation and POST and have it sent to the sidecar. The
+    // copy closes that window: the validated bytes are exactly the sent bytes.
+    const egressAllowlist = [...(options.egressAllowlist ?? [])];
     if (egressAllowlist.length > 0) {
       validateEgressEntries(egressAllowlist);
     }
-    const caseId = options.caseId ?? newUlid();
     const runIdRef = options.runId ?? this.runId;
     // Pre-flight: confirm the canonical RunResult exists (parity with
     // Python, spec line 2122-2178). The sidecar returns RELAY-REPLAY-002
     // when the run is still in flight; raiseForError() surfaces it as
     // RelayReplayPrecondition.
     await this.httpClient.getRunResult(runIdRef);
+    // The sidecar run endpoint POST /v1/replay-cases/{case_id}/run 404s for a
+    // case it never created. So when no explicit caseId is supplied, perform
+    // the real create-then-run flow (parity with the Python SDK): POST
+    // /v1/replay-cases with from_run_id to CREATE, then run the returned id.
+    // An explicit caseId is run directly (the caller owns the case lifecycle).
+    let caseRef: string;
+    if (options.caseId !== undefined) {
+      caseRef = options.caseId;
+    } else {
+      if (this.httpClient.postReplayCaseCreate === undefined) {
+        throw new RelayConfigError(
+          "replayCreate without an explicit caseId requires an HTTP client that " +
+            "implements postReplayCaseCreate (POST /v1/replay-cases)",
+          { details: { field: "caseId", reason: "no_create_capability" } },
+        );
+      }
+      const createBody = {
+        schema_version: "relay.replay_case.create.v1",
+        from_run_id: runIdRef,
+        run_id: runIdRef,
+        mode,
+        manifest_commit_hash: this.manifestCommitHash,
+        actor_identity_hash: this.actorIdentityHash,
+        egress_allowlist: egressAllowlist,
+      };
+      const created = await this.httpClient.postReplayCaseCreate(createBody);
+      const createdId = created["replay_case_id"] ?? created["case_id"];
+      if (typeof createdId !== "string" || createdId === "") {
+        throw new RelayConfigError(
+          "sidecar replay-case create response omitted a case id (replay_case_id/case_id)",
+          { details: { field: "replay_case_id" } },
+        );
+      }
+      caseRef = createdId;
+    }
     const body = {
       schema_version: "relay.replay_case.run.v1",
-      case_id: caseId,
+      case_id: caseRef,
       run_id: runIdRef,
       mode,
       manifest_commit_hash: this.manifestCommitHash,
@@ -1124,7 +1238,7 @@ export class Run {
         ? { acknowledge_degraded_approximation: true }
         : {}),
     };
-    return this.httpClient.postReplayCaseRun(caseId, body);
+    return this.httpClient.postReplayCaseRun(caseRef, body);
   }
 
   /**
