@@ -718,6 +718,138 @@ def test_canonical_request_non_object_headers_quarantines(
 
 
 @pytest.mark.fulfills("VAL-ISO-010")
+@pytest.mark.parametrize(
+    "bad_headers",
+    [
+        # Non-string VALUE under a RELEVANT header name (content-type is in
+        # KEY_DEFAULT_RELEVANT_HEADERS): _filter_headers reaches
+        # ``raw_value.split(";",1)[0].strip()`` -> AttributeError today.
+        {"content-type": 123},
+        {"content-type": [1]},
+        {"accept": None},
+        {"accept": {"y": 1}},
+        # Non-string VALUE under a NON-RELEVANT header name (X): the prior
+        # _filter_headers allow-list ``continue`` skipped the value before
+        # touching it, so it did NOT crash but silently flowed a malformed
+        # (non-string) value through the canonical request. The up-front
+        # validation rejects it consistently with the relevant-name case.
+        {"X": 123},
+        {"X": [1]},
+    ],
+)
+def test_canonical_request_non_string_header_value_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+    bad_headers: Any,
+) -> None:
+    """VAL-ISO-010 regression (re-hunt #14 / HIGH): a request.json that is
+    valid JSON with a dict ``headers`` whose VALUE is non-string MUST raise
+    ``RelayCassetteCorruptError`` and quarantine.
+
+    The prior fix validated ``headers`` is a dict but passed a non-string
+    value straight into ``CanonicalRequest``; ``derive_canonical_key`` then
+    calls ``_filter_headers``. For a RELEVANT header name (content-type /
+    accept) that does ``raw_value.split(...)`` / ``raw_value.strip()`` on the
+    value -- ``AttributeError`` ('int'/'list'/'NoneType'/'dict' has no
+    attribute 'split'/'strip'), which is NOT in load_cassette's iso-010 catch
+    tuple, so the malformed fixture escaped quarantine. For a NON-RELEVANT
+    name the allow-list ``continue`` skipped the value entirely, silently
+    flowing a malformed non-string value through. Validating every header
+    VALUE is a string up front (raising ``KeyError``, which IS in the catch
+    tuple) rejects both cases consistently.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": bad_headers,
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_non_string_header_key_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+    monkeypatch: Any,
+) -> None:
+    """VAL-ISO-010 regression (re-hunt #14 / HIGH): a ``headers`` dict whose
+    KEY is non-string MUST raise ``RelayCassetteCorruptError`` and quarantine
+    -- NOT an uncaught ``AttributeError`` from ``raw_name.lower()`` inside
+    ``_filter_headers``.
+
+    Standard JSON cannot encode a non-string object key, so a corrupted /
+    hand-rolled sidecar reaches a non-string key only after parsing. We
+    simulate that post-parse state by patching ``json.loads`` (inside the
+    cassette module) to inject a non-string key into the parsed headers, then
+    drive the public ``load_cassette`` path. A non-string key raises
+    ``KeyError`` (in the iso-010 catch tuple) which quarantines, mirroring the
+    non-string value case.
+    """
+    import relay_replay_proxy.cassette_format as cf
+
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {"content-type": "application/json"},
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    orig_loads = cf.json.loads
+
+    def _patched_loads(s: Any, *a: Any, **k: Any) -> Any:
+        obj = orig_loads(s, *a, **k)
+        if isinstance(obj, dict) and isinstance(obj.get("headers"), dict):
+            obj["headers"] = {123: "application/json"}
+        return obj
+
+    monkeypatch.setattr(cf.json, "loads", _patched_loads)
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
 def test_canonical_request_non_string_method_quarantines(
     empty_cassette_dir: Path,
     make_replay_fixture: Any,

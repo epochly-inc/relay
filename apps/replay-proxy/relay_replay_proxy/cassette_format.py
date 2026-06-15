@@ -1007,6 +1007,29 @@ def _read_canonical_key_for_fixture(
             f"canonical request field 'headers' MUST be an object; "
             f"got {type(headers).__name__}"
         )
+    # Every header KEY and VALUE MUST be a string. ``_filter_headers`` (via
+    # derive_canonical_key) calls ``raw_name.lower()`` on each key and
+    # ``raw_value.split(...)`` / ``raw_value.strip()`` on each value; a
+    # non-string key or value raises an uncaught ``AttributeError`` that
+    # escapes load_cassette's iso-010 quarantine catch tuple. A non-string
+    # value under a header name that is NOT in the relevant allow-list is
+    # silently SKIPPED by _filter_headers' ``continue`` rather than crashing,
+    # which is equally wrong -- a malformed value MUST be rejected, not
+    # quietly dropped. Raise ``KeyError`` (already in the catch tuple) so the
+    # malformed sidecar is quarantined like every other corrupt-field case,
+    # keeping the catch tuple narrow per its design comment (re-hunt #14,
+    # VAL-ISO-010).
+    for header_key, header_value in headers.items():
+        if not isinstance(header_key, str):
+            raise KeyError(
+                f"canonical request header key MUST be a string; "
+                f"got {type(header_key).__name__}"
+            )
+        if not isinstance(header_value, str):
+            raise KeyError(
+                f"canonical request header value for {header_key!r} MUST be a "
+                f"string; got {type(header_value).__name__}"
+            )
     # validate=True so a non-base64 body_b64 raises binascii.Error (which
     # load_cassette catches and quarantines) rather than silently discarding
     # invalid characters (VAL-ISO-010). ``body_b64`` is now guaranteed a str.
