@@ -131,6 +131,11 @@ def test_ipv4_in_ipv6_transition_cidr_blocks_are_denied() -> None:
         "2002:800::/22",  # 6to4 sub-block
         "64:ff9b::/96",  # entire NAT64 space
         "64:ff9b::800:0/102",  # NAT64 sub-block
+        # Deprecated IPv4-compatible ::/96 (both SDKs unwrap single
+        # IPv4-compatible hosts, so a broad CIDR over it must deny too).
+        "::/96",  # entire IPv4-compatible space
+        "::800:0/102",  # public-looking network ::8.0.0.0 yet spans ::a00:0 (10.0.0.0)
+        "::a00:0/104",  # IPv4-compatible wrapping 10.0.0.0/8
     ):
         with pytest.raises(EgressDenied):
             validate_egress_entries([cidr])

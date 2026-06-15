@@ -13,6 +13,8 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import math
 import threading
 from pathlib import Path
@@ -65,10 +67,6 @@ def test_to_string_bool_routed_to_literal_form() -> None:
     """``bool`` MUST keep the JSON-literal form, not the int form."""
     assert _to_string(True) == "true"
     assert _to_string(False) == "false"
-
-
-import builtins
-import contextlib
 
 
 @contextlib.contextmanager

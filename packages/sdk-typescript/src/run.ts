@@ -570,12 +570,15 @@ const _DENIED_SUPERNETS: ReadonlyArray<{
     "ff00::/8",
     "2001:db8::/32",
     // IPv4-in-IPv6 transition prefixes: a broad CIDR over IPv4-mapped
-    // (::ffff:0:0/96), 6to4 (2002::/16), or NAT64 (64:ff9b::/96) space can embed
-    // denied IPv4 ranges with a public-looking IPv6 network address (mirrors the
-    // Python _DENIED_SUPERNETS transition entries).
+    // (::ffff:0:0/96), 6to4 (2002::/16), NAT64 (64:ff9b::/96), or the deprecated
+    // IPv4-compatible (::/96) space can embed denied IPv4 ranges with a
+    // public-looking IPv6 network address (e.g. ::800:0/102 spans ::a00:0 ==
+    // 10.0.0.0). Mirrors the Python _DENIED_SUPERNETS transition entries; ::/96
+    // subsumes the ::1/128 and ::/128 specials above.
     "::ffff:0:0/96",
     "2002::/16",
     "64:ff9b::/96",
+    "::/96",
   ] as const
 ).map((c) => {
   const r = _cidrToRange(c);

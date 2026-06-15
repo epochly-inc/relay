@@ -273,6 +273,9 @@ describe("LOW #11: Run.replayCreate enforces the egress allowlist SSRF guard", (
     "2002:800::/22", //        6to4 sub-block
     "64:ff9b::/96", //         entire NAT64 space
     "64:ff9b::800:0/102", //   NAT64 sub-block
+    "::/96", //                entire deprecated IPv4-compatible space
+    "::800:0/102", //          IPv4-compatible: public-looking net, spans ::a00:0 (10.0.0.0)
+    "::a00:0/104", //          IPv4-compatible wrapping 10.0.0.0/8
   ])("blocks an IPv4-in-IPv6 transition CIDR-block entry %s", async (cidr) => {
     const stub = new StubHttpClient();
     const run = makeRun(stub);

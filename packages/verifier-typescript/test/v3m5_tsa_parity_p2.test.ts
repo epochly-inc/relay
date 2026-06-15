@@ -313,8 +313,11 @@ decided_at = "2026-05-15T12:34:56Z"
 gen_time = decided_at
 digest_hex = "0" * 64
 from cryptography.hazmat.primitives import serialization
-now = _dt.datetime.now(_dt.UTC)
-nb = now - _dt.timedelta(days=365); na = now + _dt.timedelta(days=365)
+# Cert window RELATIVE to gen_time (not wall-clock) so the chain is valid AT
+# the timestamp time forever -- the ONLY rejection cause is the PKIStatus gate,
+# never a wall-clock cert expiry that could mask a future regression.
+g = _dt.datetime.fromisoformat(gen_time[:-1] + "+00:00")
+nb = g - _dt.timedelta(days=30); na = g + _dt.timedelta(days=30)
 leaf_sk, leaf_cert, root_cert = make_chain(nb, na)
 tsr = build_tsr_with_status(leaf_sk=leaf_sk, leaf_cert=leaf_cert,
     bundle_digest_hex=digest_hex, gen_time_iso_z=gen_time, status_name="granted_with_mods")
@@ -342,7 +345,10 @@ print(json.dumps({"token": token, "bundle_digest_hex": digest_hex,
       extraTrustedRootsPem: Buffer.from(fx.tsa_root_pem, "utf-8"),
     });
     expect(r.outcome).toBe("invalid");
-    expect(r.reason).not.toBe("");
+    // Assert the rejection is specifically the PKIStatus gate (tsr_status_1),
+    // NOT an incidental cert-window/chain failure -- so this test fails loudly
+    // if TS ever re-accepts grantedWithMods(1) and proceeds to chain checks.
+    expect(r.reason).toContain("tsr_status_1");
   });
 });
 
