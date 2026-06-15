@@ -449,6 +449,38 @@ def test_multipart_content_type_semicolon_inside_quoted_value_is_significant(
 
 
 @pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_content_type_escaped_quote_in_value_is_significant(
+    make_canonical_request: Any,
+) -> None:
+    """Roborev follow-on: the RFC 2045 quoted-pair escape (``\\"`` inside a
+    quoted-string is a LITERAL quote, not a quote-toggle) must be honoured so a
+    ``;`` after an escaped quote stays inside the value. Two declarations
+    differing only in the case of text after such a ``;`` MUST stay distinct."""
+    boundary = "----ESC4Q"
+    same_bytes = b"{}"
+    body_upper = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type='application/json; profile="abc\\";DEF"',
+    )
+    body_lower = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type='application/json; profile="abc\\";def"',
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_upper, content_type=ct, headers={"content-type": ct}
+    )
+    b = make_canonical_request(
+        body_bytes=body_lower, content_type=ct, headers={"content-type": ct}
+    )
+    assert derive_canonical_key(a) != derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-022")
 def test_multipart_content_type_media_and_param_name_case_insensitive(
     make_canonical_request: Any,
 ) -> None:

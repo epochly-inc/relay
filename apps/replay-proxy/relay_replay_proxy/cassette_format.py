@@ -372,20 +372,32 @@ def _canonicalize_sse_body(body_bytes: bytes) -> str:
 
 
 def _split_unquoted_semicolons(raw: str) -> list[str]:
-    """Split ``raw`` on ``;`` that are NOT inside a double-quoted string.
+    r"""Split ``raw`` on ``;`` that are NOT inside a double-quoted string.
 
     RFC 2045 parameter values may be quoted-strings that legally contain a
     ``;`` (``profile="a;b"``); a naive ``str.split(";")`` would break such a
-    value apart. This single-pass scanner toggles a quote flag on each ``"`` so
-    only top-level semicolons separate parameters. (Backslash-escaping inside a
-    quoted-string is not handled -- it does not occur in provider media-type
-    declarations and would only ever OVER-split, never alias.)
+    value apart. This single-pass scanner toggles a quote flag on each
+    unescaped ``"`` so only top-level semicolons separate parameters, and it
+    honours the RFC 2045 quoted-pair escape: a ``\`` inside a quoted-string
+    escapes the next character (so ``\"`` is a literal quote, NOT a
+    quote-toggle). Without the escape handling, ``profile="abc\";DEF"`` would
+    be mis-split at the ``;`` after the escaped quote and the ``DEF"`` fragment
+    would alias with a different-case sibling.
     """
     parts: list[str] = []
     buf: list[str] = []
     in_quote = False
+    escaped = False
     for ch in raw:
-        if ch == '"':
+        if escaped:
+            # Previous char was a backslash inside a quoted-string; emit this
+            # char literally without interpreting it as a quote/separator.
+            buf.append(ch)
+            escaped = False
+        elif ch == "\\" and in_quote:
+            buf.append(ch)
+            escaped = True
+        elif ch == '"':
             in_quote = not in_quote
             buf.append(ch)
         elif ch == ";" and not in_quote:
