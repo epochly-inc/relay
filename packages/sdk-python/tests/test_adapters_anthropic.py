@@ -269,8 +269,11 @@ def test_anthropic_adapter_model_signature_deterministic(
     )
     [span] = [s for s in recorder.spans if s.kind == "model_call"]
     sig = span.attributes["model_signature"]
-    assert re.match(r"^anthropic:[a-z0-9.-]+$", sig), sig
-    assert sig == "anthropic:claude-opus-4-7"
+    # Round-5 re-hunt parity fix: model_signature is anthropic:<model>:<response.id>
+    # (or :<sha256(model)[:16]> when the id is absent), byte-identical to the TS
+    # Anthropic adapter and the OpenAI sibling. plain_response.id == "msg_02".
+    assert sig == "anthropic:claude-opus-4-7:msg_02", sig
+    assert span.attributes["response_id"] == "msg_02"
 
 
 @pytest.mark.plumbing
@@ -298,6 +301,50 @@ def test_anthropic_adapter_model_signature_is_stable_across_calls(
     ]
     assert len(sigs) == 2
     assert sigs[0] == sigs[1]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-043")
+def test_anthropic_model_signature_falls_back_to_sha256_when_id_absent() -> None:
+    """When response.id is absent the signature is anthropic:<model>:<sha256
+    (model)[:16]>, byte-identical to the TS adapter + OpenAI sibling."""
+    import hashlib
+
+    resp = _AnthroMessage(
+        id="",  # no provider id
+        model="claude-opus-4-7",
+        role="assistant",
+        content=[_TextBlock(type="text", text="hi")],
+        stop_reason="end_turn",
+        usage=_AnthroUsage(input_tokens=1, output_tokens=1),
+    )
+    recorder = SpanRecorder()
+    client = wrap_anthropic(_FakeAnthropicClient(resp), recorder=recorder)
+    client.messages.create(model="claude-opus-4-7", max_tokens=1, messages=[])
+    [span] = [s for s in recorder.spans if s.kind == "model_call"]
+    fallback = hashlib.sha256(b"claude-opus-4-7").hexdigest()[:16]
+    assert span.attributes["model_signature"] == f"anthropic:claude-opus-4-7:{fallback}"
+    assert span.attributes["response_id"] is None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W4-033")
+def test_anthropic_streaming_model_signature_carries_message_id(
+    stream_events: list[_AnthroEvent],
+) -> None:
+    """The streaming finalize captures message.id from message_start and
+    re-computes model_signature as anthropic:<model>:<message.id> + sets
+    response_id (Py<->TS parity). stream_events' message_start id == 'msg_s'."""
+    recorder = SpanRecorder()
+    client = wrap_anthropic(_FakeAnthropicClient(stream_events), recorder=recorder)
+    stream = client.messages.create(
+        model="claude-opus-4-7", max_tokens=64, stream=True, messages=[]
+    )
+    for _ in stream:
+        pass
+    [span] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert span.attributes["model_signature"] == "anthropic:claude-opus-4-7:msg_s"
+    assert span.attributes["response_id"] == "msg_s"
 
 
 # ---------------------------------------------------------------------------

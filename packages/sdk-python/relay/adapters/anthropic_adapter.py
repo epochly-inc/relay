@@ -50,14 +50,23 @@ def _safe_anthropic_sdk_version() -> str:
     return "anthropic@unknown"
 
 
-def _model_signature(model: str) -> str:
-    """``anthropic:<model>`` -- Anthropic does not expose system_fingerprint.
+def _model_signature(model: str, response_id: str | None = None) -> str:
+    """``anthropic:<model>:<response.id-or-sha256(model)[:16]>`` (VAL-W4-033).
 
-    Per VAL-W3-043 the signature is deterministic across calls with the
-    same model. The refresh policy detects drift by observing a change
-    in this string.
+    Anthropic does not expose a ``system_fingerprint``; per the spec gap note
+    the provider ``response.id`` is the drift surrogate. Byte-identical to the
+    TS Anthropic adapter (``modelSignature``) and to the OpenAI sibling's
+    ``provider:model:<discriminator-or-sha256(model)[:16]>`` form: the third
+    segment is the response id when present, else a SHA-256 prefix of the model
+    so the signature stays deterministic + drift-detectable. The caller also
+    surfaces the id as its own ``response_id`` span attribute. Mirrors the TS
+    guard (``responseId !== null && responseId !== ""``): an empty/absent id
+    falls back to the hash.
     """
-    return f"{_ANTHROPIC_PROVIDER}:{model}"
+    if response_id:
+        return f"{_ANTHROPIC_PROVIDER}:{model}:{response_id}"
+    fallback = hashlib.sha256(model.encode("utf-8")).hexdigest()[:16]
+    return f"{_ANTHROPIC_PROVIDER}:{model}:{fallback}"
 
 
 def _estimate_cost_usd(
@@ -188,7 +197,13 @@ def _populate_parent_from_response(parent: Span, response: Any) -> None:
     parent.attributes["total_cost_usd"] = _estimate_cost_usd(
         model, input_tokens, output_tokens
     )
-    parent.attributes["model_signature"] = _model_signature(model)
+    # response.id seeds the model_signature drift surrogate + its own attribute,
+    # mirroring the TS adapter (asString(response.id, "") || null). A non-string
+    # or empty id collapses to None so the signature uses the sha256 fallback.
+    _rid = _get(response, "id", "")
+    response_id = _rid if isinstance(_rid, str) and _rid else None
+    parent.attributes["model_signature"] = _model_signature(model, response_id)
+    parent.attributes["response_id"] = response_id
     parent.attributes["stop_reason"] = _get(response, "stop_reason")
 
 
@@ -255,6 +270,9 @@ class _StreamWrapper:
         self._cum_output = 0
         self._chunk_count = 0
         self._stop_reason: str | None = None
+        # Captured from message_start (event.message.id); seeds the finalized
+        # model_signature + response_id attribute, mirroring the TS finalizeStream.
+        self._response_id: str | None = None
         # Streamed tool_use blocks arrive as a content_block_start (carrying the
         # tool name) followed by input_json_delta fragments (carrying the args
         # JSON in pieces). Aggregate per block index, mirroring the TS adapter's
@@ -275,6 +293,14 @@ class _StreamWrapper:
             self._parent.attributes["total_cost_usd"] = _estimate_cost_usd(
                 self._model, self._cum_input, self._cum_output
             )
+            # Re-compute model_signature with the captured response id (TS
+            # finalizeStream: modelSignature(model, state.responseId)) and surface
+            # response_id, so a fixture/cassette recorded under either SDK carries
+            # byte-identical span attributes.
+            self._parent.attributes["model_signature"] = _model_signature(
+                self._model, self._response_id
+            )
+            self._parent.attributes["response_id"] = self._response_id
             self._parent.attributes["chunk_count"] = self._chunk_count
             self._parent.attributes["stop_reason"] = self._stop_reason
             # Emit ONE tool_call span per aggregated streamed tool_use block
@@ -328,6 +354,12 @@ class _StreamWrapper:
         # ``message_start``). Assigning cumulative snapshots is correct.
         if event_type == "message_start":
             message = _get(event, "message")
+            # Capture the provider message id for the finalized model_signature
+            # (TS: if (id !== "") state.responseId = id). Empty/non-string ids
+            # leave the seed None so finalize uses the sha256 fallback.
+            _mid = _get(message, "id", "")
+            if isinstance(_mid, str) and _mid:
+                self._response_id = _mid
             usage = _get(message, "usage")
             if usage is not None:
                 in_tok = _get(usage, "input_tokens")
