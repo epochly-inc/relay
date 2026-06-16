@@ -820,19 +820,14 @@ function _verifyOneOverBytes(args: {
 // (3) verifies the raw signature against the recomputed bytes under the
 // JWK matched by `kid`.
 //
-// Backward-compatibility alias: the pre-fix TS validator emitted
-// `protected_b64u` (a different concept -- a JWS protected header). The
-// alias accepts a signature entry that supplies `protected_b64u` AS IF
-// it were `signing_input_b64u`. This is a one-release compatibility
-// bridge for any in-flight fixture; new bundles MUST use
-// `signing_input_b64u` and the contract test in
-// `audit_r3_parity.test.ts` enforces it.
+// `signing_input_b64u` is the ONLY accepted signing-input field, matching the
+// Python verify_bundle (a `protected_b64u` alias was a Py<->TS verdict split
+// and is no longer accepted -- see verifyBundleSignature; the contract test in
+// `audit_r3_parity.test.ts` enforces the rejection).
 export interface BundleSignatureEntry {
   alg?: unknown;
   kid?: unknown;
   signing_input_b64u?: unknown;
-  /** Legacy alias for `signing_input_b64u`; one-release back-compat only. */
-  protected_b64u?: unknown;
   signature_b64u?: unknown;
 }
 
@@ -886,16 +881,13 @@ export function verifyBundleSignature(args: {
     });
   }
 
-  // Wire-field resolution: prefer the canonical `signing_input_b64u`,
-  // accept legacy `protected_b64u` as an alias only when the canonical
-  // field is absent. Mirrors Python's strict expectation while letting
-  // in-flight fixtures pass during the transition.
-  let signingInputB64u: unknown = sig.signing_input_b64u;
-  if (typeof signingInputB64u !== "string" || signingInputB64u.length === 0) {
-    if (typeof sig.protected_b64u === "string" && sig.protected_b64u.length > 0) {
-      signingInputB64u = sig.protected_b64u;
-    }
-  }
+  // Wire-field resolution: the canonical `signing_input_b64u` is REQUIRED.
+  // The Python verify_bundle reads only `signing_input_b64u`, so the TS side
+  // must NOT accept a `protected_b64u` alias -- doing so was a Py<->TS verdict
+  // split (a bundle authored with the legacy field name verified under TS but
+  // failed under Python). No producer emits `protected_b64u`; the alias is
+  // removed for parity.
+  const signingInputB64u: unknown = sig.signing_input_b64u;
   if (typeof signingInputB64u !== "string" || signingInputB64u.length === 0) {
     return _check({
       kid,

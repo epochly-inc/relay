@@ -197,6 +197,30 @@ describe("BUG-C1 path-traversal hardening (parity with Python)", () => {
     expect(checkArtifactPath("my..file.txt")).toBeNull();
   });
 
+  // Round-... re-hunt HIGH: the whitespace screen MUST match CPython
+  // str.strip() EXACTLY, not JS String.trim(). Python strips the C0/C1
+  // separators \x1c-\x1f and \x85 (NEL) that trim() does NOT, so a
+  // control-char-bracketed artifact_id previously slipped the TS screen while
+  // Python rejected it (a verdict split + path-screen weakening). And Python
+  // does NOT strip ﻿ (which trim() does), so it must stay ACCEPTED.
+  test("checkArtifactPath rejects C0/C1-separator-bracketed names (Python str.strip parity)", () => {
+    for (const ws of ["\x1c", "\x1d", "\x1e", "\x1f", "\x85"]) {
+      expect(checkArtifactPath(`${ws}foo.txt`)).not.toBeNull();
+      expect(checkArtifactPath(`${ws}foo.txt`)?.path_violation).toBe("invalid_utf8_name");
+      expect(checkArtifactPath(`foo.txt${ws}`)).not.toBeNull();
+    }
+    // Unicode whitespace Python AND trim both strip -> still rejected.
+    for (const ws of ["\xa0", " ", "　"]) {
+      expect(checkArtifactPath(`${ws}foo.txt`)).not.toBeNull();
+    }
+    // ﻿ (ZWNBSP) is NOT Python whitespace -> must be ACCEPTED (a leading
+    // BOM is not NFC-changing/absolute/traversal), matching the Python verifier
+    // -- using JS trim() here would have wrongly REJECTED it.
+    expect(checkArtifactPath("﻿foo.txt")).toBeNull();
+    // A newline INSIDE the name (not leading/trailing) is not stripped -> OK.
+    expect(checkArtifactPath("a\nb.txt")).toBeNull();
+  });
+
   test("validateBundle wires path screen BEFORE the resolver", () => {
     // A resolver that throws if it is ever called — the screen MUST
     // short-circuit before the resolver is touched.
@@ -372,9 +396,12 @@ print(json.dumps({"bundle": b.bundle, "jwks": b.jwks}))
     expect(out.signatures_checked[0]?.ok).toBe(true);
   });
 
-  test("verifyBundleSignature accepts legacy `protected_b64u` field as alias", () => {
+  test("verifyBundleSignature REJECTS a legacy `protected_b64u`-only entry (Py<->TS parity)", () => {
     // Build a signed bundle on the Python side, then move the
-    // signing_input_b64u value into a legacy protected_b64u field.
+    // signing_input_b64u value into the legacy protected_b64u field. The TS
+    // verifier must NOT accept the legacy alias -- Python verify_bundle reads
+    // only signing_input_b64u, so accepting it here was a verdict split. Both
+    // runtimes now reject with `signature missing 'signing_input_b64u'`.
     const py = pyJson<{
       bundle: Record<string, unknown>;
       jwks: { keys: Array<Record<string, unknown>> };
@@ -406,7 +433,23 @@ print(json.dumps({"bundle": b.bundle, "jwks": b.jwks}))
       expectedCanonicalBytes,
       jwks: py.jwks as unknown as { keys: Array<{ kid?: unknown }> },
     });
-    expect(check.ok).toBe(true);
+    expect(check.ok).toBe(false);
+    expect(check.reason).toBe("signature missing 'signing_input_b64u'");
+
+    // Cross-check: the Python verifier rejects the SAME legacy-field bundle
+    // with the identical reason (signatures_ok=False).
+    const legacyBundle: Record<string, unknown> = { ...bundle, signatures: [legacySig] };
+    const pyVerdict = pyJson<{ signatures_ok: boolean; reason: string }>(`
+import json
+from relay_verifier.verifier import verify_bundle
+bundle = json.loads(${JSON.stringify(JSON.stringify(legacyBundle))})
+jwks = json.loads(${JSON.stringify(JSON.stringify(py.jwks))})
+res = verify_bundle(bundle, jwks)
+reason = res.signature_checks[0].reason if res.signature_checks else ""
+print(json.dumps({"signatures_ok": res.signatures_ok, "reason": reason}))
+`);
+    expect(pyVerdict.signatures_ok).toBe(false);
+    expect(pyVerdict.reason).toBe("signature missing 'signing_input_b64u'");
   });
 
   test("verifyBundleSignature rejects signature missing both wire fields", () => {

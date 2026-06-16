@@ -99,6 +99,30 @@ function utf8ByteLength(s: string): number {
   return new TextEncoder().encode(s).length;
 }
 
+// CPython str.strip() / str.isspace() whitespace codepoints. The path-collision
+// screen below MUST match Python's `path.strip()` EXACTLY so the Py<->TS verdict
+// is identical: JS String.trim() strips a DIFFERENT set -- it OMITS the C0/C1
+// separators 0x1c-0x1f and 0x85 (NEL) that Python strips (a control-char-
+// prefixed artifact_id slipped the TS screen while Python rejected it), and it
+// STRIPS 0xFEFF (ZWNBSP) which Python does NOT. Every Python-whitespace
+// codepoint is in the BMP (<= 0x3000), so charCodeAt indexing is exact and
+// never splits a surrogate pair.
+const _PY_WHITESPACE: ReadonlySet<number> = new Set<number>([
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0,
+  0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
+  0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+]);
+
+/** Strip leading/trailing Python-whitespace codepoints -- byte-identical to
+ * CPython ``str.strip()`` over the path-screen input domain. */
+function _pythonStrip(s: string): string {
+  let start = 0;
+  let end = s.length;
+  while (start < end && _PY_WHITESPACE.has(s.charCodeAt(start))) start++;
+  while (end > start && _PY_WHITESPACE.has(s.charCodeAt(end - 1))) end--;
+  return s.slice(start, end);
+}
+
 /**
  * Return `null` if `path` passes every path-hardening check; otherwise
  * return a structured rejection envelope.
@@ -140,7 +164,7 @@ export function checkArtifactPath(path: unknown): PathViolation | null {
       offending_path: path,
     };
   }
-  if (path !== path.trim()) {
+  if (path !== _pythonStrip(path)) {
     return {
       code: RELAY_EVID_024_PATH,
       path_violation: "invalid_utf8_name",
