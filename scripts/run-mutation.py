@@ -165,9 +165,21 @@ _PYTEST_BASE: Final[str] = "python -m pytest -x -q --no-header -p no:cacheprovid
 
 
 def _pytest_cmd(test_groups: list[list[str]]) -> str:
-    """One `&&`-chained command: each group is its own pytest process, so a
-    mutant survives only if EVERY group passes (killed if any fails)."""
-    return " && ".join(f"{_PYTEST_BASE} {' '.join(g)}" for g in test_groups)
+    """One command run as ``bash -c '<chained>'``: each group is its own pytest
+    process (process isolation prevents cross-package conftest pollution), and a
+    mutant survives only if EVERY group passes (killed if any group fails).
+
+    The ``bash -c`` wrapper is REQUIRED, not cosmetic. cosmic-ray runs the
+    test-command via ``shlex.split(command)`` with NO shell
+    (cosmic_ray/testing.py:46), so a bare ``a && b`` would hand ``&&`` (and
+    everything after it) to the FIRST pytest as literal argv tokens -- pytest
+    then errors on every mutant and cosmic-ray records a FALSE 100% kill rate
+    for ANY multi-group target. Routing through ``bash -c`` makes bash
+    interpret the ``&&`` as a real shell operator. Group paths contain no
+    single quotes, so single-quoting the inner command is safe under
+    ``shlex.split`` (which yields ``['bash', '-c', '<chained>']``)."""
+    inner = " && ".join(f"{_PYTEST_BASE} {' '.join(g)}" for g in test_groups)
+    return f"bash -c '{inner}'"
 
 
 def _baseline_ok(test_groups: list[list[str]]) -> tuple[bool, str]:
