@@ -1,0 +1,461 @@
+{
+  "schema": "relay.architecture.dependency-graph/v1",
+  "generated_by": "scripts/gen-dependency-graph.py",
+  "module_index": {
+    "acef": "acef",
+    "relay": "sdk-python",
+    "relay_acef": "acef",
+    "relay_cli": "cli",
+    "relay_contracts": "contracts",
+    "relay_evals": "evals",
+    "relay_explain": "explain",
+    "relay_extensions": "acef",
+    "relay_gate_engine": "gate",
+    "relay_replay_proxy": "replay-proxy",
+    "relay_replay_sandbox_protocol": "replay-sandbox-protocol",
+    "relay_schemas": "schemas",
+    "relay_sidecar": "local-sidecar",
+    "relay_verifier": "verifier",
+    "verify_self": "cli"
+  },
+  "packages": [
+    {
+      "name": "acef",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/acef",
+      "depends_on": [],
+      "depended_on_by": [
+        "cli"
+      ],
+      "fan_out": 0,
+      "fan_in": 1
+    },
+    {
+      "name": "cli",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/cli",
+      "depends_on": [
+        "acef",
+        "contracts",
+        "local-sidecar",
+        "replay-proxy",
+        "schemas",
+        "sdk-python",
+        "verifier"
+      ],
+      "depended_on_by": [
+        "replay-proxy"
+      ],
+      "fan_out": 7,
+      "fan_in": 1
+    },
+    {
+      "name": "contracts",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/contracts",
+      "depends_on": [
+        "schemas"
+      ],
+      "depended_on_by": [
+        "cli",
+        "evals",
+        "gate",
+        "replay-proxy"
+      ],
+      "fan_out": 1,
+      "fan_in": 4
+    },
+    {
+      "name": "contracts-typescript",
+      "languages": [
+        "typescript"
+      ],
+      "path": "/Users/chandlervaughn/Development/epochly-relay/relay/packages/contracts-typescript",
+      "depends_on": [],
+      "depended_on_by": [],
+      "fan_out": 0,
+      "fan_in": 0
+    },
+    {
+      "name": "evals",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/evals",
+      "depends_on": [
+        "contracts",
+        "schemas"
+      ],
+      "depended_on_by": [],
+      "fan_out": 2,
+      "fan_in": 0
+    },
+    {
+      "name": "explain",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/explain",
+      "depends_on": [
+        "schemas"
+      ],
+      "depended_on_by": [],
+      "fan_out": 1,
+      "fan_in": 0
+    },
+    {
+      "name": "gate",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/gate",
+      "depends_on": [
+        "contracts",
+        "local-sidecar",
+        "schemas"
+      ],
+      "depended_on_by": [],
+      "fan_out": 3,
+      "fan_in": 0
+    },
+    {
+      "name": "local-sidecar",
+      "languages": [
+        "python"
+      ],
+      "path": "apps/local-sidecar",
+      "depends_on": [
+        "schemas",
+        "sdk-python"
+      ],
+      "depended_on_by": [
+        "cli",
+        "gate",
+        "replay-proxy",
+        "sdk-python"
+      ],
+      "fan_out": 2,
+      "fan_in": 4
+    },
+    {
+      "name": "replay-proxy",
+      "languages": [
+        "python"
+      ],
+      "path": "apps/replay-proxy",
+      "depends_on": [
+        "cli",
+        "contracts",
+        "local-sidecar",
+        "schemas"
+      ],
+      "depended_on_by": [
+        "cli"
+      ],
+      "fan_out": 4,
+      "fan_in": 1
+    },
+    {
+      "name": "replay-sandbox-protocol",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/replay-sandbox-protocol",
+      "depends_on": [],
+      "depended_on_by": [],
+      "fan_out": 0,
+      "fan_in": 0
+    },
+    {
+      "name": "schemas",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/schemas",
+      "depends_on": [],
+      "depended_on_by": [
+        "cli",
+        "contracts",
+        "evals",
+        "explain",
+        "gate",
+        "local-sidecar",
+        "replay-proxy",
+        "sdk-python"
+      ],
+      "fan_out": 0,
+      "fan_in": 8
+    },
+    {
+      "name": "sdk-python",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/sdk-python",
+      "depends_on": [
+        "local-sidecar",
+        "schemas"
+      ],
+      "depended_on_by": [
+        "cli",
+        "local-sidecar"
+      ],
+      "fan_out": 2,
+      "fan_in": 2
+    },
+    {
+      "name": "sdk-typescript",
+      "languages": [
+        "typescript"
+      ],
+      "path": "/Users/chandlervaughn/Development/epochly-relay/relay/packages/sdk-typescript",
+      "depends_on": [],
+      "depended_on_by": [
+        "sdk-typescript-sidecar-bundle"
+      ],
+      "fan_out": 0,
+      "fan_in": 1
+    },
+    {
+      "name": "sdk-typescript-sidecar-bundle",
+      "languages": [
+        "typescript"
+      ],
+      "path": "/Users/chandlervaughn/Development/epochly-relay/relay/packages/sdk-typescript-sidecar-bundle",
+      "depends_on": [
+        "sdk-typescript"
+      ],
+      "depended_on_by": [],
+      "fan_out": 1,
+      "fan_in": 0
+    },
+    {
+      "name": "verifier",
+      "languages": [
+        "python"
+      ],
+      "path": "packages/verifier",
+      "depends_on": [],
+      "depended_on_by": [
+        "cli"
+      ],
+      "fan_out": 0,
+      "fan_in": 1
+    },
+    {
+      "name": "verifier-typescript",
+      "languages": [
+        "typescript"
+      ],
+      "path": "/Users/chandlervaughn/Development/epochly-relay/relay/packages/verifier-typescript",
+      "depends_on": [],
+      "depended_on_by": [],
+      "fan_out": 0,
+      "fan_in": 0
+    }
+  ],
+  "edges": [
+    {
+      "from": "cli",
+      "to": "acef",
+      "lang": "python",
+      "examples": [
+        "relay_acef"
+      ]
+    },
+    {
+      "from": "cli",
+      "to": "contracts",
+      "lang": "python",
+      "examples": [
+        "relay_contracts"
+      ]
+    },
+    {
+      "from": "cli",
+      "to": "local-sidecar",
+      "lang": "python",
+      "examples": [
+        "relay_sidecar"
+      ]
+    },
+    {
+      "from": "cli",
+      "to": "replay-proxy",
+      "lang": "python",
+      "examples": [
+        "relay_replay_proxy"
+      ]
+    },
+    {
+      "from": "cli",
+      "to": "schemas",
+      "lang": "python",
+      "examples": [
+        "relay_schemas"
+      ]
+    },
+    {
+      "from": "cli",
+      "to": "sdk-python",
+      "lang": "python",
+      "examples": [
+        "relay"
+      ]
+    },
+    {
+      "from": "cli",
+      "to": "verifier",
+      "lang": "python",
+      "examples": [
+        "relay_verifier"
+      ]
+    },
+    {
+      "from": "contracts",
+      "to": "schemas",
+      "lang": "python",
+      "examples": [
+        "relay_schemas"
+      ]
+    },
+    {
+      "from": "evals",
+      "to": "contracts",
+      "lang": "python",
+      "examples": [
+        "relay_contracts"
+      ]
+    },
+    {
+      "from": "evals",
+      "to": "schemas",
+      "lang": "python",
+      "examples": [
+        "relay_schemas"
+      ]
+    },
+    {
+      "from": "explain",
+      "to": "schemas",
+      "lang": "python",
+      "examples": [
+        "relay_schemas"
+      ]
+    },
+    {
+      "from": "gate",
+      "to": "contracts",
+      "lang": "python",
+      "examples": [
+        "relay_contracts"
+      ]
+    },
+    {
+      "from": "gate",
+      "to": "local-sidecar",
+      "lang": "python",
+      "examples": [
+        "relay_sidecar"
+      ]
+    },
+    {
+      "from": "gate",
+      "to": "schemas",
+      "lang": "python",
+      "examples": [
+        "relay_schemas"
+      ]
+    },
+    {
+      "from": "local-sidecar",
+      "to": "schemas",
+      "lang": "python",
+      "examples": [
+        "relay_schemas"
+      ]
+    },
+    {
+      "from": "local-sidecar",
+      "to": "sdk-python",
+      "lang": "python",
+      "examples": [
+        "relay"
+      ]
+    },
+    {
+      "from": "replay-proxy",
+      "to": "cli",
+      "lang": "python",
+      "examples": [
+        "relay_cli"
+      ]
+    },
+    {
+      "from": "replay-proxy",
+      "to": "contracts",
+      "lang": "python",
+      "examples": [
+        "relay_contracts"
+      ]
+    },
+    {
+      "from": "replay-proxy",
+      "to": "local-sidecar",
+      "lang": "python",
+      "examples": [
+        "relay_sidecar"
+      ]
+    },
+    {
+      "from": "replay-proxy",
+      "to": "schemas",
+      "lang": "python",
+      "examples": [
+        "relay_schemas"
+      ]
+    },
+    {
+      "from": "sdk-python",
+      "to": "local-sidecar",
+      "lang": "python",
+      "examples": [
+        "relay_sidecar"
+      ]
+    },
+    {
+      "from": "sdk-python",
+      "to": "schemas",
+      "lang": "python",
+      "examples": [
+        "relay_schemas"
+      ]
+    },
+    {
+      "from": "sdk-typescript-sidecar-bundle",
+      "to": "sdk-typescript",
+      "lang": "typescript",
+      "examples": [
+        "@epochly/relay",
+        "@epochly/relay/dist/src/bin/wrapper.js"
+      ]
+    }
+  ],
+  "cycles": [
+    [
+      "cli",
+      "replay-proxy"
+    ],
+    [
+      "local-sidecar",
+      "sdk-python"
+    ]
+  ],
+  "layers": null
+}
