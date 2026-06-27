@@ -419,3 +419,48 @@ async def test_init_scope_rejects_non_canonical_initial_state(tmp_path) -> None:
                 )
     finally:
         await db.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-009")
+def test_actor_ref_is_frozen() -> None:
+    """ActorRef is frozen (compare_and_set.py L61 @dataclass(frozen=True)): the
+    actor reference recorded on the forensic event_log row must be immutable.
+    Mutation gap: frozen=True -> frozen=False survived because no test asserted
+    immutability of the actor anchor.
+    """
+    from dataclasses import FrozenInstanceError
+
+    actor = ActorRef(kind="sdk", identity_hash="sha256-aaaa")
+    with pytest.raises(FrozenInstanceError):
+        actor.kind = "tampered"  # type: ignore[misc]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-029")
+@pytest.mark.asyncio
+async def test_init_scope_distinct_object_canonical_initial_succeeds(
+    tmp_path,
+) -> None:
+    """A runtime-built 'pending' (equal to but NOT identical with the interned
+    canonical origin) must be ACCEPTED by init_scope. Mutation gap L185
+    ``actual_initial != spec.initial_state`` -> ``is not``: the real ``!=`` is
+    False here (equal values -> insert), but ``is not`` between distinct-but-
+    equal strings is True and would wrongly raise.
+    """
+    db = SidecarDatabase(db_path=tmp_path / "sidecar.db", reader_count=1)
+    try:
+        await db.open()
+        canonical = "pending"
+        dyn = "".join(["pend", "ing"])  # == 'pending' but a distinct object
+        assert dyn == canonical
+        assert dyn is not canonical  # premise (no literal -> no SyntaxWarning)
+        await init_scope(
+            database=db,
+            scope_kind="run",
+            scope_id=str(uuid.uuid4()),
+            project_id=str(uuid.uuid4()),
+            initial_state=dyn,
+        )  # must NOT raise
+    finally:
+        await db.close()
