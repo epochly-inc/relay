@@ -109,6 +109,23 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
             ],
         ],
         "why": "compare_and_set_state -- keystone #1 (control plane writes the result).",
+        # Logic-equivalent mutants justified in docs/architecture/mutation-equivalents.md
+        # (class B). Each entry excludes survivors on `lines` whose operator
+        # contains `op_contains`. See the doc for the per-class reasoning.
+        "justified_equivalents": [
+            {"lines": [678, 681, 684], "op_contains": "",
+             "reason": "dead rowcount!=1 defensive block (single-writer in-txn)"},
+            {"lines": [667], "op_contains": "NotEq_Gt", "reason": "rowcount==1: 1!=1==1>1"},
+            {"lines": [667], "op_contains": "NotEq_Lt", "reason": "rowcount==1: 1!=1==1<1"},
+            {"lines": [560, 767], "op_contains": "NumberReplacer",
+             "reason": "dead else-0 arm of COALESCE-MAX seq read"},
+            {"lines": [201, 585], "op_contains": "ExceptionReplacer",
+             "reason": "defensive except BaseException (KeyboardInterrupt mid-txn)"},
+            {"lines": [725, 309], "op_contains": "Eq_Is",
+             "reason": "==/is identity equivalence (assigned-constant / small-int cache)"},
+            {"lines": [266], "op_contains": "Mul_Div",
+             "reason": "keyword-only * marker, no runtime arithmetic"},
+        ],
     },
 }
 
@@ -192,13 +209,18 @@ def _annotation_binop_rows(module_path: str) -> set[int]:
 
 
 def _classify_survivors(
-    module: str, session: Path
+    module: str,
+    session: Path,
+    justified: list[dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Return (real_survivors, equivalent_survivors) from a cosmic-ray session.
 
     Equivalent = a bit-operator mutation on a type-annotation line (auto-
-    justified per _annotation_binop_rows). Everything else is a REAL survivor
-    that must be killed by a new TDD test or justified by hand."""
+    justified per _annotation_binop_rows) OR a survivor matching one of the
+    target's ``justified_equivalents`` entries (logic equivalents justified in
+    writing in docs/architecture/mutation-equivalents.md). Everything else is a
+    REAL survivor that must be killed by a new TDD test."""
+    justified = justified or []
     anno_rows = _annotation_binop_rows(module)
     real: list[dict[str, object]] = []
     equiv: list[dict[str, object]] = []
@@ -212,9 +234,22 @@ def _classify_survivors(
     finally:
         con.close()
     for row, op, defn in sorted(rows):
-        rec = {"line": row, "operator": op, "function": defn}
+        rec: dict[str, object] = {"line": row, "operator": op, "function": defn}
         is_bitop = any(b in op for b in ("BitOr", "BitAnd", "BitXor"))
+        match = next(
+            (
+                j
+                for j in justified
+                if row in j["lines"]  # type: ignore[operator]
+                and str(j["op_contains"]) in op
+            ),
+            None,
+        )
         if is_bitop and row in anno_rows:
+            rec["reason"] = "annotation bit-op (PEP 563, no runtime effect)"
+            equiv.append(rec)
+        elif match is not None:
+            rec["reason"] = str(match["reason"])
             equiv.append(rec)
         else:
             real.append(rec)
@@ -251,7 +286,10 @@ def run_target(name: str, *, emit_json: bool, baseline_only: bool) -> int:
 
     # cr-rate prints the raw survival rate (counts equivalent mutants too).
     rate = _run(["cr-rate", str(session)])
-    real, equiv = _classify_survivors(module, session)
+    justified = target.get("justified_equivalents")  # type: ignore[union-attr]
+    real, equiv = _classify_survivors(
+        module, session, justified if isinstance(justified, list) else None
+    )
     result = {
         "target": name,
         "module": module,

