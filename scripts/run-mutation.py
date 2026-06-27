@@ -102,6 +102,10 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
                 "apps/local-sidecar/tests/test_state_engine_event_log.py",
                 "apps/local-sidecar/tests/test_state_engine_serializable.py",
                 "apps/local-sidecar/tests/test_v2m03_state_guards.py",
+                # Mutation-gap tests authored to kill real survivors (this loop):
+                "apps/local-sidecar/tests/test_cas_gaps_main.py",
+                "apps/local-sidecar/tests/test_cas_gaps_init_on_conn.py",
+                "apps/local-sidecar/tests/test_cas_gaps_idempotency.py",
             ],
         ],
         "why": "compare_and_set_state -- keystone #1 (control plane writes the result).",
