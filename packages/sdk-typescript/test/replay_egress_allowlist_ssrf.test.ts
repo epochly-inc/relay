@@ -34,6 +34,7 @@ import {
   RELAY_REPLAY_SSRF_CODE,
   Run,
   type RunHttpClient,
+  validateEgressEntries,
 } from "../src/run.js";
 
 const VALID_ACTOR = "sha256-actoractoractoractoractoractoractoractoractoractoractoractoractor";
@@ -478,5 +479,94 @@ describe("LOW #11: Run.replayCreate enforces the egress allowlist SSRF guard", (
     expect(stub.postReplayCalls.length).toBe(1);
     expect(result["mode"]).toBe("cassette");
     await run.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Native reserved-IPv6 SSRF parity (round-N re-hunt).
+//
+// Python network_policy._classify denies a NATIVE reserved IPv6 address via
+// ``ipaddress.is_reserved`` -> ("reserved", "ipv6_reserved"). The TS
+// _classifyIpv6 mirrored every other native-special branch (link-local,
+// is_private, multicast, the ::/96 IPv4-compatible unwrap) but was MISSING
+// the final is_reserved branch, so a reserved address like 4000::1 fell
+// through to ALLOW -- a Py<->TS verdict divergence and an SSRF defense gap
+// (the TS replay allowlist accepted a host the Python SDK rejects).
+//
+// CPython runs is_private BEFORE is_reserved, so the 100::/64 "discard-only"
+// private carve-out INSIDE reserved 100::/8 tags rfc1918/fc00::/7, while the
+// rest of 100::/8 tags reserved. These cases pin both the verdict AND the
+// (denied_reason, denied_cidr) bytes against the cel-python reference
+// (packages/sdk-python/relay/network_policy.py::_classify).
+//
+// Reference verdicts captured from cel-python:
+//   4000::1 8000::1 c000::1 e000::1 f800::1 fe00::1 1000::abcd 200::1
+//   400::1 800::1 100:0:0:1::1 101::1 1ff::1  -> ("reserved","ipv6_reserved")
+//   100::1 100::ffff:ffff:ffff:ffff           -> ("rfc1918","fc00::/7")
+//   2000::1                                    -> None (global unicast ALLOW)
+// ---------------------------------------------------------------------------
+describe("validateEgressEntries native reserved-IPv6 parity", () => {
+  function classifyEntry(
+    entry: string,
+  ): { reason: string; cidr: string } | null {
+    try {
+      validateEgressEntries([entry]);
+      return null;
+    } catch (e) {
+      expect(e).toBeInstanceOf(EgressDenied);
+      const env = (e as EgressDenied).envelope;
+      expect(env.code).toBe(RELAY_REPLAY_SSRF_CODE);
+      return { reason: env.denied_reason, cidr: env.denied_cidr };
+    }
+  }
+
+  const RESERVED_DENY = [
+    "4000::1",
+    "8000::1",
+    "c000::1",
+    "e000::1",
+    "f800::1",
+    "fe00::1",
+    "1000::abcd",
+    "200::1",
+    "400::1",
+    "800::1",
+    "100:0:0:1::1",
+    "101::1",
+    "1ff::1",
+  ] as const;
+
+  for (const host of RESERVED_DENY) {
+    it(`denies native reserved IPv6 ${host} as reserved/ipv6_reserved`, () => {
+      expect(classifyEntry(host)).toEqual({
+        reason: "reserved",
+        cidr: "ipv6_reserved",
+      });
+    });
+  }
+
+  // Bracketed host:port form must reach the same verdict (mirrors fe80:: ).
+  it("denies a bracketed [4000::1]:443 allowlist entry as reserved", () => {
+    expect(classifyEntry("[4000::1]:443")).toEqual({
+      reason: "reserved",
+      cidr: "ipv6_reserved",
+    });
+  });
+
+  // 100::/64 is the is_private discard-only carve-out INSIDE reserved
+  // 100::/8; CPython is_private precedence tags it rfc1918/fc00::/7, NOT
+  // reserved.
+  for (const host of ["100::1", "100::ffff:ffff:ffff:ffff"] as const) {
+    it(`tags the 100::/64 private carve-out ${host} as rfc1918 (is_private precedence)`, () => {
+      expect(classifyEntry(host)).toEqual({
+        reason: "rfc1918",
+        cidr: "fc00::/7",
+      });
+    });
+  }
+
+  // Control: 2000::/3 global unicast stays ALLOWED (is_reserved == False).
+  it("allows global-unicast 2000::1 (not reserved)", () => {
+    expect(classifyEntry("2000::1")).toBeNull();
   });
 });

@@ -551,6 +551,26 @@ function _classifyIpv6(host: string): readonly [string, string] | null {
   if (high96 === 0n) {
     return _classify(embeddedIpv4(low32));
   }
+  // ``is_private`` carve-out 100::/64 (the IETF "discard-only" prefix) sits
+  // INSIDE reserved 100::/8. CPython evaluates ``is_private`` BEFORE
+  // ``is_reserved``, so a 100::/64 address tags rfc1918/fc00::/7 like the
+  // other private blocks while the REST of 100::/8 tags reserved. Match that
+  // precedence: check the /64 private carve-out before the is_reserved table.
+  // (The wider 2001::/23 / 2001:10::/28 private blocks are NOT reserved -- they
+  // live in non-reserved 2000::/3 -- so they stay residual per the table note.)
+  if ((value >> 64n) === 0x0100000000000000n) {
+    return ["rfc1918", "fc00::/7"];
+  }
+  // Native ``is_reserved`` (CPython): the FINAL native-IPv6 branch, mirroring
+  // network_policy.py::_classify's ``if ip.is_reserved: ("reserved",
+  // "ipv6_reserved")``. Without this, a reserved address (4000::1, 8000::1,
+  // ...) fell through to the ALLOW null below -- a Py<->TS verdict divergence
+  // and an SSRF allowlist gap.
+  for (const net of _RESERVED_IPV6_NETWORKS) {
+    if (value >= net.first && value <= net.last) {
+      return ["reserved", "ipv6_reserved"];
+    }
+  }
   return null;
 }
 
@@ -638,6 +658,44 @@ const _DENIED_SUPERNETS: ReadonlyArray<{
   /* c8 ignore next */
   if (r === null) throw new Error(`bad denied supernet literal: ${c}`);
   return { v: r.v, first: r.first, last: r.last, cidr: c };
+});
+
+// CPython ``ipaddress.IPv6Address.is_reserved`` -- membership in any of the 15
+// IETF-reserved IPv6 networks. The Python egress _classify denies a native
+// reserved address as ("reserved","ipv6_reserved") in its FINAL IPv6 branch
+// (after link-local, is_private, multicast, and the ::/96 IPv4-compatible
+// unwrap). Mirrored here so _classifyIpv6 fails closed identically. The
+// table is the stable IANA reserved set -- NOT the irregular per-sub-block
+// global<->private carve-outs inside 2001::/23 / 3fff::/20, which remain
+// residual (those flip across CPython releases and are intentionally not
+// hand-rolled). Built from the same _cidrToRange machinery as
+// _DENIED_SUPERNETS so the range arithmetic is shared and tested.
+const _RESERVED_IPV6_NETWORKS: ReadonlyArray<{
+  first: bigint;
+  last: bigint;
+}> = (
+  [
+    "::/8",
+    "100::/8",
+    "200::/7",
+    "400::/6",
+    "800::/5",
+    "1000::/4",
+    "4000::/3",
+    "6000::/3",
+    "8000::/3",
+    "a000::/3",
+    "c000::/3",
+    "e000::/4",
+    "f000::/5",
+    "f800::/6",
+    "fe00::/9",
+  ] as const
+).map((c) => {
+  const r = _cidrToRange(c);
+  /* c8 ignore next */
+  if (r === null) throw new Error(`bad reserved ipv6 literal: ${c}`);
+  return { first: r.first, last: r.last };
 });
 
 /** Return ``[denied_reason, denied_cidr]`` or ``null`` if ``host`` is not
