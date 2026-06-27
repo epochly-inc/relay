@@ -204,8 +204,15 @@ list.
   health / dsm / test-gaps tools). The committed `.qsense/rules.toml` codifies
   the layering + no-cycle + complexity constraints as a machine-checked gate
   (`qsense check`); 5 current violations match the section 7 debt register.
-- The architecture must trace to the spec: a spec<->code<->test traceability map
-  is the companion deliverable (in progress).
+- Spec<->code<->test traceability: `scripts/gen-traceability-map.py` ->
+  [`docs/architecture/traceability-map.md`](docs/architecture/traceability-map.md)
+  -- the 16 keystone invariants mapped to their enforcement site + guard
+  test(s) (all 16 enforced and guarded, 0 findings), 987 assertions bound to a
+  test via `@pytest.mark.fulfills`, and coarse spec-section citation coverage.
+  `--check` gates drift + any invariant with no enforcement site.
+- Mutation testing (the loop's convergence signal): `scripts/run-mutation.py`
+  (cosmic-ray). `network_policy.py` is mutation-complete: 457/457 mutants
+  killed, 0 survivors, under its full SSRF + hardening test coverage.
 
 ## Cross-links
 
@@ -214,6 +221,7 @@ list.
 - [`docs/architecture/state-machine.md`](docs/architecture/state-machine.md)
 - [`docs/architecture/sandbox-threat-model.md`](docs/architecture/sandbox-threat-model.md)
 - [`docs/architecture/dependency-graph.md`](docs/architecture/dependency-graph.md)
+- [`docs/architecture/traceability-map.md`](docs/architecture/traceability-map.md)
 - [`CLAUDE.md`](CLAUDE.md) -- execution doctrine and the keystone invariants
 
 Spec: §A, §B, §C, §AO
