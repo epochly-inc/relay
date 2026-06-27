@@ -183,6 +183,50 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _remove_worktree(wt: Path) -> None:
+    subprocess.run(  # noqa: S603
+        ["git", "worktree", "remove", "--force", str(wt)],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+    )
+
+
+def _make_worktree(name: str) -> Path:
+    """Create an isolated git worktree at HEAD with its OWN uv venv.
+
+    cosmic-ray mutates the source file IN PLACE (apply -> test -> revert per
+    mutant), so running it in the main working tree races any concurrent
+    test/git activity and leaves the tree transiently dirty. Running it in a
+    throwaway worktree (the worktree's editable install points at the
+    worktree's source) keeps the main tree pristine and lets runs parallelize.
+    The uv venv is created from uv's global cache in ~1.5s."""
+    wt = Path(tempfile.mkdtemp(prefix=f"relay-mut-wt-{name}-"))
+    add = subprocess.run(  # noqa: S603
+        ["git", "worktree", "add", "--detach", str(wt), "HEAD"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+    )
+    if add.returncode != 0:
+        raise RuntimeError(f"git worktree add failed: {add.stderr.strip()}")
+    sync = subprocess.run(  # noqa: S603
+        ["uv", "sync", "--all-packages", "--all-extras"],
+        cwd=wt, capture_output=True, text=True, check=False, timeout=1200,
+    )
+    if sync.returncode != 0:
+        _remove_worktree(wt)
+        raise RuntimeError(f"uv sync in worktree failed: {sync.stderr[-400:]}")
+    return wt
+
+
+def _run_wt(wt: Path, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a venv command (cosmic-ray, cr-rate) inside the worktree via its own
+    venv (uv run --project), so the mutated file is the worktree's, not the
+    main tree's. The cosmic-ray test-command subprocess inherits the worktree
+    venv on PATH."""
+    return subprocess.run(  # noqa: S603
+        ["uv", "run", "--project", str(wt), *cmd],
+        cwd=wt, capture_output=True, text=True, check=False,
+    )
+
+
 def _annotation_binop_rows(module_path: str) -> set[int]:
     """Line numbers of every ``ast.BinOp`` that lives inside a type annotation
     (parameter ``annotation`` or function ``returns``). A bit-operator mutation
@@ -278,14 +322,21 @@ def run_target(name: str, *, emit_json: bool, baseline_only: bool) -> int:
     session = tmp / "session.sqlite"
     _write_config(module, test_groups, cfg)
 
-    init = _run(["cosmic-ray", "init", str(cfg), str(session)])
-    if init.returncode != 0:
-        print(f"FAIL: cosmic-ray init: {init.stderr.strip()}", file=sys.stderr)
-        return 2
-    _run(["cosmic-ray", "exec", str(cfg), str(session)])
-
-    # cr-rate prints the raw survival rate (counts equivalent mutants too).
-    rate = _run(["cr-rate", str(session)])
+    # Run cosmic-ray inside an isolated worktree so it never mutates the main
+    # working tree. config + session live outside the worktree (absolute paths);
+    # the relative module-path / test paths in the config resolve against the
+    # worktree (cwd) so the worktree's copy is mutated and its venv runs tests.
+    wt = _make_worktree(name)
+    try:
+        init = _run_wt(wt, ["cosmic-ray", "init", str(cfg), str(session)])
+        if init.returncode != 0:
+            print(f"FAIL: cosmic-ray init: {init.stderr.strip()}", file=sys.stderr)
+            return 2
+        _run_wt(wt, ["cosmic-ray", "exec", str(cfg), str(session)])
+        # cr-rate prints the raw survival rate (counts equivalent mutants too).
+        rate = _run_wt(wt, ["cr-rate", str(session)])
+    finally:
+        _remove_worktree(wt)
     justified = target.get("justified_equivalents")  # type: ignore[union-attr]
     real, equiv = _classify_survivors(
         module, session, justified if isinstance(justified, list) else None
