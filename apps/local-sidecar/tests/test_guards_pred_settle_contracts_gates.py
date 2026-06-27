@@ -376,3 +376,93 @@ async def test_bound_gates_accept_action_passes() -> None:
         )
     assert ok is True
     assert diag == {}
+
+
+# ---------------------------------------------------------------------------
+# (5) Residual mutation-survivor hardening (cosmic-ray fixed-harness report)
+#
+# Each test pins a guard branch against ONE surviving mutation operator on a
+# specific source line. The chosen input makes the REAL guard and the MUTATED
+# guard return observably different results, so the real-behavior assertion
+# below passes today and would FAIL under the mutation.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_settle_spans_batch_settled_integer_one_is_not_true() -> None:
+    """L340 ReplaceComparisonOperator_Is_Eq: the settled marker uses identity
+    (`is True`), not equality. An integer 1 satisfies `== True` but NOT
+    `is True`. With the spans_batch_settled key present and its value not the
+    `True` singleton, the guard FAILS (the present-key branch fires). Mutating
+    `is True` -> `== True` would PASS (1 == True), so this kills the mutation.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        ok, diag = await _guard_spans_batch_settled_or_client_lifecycle_terminal(
+            conn, "run", "run-1", {"spans_batch_settled": 1}, None
+        )
+    assert ok is False
+    assert "neither spans batch settled nor lifecycle terminal" in diag["reason"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_contract_written_empty_list_passes_lenient() -> None:
+    """L399 ReplaceOrWithAnd: an empty required_contract_ids list is lenient
+    (True, {}) even when contract_results exists with zero rows for the run.
+    Operand1 `not isinstance([], list)` is False and operand2 `not []` is True,
+    so `or` -> True (lenient) while `and` -> False, dropping into the COUNT(*)
+    path (count == 0 -> FAIL). This kills the mutation.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_CONTRACT_RESULTS)
+        ok, diag = await _guard_contract_results_written(
+            conn, "run", "run-1", {"required_contract_ids": []}, None
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_bound_gates_non_list_passes_lenient() -> None:
+    """L436 ReplaceOrWithAnd: a non-list bound_gate_ids (str) is treated as
+    absent -> lenient (True, {}), short-circuiting before the gate_decisions
+    query. Operand1 `not isinstance("g1", list)` is True and operand2
+    `not "g1"` is False, so `or` -> True while `and` -> False; the mutant then
+    iterates the string's characters ('g', '1') as gate ids, finds no decision
+    rows, and FAILS. The empty gate_decisions table guarantees the mutant
+    reaches the loop rather than the OperationalError note path. This kills the
+    mutation.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_GATE_DECISIONS)
+        ok, diag = await _guard_all_bound_gates_decided(
+            conn, "run", "run-1", {"bound_gate_ids": "g1"}, None
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_bound_gates_action_after_remediate_lexically_passes() -> None:
+    """L451 ReplaceComparisonOperator_Eq_GtE: only the exact 'remediate'
+    sentinel (or a missing decision) blocks a bound gate. A decided action that
+    sorts lexicographically AFTER 'remediate' (e.g. 'superseded') is accepted
+    -> (True, {}). Mutating `== "remediate"` -> `>= "remediate"` would flag it
+    ('superseded' >= 'remediate' is True) and FAIL, so this kills the mutation.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_GATE_DECISIONS)
+        await conn.execute(
+            "INSERT INTO gate_decisions (scope_type, scope_id, gate_id, action) "
+            "VALUES (?, ?, ?, ?)",
+            ("run", "run-1", "g1", "superseded"),
+        )
+        await conn.commit()
+        ok, diag = await _guard_all_bound_gates_decided(
+            conn, "run", "run-1", {"bound_gate_ids": ["g1"]}, None
+        )
+    assert ok is True
+    assert diag == {}

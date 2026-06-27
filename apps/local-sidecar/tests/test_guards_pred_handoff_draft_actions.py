@@ -28,9 +28,12 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import aiosqlite
 import pytest
 
+from relay_sidecar.state_engine import guards
 from relay_sidecar.state_engine.guards import (
     _guard_all_conditions_evaluated,
     _guard_auto_transition_allowed,
@@ -492,3 +495,166 @@ async def test_terminal_action_accept_and_invalid_pass() -> None:
         )
         assert ok_invalid is True
         assert diag_invalid == {}
+
+
+# ---------------------------------------------------------------------------
+# (7) Residual mutation-survivor closers.
+#
+# The branch tests above leave a handful of cosmic-ray survivors on guard
+# predicates whose existing inputs do not distinguish the real operator from
+# its mutant. Each test below pins the REAL behavior on the one input class
+# that diverges under the named mutation, killing it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_three_anchor_empty_project_id_triggers_scope_state_read() -> None:
+    # Kills L506 ReplaceAndWithOr in _guard_three_anchor_handoff_valid:
+    #   if not (isinstance(payload_project_id, str) and payload_project_id):
+    # The empty string "" is the divergence point. With `and`, the guard
+    # detects "" as not a usable project_id (True and "" -> falsy; `not` ->
+    # True) and reads scope_state, which supplies 'proj-from-state'. The
+    # manifest is registered ONLY for a DIFFERENT project, so the project-
+    # bound lookup misses -> MANIFEST_NOT_ACTIVE.
+    # With `or`, isinstance("",str)=True short-circuits the disjunction to
+    # True; `not True` -> False, so the scope_state read is skipped, the
+    # empty "" stays in the payload, the validator coerces it to None and
+    # falls back to a commit_hash-only lookup that MATCHES the cross-project
+    # row -> (True, {}). Asserting False here kills the `or` mutant.
+    async with aiosqlite.connect(":memory:") as conn:
+        await _create_handoff_tables(conn)
+        await conn.execute("INSERT INTO actors VALUES ('sha256-actor-h', NULL)")
+        await conn.execute(
+            "INSERT INTO manifest_versions VALUES "
+            "('proj-OTHER', 'sha256-mch-h', NULL, 0)"
+        )
+        await conn.execute(
+            "INSERT INTO scope_state VALUES ('run', 'run-h', 'proj-from-state')"
+        )
+        await conn.commit()
+        payload = {
+            "run_id": "run-h",
+            "actor_identity_hash": "sha256-actor-h",
+            "manifest_commit_hash": "sha256-mch-h",
+            "project_id": "",
+        }
+        ok, diag = await _guard_three_anchor_handoff_valid(
+            conn, "run", "run-h", payload, None
+        )
+        assert ok is False
+        assert "three-anchor handoff failed" in diag["reason"]
+        assert diag["handoff_reason"] == "MANIFEST_NOT_ACTIVE"
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_three_anchor_scope_state_present_no_matching_row() -> None:
+    # Kills BOTH L514 ReplaceAndWithOr mutants in
+    # _guard_three_anchor_handoff_valid:
+    #   if row is not None and isinstance(row[0], str) and row[0]:
+    # The scope_state table is PRESENT but has no row for this scope, so the
+    # SELECT succeeds (no OperationalError) and fetchone() returns None.
+    # Real (`and`): `None is not None` short-circuits the whole condition to
+    # False -- row[0] is never evaluated -- so project_id stays absent and the
+    # validator's commit_hash-only fallback matches the registered row ->
+    # (True, {}).
+    # Mutant 1 (first `and` -> `or`): `(None is not None) or
+    # isinstance(row[0], str) and row[0]` forces evaluation of
+    # isinstance(None[0], ...) -> TypeError.
+    # Mutant 2 (second `and` -> `or`): `(... ) or row[0]` forces evaluation
+    # of None[0] -> TypeError.
+    # The except clause only catches aiosqlite.OperationalError, so the
+    # TypeError propagates; the real path returns a tuple. Asserting a tuple
+    # return kills both mutants (they raise instead).
+    async with aiosqlite.connect(":memory:") as conn:
+        await _create_handoff_tables(conn)
+        await conn.execute("INSERT INTO actors VALUES ('sha256-actor-i', NULL)")
+        await conn.execute(
+            "INSERT INTO manifest_versions VALUES ('proj-any', 'sha256-mch-i', NULL, 0)"
+        )
+        # A scope_state row for a DIFFERENT scope: the table is populated but
+        # the guard's WHERE clause matches nothing -> fetchone() is None.
+        await conn.execute(
+            "INSERT INTO scope_state VALUES ('run', 'other-scope', 'proj-x')"
+        )
+        await conn.commit()
+        payload = {
+            "run_id": "run-i",
+            "actor_identity_hash": "sha256-actor-i",
+            "manifest_commit_hash": "sha256-mch-i",
+        }
+        ok, diag = await _guard_three_anchor_handoff_valid(
+            conn, "run", "run-i", payload, None
+        )
+        assert ok is True
+        assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_draft_not_expired_exact_boundary_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Kills L560 ReplaceComparisonOperator_Gt_GtE in _guard_draft_not_expired:
+    #   if datetime.now(tz=UTC) > expiry:
+    # The divergence point is the exact boundary now == expiry. Freeze the
+    # guard's clock to equal draft_expires_at. Real (`>`): now > expiry is
+    # False -> not expired -> (True, {}). Mutant (`>=`): now >= expiry is
+    # True -> expired -> (False, "draft expired"). Subclassing datetime keeps
+    # fromisoformat working while overriding now().
+    fixed = datetime(2026, 6, 27, 12, 0, 0, tzinfo=UTC)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return fixed
+
+    monkeypatch.setattr(guards, "datetime", _FrozenDatetime)
+    async with aiosqlite.connect(":memory:") as conn:
+        ok, diag = await _guard_draft_not_expired(
+            conn, "gate", "g-1", {"draft_expires_at": "2026-06-27T12:00:00Z"}, None
+        )
+        assert ok is True
+        assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_all_conditions_pending_int_one_passes() -> None:
+    # Kills L579 ReplaceComparisonOperator_Is_Eq in
+    # _guard_all_conditions_evaluated:
+    #   if payload.get("conditions_pending") is True:
+    # Integer 1 is the divergence point: `1 is True` is False (identity), so
+    # the guard PASSES -> (True, {}). The `==` mutant evaluates `1 == True`
+    # as True and would block with "conditions not fully evaluated".
+    async with aiosqlite.connect(":memory:") as conn:
+        ok, diag = await _guard_all_conditions_evaluated(
+            conn, "gate", "g-1", {"conditions_pending": 1}, None
+        )
+        assert ok is True
+        assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_restart_action_cascade_int_zero_passes() -> None:
+    # Kills BOTH L604 mutants in _guard_restart_action_applies:
+    #   if cascade is False:
+    # ReplaceComparisonOperator_Is_Eq (`==`) and Is_LtE (`<=`). Integer 0 is
+    # the divergence point. Real (`is`): `0 is False` is False (identity), so
+    # with a valid action the guard PASSES -> (True, {}).
+    #   - `==` mutant: `0 == False` is True -> blocks ("cascade_on_block is
+    #     false").
+    #   - `<=` mutant: `0 <= False` is `0 <= 0` -> True -> blocks.
+    # Asserting (True, {}) kills both.
+    async with aiosqlite.connect(":memory:") as conn:
+        ok, diag = await _guard_restart_action_applies(
+            conn,
+            "gate",
+            "g-1",
+            {"decision_action": "remediate", "cascade_on_block": 0},
+            None,
+        )
+        assert ok is True
+        assert diag == {}

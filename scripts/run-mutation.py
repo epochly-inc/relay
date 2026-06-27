@@ -154,6 +154,30 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
             ],
         ],
         "why": "transition guards -- keystone #4 (three-anchor handoff) + actor/manifest binding.",
+        # Logic equivalents triaged in writing (docs/architecture/mutation-equivalents.md
+        # Class C). Each surviving mutant here changes the source but produces no
+        # test-observable behavior; the killable +1 NumberReplacer siblings (row[1]
+        # IndexError) ARE killed by the predicate tests, so only the unobservable
+        # variant survives. The annotation `|`-mutants are auto-classified (Class A).
+        "justified_equivalents": [
+            {"lines": [243, 244, 277, 373, 409, 514, 515, 746, 783],
+             "op_contains": "NumberReplacer",
+             "reason": "single-column SELECT row[-1]==row[0], OR dead `else 0` arm "
+                       "of `int(row[0]) if row is not None else 0` over COUNT(*)/"
+                       "single-row fetchone (never None). +1 sibling row[1] raises "
+                       "IndexError and is killed by existing tests; only the "
+                       "unobservable -1/dead-arm variant survives."},
+            {"lines": [278, 410, 747], "op_contains": "Eq_LtE",
+             "reason": "`count/total == 0` vs `<= 0` over a non-negative COUNT(*) "
+                       "result -- the operators cannot diverge for any input."},
+            {"lines": [376], "op_contains": "Sub_BitXor",
+             "reason": "set(required) - evaluated == set(required) ^ evaluated: "
+                       "evaluated is always a subset of required (built from the "
+                       "WHERE contract_id IN (required) projection)."},
+            {"lines": [91], "op_contains": "Mul_Div",
+             "reason": "bare `*` keyword-only marker in def register_guard(...,*,"
+                       "override=...) is syntactic, not arithmetic; no runtime effect."},
+        ],
     },
 }
 

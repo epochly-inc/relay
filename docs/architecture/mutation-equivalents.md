@@ -75,4 +75,42 @@ the Mul-Div binary-operator mutation on the bare `*` in `def f(*, ...)`: the `*`
 syntactic keyword-only separator, not an arithmetic operator; mutating it has no
 runtime behavioral effect.
 
+## Class C -- guards.py logic equivalents (17)
+
+`state_engine/guards.py` holds 23 pure guard predicates. After the direct-unit
+suite (`tests/test_guards_pred_*.py`, 144 tests) killed 315 of the 368 original
+real survivors, 53 remained; 36 of those were killed by targeted-input tests
+(integer `0`/`1` to pin `is False`/`is True` identity checks, two-row fixtures
+for `continue`-vs-`break`, boundary values for comparison mutants), leaving these
+17 logic equivalents (encoded in `scripts/run-mutation.py` `guards.justified_
+equivalents`). Each was verified unobservable by a sandboxed harness that execs a
+copy of the predicate with the mutation applied across every reaching scenario.
+
+### C1. Single-column `row[-1]` / dead `else 0` (NumberReplacer; L243, L244, L277, L373, L409, L514, L515, L746, L783)
+
+cosmic-ray's `NumberReplacer` offsets are exactly `+1`/`-1`. On a row from a
+single-column `SELECT` (`project_id`, `contract_id`, `COUNT(*)`), `row[-1]` is
+identically `row[0]`, so the `-1` variant is unobservable; the `+1` variant
+(`row[1]`) raises `IndexError` and IS killed by the existing predicate tests. The
+`else 0` arm of `int(row[0]) if row is not None else 0` over `COUNT(*)`/single-row
+`fetchone()` (never `None`) is dead, so mutating the `0` literal (`->1`/`->-1`) is
+unobservable.
+
+### C2. `== 0` vs `<= 0` over COUNT(*) (Eq_LtE; L278, L410, L747)
+
+`count/total = int(COUNT(*))` is non-negative for every input, so `== 0` and
+`<= 0` cannot diverge.
+
+### C3. Subset set-difference (Sub_BitXor; L376)
+
+`set(required) - evaluated == set(required) ^ evaluated` because `evaluated` is
+always a subset of `required` (built from `WHERE contract_id IN (required)`), so
+`evaluated - required` is empty.
+
+### C4. Keyword-only `*` marker (Mul_Div; L91)
+
+`ReplaceBinaryOperator_Mul_Div` on the bare `*` in `def register_guard(name, fn,
+*, override=...)`: the `*` is the keyword-only-args separator, not an arithmetic
+operator; mutating it has no runtime behavior (same class as B5).
+
 Spec: §C, §H, §AM

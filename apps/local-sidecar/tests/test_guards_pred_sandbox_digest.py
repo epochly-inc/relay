@@ -435,3 +435,62 @@ async def test_manifest_digest_falls_back_to_mch_arg() -> None:
         )
     assert ok is True
     assert diag == {}
+
+
+# ---------------------------------------------------------------------------
+# (6) Identity-vs-equality mutation hardening (``is False`` not ``== False``)
+#
+# The three replay-sandbox markers compare with ``is False`` ON PURPOSE: only
+# the literal ``False`` singleton fails the guard, never a merely falsy value.
+# Integer ``0`` is the discriminator -- ``0 == False`` is True but
+# ``0 is False`` is False -- so these tests kill
+# ReplaceComparisonOperator_Is_Eq (``is`` -> ``==``) on L674 / L690 / L706.
+# (The existing truthy-string ``"no"`` tests do NOT: ``"no" == False`` and
+# ``"no" is False`` are both False, so they cannot observe the swap.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_sandbox_provisioned_zero_int_passes() -> None:
+    """L674 ``is False`` identity: int 0 must PASS, not fail.
+
+    ``0 == False`` is True but ``0 is False`` is False, so under the
+    ``is`` -> ``==`` mutation the guard would wrongly FAIL.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        ok, diag = await _guard_sandbox_provisioned(
+            conn, "replay_case", "rc-1", {"sandbox_provisioned": 0}, None
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_network_policy_zero_int_passes() -> None:
+    """L690 ``is False`` identity: int 0 must PASS, not fail.
+
+    Discriminates ``is False`` from ``== False`` (``0 == False`` is True).
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        ok, diag = await _guard_network_policy_applied(
+            conn, "replay_case", "rc-1", {"network_policy_applied": 0}, None
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_sandbox_exit_zero_int_passes() -> None:
+    """L706 ``is False`` identity: int 0 must PASS, not fail.
+
+    Discriminates ``is False`` from ``== False`` (``0 == False`` is True).
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        ok, diag = await _guard_sandbox_exit_observed(
+            conn, "replay_case", "rc-1", {"sandbox_exit_observed": 0}, None
+        )
+    assert ok is True
+    assert diag == {}

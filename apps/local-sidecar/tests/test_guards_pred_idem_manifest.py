@@ -28,9 +28,12 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import aiosqlite
 import pytest
 
+import relay_sidecar.state_engine.guards as guards_module
 from relay_sidecar.state_engine.guards import (
     _guard_valid_idempotency_key,
     _guard_valid_manifest_commit_hash,
@@ -445,6 +448,285 @@ async def test_manifest_j_no_scope_state_commit_only() -> None:
         await conn.execute(
             "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
             ("projWhatever", "sha256-abc", None, 0),
+        )
+        await conn.commit()
+        ok, diag = await _guard_valid_manifest_commit_hash(
+            conn, _SCOPE_KIND, _SCOPE_ID, {}, "sha256-abc"
+        )
+    assert ok is True
+    assert diag == {}
+
+
+# ===========================================================================
+# (3) Residual-mutant hardening (cosmic-ray survivors)
+#
+# Each test below pins a specific guard branch against a specific surviving
+# mutation that no prior test in this file detects. The mutant operator and
+# source line are named in the docstring so a future reader can trace it.
+# ===========================================================================
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_idem_a_identity_int_one_not_true() -> None:
+    """Kill L160 ReplaceComparisonOperator_Is_Eq (``... is True`` -> ``== True``).
+
+    The marker check uses *identity* on purpose. Integer ``1`` satisfies
+    ``1 == True`` but NOT ``1 is True``. With ``idempotency_key_invalid: 1``
+    the real guard takes the identity path (does NOT fail), no key is
+    supplied, so it returns ``(True, {})``. Under the ``== True`` mutation it
+    would hard-fail with the explicit-invalid-marker diagnostic.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        ok, diag = await _guard_valid_idempotency_key(
+            conn,
+            _SCOPE_KIND,
+            _SCOPE_ID,
+            {"idempotency_key_invalid": 1},
+            None,
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_idem_e_reuse_stored_greater_than_expected() -> None:
+    """Kill L193 ReplaceComparisonOperator_NotEq_Lt (``!=`` -> ``<``).
+
+    ``!=`` and ``<`` agree when stored < expected (which the existing
+    ``test_idem_e_reuse_mismatch`` covers) but DIVERGE when stored > expected:
+    ``!=`` is still True (mismatch -> fail) while ``<`` is False (would pass).
+    Stored ``sha256-bbb`` > expected ``sha256-aaa`` lexicographically, so the
+    real guard FAILS on reuse; the ``<`` mutation would PASS.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_IDEMPOTENCY)
+        await conn.execute(
+            "INSERT INTO idempotency_records VALUES (?, ?, ?)",
+            ("k1", "sha256-bbb", 200),
+        )
+        await conn.commit()
+        ok, diag = await _guard_valid_idempotency_key(
+            conn,
+            _SCOPE_KIND,
+            _SCOPE_ID,
+            {"idempotency_key": "k1", "request_hash": "sha256-aaa"},
+            None,
+        )
+    assert ok is False
+    assert "reuse with different request_digest" in diag["reason"]
+    assert diag["idempotency_key"] == "k1"
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_manifest_and_with_or_empty_project_id() -> None:
+    """Kill L243 ReplaceAndWithOr x2 (both ``and`` -> ``or``).
+
+    scope_state stores an EMPTY-STRING project_id. The real predicate
+    ``row is not None and isinstance(row[0], str) and row[0]`` is falsy
+    (``row[0] == ''`` fails the truthiness clause), so project_id stays None
+    and the guard takes the commit-only lookup -> the row registered under
+    ``realproj`` matches -> active (NULL effective_until) -> ``(True, {})``.
+
+    Either ``and`` -> ``or`` mutation makes the expression truthy, assigning
+    ``project_id = ''`` -> the project-scoped lookup finds nothing -> the
+    cross-project arm fires -> ``(False, ...)``. So the real PASS distinguishes
+    both mutants.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_SCOPE_STATE)
+        await conn.execute(_DDL_MANIFEST_VERSIONS)
+        await conn.execute(
+            "INSERT INTO scope_state VALUES (?, ?, ?)",
+            (_SCOPE_KIND, _SCOPE_ID, ""),
+        )
+        await conn.execute(
+            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
+            ("realproj", "sha256-abc", None, 0),
+        )
+        await conn.commit()
+        ok, diag = await _guard_valid_manifest_commit_hash(
+            conn, _SCOPE_KIND, _SCOPE_ID, {}, "sha256-abc"
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_manifest_aware_non_z_future_passes() -> None:
+    """Kill L307 AddNot (``if text.endswith("Z")`` -> ``if not ...``).
+
+    With an AWARE, non-Z future timestamp (``...+00:00``) the real guard
+    SKIPS the trailing-Z normalization, parses cleanly, and passes.
+    The ``not`` mutation instead truncates the last char and appends
+    ``+00:00`` (``...+00:0+00:00``), which fails ``fromisoformat`` with a
+    ValueError -> the row is skipped -> ``(False, expired)``.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_SCOPE_STATE)
+        await conn.execute(_DDL_MANIFEST_VERSIONS)
+        await conn.execute(
+            "INSERT INTO scope_state VALUES (?, ?, ?)",
+            (_SCOPE_KIND, _SCOPE_ID, "projA"),
+        )
+        await conn.execute(
+            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
+            ("projA", "sha256-abc", "2999-01-01T00:00:00+00:00", 0),
+        )
+        await conn.commit()
+        ok, diag = await _guard_valid_manifest_commit_hash(
+            conn, _SCOPE_KIND, _SCOPE_ID, {}, "sha256-abc"
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_manifest_naive_future_tz_normalized() -> None:
+    """Kill L310 AddNot AND L310 ReplaceComparisonOperator_Is_IsNot.
+
+    A NAIVE future timestamp (no offset) parses to a tz-naive datetime. The
+    real guard's ``if effective_until.tzinfo is None`` is True, so it stamps
+    UTC and the aware<=aware comparison succeeds -> ``(True, {})``.
+
+    Both the ``not (... is None)`` (AddNot) and the ``... is not None``
+    (Is_IsNot) mutations SKIP the UTC stamp, leaving a naive datetime. The
+    later ``now(aware) <= naive + timedelta`` comparison then raises
+    TypeError (can't compare aware and naive) -> guard raises, distinguishing
+    the real PASS.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_SCOPE_STATE)
+        await conn.execute(_DDL_MANIFEST_VERSIONS)
+        await conn.execute(
+            "INSERT INTO scope_state VALUES (?, ?, ?)",
+            (_SCOPE_KIND, _SCOPE_ID, "projA"),
+        )
+        await conn.execute(
+            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
+            ("projA", "sha256-abc", "2999-01-01T00:00:00", 0),
+        )
+        await conn.commit()
+        ok, diag = await _guard_valid_manifest_commit_hash(
+            conn, _SCOPE_KIND, _SCOPE_ID, {}, "sha256-abc"
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_manifest_skip_malformed_row_then_active() -> None:
+    """Kill L312 ExceptionReplacer AND L313 ReplaceContinueWithBreak.
+
+    Two rows for the same (project, hash): the FIRST has a malformed
+    effective_until (``fromisoformat`` raises ValueError), the SECOND is
+    active (NULL effective_until). The real guard catches the ValueError,
+    ``continue``s past the bad row, reaches the active row, and returns
+    ``(True, {})``.
+
+    - L312 ExceptionReplacer rewrites ``except ValueError`` to
+      ``except CosmicRayTestingException`` (which does NOT catch ValueError),
+      so the ValueError propagates and the guard raises.
+    - L313 ``continue`` -> ``break`` stops at the malformed row, exits the
+      loop, and returns ``(False, expired)``.
+
+    Both diverge from the real PASS. Row order is SQLite rowid/insertion
+    order (no ORDER BY in the guard query), so the malformed row is visited
+    first.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_SCOPE_STATE)
+        await conn.execute(_DDL_MANIFEST_VERSIONS)
+        await conn.execute(
+            "INSERT INTO scope_state VALUES (?, ?, ?)",
+            (_SCOPE_KIND, _SCOPE_ID, "projA"),
+        )
+        await conn.execute(
+            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
+            ("projA", "sha256-abc", "not-a-valid-date", 0),
+        )
+        await conn.execute(
+            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
+            ("projA", "sha256-abc", None, 0),
+        )
+        await conn.commit()
+        ok, diag = await _guard_valid_manifest_commit_hash(
+            conn, _SCOPE_KIND, _SCOPE_ID, {}, "sha256-abc"
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_manifest_within_grace_window_past() -> None:
+    """Kill L314 ReplaceBinaryOperator_Add_Sub (``eu + grace`` -> ``eu - grace``).
+
+    effective_until is 100s in the PAST with a 3600s grace window, so the
+    real ``now <= effective_until + grace`` is ``now <= now+3500`` -> True
+    (within grace) -> ``(True, {})``. The ``-`` mutation computes
+    ``now <= now-3700`` -> False -> ``(False, expired)``. The ~3500s margin
+    swamps any test-execution jitter.
+    """
+    now = datetime.now(UTC)
+    effective_until = (now - timedelta(seconds=100)).isoformat()
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_SCOPE_STATE)
+        await conn.execute(_DDL_MANIFEST_VERSIONS)
+        await conn.execute(
+            "INSERT INTO scope_state VALUES (?, ?, ?)",
+            (_SCOPE_KIND, _SCOPE_ID, "projA"),
+        )
+        await conn.execute(
+            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
+            ("projA", "sha256-abc", effective_until, 3600),
+        )
+        await conn.commit()
+        ok, diag = await _guard_valid_manifest_commit_hash(
+            conn, _SCOPE_KIND, _SCOPE_ID, {}, "sha256-abc"
+        )
+    assert ok is True
+    assert diag == {}
+
+
+_FROZEN_NOW = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+
+class _FrozenDateTime(datetime):
+    """``datetime`` subclass whose ``now()`` is frozen for boundary tests."""
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: ARG003 - signature parity with datetime.now
+        return _FROZEN_NOW
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
+async def test_manifest_grace_boundary_equality(monkeypatch) -> None:
+    """Kill L314 ReplaceComparisonOperator_LtE_Lt (``<=`` -> ``<``).
+
+    ``<=`` and ``<`` only diverge at exact equality, which is unreachable
+    against a live wall clock. We freeze ``datetime.now`` to a fixed instant
+    and set effective_until to that SAME instant with a 0s grace window, so
+    ``now <= effective_until + 0`` is an equality. The real ``<=`` passes;
+    the ``<`` mutation fails (expired).
+    """
+    monkeypatch.setattr(guards_module, "datetime", _FrozenDateTime)
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_SCOPE_STATE)
+        await conn.execute(_DDL_MANIFEST_VERSIONS)
+        await conn.execute(
+            "INSERT INTO scope_state VALUES (?, ?, ?)",
+            (_SCOPE_KIND, _SCOPE_ID, "projA"),
+        )
+        await conn.execute(
+            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
+            ("projA", "sha256-abc", _FROZEN_NOW.isoformat(), 0),
         )
         await conn.commit()
         ok, diag = await _guard_valid_manifest_commit_hash(
