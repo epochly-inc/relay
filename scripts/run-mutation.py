@@ -46,26 +46,28 @@ from typing import Final
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 
 # Parity-critical + control-plane targets. module = path to mutate (relative to
-# REPO_ROOT); tests = the files that exercise it (broad enough for accurate
-# kills). Extend as the loop widens coverage; every entry must keep its tests
-# green on un-mutated source.
+# REPO_ROOT); test_groups = lists of test files, each GROUP run in its OWN
+# pytest process and chained with `&&` so a mutant is killed if ANY group fails.
+# Separate processes are required because cross-package test files do not
+# always compose in one process (different conftests / module-global state); a
+# mutant must be exercised by the UNION of all groups for an accurate kill-rate.
+# Extend as the loop widens coverage; every group must pass on un-mutated source.
 TARGETS: Final[dict[str, dict[str, object]]] = {
     "network_policy": {
         "module": "packages/sdk-python/relay/network_policy.py",
-        "tests": [
-            "packages/sdk-python/tests/test_audit_r3_ssrf.py",
-            "packages/sdk-python/tests/test_ssrf_numeric_and_transition_forms.py",
-            "packages/sdk-python/tests/test_ssrf_decorated_host_normalization.py",
-            "packages/sdk-python/tests/test_iso018_ssrf_ipv4_mapped_ipv6.py",
-            "packages/sdk-python/tests/test_v3m5_idn_homograph_sdk.py",
+        "test_groups": [
+            [
+                "packages/sdk-python/tests/test_audit_r3_ssrf.py",
+                "packages/sdk-python/tests/test_ssrf_numeric_and_transition_forms.py",
+                "packages/sdk-python/tests/test_ssrf_decorated_host_normalization.py",
+                "packages/sdk-python/tests/test_iso018_ssrf_ipv4_mapped_ipv6.py",
+                "packages/sdk-python/tests/test_v3m5_idn_homograph_sdk.py",
+            ],
+            # Separate process: this hardening file fails 5 SSRF tests if run in
+            # the SAME process (cross-package conftest/state pollution -- a real
+            # test-isolation finding) but composes fine on its own.
+            ["tests/hardening/test_v2m08_ai_hardening.py"],
         ],
-        # NOTE: tests/hardening/test_v2m08_ai_hardening.py also exercises this
-        # module but CANNOT be appended to the same pytest process -- running it
-        # alongside the SSRF tests fails 5 of them (cross-package conftest/state
-        # pollution, a real test-isolation finding tracked for the loop). The
-        # fix is per-process test groups (pytest A && pytest B); until then this
-        # selection is the clean-composing subset, so a few survivors may be
-        # false (covered only by the hardening tier) and are caught at triage.
         "why": "SSRF egress classifier + manifest homograph guard; Py<->TS parity-critical.",
     },
 }
@@ -75,35 +77,43 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
 _MUTANT_TIMEOUT_S: Final[float] = 30.0
 
 
-def _pytest_cmd(tests: list[str]) -> str:
-    sel = " ".join(tests)
-    return (
-        "python -m pytest -x -q --no-header -p no:cacheprovider " + sel
-    )
+_PYTEST_BASE: Final[str] = "python -m pytest -x -q --no-header -p no:cacheprovider"
 
 
-def _baseline_ok(tests: list[str]) -> tuple[bool, str]:
-    """The target tests MUST pass on un-mutated source before mutating."""
-    proc = subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "pytest", "-q", "--no-header",
-         "-p", "no:cacheprovider", *tests],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
-    )
-    tail = "\n".join(proc.stdout.strip().splitlines()[-2:])
-    return proc.returncode == 0, tail
+def _pytest_cmd(test_groups: list[list[str]]) -> str:
+    """One `&&`-chained command: each group is its own pytest process, so a
+    mutant survives only if EVERY group passes (killed if any fails)."""
+    return " && ".join(f"{_PYTEST_BASE} {' '.join(g)}" for g in test_groups)
 
 
-def _write_config(module: str, tests: list[str], cfg_path: Path) -> None:
+def _baseline_ok(test_groups: list[list[str]]) -> tuple[bool, str]:
+    """Every group MUST pass on un-mutated source (each in its own process,
+    mirroring how cosmic-ray runs the chained command)."""
+    for group in test_groups:
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "-m", "pytest", "-q", "--no-header",
+             "-p", "no:cacheprovider", *group],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+        if proc.returncode != 0:
+            tail = "\n".join(proc.stdout.strip().splitlines()[-3:])
+            return False, f"group {group}:\n{tail}"
+    return True, "all groups green"
+
+
+def _write_config(
+    module: str, test_groups: list[list[str]], cfg_path: Path
+) -> None:
     body = (
         "[cosmic-ray]\n"
         f'module-path = "{module}"\n'
         f"timeout = {_MUTANT_TIMEOUT_S}\n"
         "excluded-modules = []\n"
-        f'test-command = "{_pytest_cmd(tests)}"\n\n'
+        f'test-command = "{_pytest_cmd(test_groups)}"\n\n'
         "[cosmic-ray.distributor]\n"
         'name = "local"\n'
     )
@@ -119,9 +129,9 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 def run_target(name: str, *, emit_json: bool, baseline_only: bool) -> int:
     target = TARGETS[name]
     module = str(target["module"])
-    tests = list(target["tests"])  # type: ignore[arg-type]
+    test_groups = [list(g) for g in target["test_groups"]]  # type: ignore[union-attr]
 
-    ok, tail = _baseline_ok(tests)
+    ok, tail = _baseline_ok(test_groups)
     if not ok:
         print(
             f"FAIL: baseline tests for target {name!r} do not pass on un-mutated "
@@ -136,7 +146,7 @@ def run_target(name: str, *, emit_json: bool, baseline_only: bool) -> int:
     tmp = Path(tempfile.mkdtemp(prefix=f"cr-{name}-"))
     cfg = tmp / "config.toml"
     session = tmp / "session.sqlite"
-    _write_config(module, tests, cfg)
+    _write_config(module, test_groups, cfg)
 
     init = _run(["cosmic-ray", "init", str(cfg), str(session)])
     if init.returncode != 0:
