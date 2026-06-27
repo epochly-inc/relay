@@ -139,6 +139,18 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
                 "apps/local-sidecar/tests/test_audit_r4_actors_kind_alignment.py",
                 "apps/local-sidecar/tests/test_audit_v3_manifest_side_effect_binding.py",
             ],
+            # Direct-unit suites: call each _guard_* predicate directly across
+            # every internal branch (the transition-level tests above only
+            # observe pass/fail at the CAS boundary, leaving the lenient /
+            # mismatch / expired arms unpinned). Own pytest process.
+            [
+                "apps/local-sidecar/tests/test_guards_pred_registry.py",
+                "apps/local-sidecar/tests/test_guards_pred_idem_manifest.py",
+                "apps/local-sidecar/tests/test_guards_pred_settle_contracts_gates.py",
+                "apps/local-sidecar/tests/test_guards_pred_handoff_draft_actions.py",
+                "apps/local-sidecar/tests/test_guards_pred_sandbox_digest.py",
+                "apps/local-sidecar/tests/test_guards_pred_signing_retention_round_admin.py",
+            ],
         ],
         "why": "transition guards -- keystone #4 (three-anchor handoff) + actor/manifest binding.",
     },
