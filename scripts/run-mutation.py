@@ -70,6 +70,21 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
         ],
         "why": "SSRF egress classifier + manifest homograph guard; Py<->TS parity-critical.",
     },
+    "redaction": {
+        "module": "packages/sdk-python/relay/redaction.py",
+        "test_groups": [
+            [
+                "packages/sdk-python/tests/test_redaction.py",
+                "packages/sdk-python/tests/test_redaction_parity.py",
+                "packages/sdk-python/tests/test_v2m08_redaction.py",
+                "packages/sdk-python/tests/test_json_pointer_null_leaf_parity.py",
+                "packages/sdk-python/tests/test_v3m5_hosted_default_policy.py",
+                "packages/sdk-python/tests/test_v3m5_json_path_matcher.py",
+            ],
+            ["tests/hardening/test_v2m08_ai_hardening.py"],
+        ],
+        "why": "Redaction policy engine; Py<->TS byte-parity P0 (HMAC/JCS over intervals).",
+    },
 }
 
 # Per-mutant wall budget (s). Mutants that hang (infinite loop) are killed by
