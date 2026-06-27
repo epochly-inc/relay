@@ -36,7 +36,9 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import argparse
+import ast
 import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -160,6 +162,61 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _annotation_binop_rows(module_path: str) -> set[int]:
+    """Line numbers of every ``ast.BinOp`` that lives inside a type annotation
+    (parameter ``annotation`` or function ``returns``). A bit-operator mutation
+    on such a node (e.g. the ``|`` in ``str | None``) is an EQUIVALENT mutant:
+    annotations carry no runtime behavior the tests can observe (and under
+    ``from __future__ import annotations`` are not even evaluated), so the
+    mutant survives by construction, not because of a test gap."""
+    try:
+        tree = ast.parse((REPO_ROOT / module_path).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return set()
+    anno_ids: set[int] = set()
+    for node in ast.walk(tree):
+        for field in ("annotation", "returns"):
+            a = getattr(node, field, None)
+            if a is not None:
+                for sub in ast.walk(a):
+                    anno_ids.add(id(sub))
+    return {
+        n.lineno
+        for n in ast.walk(tree)
+        if isinstance(n, ast.BinOp) and id(n) in anno_ids
+    }
+
+
+def _classify_survivors(
+    module: str, session: Path
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Return (real_survivors, equivalent_survivors) from a cosmic-ray session.
+
+    Equivalent = a bit-operator mutation on a type-annotation line (auto-
+    justified per _annotation_binop_rows). Everything else is a REAL survivor
+    that must be killed by a new TDD test or justified by hand."""
+    anno_rows = _annotation_binop_rows(module)
+    real: list[dict[str, object]] = []
+    equiv: list[dict[str, object]] = []
+    con = sqlite3.connect(str(session))
+    try:
+        rows = con.execute(
+            "SELECT ms.start_pos_row, ms.operator_name, ms.definition_name "
+            "FROM mutation_specs ms JOIN work_results wr ON ms.job_id = wr.job_id "
+            "WHERE wr.test_outcome = 'SURVIVED'"
+        ).fetchall()
+    finally:
+        con.close()
+    for row, op, defn in sorted(rows):
+        rec = {"line": row, "operator": op, "function": defn}
+        is_bitop = any(b in op for b in ("BitOr", "BitAnd", "BitXor"))
+        if is_bitop and row in anno_rows:
+            equiv.append(rec)
+        else:
+            real.append(rec)
+    return real, equiv
+
+
 def run_target(name: str, *, emit_json: bool, baseline_only: bool) -> int:
     target = TARGETS[name]
     module = str(target["module"])
@@ -188,32 +245,31 @@ def run_target(name: str, *, emit_json: bool, baseline_only: bool) -> int:
         return 2
     _run(["cosmic-ray", "exec", str(cfg), str(session)])
 
-    # cr-rate prints the survival rate; cr-report lists per-mutant outcomes.
-    rate = _run(["cr-rate", "--estimate", "--confidence", "95.0", str(session)])
-    report = _run(["cr-report", "--show-output", str(session)])
-
-    survivors = [
-        ln for ln in report.stdout.splitlines() if "survived" in ln.lower()
-    ]
-    total = sum(
-        1 for ln in report.stdout.splitlines() if "test outcome:" in ln.lower()
-    )
+    # cr-rate prints the raw survival rate (counts equivalent mutants too).
+    rate = _run(["cr-rate", str(session)])
+    real, equiv = _classify_survivors(module, session)
     result = {
         "target": name,
         "module": module,
-        "survival_rate_pct": rate.stdout.strip(),
-        "total_mutants_reported": total,
-        "survivors": survivors,
+        "raw_survival_rate_pct": rate.stdout.strip(),
+        "real_survivors": real,
+        "real_survivor_count": len(real),
+        "equivalent_survivors": equiv,
+        "equivalent_survivor_count": len(equiv),
         "session_dir": str(tmp),
     }
     if emit_json:
         print(json.dumps(result, indent=2))
     else:
         print(f"TARGET {name} ({module})")
-        print(f"  survival rate: {rate.stdout.strip()}")
-        print(f"  surviving mutants ({len(survivors)}):")
-        for s in survivors[:200]:
-            print(f"    {s}")
+        print(f"  raw survival rate: {rate.stdout.strip()}")
+        print(
+            f"  equivalent survivors (auto-justified, annotation bit-ops): "
+            f"{len(equiv)}"
+        )
+        print(f"  REAL survivors needing triage ({len(real)}):")
+        for s in real[:300]:
+            print(f"    L{s['line']:<5} {s['function']}  [{s['operator']}]")
         print(f"  session: {tmp} (cr-report {session} for full detail)")
     return 0
 
