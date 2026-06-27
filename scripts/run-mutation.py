@@ -127,6 +127,21 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
              "reason": "keyword-only * marker, no runtime arithmetic"},
         ],
     },
+    "guards": {
+        "module": "apps/local-sidecar/relay_sidecar/state_engine/guards.py",
+        "test_groups": [
+            [
+                "apps/local-sidecar/tests/test_v2m03_state_guards.py",
+                "apps/local-sidecar/tests/test_three_anchor_handoff.py",
+                "apps/local-sidecar/tests/test_iso029_handoff_guard_authenticated_actor.py",
+                "apps/local-sidecar/tests/test_http_boundary_handoff.py",
+                "apps/local-sidecar/tests/test_gate_decision_draft_handoff.py",
+                "apps/local-sidecar/tests/test_audit_r4_actors_kind_alignment.py",
+                "apps/local-sidecar/tests/test_audit_v3_manifest_side_effect_binding.py",
+            ],
+        ],
+        "why": "transition guards -- keystone #4 (three-anchor handoff) + actor/manifest binding.",
+    },
 }
 
 # Per-mutant wall budget (s). Mutants that hang (infinite loop) are killed by
