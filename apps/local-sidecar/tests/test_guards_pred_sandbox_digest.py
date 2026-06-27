@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import aiosqlite
 import pytest
-
 from relay_sidecar.state_engine.guards import (
     _guard_fixtures_have_valid_digests,
     _guard_manifest_digest_valid,

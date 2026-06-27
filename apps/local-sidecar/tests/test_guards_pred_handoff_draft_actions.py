@@ -32,7 +32,6 @@ from datetime import UTC, datetime
 
 import aiosqlite
 import pytest
-
 from relay_sidecar.state_engine import guards
 from relay_sidecar.state_engine.guards import (
     _guard_all_conditions_evaluated,

@@ -32,7 +32,6 @@ from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 import pytest
-
 import relay_sidecar.state_engine.guards as guards_module
 from relay_sidecar.state_engine.guards import (
     _guard_valid_idempotency_key,
@@ -635,9 +634,11 @@ async def test_manifest_skip_malformed_row_then_active() -> None:
     - L313 ``continue`` -> ``break`` stops at the malformed row, exits the
       loop, and returns ``(False, expired)``.
 
-    Both diverge from the real PASS. Row order is SQLite rowid/insertion
-    order (no ORDER BY in the guard query), so the malformed row is visited
-    first.
+    Both diverge from the real PASS. Visit order is pinned DETERMINISTICALLY
+    via EXPLICIT ascending rowids: the guard query has no ORDER BY and the
+    minimal test table has no index on (project_id, commit_hash), so SQLite
+    does a full-table scan in rowid order -- rowid 1 (malformed) is therefore
+    visited strictly before rowid 2 (active), independent of insertion timing.
     """
     async with aiosqlite.connect(":memory:") as conn:
         await conn.execute(_DDL_SCOPE_STATE)
@@ -646,13 +647,18 @@ async def test_manifest_skip_malformed_row_then_active() -> None:
             "INSERT INTO scope_state VALUES (?, ?, ?)",
             (_SCOPE_KIND, _SCOPE_ID, "projA"),
         )
+        # Explicit rowids pin scan order: malformed (1) strictly before active (2).
         await conn.execute(
-            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
-            ("projA", "sha256-abc", "not-a-valid-date", 0),
+            "INSERT INTO manifest_versions"
+            "(rowid, project_id, commit_hash, effective_until, grace_window_seconds) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (1, "projA", "sha256-abc", "not-a-valid-date", 0),
         )
         await conn.execute(
-            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
-            ("projA", "sha256-abc", None, 0),
+            "INSERT INTO manifest_versions"
+            "(rowid, project_id, commit_hash, effective_until, grace_window_seconds) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (2, "projA", "sha256-abc", None, 0),
         )
         await conn.commit()
         ok, diag = await _guard_valid_manifest_commit_hash(

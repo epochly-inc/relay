@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import json
 import shlex
 import sqlite3
@@ -181,30 +182,72 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
     },
 }
 
-# Per-mutant wall budget (s). Mutants that hang (infinite loop) are killed by
-# this timeout and scored as killed-by-timeout.
-_MUTANT_TIMEOUT_S: Final[float] = 30.0
+# cosmic-ray's per-mutant wall budget (s): a BACKSTOP above the group-runner's
+# own per-group timeout. Kept well above _GROUP_TIMEOUT_S * (max groups) so
+# cosmic-ray never SIGKILLs the runner mid-flight (which would orphan a pytest
+# grandchild); the runner enforces the real, descendant-cleaning timeout.
+_MUTANT_TIMEOUT_S: Final[float] = 90.0
+
+# Per-group wall budget (s) enforced by the group-runner. A hanging mutant
+# (e.g. a mutated loop condition) is killed here, process-group and all.
+_GROUP_TIMEOUT_S: Final[float] = 30.0
+
+# Worktree-relative path to THIS script -- cosmic-ray runs the test-command from
+# the worktree cwd, so `python scripts/run-mutation.py` resolves to the
+# worktree's committed copy and runs its --run-groups-file mode.
+_SCRIPT_REL: Final[str] = "scripts/run-mutation.py"
 
 
-_PYTEST_BASE: Final[str] = "python -m pytest -x -q --no-header -p no:cacheprovider"
+def _run_groups(test_groups: list[list[str]]) -> int:
+    """Run each test group as its OWN pytest process in its OWN session/process
+    group, with a per-group wall timeout; on timeout kill the whole process
+    group (SIGKILL) so NO orphaned pytest survives into the next mutant's
+    apply/revert. Returns 0 iff EVERY group passes (124 on timeout, else the
+    first failing group's return code).
+
+    This is the test-command cosmic-ray executes -- a Python runner, NOT a shell.
+    Two correctness reasons it must not be `bash -c 'a && b'`:
+      1. cosmic-ray runs the command via shlex.split() with no shell, so a bare
+         `&&` would be passed to the first pytest as a literal arg -> every
+         mutant errors -> false 100% kill rate.
+      2. On cosmic-ray's own timeout, subprocess SIGKILL hits the command
+         process only; a `bash -c` cannot forward SIGKILL to its pytest
+         grandchildren, leaking processes that race the next mutant. start_new_
+         session + killpg here guarantees descendant cleanup."""
+    import os
+    import signal
+
+    for group in test_groups:
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "pytest", "-x", "-q", "--no-header",
+             "-p", "no:cacheprovider", *group],
+            start_new_session=True,
+        )
+        try:
+            rc = proc.wait(timeout=_GROUP_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait()
+            return 124
+        if rc != 0:
+            return rc
+    return 0
 
 
-def _pytest_cmd(test_groups: list[list[str]]) -> str:
-    """One command run as ``bash -c '<chained>'``: each group is its own pytest
-    process (process isolation prevents cross-package conftest pollution), and a
-    mutant survives only if EVERY group passes (killed if any group fails).
+def _write_groups_file(dest_dir: Path, test_groups: list[list[str]]) -> Path:
+    """Persist the test-group spec next to the cosmic-ray session (absolute path),
+    so the test-command can reference it from the worktree cwd."""
+    gf = dest_dir / "groups.json"
+    gf.write_text(json.dumps(test_groups), encoding="utf-8")
+    return gf
 
-    The ``bash -c`` wrapper is REQUIRED, not cosmetic. cosmic-ray runs the
-    test-command via ``shlex.split(command)`` with NO shell
-    (cosmic_ray/testing.py:46), so a bare ``a && b`` would hand ``&&`` (and
-    everything after it) to the FIRST pytest as literal argv tokens -- pytest
-    then errors on every mutant and cosmic-ray records a FALSE 100% kill rate
-    for ANY multi-group target. Routing through ``bash -c`` makes bash
-    interpret the ``&&`` as a real shell operator. Group paths contain no
-    single quotes, so single-quoting the inner command is safe under
-    ``shlex.split`` (which yields ``['bash', '-c', '<chained>']``)."""
-    inner = " && ".join(f"{_PYTEST_BASE} {' '.join(g)}" for g in test_groups)
-    return f"bash -c '{inner}'"
+
+def _test_command(groups_file: Path) -> str:
+    """The cosmic-ray test-command: invoke this script's group-runner against the
+    persisted group spec. No shell metacharacters -> shlex.split-safe; mkdtemp
+    paths contain no spaces."""
+    return f"python {_SCRIPT_REL} --run-groups-file {groups_file}"
 
 
 def _baseline_ok(test_groups: list[list[str]]) -> tuple[bool, str]:
@@ -226,15 +269,13 @@ def _baseline_ok(test_groups: list[list[str]]) -> tuple[bool, str]:
     return True, "all groups green"
 
 
-def _write_config(
-    module: str, test_groups: list[list[str]], cfg_path: Path
-) -> None:
+def _write_config(module: str, test_command: str, cfg_path: Path) -> None:
     body = (
         "[cosmic-ray]\n"
         f'module-path = "{module}"\n'
         f"timeout = {_MUTANT_TIMEOUT_S}\n"
         "excluded-modules = []\n"
-        f'test-command = "{_pytest_cmd(test_groups)}"\n\n'
+        f'test-command = "{test_command}"\n\n'
         "[cosmic-ray.distributor]\n"
         'name = "local"\n'
     )
@@ -280,33 +321,42 @@ def _make_worktree(name: str) -> Path:
     return wt
 
 
-def _run_wt(wt: Path, cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run a venv command (cosmic-ray, cr-rate) inside the worktree via its own
-    venv (uv run --project), so the mutated file is the worktree's, not the
-    main tree's. The cosmic-ray test-command subprocess inherits the worktree
-    venv on PATH."""
+def _run_wt(
+    wt: Path, cmd: list[str], timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a venv command (cosmic-ray, cr-rate, the group-runner) inside the
+    worktree via its own venv (uv run --project), so the mutated file is the
+    worktree's, not the main tree's. The cosmic-ray test-command subprocess
+    inherits the worktree venv on PATH. ``timeout`` (s) bounds the call."""
     return subprocess.run(  # noqa: S603
         ["uv", "run", "--project", str(wt), *cmd],
-        cwd=wt, capture_output=True, text=True, check=False,
+        cwd=wt, capture_output=True, text=True, check=False, timeout=timeout,
     )
 
 
 def _worktree_baseline_ok(
-    wt: Path, test_groups: list[list[str]]
+    wt: Path, test_command: str
 ) -> tuple[bool, str]:
     """Run cosmic-ray's EXACT test-command on UNMUTATED source INSIDE the worktree.
 
     cosmic-ray records a mutant KILLED whenever the test-command exits non-zero
     for ANY reason -- including a test that fails on unmutated source in the
     worktree's own environment (different venv, different cwd, or a cross-file
-    event-loop/conftest interaction that the main tree does not exhibit). If that
-    happens, EVERY mutant is scored KILLED and the run reports a FALSE 100% kill
-    rate. The main-tree _baseline_ok CANNOT catch a worktree-only baseline
-    failure, so we re-validate here, replicating cosmic-ray's own invocation
-    exactly: ``shlex.split(test_command)`` run with no shell (the bash -c wrapper
-    inside _pytest_cmd is what re-introduces shell semantics for the && chain).
-    A run whose worktree baseline is red MUST abort and emit NO survival numbers."""
-    proc = _run_wt(wt, shlex.split(_pytest_cmd(test_groups)))
+    event-loop/conftest interaction that the main tree does not exhibit), OR a
+    baseline that simply runs LONGER than cosmic-ray's per-mutant timeout (every
+    mutant then times out -> the same false 100%). The main-tree _baseline_ok
+    CANNOT catch either, so we re-validate here, replicating cosmic-ray's own
+    invocation exactly (``shlex.split(test_command)``, no shell) AND under the
+    same ``_MUTANT_TIMEOUT_S`` budget. A red OR too-slow worktree baseline MUST
+    abort and emit NO survival numbers."""
+    try:
+        proc = _run_wt(wt, shlex.split(test_command), timeout=_MUTANT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return False, (
+            f"worktree baseline exceeded _MUTANT_TIMEOUT_S={_MUTANT_TIMEOUT_S}s "
+            "on un-mutated source -- cosmic-ray would time out (and 'kill') every "
+            "mutant, a false 100%. Raise the budget or shrink the test groups."
+        )
     if proc.returncode != 0:
         tail = "\n".join(
             (proc.stdout + proc.stderr).strip().splitlines()[-10:]
@@ -408,15 +458,17 @@ def run_target(name: str, *, emit_json: bool, baseline_only: bool) -> int:
     tmp = Path(tempfile.mkdtemp(prefix=f"cr-{name}-"))
     cfg = tmp / "config.toml"
     session = tmp / "session.sqlite"
-    _write_config(module, test_groups, cfg)
+    groups_file = _write_groups_file(tmp, test_groups)
+    test_command = _test_command(groups_file)
+    _write_config(module, test_command, cfg)
 
     # Run cosmic-ray inside an isolated worktree so it never mutates the main
-    # working tree. config + session live outside the worktree (absolute paths);
-    # the relative module-path / test paths in the config resolve against the
+    # working tree. config + session + groups-file live outside the worktree
+    # (absolute paths); the relative module-path / test paths resolve against the
     # worktree (cwd) so the worktree's copy is mutated and its venv runs tests.
     wt = _make_worktree(name)
     try:
-        wt_ok, wt_tail = _worktree_baseline_ok(wt, test_groups)
+        wt_ok, wt_tail = _worktree_baseline_ok(wt, test_command)
         if not wt_ok:
             print(
                 f"FAIL: WORKTREE baseline for {name!r} is RED on un-mutated source. "
@@ -477,7 +529,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="only verify the target's tests pass on un-mutated source",
     )
+    p.add_argument(
+        "--run-groups-file",
+        metavar="PATH",
+        help="INTERNAL: the cosmic-ray test-command. Run the JSON-encoded test "
+        "groups in PATH via the per-group-timeout process-group runner; exit 0 "
+        "iff every group passes.",
+    )
     args = p.parse_args(argv)
+
+    if args.run_groups_file:
+        groups = json.loads(Path(args.run_groups_file).read_text(encoding="utf-8"))
+        return _run_groups(groups)
 
     if args.list or (not args.target and not args.all):
         for name, t in sorted(TARGETS.items()):

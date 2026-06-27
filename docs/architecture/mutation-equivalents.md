@@ -96,6 +96,15 @@ identically `row[0]`, so the `-1` variant is unobservable; the `+1` variant
 `fetchone()` (never `None`) is dead, so mutating the `0` literal (`->1`/`->-1`) is
 unobservable.
 
+*Whitelist-safety adjudication (roborev d23f48d):* the harness matches these by
+`(line, op_contains="NumberReplacer")` only, which is sound because the ONLY other
+NumberReplacer variant cosmic-ray emits on these lines is the `+1` sibling
+(`row[0] -> row[1]`), and on a single-column tuple `row[1]` raises `IndexError` at
+runtime -- so any test reaching the line KILLS it (or it is INCOMPETENT). A `+1`
+mutant can therefore NEVER be a SURVIVOR, so it never reaches `_classify_survivors`
+to be mis-bucketed as equivalent. The authoritative `real_survivor_count == 0`
+re-run confirms no real survivor hides behind this whitelist.
+
 ### C2. `== 0` vs `<= 0` over COUNT(*) (Eq_LtE; L278, L410, L747)
 
 `count/total = int(COUNT(*))` is non-negative for every input, so `== 0` and

@@ -83,7 +83,9 @@ def test_register_guard_override_true_replaces() -> None:
         assert first.check is _noop_guard
         second = register_guard(name, _other_guard, override=True)
         assert second.check is _other_guard
-        assert get_guard(name).check is _other_guard
+        fetched = get_guard(name)
+        assert fetched is not None
+        assert fetched.check is _other_guard
     finally:
         guards_mod._REGISTRY.pop(name, None)
 

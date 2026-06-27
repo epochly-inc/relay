@@ -296,7 +296,7 @@ def test_no_leak_hosted_default_message_content(contents: list[str]) -> None:
     engine = _hosted_default_engine()
     payload = {"messages": [{"content": {"text": c}} for c in contents]}
     redacted = engine.redact(payload)
-    for idx, content in enumerate(contents):
+    for idx, _content in enumerate(contents):
         assert redacted["messages"][idx]["content"]["text"] == "<redacted>", (
             f"json_pointer leaf {idx} not fully redacted: {redacted!r}"
         )

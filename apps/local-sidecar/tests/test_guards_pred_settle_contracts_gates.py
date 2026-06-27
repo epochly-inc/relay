@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import aiosqlite
 import pytest
-
 from relay_sidecar.state_engine.guards import (
     _guard_all_bound_gates_decided,
     _guard_all_required_contracts_evaluated,
