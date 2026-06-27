@@ -390,3 +390,32 @@ async def test_expected_from_mismatch_rejects_when_actual_sorts_after_expected(
         assert result.observed_state == "pending", result
     finally:
         await db.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-029")
+@pytest.mark.asyncio
+async def test_init_scope_rejects_non_canonical_initial_state(tmp_path) -> None:
+    """``init_scope`` must reject ANY ``initial_state`` other than the canonical
+    transition-table origin, in BOTH lexicographic orderings (spec W
+    "Initialization rules"). Mutation gap on ``compare_and_set.py`` L185
+    (``actual_initial != spec.initial_state``): the ``<`` / ``>`` mutants
+    survived because no test ever supplied a non-canonical ``initial_state``.
+    The canonical 'run' origin is 'pending'; a value sorting BEFORE it
+    ('aaaa...' < 'pending') AND one sorting AFTER it ('zzzz...' > 'pending')
+    must both raise.
+    """
+    db = SidecarDatabase(db_path=tmp_path / "sidecar.db", reader_count=1)
+    try:
+        await db.open()
+        for bad in ("aaaa_before_pending", "zzzz_after_pending"):
+            with pytest.raises(ValueError, match="canonical initial state"):
+                await init_scope(
+                    database=db,
+                    scope_kind="run",
+                    scope_id=str(uuid.uuid4()),
+                    project_id=str(uuid.uuid4()),
+                    initial_state=bad,
+                )
+    finally:
+        await db.close()
