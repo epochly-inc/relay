@@ -242,4 +242,14 @@ dev = [
     "pytest-asyncio>=0.24,<0.26",
     "aiohttp>=3.9",
     "requests>=2.31",
+    # Shakedown-loop measurement + formal-methods tooling (see
+    # scripts/run-mutation.py and the property-test suites):
+    #   - cosmic-ray: mutation testing -- the loop's PRIMARY convergence signal
+    #     (a surviving mutant is a test gap / latent bug to kill or justify).
+    #   - hypothesis: property-based tests backing the keystone invariants
+    #     (formal-methods acceptance gate).
+    #   - coverage: real line/branch coverage (not the qsense import heuristic).
+    "cosmic-ray>=8.3",
+    "hypothesis>=6.100",
+    "coverage>=7.4",
 ]

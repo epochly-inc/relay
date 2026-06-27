@@ -64,3 +64,7 @@ docs/reference/errors/RELAY-*/
 
 # graphify knowledge-graph output (generated; ~6MB, do not track)
 graphify-out/
+
+# cosmic-ray mutation sessions (harness writes to tempdir; this guards stray runs)
+.cosmic-ray*/
+cr-*.sqlite
