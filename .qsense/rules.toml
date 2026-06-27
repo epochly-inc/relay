@@ -1,0 +1,91 @@
+# qsense Architectural Rules -- Relay (public OSS repo)
+#
+# Checked by `qsense check` and the `check_rules` MCP tool. These encode the
+# TARGET architecture; `qsense gate` against a saved baseline is the
+# non-regression mechanism. Known current violations are tracked in
+# ARCHITECTURE.md section 7 (debt register).
+#
+# Baseline scan 2026-06-27: quality_signal_v2 0.491; structural bottleneck =
+# acyclicity (score 2500/10000). Drive complexity + cycles down over time.
+# FORBIDDEN: bumping global max_cc / max_fn_lines to clear a violation.
+# CORRECT: refactor the hotspot, OR add a per-path exemption with a written
+# reason for genuinely-exempt (vendored / generated / test) code.
+
+[constraints]
+max_cycles = 1           # 1 = the irreducible vendored cel-rust parser cycle
+                         # (packages/cel-wasm/vendor/.../macros.rs<->parser.rs,
+                         # third-party, not relay-authored; path_overrides do NOT
+                         # exclude paths from cycle detection). Relay-authored
+                         # target is 0: the acef (export<->package) and explain
+                         # (api<->engine) file cycles, plus the package-level
+                         # cycles caught by [[boundaries]] below, must all go to
+                         # zero (tracked in ARCHITECTURE.md s7).
+max_cc = 40              # Target. Known production hotspots above it:
+                         # build_runtime_app=367, validateBundle=94,
+                         # validate_bundle=80, loadRedactionPolicy=72,
+                         # redaction.load=51. Refactor, do not bump.
+max_fn_lines = 250       # Target focused on the egregious cases. Known:
+                         # build_runtime_app=4707, validate_bundle=584,
+                         # compare_and_set_state=539, validateBundle=532. The
+                         # 150-250 band (route handlers, validators) is tracked
+                         # but not gated yet; tighten as those are refactored.
+no_god_files = false     # Allow runtime.py (6057 lines) for now; tracked debt.
+
+# -- Per-path exemptions (cc / fn-lines only; NOT a weakening of cycle rules) --
+
+# Vendored third-party CEL engine (forked cel-rust). Not relay-authored; the
+# pinned crate is rebuilt deterministically, not hand-edited.
+[[path_overrides]]
+path = "packages/cel-wasm/vendor/**"
+exempt = true
+
+# CEL conformance oracle harness (Go + Python cross-check tooling, not shipped).
+[[path_overrides]]
+path = "packages/cel-wasm/conformance/**"
+exempt = true
+
+# Generated parser tables.
+[[path_overrides]]
+path = "**/gen/**"
+exempt = true
+
+# Test trees: setup/fixture functions legitimately exceed cc / line thresholds.
+[[path_overrides]]
+path = "**/tests/**"
+exempt = true
+
+[[path_overrides]]
+path = "tests/**"
+exempt = true
+
+# Build/CI/codegen tooling and corpus generators -- not shipped product code.
+[[path_overrides]]
+path = "scripts/**"
+exempt = true
+
+# ACEF golden-bundle / doc generators (build_golden_bundles.py, summary-pdf).
+[[path_overrides]]
+path = "packages/acef/upstream/scripts/**"
+exempt = true
+
+[[path_overrides]]
+path = "packages/acef/upstream/docs/**"
+exempt = true
+
+# -- Explicit forbidden import pairs (deliberate prohibitions) --
+# Each documents an intended dependency DIRECTION; the back-edge is the smell.
+# These currently FAIL (the cycles exist) -- that is intentional: the rule
+# flags the violation and prevents its reintroduction once the cycle is broken.
+
+# `from` is scoped to the PRODUCTION module dir (not the package root) so that
+# test code -- which legitimately imports across packages for setup -- is not
+# flagged; path_overrides do NOT exempt boundary checks, so the scope must do it.
+[[boundaries]]
+from = "apps/local-sidecar/relay_sidecar/**"
+to = "packages/sdk-python/relay/**"
+reason = "The host (sidecar/server) must not depend on the SDK (client). local-sidecar/runtime.py imports relay.redaction_budget; move the shared code to a lower layer (schemas or a shared lib) to break the local-sidecar<->sdk-python cycle."
+
+[[boundaries]]
+from = "apps/replay-proxy/relay_replay_proxy/**"
+to = "packages/cli/src/**"
+reason = "The cassette replay proxy must not depend on the CLI surface. replay-proxy/cassette_server.py imports relay_cli.cassette; extract the shared cassette format to a lower layer to break the cli<->replay-proxy cycle."
