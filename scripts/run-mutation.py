@@ -66,7 +66,7 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
         # fix is per-process test groups (pytest A && pytest B); until then this
         # selection is the clean-composing subset, so a few survivors may be
         # false (covered only by the hardening tier) and are caught at triage.
-        "why": "SSRF egress classifier + manifest-URL homograph guard; Py<->TS parity-critical (keystone #16-adjacent).",
+        "why": "SSRF egress classifier + manifest homograph guard; Py<->TS parity-critical.",
     },
 }
 
