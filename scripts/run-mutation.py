@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -266,6 +267,30 @@ def _run_wt(wt: Path, cmd: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _worktree_baseline_ok(
+    wt: Path, test_groups: list[list[str]]
+) -> tuple[bool, str]:
+    """Run cosmic-ray's EXACT test-command on UNMUTATED source INSIDE the worktree.
+
+    cosmic-ray records a mutant KILLED whenever the test-command exits non-zero
+    for ANY reason -- including a test that fails on unmutated source in the
+    worktree's own environment (different venv, different cwd, or a cross-file
+    event-loop/conftest interaction that the main tree does not exhibit). If that
+    happens, EVERY mutant is scored KILLED and the run reports a FALSE 100% kill
+    rate. The main-tree _baseline_ok CANNOT catch a worktree-only baseline
+    failure, so we re-validate here, replicating cosmic-ray's own invocation
+    exactly: ``shlex.split(test_command)`` run with no shell (the bash -c wrapper
+    inside _pytest_cmd is what re-introduces shell semantics for the && chain).
+    A run whose worktree baseline is red MUST abort and emit NO survival numbers."""
+    proc = _run_wt(wt, shlex.split(_pytest_cmd(test_groups)))
+    if proc.returncode != 0:
+        tail = "\n".join(
+            (proc.stdout + proc.stderr).strip().splitlines()[-10:]
+        )
+        return False, tail
+    return True, "worktree baseline green"
+
+
 def _annotation_binop_rows(module_path: str) -> set[int]:
     """Line numbers of every ``ast.BinOp`` that lives inside a type annotation
     (parameter ``annotation`` or function ``returns``). A bit-operator mutation
@@ -367,6 +392,17 @@ def run_target(name: str, *, emit_json: bool, baseline_only: bool) -> int:
     # worktree (cwd) so the worktree's copy is mutated and its venv runs tests.
     wt = _make_worktree(name)
     try:
+        wt_ok, wt_tail = _worktree_baseline_ok(wt, test_groups)
+        if not wt_ok:
+            print(
+                f"FAIL: WORKTREE baseline for {name!r} is RED on un-mutated source. "
+                f"Running anyway would score EVERY mutant KILLED and report a FALSE "
+                f"100% kill rate. Aborting -- emitting no survival numbers. Fix the "
+                f"worktree baseline (env mismatch or cross-file test interaction) "
+                f"first.\n{wt_tail}",
+                file=sys.stderr,
+            )
+            return 3
         init = _run_wt(wt, ["cosmic-ray", "init", str(cfg), str(session)])
         if init.returncode != 0:
             print(f"FAIL: cosmic-ray init: {init.stderr.strip()}", file=sys.stderr)
