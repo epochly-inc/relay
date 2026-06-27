@@ -345,3 +345,48 @@ async def test_override_claim_actor_hash_bound_to_authenticated_actor(
         assert ok_result.new_state == "captured", ok_result
     finally:
         await db.close()
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-027")
+@pytest.mark.asyncio
+async def test_expected_from_mismatch_rejects_when_actual_sorts_after_expected(
+    tmp_path,
+) -> None:
+    """The CAS guard must reject EVERY ``expected_from != current_state``,
+    independent of lexicographic ordering (keystone #1).
+
+    The existing mismatch test (VAL-W2-027) has current_state ``'captured'``
+    sorting BEFORE the stale ``expected_from='pending'`` (``'captured' <
+    'pending'``), so it does not distinguish ``current != expected`` from
+    ``current < expected``. A mutation-testing gap on
+    ``compare_and_set.py`` L417 (``ReplaceComparisonOperator_NotEq_Lt/LtE``)
+    survived the full sidecar suite as a result: a ``<``-comparison guard
+    would wrongly PROCEED with a transition from the wrong state whenever the
+    actual state sorts AFTER the claimed expected_from.
+
+    This pins the opposite ordering: a fresh scope is at the canonical initial
+    ``'pending'`` and a wrong ``expected_from='captured'`` sorts BEFORE
+    ``'pending'`` (``'captured' < 'pending'``), so the mutated ``<`` guard
+    would NOT reject -- the real ``!=`` guard does.
+    """
+    db = SidecarDatabase(db_path=tmp_path / "sidecar.db", reader_count=1)
+    try:
+        await db.open()
+        scope_id, project_id = await _seed_scope(db)
+        actor = ActorRef(kind="sdk", identity_hash="sha256-aaaa")
+        assert "captured" < "pending", "test premise: actual sorts after expected"
+        result = await compare_and_set_state(
+            database=db,
+            scope_kind="run",
+            scope_id=scope_id,
+            expected_from="captured",  # wrong: scope is at 'pending'
+            event="ingest.run_received",
+            actor=actor,
+            project_id=project_id,
+        )
+        assert result.ok is False, result
+        assert result.reason == EXPECTED_FROM_MISMATCH, result
+        assert result.observed_state == "pending", result
+    finally:
+        await db.close()
