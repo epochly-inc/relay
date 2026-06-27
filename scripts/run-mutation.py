@@ -85,6 +85,25 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
         ],
         "why": "Redaction policy engine; Py<->TS byte-parity P0 (HMAC/JCS over intervals).",
     },
+    "compare_and_set": {
+        "module": "apps/local-sidecar/relay_sidecar/state_engine/compare_and_set.py",
+        "test_groups": [
+            [
+                "apps/local-sidecar/tests/test_compare_and_set_state.py",
+                "apps/local-sidecar/tests/test_state_engine_writes_only.py",
+                "apps/local-sidecar/tests/test_state_transition_coverage.py",
+                "apps/local-sidecar/tests/test_three_anchor_handoff.py",
+                "apps/local-sidecar/tests/test_event_log_append_only.py",
+                "apps/local-sidecar/tests/test_invalid_transition_secondary_error.py",
+                "apps/local-sidecar/tests/test_iso028_invalid_transition_forensic_durable.py",
+                "apps/local-sidecar/tests/test_iso029_handoff_guard_authenticated_actor.py",
+                "apps/local-sidecar/tests/test_state_engine_event_log.py",
+                "apps/local-sidecar/tests/test_state_engine_serializable.py",
+                "apps/local-sidecar/tests/test_v2m03_state_guards.py",
+            ],
+        ],
+        "why": "compare_and_set_state -- keystone #1 (control plane writes the result).",
+    },
 }
 
 # Per-mutant wall budget (s). Mutants that hang (infinite loop) are killed by
