@@ -132,13 +132,13 @@ work).
 
 | # | Invariant | Primary enforcement site |
 |---|---|---|
-| 1 | Control plane writes the result | `apps/local-sidecar/.../state_engine/compare_and_set.py` |
+| 1 | Control plane writes the result | `apps/local-sidecar/relay_sidecar/state_engine/compare_and_set.py` |
 | 2 | Pass without evidence is not a pass | `packages/gate/`, evidence staging in `apps/local-sidecar/` |
-| 3 | Manifest is the source of truth | `packages/cli/.../commands/manifest.py`, gate runner |
-| 4 | Three-anchor handoff | `apps/local-sidecar/.../state_engine/guards.py` (`_guard_three_anchor_handoff_valid`) |
+| 3 | Manifest is the source of truth | `packages/cli/src/relay_cli/commands/manifest.py`, gate runner |
+| 4 | Three-anchor handoff | `apps/local-sidecar/relay_sidecar/state_engine/guards.py` (`_guard_three_anchor_handoff_valid`) |
 | 5 | Gate restart on failure | `packages/gate/`, state-machine gate-restart rule |
-| 6 | Side-effect idempotency | `apps/local-sidecar/.../side_effect_markers.py` |
-| 7 | Default-deny raw capture | `apps/local-sidecar/.../validation/raw_capture.py`, redaction policy |
+| 6 | Side-effect idempotency | `apps/local-sidecar/relay_sidecar/side_effect_markers.py` |
+| 7 | Default-deny raw capture | `apps/local-sidecar/relay_sidecar/validation/raw_capture.py`, redaction policy |
 | 8 | Atomic persistence -- four primitives only | `apps/local-sidecar/relay_sidecar/primitives/`, CI lint |
 | 9 | Cassette-first replay | `packages/replay-proxy/`, `apps/replay-proxy/` |
 | 10 | Schema versioning on every envelope | `packages/schemas/` |
@@ -162,7 +162,7 @@ inside the vendored `cel-rust` parser, is third-party and out of scope):
 
 - **Package-level** (generator):
   - `cli <-> replay-proxy`: `cli/.../commands/replay.py` lazily imports
-    `relay_replay_proxy`; `apps/replay-proxy/.../cassette_server.py` imports
+    `relay_replay_proxy`; `apps/replay-proxy/relay_replay_proxy/cassette_server.py` imports
     `relay_cli.cassette`.
   - `local-sidecar <-> sdk-python`: `sdk-python` imports `relay_sidecar`
     (client/_transport/salt_registry); `local-sidecar/.../runtime.py` imports
@@ -200,9 +200,10 @@ list.
 
 - Dependency graph: `scripts/gen-dependency-graph.py` (deterministic; `--check`
   in CI).
-- Structural metrics / cycles / complexity / test-gaps: qsense (`scan` then
-  `health` / `dsm` / `test_gaps`). An optional `.qsense/rules.toml` can codify
-  the layering + no-cycle constraints as a machine-checked gate.
+- Structural metrics / cycles / complexity / test-gaps: qsense (scan, then the
+  health / dsm / test-gaps tools). The committed `.qsense/rules.toml` codifies
+  the layering + no-cycle + complexity constraints as a machine-checked gate
+  (`qsense check`); 5 current violations match the section 7 debt register.
 - The architecture must trace to the spec: a spec<->code<->test traceability map
   is the companion deliverable (in progress).
 
@@ -215,4 +216,4 @@ list.
 - [`docs/architecture/dependency-graph.md`](docs/architecture/dependency-graph.md)
 - [`CLAUDE.md`](CLAUDE.md) -- execution doctrine and the keystone invariants
 
-Spec: sec A, sec B, sec C, sec AO
+Spec: §A, §B, §C, §AO

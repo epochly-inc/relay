@@ -456,6 +456,9 @@ def render_markdown(graph: dict[str, object]) -> str:
             f"| `{p['name']}` | {langs} | {p['fan_out']} | {p['fan_in']} | {deps} |"
         )
     lines.append("")
+    # Spec footer (required by scripts/docs/audit-codebase-alignment.py layer 4).
+    # The package structure + canonical schemas derive from spec sec A / sec B.
+    lines.append("Spec: §A, §B")
     return "\n".join(lines) + "\n"
 
 
