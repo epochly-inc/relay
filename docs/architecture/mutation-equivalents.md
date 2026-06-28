@@ -78,7 +78,7 @@ runtime behavioral effect.
 ## Class C -- guards.py logic equivalents (16)
 
 `state_engine/guards.py` holds 23 pure guard predicates. After the direct-unit
-direct-unit `test_guards_pred_*` suite (six files under
+`test_guards_pred_*` suite (six files under
 `apps/local-sidecar/tests/`, e.g.
 `apps/local-sidecar/tests/test_guards_pred_registry.py`; 145 tests) killed 315 of
 the 368 original
