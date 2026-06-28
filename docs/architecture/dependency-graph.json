@@ -131,8 +131,7 @@
       ],
       "path": "apps/local-sidecar",
       "depends_on": [
-        "schemas",
-        "sdk-python"
+        "schemas"
       ],
       "depended_on_by": [
         "cli",
@@ -140,7 +139,7 @@
         "replay-proxy",
         "sdk-python"
       ],
-      "fan_out": 2,
+      "fan_out": 1,
       "fan_in": 4
     },
     {
@@ -203,11 +202,10 @@
         "schemas"
       ],
       "depended_on_by": [
-        "cli",
-        "local-sidecar"
+        "cli"
       ],
       "fan_out": 2,
-      "fan_in": 2
+      "fan_in": 1
     },
     {
       "name": "sdk-typescript",
@@ -382,14 +380,6 @@
       ]
     },
     {
-      "from": "local-sidecar",
-      "to": "sdk-python",
-      "lang": "python",
-      "examples": [
-        "relay"
-      ]
-    },
-    {
       "from": "replay-proxy",
       "to": "cli",
       "lang": "python",
@@ -451,10 +441,6 @@
     [
       "cli",
       "replay-proxy"
-    ],
-    [
-      "local-sidecar",
-      "sdk-python"
     ]
   ],
   "layers": null

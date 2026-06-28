@@ -1,7 +1,7 @@
 """AUDIT-R4 BUG-H1: stuck-thread counter must be monotonic.
 
 The 2026-05-18 R4 audit found that
-``relay.redaction_budget._evaluate_one`` could double-decrement
+``relay_schemas.redaction_budget._evaluate_one`` could double-decrement
 ``_STUCK_REGEX_THREADS`` when the probe thread completed inside the
 race-detect window between ``done.wait`` returning False and the main
 path flipping ``state['overran']``. Both the probe's ``finally`` and
@@ -30,8 +30,8 @@ import time
 from typing import cast
 
 import pytest
-import relay.redaction_budget as rb
-from relay.redaction_budget import _evaluate_one
+import relay_schemas.redaction_budget as rb
+from relay_schemas.redaction_budget import _evaluate_one
 
 
 @pytest.mark.plumbing

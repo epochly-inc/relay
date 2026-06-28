@@ -43,8 +43,6 @@ import time
 from collections.abc import Iterable
 from typing import Any, ClassVar, Final
 
-from .errors import RelaySdkError
-
 # 50 ms per-input wall-clock budget (spec AI line 5665). Strict greater-
 # than triggers rejection (a matcher that completes in exactly 50 ms is
 # accepted; anything strictly over the budget rejects).
@@ -79,8 +77,18 @@ _STUCK_REGEX_LOCK: threading.Lock = threading.Lock()
 _STUCK_REGEX_THREADS: int = 0
 
 
-class RelayBudgetExceededError(RelaySdkError):
+class RelayBudgetExceededError(ValueError):
     """Raised when the regex-probe thread pool is saturated.
+
+    Base class note: this module lives in ``relay_schemas`` (the lowest shared
+    layer, depended on by BOTH the sdk-python redaction engine and the
+    local-sidecar publish path) so neither package back-imports the other --
+    breaking the prior local-sidecar<->sdk-python import cycle. It therefore
+    subclasses ``ValueError`` (the relay_schemas validation-error convention,
+    e.g. ``YamlDepthExceededError``) rather than the sdk-python
+    ``RelaySdkError`` it could not import here. No caller relies on the old base:
+    the only production catch site (local-sidecar runtime.py) catches this exact
+    class as a control-flow signal and builds its own RELAY-REDACT-014 envelope.
 
     Reaching this state means more than :data:`_STUCK_REGEX_THREAD_CAP`
     matcher evaluations have left a regex thread alive past its
@@ -92,6 +100,18 @@ class RelayBudgetExceededError(RelaySdkError):
     code: str = "RELAY-REDACT-015"
     error_class: ClassVar[str] = "RELAY-REDACT-015"
     http_status: int = 429
+
+    def __init__(
+        self, message: str, *, details: dict[str, Any] | None = None
+    ) -> None:
+        # Preserve the (message, *, details) signature the previous
+        # RelaySdkError base provided -- the raise site passes a structured
+        # ``details`` payload and callers may read ``.message`` / ``.details``;
+        # ``ValueError.__init__`` would reject the keyword. The wire identity
+        # (code / error_class / http_status) stays on the class attributes above.
+        super().__init__(message)
+        self.message = message
+        self.details: dict[str, Any] = details or {}
 
 
 def _evaluate_one(

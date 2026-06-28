@@ -18,7 +18,7 @@ Covers VAL-V3M5-001..004 (4 assertions):
     (already-implemented; this is a regression lock).
 
 The server-side ReDoS handler MUST reuse
-``relay.redaction_budget.evaluate_matcher_budget`` (sdk-python module)
+``relay_schemas.redaction_budget.evaluate_matcher_budget`` (relay_schemas module)
 rather than duplicating budget logic (VAL-V3M5-004 / contract requires
 no duplicate ReDoS implementation in apps/local-sidecar/).
 
@@ -221,15 +221,15 @@ def test_v3m5_archive_bomb_cap_regression_lock() -> None:
         / "runtime.py"
     )
     src = runtime_src.read_text(encoding="utf-8")
-    assert "from relay.redaction_budget import" in src or (
-        "import relay.redaction_budget" in src
+    assert "from relay_schemas.redaction_budget import" in src or (
+        "import relay_schemas.redaction_budget" in src
     ), (
-        "runtime.py must reuse the sdk-python redaction_budget module "
+        "runtime.py must reuse the relay_schemas redaction_budget module "
         "(VAL-V3M5-004); no duplicate logic permitted."
     )
     # And: no local re-implementation of the budget constant.
     assert "REDACTION_REGEX_BUDGET_MS = " not in src, (
         "Local redefinition of REDACTION_REGEX_BUDGET_MS in runtime.py "
         "violates VAL-V3M5-004 (single source of truth for the 50 ms "
-        "budget is relay.redaction_budget)."
+        "budget is relay_schemas.redaction_budget)."
     )

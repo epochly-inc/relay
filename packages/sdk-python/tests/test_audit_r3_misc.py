@@ -21,11 +21,11 @@ from pathlib import Path
 
 import pytest
 from relay.redaction import _to_string
-from relay.redaction_budget import (
+from relay.salt_registry import SaltRegistry
+from relay_schemas.redaction_budget import (
     RelayBudgetExceededError,
     evaluate_matcher_budget,
 )
-from relay.salt_registry import SaltRegistry
 
 # ---------------------------------------------------------------------------
 # BUG-E2  _to_string float parity (Python <-> ECMA-262)
@@ -181,7 +181,7 @@ def test_evaluate_matcher_budget_admission_gate_refuses_when_saturated(
     """When the stuck-thread counter exceeds the cap, the gate MUST
     raise RelayBudgetExceededError instead of spawning another probe.
     """
-    import relay.redaction_budget as rb
+    import relay_schemas.redaction_budget as rb
 
     monkeypatch.setattr(rb, "_STUCK_REGEX_THREADS", rb._STUCK_REGEX_THREAD_CAP)
     with pytest.raises(RelayBudgetExceededError) as excinfo:
@@ -200,7 +200,7 @@ def test_evaluate_matcher_budget_happy_path_does_not_leak_counter() -> None:
     """A regex that completes in budget MUST leave the stuck counter
     unchanged.
     """
-    import relay.redaction_budget as rb
+    import relay_schemas.redaction_budget as rb
 
     before = rb._STUCK_REGEX_THREADS
     result = evaluate_matcher_budget(

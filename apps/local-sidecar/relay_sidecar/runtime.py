@@ -86,7 +86,7 @@ from fastapi import FastAPI, Request
 # evaluator rather than duplicating the 50 ms wall-clock budget logic
 # in the sidecar (no-duplicate-implementation guard in
 # test_audit_v3_redos_publish::test_v3m5_archive_bomb_cap_regression_lock).
-from relay.redaction_budget import (
+from relay_schemas.redaction_budget import (
     REDACTION_REGEX_BUDGET_MS,
     RelayBudgetExceededError,
     evaluate_matcher_budget,
@@ -5658,7 +5658,7 @@ def build_runtime_app(
         # 50 ms per-input budget on either sentinel rejects publish
         # with HTTP 400 RELAY-REDACT-014. The budget evaluator is
         # imported from the sdk-python module
-        # (relay.redaction_budget.evaluate_matcher_budget); no
+        # (relay_schemas.redaction_budget.evaluate_matcher_budget); no
         # duplicate budget logic lives in the sidecar (single source of
         # truth for the 50 ms budget constant). The 1 KiB sentinel is
         # evaluated first so an obvious adversarial pattern is rejected
