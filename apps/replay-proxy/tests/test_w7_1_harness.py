@@ -794,8 +794,15 @@ def test_malformed_content_length_does_not_crash_handler(
     harness: HarnessSession, bad_value: str
 ) -> None:
     """A request with a non-numeric or negative Content-Length is handled
-    without an unhandled exception: the handler returns a controlled HTTP
-    response (treating the body length as 0) rather than crashing the thread.
+    without an unhandled exception AND fails CLOSED.
+
+    Previously a malformed Content-Length was coerced to length 0 and treated as
+    an empty body, so it flowed into the cassette lookup as {} -- which could HIT
+    an empty-object cassette entry and replay a recorded response for a DIFFERENT
+    (non-empty) request (roborev d4b5c6f). A malformed Content-Length is malformed
+    input (RFC 7230 sec 3.3.2), so the in-process driver now BLOCKS it with a
+    controlled 502 (RELAY-REPLAY-025) instead of treating it as empty. The
+    handler still never crashes the thread (it returns a controlled HTTP reply).
     """
     handle = harness.handle
     assert handle is not None
@@ -815,10 +822,13 @@ def test_malformed_content_length_does_not_crash_handler(
         f"handler did not return a controlled response for "
         f"Content-Length={bad_value!r}; got: {response[:200]!r}"
     )
-    # With an empty body the cassette lookup misses -> 404 cassette-miss.
-    assert b"404" in response.split(b"\r\n", 1)[0], (
-        f"expected a 404 cassette-miss for empty body; got: {response[:200]!r}"
+    # Fail-closed: a malformed Content-Length is BLOCKED (502), not treated as an
+    # empty body that could hit a {} cassette entry.
+    assert b"502" in response.split(b"\r\n", 1)[0], (
+        f"expected a 502 fail-closed block for malformed Content-Length; "
+        f"got: {response[:200]!r}"
     )
+    assert b"RELAY-REPLAY-025" in response
 
 
 @pytest.mark.fulfills("VAL-W7-009")

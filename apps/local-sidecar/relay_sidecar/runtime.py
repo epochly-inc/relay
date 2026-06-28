@@ -5417,7 +5417,10 @@ def build_runtime_app(
                             "attempts": exc.attempts,
                         },
                     ),
-                    headers=_rate_limit_headers_for(request),
+                    # retry_advice=after_retry_after MUST be backed by a real
+                    # Retry-After header (roborev e19ec7c). SQLite-busy is a
+                    # transient write-contention condition; advise a 1 s backoff.
+                    headers={**_rate_limit_headers_for(request), "Retry-After": "1"},
                 )
             except RelayDiskFullError as exc:
                 # ENOSPC mid-write -> registered RELAY-SIDECAR-011 (507).

@@ -249,7 +249,17 @@ class _InProcDriver(_ProxyDriver):
                 self.wfile.write(block)
 
             def _serve_from_cassette(self) -> None:
-                length = _parse_content_length(self.headers.get("Content-Length"))
+                # Fail CLOSED on a PRESENT-but-malformed Content-Length (roborev
+                # d4b5c6f): _parse_content_length maps a malformed value (e.g.
+                # "abc") to 0, so without this guard a malformed-CL request would
+                # read 0 bytes -> body {} -> hit an empty-object cassette entry.
+                # An ABSENT header is legitimate (empty body); a present value
+                # must be a pristine run of ASCII decimal digits.
+                cl_raw = self.headers.get("Content-Length")
+                if cl_raw is not None and not (cl_raw.isascii() and cl_raw.isdigit()):
+                    self._send_corrupt_block()
+                    return
+                length = _parse_content_length(cl_raw)
                 raw = self.rfile.read(length) if length > 0 else b""
                 # Fail CLOSED on a non-empty malformed / non-object body
                 # (roborev e93594b): coercing it to {} would let a malformed or

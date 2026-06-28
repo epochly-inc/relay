@@ -298,6 +298,11 @@ async def test_post_manifest_busy_exhausted_returns_canonical_503(
     assert env.retry_advice
     assert env.request_id
     assert env.trace_id
+    # retry_advice=after_retry_after MUST be backed by a real Retry-After header
+    # (roborev e19ec7c): a client told to "retry after the Retry-After window"
+    # needs the header to know the window.
+    assert env.retry_advice == "after_retry_after"
+    assert r.headers.get("Retry-After") == "1"
 
 
 # ---------------------------------------------------------------------------
