@@ -77,9 +77,10 @@
         "apps/local-sidecar/tests/test_v2m03_state_guards.py",
         "packages/explain/tests/test_v3m4_quality_per_class.py",
         "packages/gate/tests/_w8_4_helpers.py",
-        "packages/gate/tests/test_w8_3_restart.py"
+        "packages/gate/tests/test_w8_3_restart.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py"
       ],
-      "guard_test_count": 4
+      "guard_test_count": 5
     },
     {
       "n": "3",
@@ -121,6 +122,8 @@
         "apps/local-sidecar/tests/test_canon_002_int_coercion_422.py",
         "apps/local-sidecar/tests/test_compare_and_set_state.py",
         "apps/local-sidecar/tests/test_gate_decision_draft_handoff.py",
+        "apps/local-sidecar/tests/test_guards_pred_handoff_draft_actions.py",
+        "apps/local-sidecar/tests/test_guards_pred_registry.py",
         "apps/local-sidecar/tests/test_http_boundary_handoff.py",
         "apps/local-sidecar/tests/test_idemp_001_surface_path_param.py",
         "apps/local-sidecar/tests/test_idemp_002_toctou_reservation.py",
@@ -132,12 +135,14 @@
         "apps/local-sidecar/tests/test_payload_engine_audit_keys_win.py",
         "apps/local-sidecar/tests/test_rawcap_ingest_runs_gate.py",
         "apps/local-sidecar/tests/test_run_results_check_constraints.py",
+        "apps/local-sidecar/tests/test_state_machine_property.py",
         "apps/local-sidecar/tests/test_state_transition_coverage.py",
         "apps/local-sidecar/tests/test_three_anchor_handoff.py",
         "apps/local-sidecar/tests/test_v2_audit_p0_fixes.py",
         "apps/local-sidecar/tests/test_v2m02_auth_scope.py",
         "apps/local-sidecar/tests/test_v2m02_gate_endpoints.py",
         "apps/local-sidecar/tests/test_v2m02_ingest.py",
+        "apps/local-sidecar/tests/test_v2m02_manifest_endpoints.py",
         "apps/local-sidecar/tests/test_v2m02_pagination.py",
         "apps/local-sidecar/tests/test_v2m02_rate_limit.py",
         "apps/local-sidecar/tests/test_v2m02_replay_endpoints.py",
@@ -200,7 +205,7 @@
         "tests/examples/test_w16_3_lifecycle_e2e.py",
         "tests/examples/test_w16_4_lifecycle_e2e.py"
       ],
-      "guard_test_count": 85
+      "guard_test_count": 89
     },
     {
       "n": "5",
@@ -209,6 +214,7 @@
       "enforcement_exists": true,
       "guard_tests": [
         "apps/local-sidecar/tests/test_canon_002_int_coercion_422.py",
+        "apps/local-sidecar/tests/test_guards_pred_signing_retention_round_admin.py",
         "apps/local-sidecar/tests/test_state_engine_writes_only.py",
         "packages/gate/tests/_w8_4_helpers.py",
         "packages/gate/tests/test_anti_bypass_shell_quote_evasion.py",
@@ -217,7 +223,7 @@
         "packages/gate/tests/test_w8_4_cap_config.py",
         "packages/gate/tests/test_w8_4_circuit_breaker.py"
       ],
-      "guard_test_count": 8
+      "guard_test_count": 9
     },
     {
       "n": "6",
@@ -225,12 +231,13 @@
       "enforcement": "apps/local-sidecar/relay_sidecar/side_effect_markers.py",
       "enforcement_exists": true,
       "guard_tests": [
+        "apps/local-sidecar/tests/test_cas_gaps_idempotency.py",
         "apps/local-sidecar/tests/test_idemp_002_toctou_reservation.py",
         "apps/local-sidecar/tests/test_v2m04_side_effects.py",
         "packages/sdk-python/tests/test_adapter_side_effects.py",
         "packages/sdk-python/tests/test_iso017_side_effect_idempotency_determinism.py"
       ],
-      "guard_test_count": 4
+      "guard_test_count": 5
     },
     {
       "n": "7",
@@ -249,6 +256,7 @@
         "packages/sdk-python/tests/test_json_pointer_null_leaf_parity.py",
         "packages/sdk-python/tests/test_redaction.py",
         "packages/sdk-python/tests/test_redaction_parity.py",
+        "packages/sdk-python/tests/test_redaction_property.py",
         "packages/sdk-python/tests/test_v2m08_redaction.py",
         "packages/sdk-python/tests/test_v3m5_hosted_default_policy.py",
         "packages/sdk-python/tests/test_v3m5_json_path_matcher.py",
@@ -264,7 +272,7 @@
         "tests/conformance/redaction/generate_parity_fixtures.py",
         "tests/examples/test_w16_4_lifecycle_e2e.py"
       ],
-      "guard_test_count": 25
+      "guard_test_count": 26
     },
     {
       "n": "8",
@@ -287,6 +295,7 @@
         "apps/local-sidecar/tests/test_reader_separation.py",
         "apps/local-sidecar/tests/test_retention_pass.py",
         "apps/local-sidecar/tests/test_sqlite_busy_exhausted.py",
+        "apps/local-sidecar/tests/test_v2m02_manifest_endpoints.py",
         "apps/local-sidecar/tests/test_v2m04_side_effects.py",
         "apps/local-sidecar/tests/test_wal_checkpoint_failure.py",
         "apps/local-sidecar/tests/test_wal_checkpoint_on_shutdown.py",
@@ -298,7 +307,7 @@
         "packages/schemas/python/tests/test_v3m1_runresult_no_array.py",
         "tests/release/test_w12_6_release_evidence_bundle.py"
       ],
-      "guard_test_count": 25
+      "guard_test_count": 26
     },
     {
       "n": "9",
@@ -307,7 +316,9 @@
       "enforcement_exists": true,
       "guard_tests": [
         "apps/replay-proxy/tests/test_v2m08_replay_determinism.py",
+        "apps/replay-proxy/tests/test_w7_1_addon_fail_closed.py",
         "packages/cli/tests/test_w5_3_replay_commands.py",
+        "packages/sdk-python/tests/test_egress_ssrf_parity_property.py",
         "packages/sdk-python/tests/test_replay_mode.py",
         "packages/sdk-typescript/test/w4_2_replay_and_flush.test.ts",
         "tests/examples/test_w16_1_lifecycle_e2e.py",
@@ -319,7 +330,7 @@
         "tests/examples/test_w16_4_manifest_schema.py",
         "tests/examples/test_w16_4_readme.py"
       ],
-      "guard_test_count": 12
+      "guard_test_count": 14
     },
     {
       "n": "10",
@@ -330,6 +341,7 @@
         "apps/local-sidecar/tests/_w25_helpers.py",
         "apps/local-sidecar/tests/test_audit_r3_p0_fixes.py",
         "apps/local-sidecar/tests/test_canon_002_int_coercion_422.py",
+        "apps/local-sidecar/tests/test_cas_gaps_idempotency.py",
         "apps/local-sidecar/tests/test_context_reinjection_guard.py",
         "apps/local-sidecar/tests/test_crash_kill_minus_9.py",
         "apps/local-sidecar/tests/test_e2e_event_log_ordering_post_crash.py",
@@ -381,6 +393,7 @@
         "packages/contracts-typescript/test/w17_3_celspec_corpus.test.ts",
         "packages/contracts-typescript/test/w6_2_014_jcs_canonical.test.ts",
         "packages/contracts-typescript/test/w6_5_corpus.test.ts",
+        "packages/contracts/tests/test_f7_oob_result_keeps_udf_trace.py",
         "packages/contracts/tests/test_pipeline_udf_capture_multi_call.py",
         "packages/contracts/tests/test_pipeline_udf_outputs_parity.py",
         "packages/contracts/tests/test_pipeline_wasm_udf_trace.py",
@@ -426,6 +439,7 @@
         "packages/sdk-python/tests/test_loopback_server.py",
         "packages/sdk-python/tests/test_redaction.py",
         "packages/sdk-python/tests/test_redaction_parity.py",
+        "packages/sdk-python/tests/test_redaction_property.py",
         "packages/sdk-python/tests/test_replay_create.py",
         "packages/sdk-python/tests/test_v2m08_redaction.py",
         "packages/sdk-python/tests/test_v3m5_json_path_matcher.py",
@@ -463,6 +477,7 @@
         "packages/verifier/tests/test_v3m1_claim_rules.py",
         "packages/verifier/tests/test_v3m1_no_deprecation_on_subject_access.py",
         "packages/verifier/tests/test_v3m5_toctou_symlink_safe.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py",
         "packages/verifier/tests/test_w10_1_jwks_loader.py",
         "packages/verifier/tests/test_w10_4_bundle_validator.py",
         "tests/conformance/cassettes/generate_parity_fixtures.py",
@@ -482,7 +497,7 @@
         "tests/release/test_w12_6_release_evidence_bundle.py",
         "tests/release/test_w12_6_verify_install.py"
       ],
-      "guard_test_count": 154
+      "guard_test_count": 158
     },
     {
       "n": "11",
@@ -514,6 +529,7 @@
         "packages/verifier/tests/test_v3m1_claim_rules.py",
         "packages/verifier/tests/test_v3m1_no_deprecation_on_subject_access.py",
         "packages/verifier/tests/test_v3m5_idn_homograph.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py",
         "packages/verifier/tests/test_w10_1_default_jwks_url.py",
         "packages/verifier/tests/test_w10_1_jwks_loader.py",
         "packages/verifier/tests/test_w10_4_bundle_validator.py",
@@ -524,7 +540,7 @@
         "tests/release/test_w12_6_release_evidence_bundle.py",
         "tests/release/test_w12_6_verify_install.py"
       ],
-      "guard_test_count": 33
+      "guard_test_count": 34
     },
     {
       "n": "12",
@@ -600,6 +616,7 @@
         "packages/verifier/tests/test_v2m08_trust_anchor.py",
         "packages/verifier/tests/test_v3m1_claim_rules.py",
         "packages/verifier/tests/test_v3m5_idn_homograph.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py",
         "packages/verifier/tests/test_w10_1_default_jwks_url.py",
         "packages/verifier/tests/test_w10_4_bundle_validator.py",
         "packages/verifier/tests/test_w10_4_retention_and_anchor.py",
@@ -611,7 +628,7 @@
         "tests/release/test_w12_6_release_evidence_bundle.py",
         "tests/release/test_w12_6_verify_install.py"
       ],
-      "guard_test_count": 37
+      "guard_test_count": 38
     },
     {
       "n": "14",
@@ -626,13 +643,14 @@
         "packages/verifier-typescript/test/v3m5_tsa_parity_p2.test.ts",
         "packages/verifier/tests/conftest_w10_4.py",
         "packages/verifier/tests/test_v2m08_trust_anchor.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py",
         "packages/verifier/tests/test_w10_4_chain_and_invariants.py",
         "packages/verifier/tests/test_w9_tsa_verifier.py",
         "tests/guards/test_no_private_keys.py",
         "tests/guards/test_no_private_keys_repo_wide.py",
         "tests/release/test_w12_5_sidecar_bundle_workflow.py"
       ],
-      "guard_test_count": 12
+      "guard_test_count": 13
     },
     {
       "n": "15",
@@ -656,11 +674,14 @@
       "enforcement_exists": true,
       "guard_tests": [
         "apps/local-sidecar/tests/test_e2e_partial_lockfile.py",
+        "apps/local-sidecar/tests/test_guards_pred_idem_manifest.py",
+        "apps/local-sidecar/tests/test_http_boundary_handoff.py",
         "apps/local-sidecar/tests/test_iso024_nonce_store_bounded.py",
         "apps/local-sidecar/tests/test_lifespan_sqlite_wal.py",
         "apps/local-sidecar/tests/test_shared_httpx_client.py",
         "apps/local-sidecar/tests/test_shutdown_drain.py",
         "apps/local-sidecar/tests/test_sigterm_drain_ingest.py",
+        "apps/local-sidecar/tests/test_state_machine_stateful_property.py",
         "apps/local-sidecar/tests/test_v2m02_rate_limit.py",
         "apps/local-sidecar/tests/test_v3m2_hosted_501_stubs.py",
         "apps/local-sidecar/tests/test_writer_queue_concurrency.py",
@@ -716,12 +737,14 @@
         "packages/contracts-typescript/test/wsj_edge_timeout_code_identity.test.ts",
         "packages/contracts/tests/test_canonical_bmp_only_keys.py",
         "packages/contracts/tests/test_engine_factory.py",
+        "packages/contracts/tests/test_f7_oob_result_keeps_udf_trace.py",
         "packages/contracts/tests/test_p5flip_default_engine_wasm.py",
         "packages/contracts/tests/test_p5flip_default_equals_wasm_guard.py",
         "packages/contracts/tests/test_parity_007_regex_backref_scope.py",
         "packages/contracts/tests/test_pipeline_udf_outputs_parity.py",
         "packages/contracts/tests/test_pipeline_wasm_udf_trace.py",
         "packages/contracts/tests/test_run_with_timeout_helper.py",
+        "packages/contracts/tests/test_w16_jcs_canonical_parity_property.py",
         "packages/contracts/tests/test_w16_p4dualrun_default_engine_guard.py",
         "packages/contracts/tests/test_w6_1_evaluator.py",
         "packages/contracts/tests/test_w6_3_determinism.py",
@@ -750,6 +773,7 @@
         "packages/gate/tests/test_w8_2_decision_writer.py",
         "packages/gate/tests/test_w8_3_restart.py",
         "packages/schemas/python/tests/test_canonical_bytes_parity.py",
+        "packages/schemas/python/tests/test_canonical_bytes_property.py",
         "packages/schemas/python/tests/test_v2m01_envelopes.py",
         "packages/schemas/python/tests/test_v2m03_manifest.py",
         "packages/schemas/python/tests/test_v3m5_yaml_hardening.py",
@@ -765,6 +789,7 @@
         "packages/sdk-python/tests/test_iso019_async_teardown_drains_queue.py",
         "packages/sdk-python/tests/test_redaction.py",
         "packages/sdk-python/tests/test_redaction_parity.py",
+        "packages/sdk-python/tests/test_redaction_property.py",
         "packages/sdk-python/tests/test_v2m08_redaction.py",
         "packages/sdk-typescript/test/iso_022_040_041_run_digest_and_tokens.test.ts",
         "packages/sdk-typescript/test/replay_egress_allowlist_ssrf.test.ts",
@@ -786,6 +811,7 @@
         "packages/verifier-typescript/test/w17_1_ietf_corpus.test.ts",
         "packages/verifier-typescript/test/w17_2_appendix_a.test.ts",
         "packages/verifier/tests/conftest_w10_4.py",
+        "packages/verifier/tests/test_merkle_property.py",
         "packages/verifier/tests/test_v3m5_toctou_symlink_safe.py",
         "packages/verifier/tests/test_w10_2_rfc7515_corpus.py",
         "packages/verifier/tests/test_w10_3_jcs_corpus.py",
@@ -820,7 +846,7 @@
         "tests/tooling/test_build_celspec_corpus.py",
         "tests/tooling/test_v2m08_tooling.py"
       ],
-      "guard_test_count": 164
+      "guard_test_count": 172
     }
   ],
   "spec_sections_total": 171,
@@ -1287,13 +1313,13 @@
     },
     {
       "section": "C",
-      "in_source": false,
+      "in_source": true,
       "in_tests": false
     },
     {
       "section": "C.1",
       "in_source": true,
-      "in_tests": false
+      "in_tests": true
     },
     {
       "section": "C.2",
@@ -1303,7 +1329,7 @@
     {
       "section": "C.3",
       "in_source": true,
-      "in_tests": false
+      "in_tests": true
     },
     {
       "section": "C.4",
@@ -1730,7 +1756,6 @@
     "AP.6",
     "AP.7",
     "B.5",
-    "C",
     "C.2",
     "CI",
     "CLA",

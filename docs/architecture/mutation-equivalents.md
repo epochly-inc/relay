@@ -78,7 +78,10 @@ runtime behavioral effect.
 ## Class C -- guards.py logic equivalents (16)
 
 `state_engine/guards.py` holds 23 pure guard predicates. After the direct-unit
-suite (`tests/test_guards_pred_*.py`, 145 tests) killed 315 of the 368 original
+direct-unit `test_guards_pred_*` suite (six files under
+`apps/local-sidecar/tests/`, e.g.
+`apps/local-sidecar/tests/test_guards_pred_registry.py`; 145 tests) killed 315 of
+the 368 original
 real survivors, 53 remained; 37 of those were killed by targeted-input tests
 (integer `0`/`1` to pin `is False`/`is True` identity checks; a single-malformed-
 row test for the `except` and a deterministic two-row rowid-ordered test for
@@ -119,14 +122,18 @@ always a subset of `required` (built from `WHERE contract_id IN (required)`), so
 
 ### C4. Keyword-only `*` marker (Mul_Div; L91)
 
-`ReplaceBinaryOperator_Mul_Div` on the bare `*` in `def register_guard(name, fn,
-*, override=...)`: the `*` is the keyword-only-args separator, not an arithmetic
-operator; mutating it has no runtime behavior (same class as B5).
+The cosmic-ray `Mul_Div` binary-operator mutation (matched by
+`op_contains="Mul_Div"` in `scripts/run-mutation.py`) on the bare `*` in
+`def register_guard(name, fn, *, override=...)`: the `*` is the keyword-only-args
+separator, not an arithmetic operator; mutating it has no runtime behavior (same
+class as B5).
 
 ## Class D -- verifier merkle.py logic equivalents (19)
 
 `packages/verifier/src/relay_verifier/merkle.py` (RFC-6962). After 16 of 35
-survivors were killed by targeted tests (`tests/test_merkle_mut_*.py`: out-of-range
+survivors were killed by the `test_merkle_mut_*` targeted tests (under
+`packages/verifier/tests/`, e.g.
+`packages/verifier/tests/test_merkle_mut_build.py`: out-of-range
 `build_inclusion_proof` index guard, `_hex_to_bytes` length/hex validation, the
 `verify_inclusion_proof` size/bounds checks and identity (`is`) swaps), 19 remain
 as structural equivalents (encoded in `scripts/run-mutation.py` `merkle.justified_
