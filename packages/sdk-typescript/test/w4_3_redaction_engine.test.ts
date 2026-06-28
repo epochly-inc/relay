@@ -22,7 +22,9 @@ import {
   DEFAULT_APPLIES_TO_FIELDS,
   hmacSha256Hex,
   loadRedactionPolicy,
+  MAX_REDACTION_LEAF_LENGTH,
   redactCapturePayload,
+  REDACTION_TRUNCATION_MARKER,
   RedactionEngine,
   type SaltProvider,
 } from "../src/redaction.js";
@@ -558,6 +560,56 @@ describe("VAL-REDACT-006: policy regex ReDoS guard (load-time rejection + leaf c
       model_call: { input: string };
     }).model_call.input;
     expect(a).toBe(b);
+  });
+
+  // F8 (keystone #16): the leaf clamp counts CODE POINTS, not UTF-16 code units.
+  // A supplementary-plane char (e.g. U+1F600) is 2 UTF-16 code units but 1 code
+  // point. The Python SDK clamps by code points (len()/[:N]); pre-fix the TS SDK
+  // clamped by `value.length` (UTF-16 units) and sliced by UTF-16, so an SMP-heavy
+  // leaf within the code-point cap but OVER the code-unit cap was clamped (+
+  // truncation marker) on TS while Python left it untouched -- a Py<->TS redacted-
+  // byte divergence, and a UTF-16 slice could split a surrogate pair.
+  it("F8: clamps by CODE POINTS -- an SMP leaf within the code-point cap is NOT clamped", () => {
+    const policy = loadRedactionPolicy(redosPolicy("zzz"));
+    const engine = new RedactionEngine({ policy, saltProvider });
+    // cap/2 + 1 emoji: code points = cap/2+1 (<= cap, so NO clamp, matching
+    // Python) but UTF-16 length = cap+2 (> cap, which pre-fix WOULD have clamped).
+    const n = MAX_REDACTION_LEAF_LENGTH / 2 + 1;
+    const leaf = "\u{1F600}".repeat(n);
+    expect(leaf.length).toBeGreaterThan(MAX_REDACTION_LEAF_LENGTH); // UTF-16 units
+    expect(Array.from(leaf).length).toBeLessThanOrEqual(MAX_REDACTION_LEAF_LENGTH); // code points
+    const out = (
+      engine.redact({ model_call: { input: leaf } }) as {
+        model_call: { input: string };
+      }
+    ).model_call.input;
+    // NOT clamped: no truncation marker, and the output preserves every code
+    // point (no surrogate-pair split). The "zzz" matcher finds nothing, so the
+    // benign emoji leaf passes through verbatim.
+    expect(out).not.toContain(REDACTION_TRUNCATION_MARKER);
+    expect(Array.from(out).length).toBe(n);
+    expect(out).toBe(leaf);
+  });
+
+  // F8 companion: BEYOND the code-point cap, the clamp fires at exactly `cap`
+  // CODE POINTS (not code units) and never emits a lone surrogate.
+  it("F8: an SMP leaf OVER the code-point cap clamps at the code-point boundary", () => {
+    const policy = loadRedactionPolicy(redosPolicy("zzz"));
+    const engine = new RedactionEngine({ policy, saltProvider });
+    const leaf = "\u{1F600}".repeat(MAX_REDACTION_LEAF_LENGTH + 5);
+    const out = (
+      engine.redact({ model_call: { input: leaf } }) as {
+        model_call: { input: string };
+      }
+    ).model_call.input;
+    expect(out).toContain(REDACTION_TRUNCATION_MARKER);
+    const body = out.slice(0, out.length - REDACTION_TRUNCATION_MARKER.length);
+    // Clamped to exactly `cap` code points (each emoji intact -> 2*cap UTF-16
+    // units), proving a code-point boundary and no split surrogate.
+    expect(Array.from(body).length).toBe(MAX_REDACTION_LEAF_LENGTH);
+    expect(body.length).toBe(MAX_REDACTION_LEAF_LENGTH * 2);
+    // No lone surrogate at the cut edge (a split pair would leave one).
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(body)).toBe(false);
   });
 
   // Gate-2 (HIGH / correctness): the ReDoS guard mis-read regex GROUP-PREFIX

@@ -1706,9 +1706,12 @@ class RedactionEngine:
         # AFTER matching so the marker is never scanned or redacted. This bounds
         # total matcher work (defense against ReDoS via huge inputs as well as
         # linear-but-slow patterns) and guarantees raw plaintext beyond the cap
-        # never crosses the wire. Byte-identical to the TS SDK clamp (the TS
-        # side clamps by UTF-16 code units; for ASCII/BMP leaves -- the parity
-        # surface -- code points and code units coincide).
+        # never crosses the wire. Byte-identical to the TS SDK clamp: BOTH clamp
+        # by Unicode CODE POINTS -- Python via len()/[:N] here, the TS SDK via
+        # Array.from(...).slice(0, N) (F8 parity fix). A supplementary-plane
+        # (>= U+10000) char counts as ONE on both sides, so an over-cap SMP-heavy
+        # leaf clamps at the SAME boundary cross-runtime and neither side splits a
+        # surrogate pair (keystone #16).
         if len(value) > MAX_REDACTION_LEAF_LENGTH:
             clamped = value[:MAX_REDACTION_LEAF_LENGTH]
             return (

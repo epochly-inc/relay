@@ -116,11 +116,14 @@ const KNOWN_ACTIONS: ReadonlySet<string> = new Set(["redact", "hash", "drop"]);
 // clamped leaf (Pattern B/C parity).
 
 /**
- * Maximum length (in UTF-16 code units) of a single string leaf the matcher
- * loop will scan. Leaves longer than this are clamped before matching. Must
- * stay byte-for-byte equal to the Python SDK constant.
+ * Maximum length (in Unicode CODE POINTS) of a single string leaf the matcher
+ * loop will scan. Leaves longer than this are clamped before matching. The unit
+ * is code points -- NOT UTF-16 code units -- so the clamp boundary is identical
+ * to the Python SDK (`len(value)` / `value[:N]`); a supplementary-plane char
+ * counts as ONE here exactly as in Python (F8 parity fix). Must stay
+ * byte-for-byte equal to the Python SDK constant.
  */
-export const MAX_REDACTION_LEAF_LENGTH = 1_048_576; // 1 MiB of UTF-16 code units.
+export const MAX_REDACTION_LEAF_LENGTH = 1_048_576; // 1 Mi code points.
 
 /**
  * Deterministic marker spliced in where a leaf was truncated at the cap.
@@ -1735,9 +1738,22 @@ export class RedactionEngine {
     // never crosses the wire. Byte-identical to the Python SDK clamp.
     let truncated = false;
     let leaf = value;
+    // `value.length` is UTF-16 CODE UNITS; the Python SDK clamps by CODE POINTS
+    // (`len(value)` / `value[:N]`). A supplementary-plane char is 2 code units
+    // but 1 code point, so a leaf can EXCEED the cap in code units while being
+    // WITHIN it in code points -- Python would not clamp it but a UTF-16 clamp
+    // would, AND `slice` on code units can split a surrogate pair into a lone
+    // surrogate. Clamp by CODE POINTS to match Python exactly and never split a
+    // surrogate (F8 parity fix, keystone #16). The code-point materialisation
+    // only runs on the rare over-(code-unit)-cap path; since code points <= code
+    // units always, a leaf within the code-unit cap is also within the code-point
+    // cap, so the common path skips it.
     if (leaf.length > MAX_REDACTION_LEAF_LENGTH) {
-      leaf = leaf.slice(0, MAX_REDACTION_LEAF_LENGTH);
-      truncated = true;
+      const codePoints = Array.from(leaf);
+      if (codePoints.length > MAX_REDACTION_LEAF_LENGTH) {
+        leaf = codePoints.slice(0, MAX_REDACTION_LEAF_LENGTH).join("");
+        truncated = true;
+      }
     }
     const redacted = this.applyMatchersToClampedString(leaf);
     return truncated ? redacted + REDACTION_TRUNCATION_MARKER : redacted;

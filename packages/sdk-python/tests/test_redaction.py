@@ -22,6 +22,8 @@ import pytest
 from relay.errors import RelayPolicyError
 from relay.redaction import (
     DEFAULT_APPLIES_TO_FIELDS,
+    MAX_REDACTION_LEAF_LENGTH,
+    REDACTION_TRUNCATION_MARKER,
     RedactionEngine,
     RedactionPolicy,
     redact_capture_payload,
@@ -784,6 +786,41 @@ def test_redos_group_prefix_credential_matcher_loads() -> None:
     out = engine._apply_matchers_to_string("token sk-ABCDEFGHIJKLMNOPQRSTUV end")
     assert "<redacted>" in out
     assert "ABCDEFGHIJKLMNOPQRSTUV" not in out
+
+
+@pytest.mark.plumbing
+def test_f8_leaf_clamp_counts_code_points_not_utf16_units() -> None:
+    """F8 (keystone #16): the leaf clamp counts Unicode CODE POINTS.
+
+    A supplementary-plane char (U+1F600) is 1 code point but 2 UTF-16 code units.
+    Python's ``len()`` / ``[:N]`` clamp is code-point based; this is the reference
+    the TS SDK now mirrors (it previously clamped by UTF-16 units, over-clamping
+    SMP-heavy leaves and diverging the redacted bytes). This test anchors the
+    Python reference so a regression to UTF-16 semantics is caught.
+
+    Boundary leaf: ``cap // 2 + 1`` emoji -> code points <= cap (NOT clamped) but
+    UTF-16 units > cap. Over-cap leaf: ``cap + 5`` emoji -> clamped at exactly
+    ``cap`` CODE POINTS (each emoji intact, never a split surrogate)."""
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+
+    n = MAX_REDACTION_LEAF_LENGTH // 2 + 1
+    boundary = "\U0001f600" * n
+    assert len(boundary) <= MAX_REDACTION_LEAF_LENGTH  # code points within cap
+    out = engine._apply_matchers_to_string(boundary)
+    # NOT clamped: no truncation marker, every code point preserved verbatim
+    # (the base policy matchers find no secret in benign emoji).
+    assert REDACTION_TRUNCATION_MARKER not in out, out[:40]
+    assert out == boundary
+
+    over = "\U0001f600" * (MAX_REDACTION_LEAF_LENGTH + 5)
+    out2 = engine._apply_matchers_to_string(over)
+    assert out2.endswith(REDACTION_TRUNCATION_MARKER), out2[-40:]
+    body = out2[: -len(REDACTION_TRUNCATION_MARKER)]
+    # Clamped at exactly cap CODE POINTS; Python str slicing never splits a
+    # character, so this is structurally guaranteed -- assert the boundary.
+    assert len(body) == MAX_REDACTION_LEAF_LENGTH
+    assert body == "\U0001f600" * MAX_REDACTION_LEAF_LENGTH
 
 
 @pytest.mark.plumbing
