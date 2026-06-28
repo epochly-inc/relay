@@ -572,17 +572,18 @@ def _flush_backoff_log(entries: list[dict[str, int]]) -> None:
     try:
         fd = os.open(path, flags, 0o600)
         try:
-            # os.write may write FEWER bytes than requested (a short write);
-            # loop until the whole batch is flushed so a JSONL line is never left
-            # truncated. O_APPEND keeps each write atomic at end-of-file, so the
-            # successive writes still land contiguously and in order.
-            view = memoryview(payload)
-            written = 0
-            while written < len(view):
-                n = os.write(fd, view[written:])
-                if n <= 0:
-                    break
-                written += n
+            # ONE os.write of the whole batch under O_APPEND. This is deliberately
+            # a single write, NOT a write-until-complete retry loop: O_APPEND makes
+            # each INDIVIDUAL write append atomically at EOF, so a single write is
+            # interleave-safe against a concurrent writer to the same log, whereas
+            # a multi-write loop would let another process' record land BETWEEN our
+            # prefix and suffix and corrupt the JSONL stream (roborev 89992dd). The
+            # payload here is a handful of tiny ``{"backoff_ms": N}`` lines -- far
+            # under the local-FS single-``write(2)`` atomicity window -- so a short
+            # write does not occur in practice; if it ever did, this is best-effort
+            # diagnostic telemetry (OSError swallowed) where a dropped tail is
+            # acceptable. Mirrors the sanctioned cassette_format.append_record write.
+            os.write(fd, payload)
         finally:
             os.close(fd)
     except OSError:
