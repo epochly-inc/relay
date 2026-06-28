@@ -155,25 +155,30 @@ These are surfaced by `scripts/gen-dependency-graph.py` (package-level) and
 qsense (file-level + complexity). They are recorded here for honesty and
 remediation tracking; none is silently waved through.
 
-### 7.1 Dependency cycles (4 in-scope)
+### 7.1 Dependency cycles (2 in-scope; the 2 package-level cycles RESOLVED 2026-06-28)
 
-Acyclicity is qsense's top structural bottleneck. Four in-scope cycles (a fifth,
-inside the vendored `cel-rust` parser, is third-party and out of scope):
+Acyclicity is qsense's top structural bottleneck. The two PACKAGE-LEVEL cycles the
+generator flagged were broken by relocating the shared module each back-edge
+imported down to the lowest layer both packages already depend on:
 
-- **Package-level** (generator):
-  - `cli <-> replay-proxy`: `cli/.../commands/replay.py` lazily imports
-    `relay_replay_proxy`; `apps/replay-proxy/relay_replay_proxy/cassette_server.py` imports
-    `relay_cli.cassette`.
-  - `local-sidecar <-> sdk-python`: `sdk-python` imports `relay_sidecar`
-    (client/_transport/salt_registry); `local-sidecar/.../runtime.py` imports
-    `relay.redaction_budget`.
-- **File-level** (qsense), intra-package:
+- **Package-level** (generator) -- **RESOLVED**; `gen-dependency-graph.py --check`
+  now reports **0 cycles**:
+  - `cli <-> replay-proxy`: the cassette format/parse module that
+    `apps/replay-proxy/.../cassette_server.py` imported from `relay_cli.cassette`
+    moved to `relay_sidecar.cassette` (both packages already depend on the
+    sidecar); the back-edge is gone.
+  - `local-sidecar <-> sdk-python`: the ReDoS matcher-budget guard
+    `local-sidecar/.../runtime.py` imported from `relay.redaction_budget` moved to
+    `relay_schemas.redaction_budget` (the lowest shared layer); the back-edge is gone.
+- **File-level** (qsense), intra-package, still tracked:
   - `acef`: `upstream/src/acef/export.py <-> package.py`.
   - `explain`: `src/relay_explain/api.py <-> engine.py`.
 
-Status: documented; remediation (or an explicit justification, e.g. lazy-import
-boundary breaking import-time coupling) is tracked under the shakedown loop.
-`gen-dependency-graph.py --check` fails on package-level cycles.
+Status: the package-level cycles are RESOLVED (no lazy-import band-aid -- the
+shared code was relocated to a lower layer); `gen-dependency-graph.py --check`
+passes (0 cycles). The two intra-package file-level cycles remain tracked under
+the shakedown loop. A fifth cycle inside the vendored `cel-rust` parser is
+third-party and out of scope.
 
 ### 7.2 Complexity hotspots
 

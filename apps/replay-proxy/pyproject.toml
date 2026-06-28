@@ -37,8 +37,13 @@ dependencies = [
   # process kill mid-write does not leave a half-written PEM that the
   # proxy might silently accept).
   "epochly-relay-sidecar",
-  # Cassette parser + canonical request digest. Used by the in-process
-  # driver and the mitmproxy addon to look up recorded responses.
+  # The cassette parser/digest the driver + mitmproxy addon use moved to
+  # `relay_sidecar.cassette` (above) when the cli<->replay-proxy import cycle was
+  # broken, so PRODUCTION no longer imports relay_cli. Retained because the
+  # replay-proxy TEST suite imports the CLI's exit-code / replay-side-effect
+  # constants (relay_cli.exit_codes, relay_cli.commands.replay) for cross-package
+  # contract assertions. A future packaging pass can recategorize this as a
+  # test-only extra once a relay-proxy [test] extra exists.
   "epochly-relay-cli",
 ]
 
