@@ -619,26 +619,23 @@ async def test_manifest_naive_future_tz_normalized() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.asyncio
-async def test_manifest_skip_malformed_row_then_active() -> None:
-    """Kill L312 ExceptionReplacer AND L313 ReplaceContinueWithBreak.
+async def test_manifest_single_malformed_row_is_caught_not_raised() -> None:
+    """Kill L312 ExceptionReplacer -- DETERMINISTICALLY, order-independently.
 
-    Two rows for the same (project, hash): the FIRST has a malformed
-    effective_until (``fromisoformat`` raises ValueError), the SECOND is
-    active (NULL effective_until). The real guard catches the ValueError,
-    ``continue``s past the bad row, reaches the active row, and returns
-    ``(True, {})``.
+    ONE row whose ``effective_until`` is unparseable (``fromisoformat`` raises
+    ValueError). The real guard catches the ValueError, ``continue``s past the
+    only row, the loop ends, and it returns ``(False, "expired beyond grace
+    window")``.
 
-    - L312 ExceptionReplacer rewrites ``except ValueError`` to
-      ``except CosmicRayTestingException`` (which does NOT catch ValueError),
-      so the ValueError propagates and the guard raises.
-    - L313 ``continue`` -> ``break`` stops at the malformed row, exits the
-      loop, and returns ``(False, expired)``.
-
-    Both diverge from the real PASS. Visit order is pinned DETERMINISTICALLY
-    via EXPLICIT ascending rowids: the guard query has no ORDER BY and the
-    minimal test table has no index on (project_id, commit_hash), so SQLite
-    does a full-table scan in rowid order -- rowid 1 (malformed) is therefore
-    visited strictly before rowid 2 (active), independent of insertion timing.
+    L312 ExceptionReplacer rewrites ``except ValueError`` to
+    ``except CosmicRayTestingException`` (which does NOT catch ValueError), so
+    the ValueError propagates and the guard RAISES instead of returning a
+    verdict. A single row makes this kill independent of SQLite scan order
+    (the prior two-row variant relied on a malformed-before-active visitation
+    order that ``SELECT`` without ``ORDER BY`` does not guarantee -- roborev
+    20fe8b6). L313 ``continue`` -> ``break`` is INDISTINGUISHABLE here (one row:
+    both exit the loop to the same ``return``) and is justified equivalent --
+    see docs/architecture/mutation-equivalents.md Class C5.
     """
     async with aiosqlite.connect(":memory:") as conn:
         await conn.execute(_DDL_SCOPE_STATE)
@@ -647,25 +644,16 @@ async def test_manifest_skip_malformed_row_then_active() -> None:
             "INSERT INTO scope_state VALUES (?, ?, ?)",
             (_SCOPE_KIND, _SCOPE_ID, "projA"),
         )
-        # Explicit rowids pin scan order: malformed (1) strictly before active (2).
         await conn.execute(
-            "INSERT INTO manifest_versions"
-            "(rowid, project_id, commit_hash, effective_until, grace_window_seconds) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (1, "projA", "sha256-abc", "not-a-valid-date", 0),
-        )
-        await conn.execute(
-            "INSERT INTO manifest_versions"
-            "(rowid, project_id, commit_hash, effective_until, grace_window_seconds) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (2, "projA", "sha256-abc", None, 0),
+            "INSERT INTO manifest_versions VALUES (?, ?, ?, ?)",
+            ("projA", "sha256-abc", "not-a-valid-date", 0),
         )
         await conn.commit()
         ok, diag = await _guard_valid_manifest_commit_hash(
             conn, _SCOPE_KIND, _SCOPE_ID, {}, "sha256-abc"
         )
-    assert ok is True
-    assert diag == {}
+    assert ok is False
+    assert "expired beyond grace window" in diag["reason"]
 
 
 @pytest.mark.plumbing

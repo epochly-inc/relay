@@ -116,6 +116,20 @@ re-run confirms no real survivor hides behind this whitelist.
 always a subset of `required` (built from `WHERE contract_id IN (required)`), so
 `evaluated - required` is empty.
 
+### C5. `continue` -> `break` in the order-agnostic manifest row loop (ContinueWithBreak; L313)
+
+`_guard_valid_manifest_commit_hash` iterates the `manifest_versions` rows matching
+`(project_id, commit_hash)` and returns `True` on the first active-within-grace
+row, `continue`-ing past malformed/expired ones. The `continue` -> `break` mutant
+changes the result ONLY when a malformed row is visited *before* an active row --
+but the guard's `SELECT` has no `ORDER BY`, and its contract ("PASS iff ANY
+matching row is active within grace") is **order-invariant**. So the mutation is
+not observable under the query's contract (a test that "kills" it would depend on
+unspecified SQLite scan order -- roborev 20fe8b6). The sibling L312
+`ExceptionReplacer` on the same `except` IS killed deterministically by a
+single-malformed-row test (real returns `(False, expired)`, the mutant raises),
+which needs no ordering.
+
 ### C4. Keyword-only `*` marker (Mul_Div; L91)
 
 `ReplaceBinaryOperator_Mul_Div` on the bare `*` in `def register_guard(name, fn,

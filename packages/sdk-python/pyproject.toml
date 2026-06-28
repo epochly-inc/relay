@@ -61,6 +61,7 @@ test = [
   "pytest>=8.0",
   "pytest-timeout>=2.3",
   "httpx>=0.27,<0.29",
+  "hypothesis>=6.100",  # property suites (test_redaction_property.py)
 ]
 
 [tool.hatch.build.targets.wheel]

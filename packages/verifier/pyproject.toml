@@ -63,6 +63,7 @@ dependencies = [
 test = [
   "pytest>=8.0",
   "pytest-timeout>=2.3",
+  "hypothesis>=6.100",  # property suites (test_merkle_property.py)
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -178,6 +178,14 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
             {"lines": [91], "op_contains": "Mul_Div",
              "reason": "bare `*` keyword-only marker in def register_guard(...,*,"
                        "override=...) is syntactic, not arithmetic; no runtime effect."},
+            {"lines": [313], "op_contains": "ContinueWithBreak",
+             "reason": "continue->break in the manifest_versions row loop differs "
+                       "ONLY when a malformed row precedes an active one; the guard "
+                       "SELECT has no ORDER BY and its contract (PASS iff ANY matching "
+                       "row is active-within-grace) is order-invariant, so the mutant "
+                       "is not a contract-observable behavior change. L312 (the except "
+                       "on the same row) IS killed deterministically by a single-row "
+                       "test."},
         ],
     },
 }
@@ -245,9 +253,11 @@ def _write_groups_file(dest_dir: Path, test_groups: list[list[str]]) -> Path:
 
 def _test_command(groups_file: Path) -> str:
     """The cosmic-ray test-command: invoke this script's group-runner against the
-    persisted group spec. No shell metacharacters -> shlex.split-safe; mkdtemp
-    paths contain no spaces."""
-    return f"python {_SCRIPT_REL} --run-groups-file {groups_file}"
+    persisted group spec. ``shlex.quote`` the path so a directory containing a
+    space (or other shell-significant char) still parses to a single token under
+    cosmic-ray's ``shlex.split`` and under our own baseline replay. TOML-escaping
+    of the assembled command is handled by ``_write_config``."""
+    return f"python {_SCRIPT_REL} --run-groups-file {shlex.quote(str(groups_file))}"
 
 
 def _baseline_ok(test_groups: list[list[str]]) -> tuple[bool, str]:
@@ -269,13 +279,20 @@ def _baseline_ok(test_groups: list[list[str]]) -> tuple[bool, str]:
     return True, "all groups green"
 
 
+def _toml_basic(s: str) -> str:
+    """Escape a string for a TOML basic (double-quoted) value: backslash first,
+    then double-quote. Without this a Windows path (backslashes) or a quoted
+    token in the test-command would produce malformed TOML."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _write_config(module: str, test_command: str, cfg_path: Path) -> None:
     body = (
         "[cosmic-ray]\n"
-        f'module-path = "{module}"\n'
+        f'module-path = "{_toml_basic(module)}"\n'
         f"timeout = {_MUTANT_TIMEOUT_S}\n"
         "excluded-modules = []\n"
-        f'test-command = "{test_command}"\n\n'
+        f'test-command = "{_toml_basic(test_command)}"\n\n'
         "[cosmic-ray.distributor]\n"
         'name = "local"\n'
     )

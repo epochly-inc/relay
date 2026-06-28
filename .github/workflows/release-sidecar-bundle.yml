@@ -222,7 +222,7 @@ jobs:
         env:
           RELAY_SIDECAR_BINARY: dist/sidecar-bundle/${{ matrix.cell }}/dist/relay-sidecar-${{ matrix.cell }}
         run: |
-          python -m pip install pytest pytest-asyncio pytest-timeout psutil
+          python -m pip install pytest pytest-asyncio pytest-timeout psutil hypothesis
           pytest -m plumbing apps/local-sidecar/tests --timeout=60 -q
 
       - name: "Upload binary artifact"

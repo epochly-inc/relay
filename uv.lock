@@ -818,6 +818,7 @@ dependencies = [
 [package.optional-dependencies]
 test = [
     { name = "httpx" },
+    { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-timeout" },
 ]
@@ -829,6 +830,7 @@ requires-dist = [
     { name = "epochly-relay-sidecar", editable = "apps/local-sidecar" },
     { name = "httpx", specifier = ">=0.27,<0.29" },
     { name = "httpx", marker = "extra == 'test'", specifier = ">=0.27,<0.29" },
+    { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.100" },
     { name = "portalocker", specifier = ">=2.10,<3" },
     { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
@@ -1103,6 +1105,7 @@ dependencies = [
 [package.optional-dependencies]
 test = [
     { name = "httpx" },
+    { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
@@ -1116,6 +1119,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<0.117" },
     { name = "httpx", specifier = ">=0.27,<0.29" },
     { name = "httpx", marker = "extra == 'test'", specifier = ">=0.27,<0.29" },
+    { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.100" },
     { name = "portalocker", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24,<0.26" },
@@ -1139,6 +1143,7 @@ dependencies = [
 
 [package.optional-dependencies]
 test = [
+    { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-timeout" },
 ]
@@ -1148,6 +1153,7 @@ requires-dist = [
     { name = "asn1crypto", specifier = ">=1.5" },
     { name = "cryptography", specifier = ">=42" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
+    { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.100" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
     { name = "rfc3161-client", specifier = ">=1.0" },
