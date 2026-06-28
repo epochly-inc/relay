@@ -528,21 +528,29 @@ function _classifyIpv6(host: string): readonly [string, string] | null {
   if ((value >> 118n) === (0xfe80n >> 6n)) {
     return ["link_local", "fe80::/10"];
   }
-  // ``is_private`` blocks Python tags ``rfc1918`` / ``fc00::/7``: ULA
-  // fc00::/7, loopback ``::1``, the IPv6 documentation 2001:db8::/32, and --
-  // critically -- the unspecified ``::`` (``is_private`` runs BEFORE
-  // ``is_unspecified`` in CPython, so ``::`` is fc00::/7, NOT reserved/::/128:
-  // the previous ``["reserved", "::/128"]`` was a byte-parity break in this
-  // same finding's class). Only these stable, uniformly-private prefixes are
-  // matched here; the irregular per-sub-block private carve-outs inside
-  // 2001::/23, 100::/64, and 3fff::/20 (where adjacent sub-blocks flip
-  // global<->private across CPython's IANA special-registry) are intentionally
-  // NOT hand-rolled to avoid introducing fresh divergences for their global
-  // sub-blocks.
-  if (value === 0n) return ["rfc1918", "fc00::/7"]; // ``::`` unspecified
-  if (value === 1n) return ["rfc1918", "fc00::/7"]; // ``::1`` loopback
-  if ((value >> 96n) === 0x20010db8n) return ["rfc1918", "fc00::/7"]; // 2001:db8::/32
-  if ((value >> 121n) === (0xfc00n >> 9n)) return ["rfc1918", "fc00::/7"]; // fc00::/7
+  // CPython ``is_private`` (faithful replica via _ipv6IsPrivate): an address is
+  // private iff it is in ANY _private_networks block AND in NO
+  // _private_networks_exceptions block (Lib/ipaddress.py _IPv6Constants). This
+  // subsumes loopback ``::1`` and unspecified ``::`` (is_private runs BEFORE
+  // is_unspecified in CPython, so ``::`` tags fc00::/7, NOT reserved/::/128),
+  // the documentation 2001:db8::/32, the discard-only 100::/64, ULA fc00::/7,
+  // and -- the fix for THIS finding -- the IETF special-registry blocks
+  // 2001::/23, 3fff::/20, and the NAT64 local-use 64:ff9b:1::/48, MINUS the
+  // global carve-out exceptions inside 2001::/23 (2001:1::1, 2001:1::2,
+  // 2001:3::/32, 2001:4:112::/48, 2001:20::/28, 2001:30::/28). The previous
+  // hand-rolled subset matched only ::, ::1, 2001:db8::/32, 100::/64, and
+  // fc00::/7, so 2001::1 / 2001:2::1 / 2001:10::1 / 3fff::1 (and their
+  // [bracket] / https://[...]/ forms) were ALLOWED by TS while CPython DENIED
+  // them -- a P0 Py<->TS verdict divergence (keystone #16). DRIFT WARNING:
+  // CPython's is_private tracks a MOVING definition (these 2001::/23 and
+  // 3fff::/20 entries and their exceptions were added / revised across 3.x
+  // point releases); if a future CPython mutates the table this TS copy drifts
+  // again, so the parity corpus
+  // (test/replay_egress_ipv6_is_private_parity.test.ts) drives the REAL CPython
+  // network_policy as the structural tripwire that catches it.
+  if (_ipv6IsPrivate(value)) {
+    return ["rfc1918", "fc00::/7"];
+  }
   // Multicast ff00::/8.
   if ((value >> 120n) === 0xffn) return ["multicast", "ff00::/8"];
   // Deprecated IPv4-compatible ::/96 (high 96 bits zero, not the specials
@@ -550,16 +558,6 @@ function _classifyIpv6(host: string): readonly [string, string] | null {
   // above as private, so only genuine IPv4-compatible wrappers reach here.
   if (high96 === 0n) {
     return _classify(embeddedIpv4(low32));
-  }
-  // ``is_private`` carve-out 100::/64 (the IETF "discard-only" prefix) sits
-  // INSIDE reserved 100::/8. CPython evaluates ``is_private`` BEFORE
-  // ``is_reserved``, so a 100::/64 address tags rfc1918/fc00::/7 like the
-  // other private blocks while the REST of 100::/8 tags reserved. Match that
-  // precedence: check the /64 private carve-out before the is_reserved table.
-  // (The wider 2001::/23 / 2001:10::/28 private blocks are NOT reserved -- they
-  // live in non-reserved 2000::/3 -- so they stay residual per the table note.)
-  if ((value >> 64n) === 0x0100000000000000n) {
-    return ["rfc1918", "fc00::/7"];
   }
   // Native ``is_reserved`` (CPython): the FINAL native-IPv6 branch, mirroring
   // network_policy.py::_classify's ``if ip.is_reserved: ("reserved",
@@ -665,10 +663,11 @@ const _DENIED_SUPERNETS: ReadonlyArray<{
 // reserved address as ("reserved","ipv6_reserved") in its FINAL IPv6 branch
 // (after link-local, is_private, multicast, and the ::/96 IPv4-compatible
 // unwrap). Mirrored here so _classifyIpv6 fails closed identically. The
-// table is the stable IANA reserved set -- NOT the irregular per-sub-block
-// global<->private carve-outs inside 2001::/23 / 3fff::/20, which remain
-// residual (those flip across CPython releases and are intentionally not
-// hand-rolled). Built from the same _cidrToRange machinery as
+// table is the stable IANA reserved set. The per-sub-block private blocks that
+// live in the NON-reserved 2000::/3 (2001::/23, 3fff::/20) and their global
+// carve-out exceptions are handled separately by _ipv6IsPrivate /
+// _PRIVATE_IPV6_NETWORKS, which runs BEFORE this table because CPython checks
+// is_private before is_reserved. Built from the same _cidrToRange machinery as
 // _DENIED_SUPERNETS so the range arithmetic is shared and tested.
 const _RESERVED_IPV6_NETWORKS: ReadonlyArray<{
   first: bigint;
@@ -697,6 +696,86 @@ const _RESERVED_IPV6_NETWORKS: ReadonlyArray<{
   if (r === null) throw new Error(`bad reserved ipv6 literal: ${c}`);
   return { first: r.first, last: r.last };
 });
+
+// CPython ``ipaddress.IPv6Address.is_private`` for NATIVE (non-unwrapped) IPv6
+// addresses -- a faithful replica of Lib/ipaddress.py _IPv6Constants:
+//   is_private == any(addr in net for net in _private_networks)
+//                 and all(addr not in net for net in _private_networks_exceptions)
+// _PRIVATE_IPV6_NETWORKS lists ONLY the _private_networks blocks that can REACH
+// the is_private check in _classifyIpv6. CPython's full _private_networks ALSO
+// contains ::ffff:0.0.0.0/96, 2002::/16, and fe80::/10, but those are
+// pre-empted EARLIER in _classifyIpv6 (the IPv4-mapped unwrap, the 6to4 unwrap,
+// and the link-local branch respectively, each of which runs BEFORE is_private
+// in CPython _classify too). Omitting them here is deliberate: classifying a
+// 6to4 / IPv4-mapped wrapper on its is_private flag would OVER-BLOCK a public
+// embedded IPv4 (e.g. 2002:0808:0808:: wrapping 8.8.8.8 reports is_private ==
+// True), which is exactly why _classify unwraps those forms first. Built from
+// the same _cidrToRange machinery as _DENIED_SUPERNETS / _RESERVED_IPV6_NETWORKS
+// so the range arithmetic is shared and tested.
+const _PRIVATE_IPV6_NETWORKS: ReadonlyArray<{
+  first: bigint;
+  last: bigint;
+}> = (
+  [
+    "::1/128", // loopback
+    "::/128", // unspecified
+    "100::/64", // IETF discard-only (the rest of 100::/8 is is_reserved)
+    "2001::/23", // IETF protocol assignments (Teredo etc.)
+    "2001:db8::/32", // documentation
+    "3fff::/20", // documentation (RFC 9637)
+    "64:ff9b:1::/48", // NAT64 local-use (the GLOBAL 64:ff9b::/96 is unwrapped)
+    "fc00::/7", // ULA
+  ] as const
+).map((c) => {
+  const r = _cidrToRange(c);
+  /* c8 ignore next */
+  if (r === null) throw new Error(`bad private ipv6 literal: ${c}`);
+  return { first: r.first, last: r.last };
+});
+
+// CPython ``_private_networks_exceptions`` -- the global carve-outs that sit
+// INSIDE 2001::/23 and are is_private == False (is_global == True) despite being
+// in a private supernet. Mirrored verbatim so TS does NOT over-block them
+// (2001:1::1 / 2001:3::1 / 2001:20::1 are public and MUST stay ALLOWED, exactly
+// like CPython). If TS denied these while CPython allowed them, that would be a
+// fresh Py<->TS divergence in the OPPOSITE direction.
+const _PRIVATE_IPV6_EXCEPTIONS: ReadonlyArray<{
+  first: bigint;
+  last: bigint;
+}> = (
+  [
+    "2001:1::1/128",
+    "2001:1::2/128",
+    "2001:3::/32",
+    "2001:4:112::/48",
+    "2001:20::/28",
+    "2001:30::/28",
+  ] as const
+).map((c) => {
+  const r = _cidrToRange(c);
+  /* c8 ignore next */
+  if (r === null) throw new Error(`bad private ipv6 exception literal: ${c}`);
+  return { first: r.first, last: r.last };
+});
+
+/** CPython ``IPv6Address.is_private`` for a native IPv6 integer: in ANY
+ * _PRIVATE_IPV6_NETWORKS block AND in NO _PRIVATE_IPV6_EXCEPTIONS block. */
+function _ipv6IsPrivate(value: bigint): boolean {
+  let inPrivate = false;
+  for (const net of _PRIVATE_IPV6_NETWORKS) {
+    if (value >= net.first && value <= net.last) {
+      inPrivate = true;
+      break;
+    }
+  }
+  if (!inPrivate) return false;
+  for (const net of _PRIVATE_IPV6_EXCEPTIONS) {
+    if (value >= net.first && value <= net.last) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /** Return ``[denied_reason, denied_cidr]`` or ``null`` if ``host`` is not
  * denied by the SSRF guard. Mirrors the Python ``_classify`` chokepoint:
