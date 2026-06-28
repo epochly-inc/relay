@@ -474,13 +474,16 @@ class _MitmProxyDriver(_ProxyDriver):
 # a module and calls the ``request`` hook on every flow.
 _MITMPROXY_ADDON_SOURCE: Final[str] = '''"""Auto-generated mitmproxy addon (W7.1)."""
 import json
+import logging
 from pathlib import Path
 
 from mitmproxy import ctx, http
-from relay_replay_proxy.cassette_server import CassetteServer, IncomingRequest
+from relay_replay_proxy.cassette_server import CassetteServer, decide_replay_response
+from relay_replay_proxy.errors import RELAY_REPLAY_CASSETTE_CORRUPT
 
 
 _server: CassetteServer | None = None
+_log = logging.getLogger("relay_replay_proxy.addon")
 
 
 def load(loader):
@@ -496,27 +499,50 @@ def configure(updates):
 
 
 def request(flow: http.HTTPFlow) -> None:
-    if _server is None:
-        return
-    raw = flow.request.raw_content or b""
+    # Fail CLOSED. A real MITM proxy forwards the flow to the LIVE upstream
+    # provider if this hook returns (or raises) without setting
+    # flow.response, so EVERY path below must set flow.response. The body is
+    # wrapped so that no exception -- a None/unconfigured server, a corrupt
+    # or tampered cassette (CassetteFormatError from lookup), or an
+    # unexpected error reading the flow -- can escape the hook and let the
+    # request reach the live provider. This enforces keystone invariant #9
+    # (cassette-first replay, default-deny egress) and #11 (integrity checks
+    # fail closed) at the proxy request hook. decide_replay_response is
+    # total: it returns a blocking decision on every non-hit path and never
+    # signals "forward to live".
     try:
-        body = json.loads(raw.decode("utf-8")) if raw else {}
-    except Exception:
-        body = {}
-    provider = flow.request.headers.get("X-Relay-Provider", "")
-    model = flow.request.headers.get("X-Relay-Model", "")
-    req = IncomingRequest(provider=provider or "unknown", model=model or "unknown", body=body)
-    response = _server.lookup(req)
-    if response is None:
+        raw = flow.request.raw_content or b""
+        provider = flow.request.headers.get("X-Relay-Provider", "")
+        model = flow.request.headers.get("X-Relay-Model", "")
+        decision = decide_replay_response(
+            _server,
+            raw_body=raw,
+            provider_header=provider,
+            model_header=model,
+        )
         flow.response = http.Response.make(
-            404,
-            json.dumps({"code": "RELAY-CASSETTE-MISS"}).encode("utf-8"),
+            decision.status, decision.body_bytes, decision.headers
+        )
+    except Exception as exc:
+        # Last-resort guard: decide_replay_response is already total, but if
+        # anything at all (e.g. reading flow.request) raises, we STILL refuse
+        # to forward to the live upstream and block with a 502.
+        try:
+            _log.error("relay replay addon blocked request: %r", exc)
+        except Exception:
+            pass
+        flow.response = http.Response.make(
+            502,
+            json.dumps(
+                {
+                    "code": RELAY_REPLAY_CASSETTE_CORRUPT,
+                    "message": "replay proxy internal error; refusing live upstream",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
             {"Content-Type": "application/json"},
         )
-        return
-    flow.response = http.Response.make(
-        response.status, response.body_bytes, response.headers
-    )
 '''
 
 

@@ -47,6 +47,17 @@ from relay_cli.cassette import (
     parse_cassette,
 )
 
+from .errors import RELAY_REPLAY_CASSETTE_CORRUPT, RELAY_REPLAY_PROXY_DOWN
+
+# Wire code for a cassette miss as emitted at the proxy edge. This mirrors
+# the in-process driver's miss envelope (``harness._InProcDriver`` writes
+# ``{"code": "RELAY-CASSETTE-MISS", ...}`` with HTTP 404) so both the
+# mitmproxy addon and the in-process driver block a miss identically. The
+# canonical ``RELAY-REPLAY-024`` form is reserved for the CLI-layer
+# ``RelayCassetteMissError``; at the wire edge we keep the short
+# ``RELAY-CASSETTE-MISS`` token already asserted by the W7.1 harness tests.
+RELAY_CASSETTE_MISS_WIRE_CODE: Final[str] = "RELAY-CASSETTE-MISS"
+
 # Header inserted on every proxy-served response so the agent can detect
 # replay vs live traffic. The header is documented as proxy-added in
 # VAL-W7-009 (modulo proxy-added X-Relay-* headers).
@@ -317,6 +328,132 @@ def _entry_to_response(
     )
 
 
+@dataclass(frozen=True)
+class ProxyDecision:
+    """Fail-closed outcome of an intercepted-request decision.
+
+    ``kind`` is ``"hit"`` (serve a recorded cassette response) or
+    ``"block"`` (refuse with a structured error envelope). There is NO
+    third ``"forward"`` outcome and the producer
+    (:func:`decide_replay_response`) never returns ``None``: a replay proxy
+    MUST NOT forward an intercepted request to the live upstream provider on
+    any miss, error, or unconfigured path. Always returning a settable
+    response (``status`` + ``headers`` + ``body_bytes``) is what lets the
+    mitmproxy addon enforce keystone invariant #9 (cassette-first replay
+    with default-deny egress) and #11 (integrity checks fail CLOSED) at the
+    request hook.
+    """
+
+    kind: str
+    status: int
+    headers: dict[str, str]
+    body_bytes: bytes
+
+
+def _block_decision(
+    code: str, status: int, message: str, **extra: str
+) -> ProxyDecision:
+    """Build a blocking :class:`ProxyDecision` carrying a JSON error envelope."""
+    envelope: dict[str, str] = {"code": code, "message": message}
+    envelope.update(extra)
+    body = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return ProxyDecision(
+        kind="block",
+        status=status,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+        },
+        body_bytes=body,
+    )
+
+
+def decide_replay_response(
+    server: CassetteServer | None,
+    *,
+    raw_body: bytes,
+    provider_header: str,
+    model_header: str,
+) -> ProxyDecision:
+    """Decide the proxy response for an intercepted request -- fail CLOSED.
+
+    Returns a :class:`ProxyDecision` on EVERY path and NEVER returns
+    ``None``. There is no outcome that signals "forward to the live
+    upstream provider": a missing / unconfigured cassette server, any
+    exception raised by ``server.lookup`` (cassette corruption,
+    ``response_digest`` / ``file_digest`` mismatch, integrity-anchor
+    required, or any unexpected error), and a plain lookup miss all resolve
+    to a blocking response. Only an exact cassette hit yields a non-blocking
+    ``"hit"`` decision.
+
+    This is the single decision path the mitmproxy addon uses so the
+    default-deny egress invariant (keystone #9) is enforced at the proxy
+    request hook regardless of cassette state. A real MITM proxy whose
+    request hook returns without setting a response forwards the flow to the
+    LIVE upstream -- the opposite of fail-closed -- so the addon translates
+    every decision (block AND hit) into a concrete response.
+
+    Block codes reuse existing replay error codes (see
+    :mod:`relay_replay_proxy.errors`):
+
+      * ``server is None`` -> ``RELAY-REPLAY-021`` (proxy not configured /
+        not functional), HTTP 503.
+      * ``server.lookup`` raises -> ``RELAY-REPLAY-025`` (cassette corrupt /
+        integrity failure), HTTP 502.
+      * lookup miss -> ``RELAY-CASSETTE-MISS``, HTTP 404 (mirrors the
+        in-process driver's miss envelope).
+    """
+    # Fail-closed path 1: the cassette server was never configured (the
+    # addon loaded but no session dir was supplied). Block rather than let a
+    # real MITM proxy forward the flow to the live upstream.
+    if server is None:
+        return _block_decision(
+            RELAY_REPLAY_PROXY_DOWN,
+            503,
+            "replay proxy not configured: cassette server unavailable",
+        )
+
+    try:
+        parsed: Any = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+    except Exception:  # noqa: BLE001 - any decode/parse failure -> empty body
+        parsed = {}
+    body = parsed if isinstance(parsed, dict) else {}
+    req = IncomingRequest(
+        provider=provider_header or "unknown",
+        model=model_header or "unknown",
+        body=body,
+    )
+
+    # Fail-closed path 2: any failure in lookup (cassette corruption,
+    # response_digest / file_digest mismatch, integrity-anchor-required, or
+    # any unexpected error) MUST block, never escape to the live upstream.
+    try:
+        response = server.lookup(req)
+    except Exception as exc:  # noqa: BLE001 - fail closed on ANY lookup failure
+        return _block_decision(
+            RELAY_REPLAY_CASSETTE_CORRUPT,
+            502,
+            "cassette integrity check failed; refusing to reach live upstream",
+            detail=str(exc),
+        )
+
+    # Fail-closed path 3: a plain miss blocks with the cassette-miss code.
+    if response is None:
+        return _block_decision(
+            RELAY_CASSETTE_MISS_WIRE_CODE,
+            404,
+            "no cassette entry matched the request",
+        )
+
+    # Hit: serve the recorded response verbatim.
+    return ProxyDecision(
+        kind="hit",
+        status=response.status,
+        headers=dict(response.headers),
+        body_bytes=response.body_bytes,
+    )
+
+
 __all__ = [
     "CASSETTE_FILENAME",
     "CassetteResponse",
@@ -325,4 +462,6 @@ __all__ = [
     "HEADER_REPLAY_HIT",
     "HEADER_REPLAY_SESSION",
     "IncomingRequest",
+    "ProxyDecision",
+    "decide_replay_response",
 ]
