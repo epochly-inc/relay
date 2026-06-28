@@ -212,18 +212,30 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
              "reason": "even index i -> i+1 == i^1 (flips the clear low bit)."},
             {"lines": [207], "op_contains": "Sub_BitXor",
              "reason": "reached only when idx is ODD (idx%2==1), so idx-1 == idx^1."},
-            # x % 2 is always in {0,1}; idx <= last invariant holds in the walk:
-            {"lines": [96, 153, 166, 206, 215], "op_contains": "Eq_GtE",
-             "reason": "x%2 in {0,1} -> ==1 equiv >=1; OR idx<=last invariant -> "
-                       "idx==last equiv idx>=last. Killable same-line == variants "
-                       "(idx%2>=0 always-true) are killed by the corpus."},
-            {"lines": [153], "op_contains": "Eq_LtE",
-             "reason": "idx%2==0 -> <=0 equiv (==0 over {0,1}). The idx<=last == "
-                       "variant is killed by the corpus."},
-            # Loop bounds are non-negative integers, so > 0 cannot diverge from != 0:
-            {"lines": [91, 152, 204], "op_contains": "Gt_NotEq",
-             "reason": "loop bound (len(level)/last) is always >= 0 -> `> 0` equiv "
-                       "`!= 0` (they only diverge for negative, unreachable)."},
+            # x % 2 is always in {0,1} -> ==1 equiv >=1. These lines hold a SINGLE
+            # comparison (no same-op ambiguity), so line+op suffices.
+            {"lines": [96, 166, 206, 215], "op_contains": "Eq_GtE",
+             "reason": "x%2 in {0,1} -> ==1 equiv >=1 (single comparison per line)."},
+            # L153 holds TWO `==` (idx==last @col15, idx%2==0 @col35). Pin the COLUMN
+            # so only the proven-equivalent occurrence is suppressed and a regressed
+            # killable sibling would surface as REAL (roborev 7ce3b70):
+            {"lines": [153], "cols": [15], "op_contains": "Eq_GtE",
+             "reason": "idx==last (col 15) -> idx>=last, equiv under the idx<=last "
+                       "walk invariant. The col-35 idx%2>=0 (always-true) Eq_GtE is "
+                       "killable and killed by the corpus -- excluded by the col."},
+            {"lines": [153], "cols": [35], "op_contains": "Eq_LtE",
+             "reason": "idx%2==0 (col 35) -> <=0, equiv over {0,1}. The col-15 "
+                       "idx<=last Eq_LtE is killable and killed -- excluded by col."},
+            # Loop bounds: L152/L204 are `last >= 0` (`> 0` equiv `!= 0`); L91 is
+            # `len(level) > 1` and needs the never-empty invariant (`> 1` equiv
+            # `!= 1` because len(level) is always >= 1 after the empty-input guard).
+            {"lines": [152, 204], "op_contains": "Gt_NotEq",
+             "reason": "last is always >= 0 -> `> 0` equiv `!= 0` (diverge only for "
+                       "negative last, unreachable)."},
+            {"lines": [91], "op_contains": "Gt_NotEq",
+             "reason": "len(level) is always >= 1 after the empty-input early return, "
+                       "and the reduction never empties it -> `> 1` equiv `!= 1` "
+                       "(diverge only at 0, unreachable)."},
             # Reduction terminates at len(level)==1, so level[-1] is level[0]:
             {"lines": [99], "op_contains": "NumberReplacer",
              "reason": "loop exits at len(level)==1 -> level[-1] == level[0]. +1 "
@@ -469,21 +481,30 @@ def _classify_survivors(
     con = sqlite3.connect(str(session))
     try:
         rows = con.execute(
-            "SELECT ms.start_pos_row, ms.operator_name, ms.definition_name "
+            "SELECT ms.start_pos_row, ms.start_pos_col, ms.operator_name, "
+            "ms.definition_name "
             "FROM mutation_specs ms JOIN work_results wr ON ms.job_id = wr.job_id "
             "WHERE wr.test_outcome = 'SURVIVED'"
         ).fetchall()
     finally:
         con.close()
-    for row, op, defn in sorted(rows):
-        rec: dict[str, object] = {"line": row, "operator": op, "function": defn}
+    for row, col, op, defn in sorted(rows):
+        rec: dict[str, object] = {
+            "line": row, "col": col, "operator": op, "function": defn,
+        }
         is_bitop = any(b in op for b in ("BitOr", "BitAnd", "BitXor"))
+        # A justified entry matches by (line in lines) AND (op_contains in op).
+        # When the entry carries a `cols` list, the survivor's start column must
+        # ALSO be in it -- this disambiguates lines with multiple same-operator
+        # mutants (e.g. two `==` on one line) so a KILLABLE sibling that ever
+        # regressed into a survivor is NOT silently bucketed as equivalent.
         match = next(
             (
                 j
                 for j in justified
                 if row in j["lines"]  # type: ignore[operator]
                 and str(j["op_contains"]) in op
+                and ("cols" not in j or col in j["cols"])  # type: ignore[operator]
             ),
             None,
         )

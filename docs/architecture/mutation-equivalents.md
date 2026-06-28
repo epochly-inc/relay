@@ -154,11 +154,20 @@ reachable iteration -> same root/proof.
 same-line `==` variants (e.g. `idx % 2 >= 0`, always true) are killed by the
 corpus.
 
-### D4. Non-negative loop bound (Gt_NotEq; L91, L152, L204)
+### D4. Non-negative loop bounds (Gt_NotEq; L91, L152, L204)
 
-`len(level)` / `last` are non-negative integers that terminate at >= 0, so the
-loop guard `> 0` cannot diverge from `!= 0` (they differ only for a negative
-value, which is unreachable).
+Two distinct cases:
+
+- **L152, L204** (`while last > 0` / `while last > 0`): `last` starts at
+  `tree_size - 1 >= 0` and is only ever `//= 2`, so it is always `>= 0`. For a
+  non-negative integer `> 0` is identical to `!= 0` (they diverge only for a
+  negative value, which is unreachable).
+- **L91** (`while len(level) > 1`): this is `> 1`, not `> 0`, so non-negativity
+  alone is insufficient. The early `if not claim_digests_hex: return ...` guard
+  makes `level` start with `>= 1` element, and each reduction yields
+  `ceil(n/2) >= 1` for `n >= 2`, so `len(level)` is always `>= 1` and never
+  reaches `0`. Over the reachable domain `{1, 2, 3, ...}`, `> 1` is identical to
+  `!= 1` (they diverge only at `0`, which is unreachable).
 
 ### D5. Single-element return (NumberReplacer; L99)
 
