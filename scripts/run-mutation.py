@@ -178,14 +178,6 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
             {"lines": [91], "op_contains": "Mul_Div",
              "reason": "bare `*` keyword-only marker in def register_guard(...,*,"
                        "override=...) is syntactic, not arithmetic; no runtime effect."},
-            {"lines": [313], "op_contains": "ContinueWithBreak",
-             "reason": "continue->break in the manifest_versions row loop differs "
-                       "ONLY when a malformed row precedes an active one; the guard "
-                       "SELECT has no ORDER BY and its contract (PASS iff ANY matching "
-                       "row is active-within-grace) is order-invariant, so the mutant "
-                       "is not a contract-observable behavior change. L312 (the except "
-                       "on the same row) IS killed deterministically by a single-row "
-                       "test."},
         ],
     },
 }

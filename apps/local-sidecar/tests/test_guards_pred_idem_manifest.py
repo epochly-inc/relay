@@ -658,6 +658,55 @@ async def test_manifest_single_malformed_row_is_caught_not_raised() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.asyncio
+async def test_manifest_malformed_before_active_continues_to_pass() -> None:
+    """Kill L313 ReplaceContinueWithBreak -- DETERMINISTICALLY.
+
+    Two rows for the same (project, hash): rowid 1 has a malformed
+    ``effective_until`` (``fromisoformat`` raises ValueError), rowid 2 is active
+    (NULL effective_until). The real guard catches the ValueError, ``continue``s
+    past the malformed row, reaches the active row, and returns ``(True, {})``.
+    The ``continue`` -> ``break`` mutant exits at the malformed row and returns
+    ``(False, expired)`` -- so the mutant VIOLATES the guard's contract (returns
+    expired while an active row exists). That is a real, non-equivalent mutant.
+
+    Determinism: the guard runs EXCLUSIVELY on SQLite (aiosqlite). The minimal
+    test table has no index on (project_id, commit_hash), so SQLite performs a
+    full-table scan, which visits rows in rowid order -- a documented SQLite
+    property. Explicit ascending rowids therefore pin rowid 1 (malformed) strictly
+    before rowid 2 (active). Verified empirically: 10/10 runs visit malformed-first
+    and real(continue)=True vs mutant(break)=False. (roborev ee49c85: this is a
+    deterministic kill, not an equivalence -- the earlier equivalent claim was
+    withdrawn.)
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute(_DDL_SCOPE_STATE)
+        await conn.execute(_DDL_MANIFEST_VERSIONS)
+        await conn.execute(
+            "INSERT INTO scope_state VALUES (?, ?, ?)",
+            (_SCOPE_KIND, _SCOPE_ID, "projA"),
+        )
+        await conn.execute(
+            "INSERT INTO manifest_versions"
+            "(rowid, project_id, commit_hash, effective_until, grace_window_seconds) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (1, "projA", "sha256-abc", "not-a-valid-date", 0),
+        )
+        await conn.execute(
+            "INSERT INTO manifest_versions"
+            "(rowid, project_id, commit_hash, effective_until, grace_window_seconds) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (2, "projA", "sha256-abc", None, 0),
+        )
+        await conn.commit()
+        ok, diag = await _guard_valid_manifest_commit_hash(
+            conn, _SCOPE_KIND, _SCOPE_ID, {}, "sha256-abc"
+        )
+    assert ok is True
+    assert diag == {}
+
+
+@pytest.mark.plumbing
+@pytest.mark.asyncio
 async def test_manifest_within_grace_window_past() -> None:
     """Kill L314 ReplaceBinaryOperator_Add_Sub (``eu + grace`` -> ``eu - grace``).
 

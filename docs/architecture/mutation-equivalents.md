@@ -75,14 +75,15 @@ the Mul-Div binary-operator mutation on the bare `*` in `def f(*, ...)`: the `*`
 syntactic keyword-only separator, not an arithmetic operator; mutating it has no
 runtime behavioral effect.
 
-## Class C -- guards.py logic equivalents (17)
+## Class C -- guards.py logic equivalents (16)
 
 `state_engine/guards.py` holds 23 pure guard predicates. After the direct-unit
-suite (`tests/test_guards_pred_*.py`, 144 tests) killed 315 of the 368 original
-real survivors, 53 remained; 36 of those were killed by targeted-input tests
-(integer `0`/`1` to pin `is False`/`is True` identity checks, two-row fixtures
-for `continue`-vs-`break`, boundary values for comparison mutants), leaving these
-17 logic equivalents (encoded in `scripts/run-mutation.py` `guards.justified_
+suite (`tests/test_guards_pred_*.py`, 145 tests) killed 315 of the 368 original
+real survivors, 53 remained; 37 of those were killed by targeted-input tests
+(integer `0`/`1` to pin `is False`/`is True` identity checks; a single-malformed-
+row test for the `except` and a deterministic two-row rowid-ordered test for
+`continue`-vs-`break`; boundary values for comparison mutants), leaving these
+16 logic equivalents (encoded in `scripts/run-mutation.py` `guards.justified_
 equivalents`). Each was verified unobservable by a sandboxed harness that execs a
 copy of the predicate with the mutation applied across every reaching scenario.
 
@@ -115,20 +116,6 @@ re-run confirms no real survivor hides behind this whitelist.
 `set(required) - evaluated == set(required) ^ evaluated` because `evaluated` is
 always a subset of `required` (built from `WHERE contract_id IN (required)`), so
 `evaluated - required` is empty.
-
-### C5. `continue` -> `break` in the order-agnostic manifest row loop (ContinueWithBreak; L313)
-
-`_guard_valid_manifest_commit_hash` iterates the `manifest_versions` rows matching
-`(project_id, commit_hash)` and returns `True` on the first active-within-grace
-row, `continue`-ing past malformed/expired ones. The `continue` -> `break` mutant
-changes the result ONLY when a malformed row is visited *before* an active row --
-but the guard's `SELECT` has no `ORDER BY`, and its contract ("PASS iff ANY
-matching row is active within grace") is **order-invariant**. So the mutation is
-not observable under the query's contract (a test that "kills" it would depend on
-unspecified SQLite scan order -- roborev 20fe8b6). The sibling L312
-`ExceptionReplacer` on the same `except` IS killed deterministically by a
-single-malformed-row test (real returns `(False, expired)`, the mutant raises),
-which needs no ordering.
 
 ### C4. Keyword-only `*` marker (Mul_Div; L91)
 
