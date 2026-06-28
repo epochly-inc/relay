@@ -26,7 +26,7 @@ import {
   verify as nodeVerify,
 } from "node:crypto";
 
-import { jcsCanonicalize } from "./canonical.js";
+import { jcsCanonicalize, screenNonCanonicalizable } from "./canonical.js";
 import {
   RELAY_EVID_014,
   RELAY_VERIFY_ALG_MISMATCH,
@@ -647,6 +647,25 @@ export function verifyDetachedClaimSignature(args: {
   jwks: JWKS;
   allowedAlgs?: ReadonlySet<string>;
 }): SignatureCheck {
+  // Value-boundary screen (keystone invariant #11/#16): a claim carrying a
+  // non-BMP object KEY or an out-of-safe-range integer cannot be canonicalised
+  // to byte-identical bytes across runtimes, so its recomputed digest (and thus
+  // this verdict) would diverge Py<->TS. Fail closed IDENTICALLY before
+  // canonicalising, returning ok=false with the shared byte-identical reason +
+  // RELAY-CANON-* code (kid/alg are not yet known -- the protected header is
+  // decoded below -- so they are '<unknown>', matching the header-decode-failure
+  // path).
+  const hazard = screenNonCanonicalizable(args.claim);
+  if (hazard !== null) {
+    return _check({
+      kid: "<unknown>",
+      alg: "<unknown>",
+      ok: false,
+      reason: hazard.message,
+      code: hazard.code,
+    });
+  }
+
   const canonicalPayload = canonicalJsonBytes(args.claim);
   const recomputedDigest = createHash("sha256").update(canonicalPayload).digest("hex");
 
@@ -704,6 +723,32 @@ export function verifyMultiSignatures(args: {
   jwks: JWKS;
   allowedAlgs?: ReadonlySet<string>;
 }): MultiSignatureResult {
+  // Value-boundary screen (keystone invariant #11/#16): if the payload carries
+  // a non-BMP object KEY or an out-of-safe-range integer, its canonical
+  // signing-input bytes diverge across runtimes, so a signature valid on one
+  // runtime could be invalid on the other (a verify split). Fail closed
+  // IDENTICALLY before canonicalising: no signature over a non-canonicalisable
+  // payload can be trusted. Each input signature is marked ok=false with the
+  // shared byte-identical reason + RELAY-CANON-* code so signaturesChecked
+  // keeps its per-signature length; aggregate is all_invalid and ok is false.
+  const hazard = screenNonCanonicalizable(args.payload);
+  if (hazard !== null) {
+    const screened: SignatureCheck[] = [];
+    const sigs = Array.isArray(args.signatures) ? args.signatures : [];
+    for (const sig of sigs) {
+      let kid = "<unknown>";
+      let alg = "<unknown>";
+      if (sig !== null && typeof sig === "object") {
+        if (typeof sig.alg === "string") alg = sig.alg;
+        if (typeof sig.kid === "string") kid = sig.kid;
+      }
+      screened.push(
+        _check({ kid, alg, ok: false, reason: hazard.message, code: hazard.code }),
+      );
+    }
+    return { ok: false, aggregate: "all_invalid", signaturesChecked: screened };
+  }
+
   const allowed = args.allowedAlgs ?? SUPPORTED_ALGS;
   const canonicalBytes = canonicalJsonBytes(args.payload);
   const checks: SignatureCheck[] = [];

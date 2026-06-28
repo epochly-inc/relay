@@ -42,7 +42,11 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
     encode_dss_signature,
 )
 
-from .canonical import JCSEncodeError, jcs_canonicalize
+from .canonical import (
+    JCSEncodeError,
+    jcs_canonicalize,
+    screen_noncanonicalizable,
+)
 from .errors import (
     RELAY_VERIFY_ALG_MISMATCH,
     RELAY_VERIFY_UNSUPPORTED_ALG,
@@ -396,6 +400,20 @@ def verify_bundle(
         return result
 
     payload = _payload_for_signing(bundle)
+    # Value-boundary screen (keystone invariant #11/#16): a payload carrying a
+    # value the JCS encoder cannot canonicalise to byte-identical bytes across
+    # runtimes -- a supplementary-plane (non-BMP) object KEY or an
+    # out-of-safe-range integer (abs > 2**53 - 1) -- is refused fail-closed and
+    # IDENTICALLY on both runtimes. Preserve the documented "does NOT raise"
+    # contract: record structurally and return all-default (structure_ok stays
+    # False), exactly like the no-signatures early-return above. This protects
+    # DIRECT callers of verify_bundle; validate_bundle pre-screens the same
+    # hazards (via the shared screen_noncanonicalizable) before reaching here.
+    _hazard = screen_noncanonicalizable(payload)
+    if _hazard is not None:
+        _, _hazard_message = _hazard
+        result.errors.append(_hazard_message)
+        return result
     try:
         canonical_bytes = canonical_json_bytes(payload)
     except JCSEncodeError as exc:
@@ -1035,6 +1053,25 @@ def verify_detached_claim_signature(
     omits the digest hint, an `InvalidSignature` rejection at the
     verify step. Both paths produce ``ok=False``.
     """
+    # Value-boundary screen (keystone invariant #11/#16): a claim carrying a
+    # non-BMP object KEY or an out-of-safe-range integer cannot be
+    # canonicalised to byte-identical bytes across runtimes, so its recomputed
+    # digest (and thus this verdict) would diverge Py<->TS. Fail closed
+    # IDENTICALLY before canonicalising, returning ok=False with the shared
+    # byte-identical reason + RELAY-CANON-* code (kid/alg are not yet known --
+    # the protected header is decoded below -- so they are '<unknown>', matching
+    # the header-decode-failure path).
+    _hazard = screen_noncanonicalizable(claim)
+    if _hazard is not None:
+        _hazard_code, _hazard_message = _hazard
+        return SignatureCheck(
+            kid="<unknown>",
+            alg="<unknown>",
+            ok=False,
+            reason=_hazard_message,
+            code=_hazard_code,
+        )
+
     canonical_payload = canonical_json_bytes(claim)
     recomputed_digest = hashlib.sha256(canonical_payload).hexdigest()
 
@@ -1136,6 +1173,39 @@ def verify_multi_signatures(
     ``ok=False`` -- because Relay's default verification posture
     refuses any unverified signature on the bundle.
     """
+    # Value-boundary screen (keystone invariant #11/#16): if the payload
+    # carries a non-BMP object KEY or an out-of-safe-range integer, its
+    # canonical signing-input bytes diverge across runtimes, so a signature
+    # valid on one runtime could be invalid on the other (a verify split).
+    # Fail closed IDENTICALLY before canonicalising: no signature over a
+    # non-canonicalisable payload can be trusted. Each input signature is
+    # marked ok=False with the shared byte-identical reason + RELAY-CANON-*
+    # code so signatures_checked keeps its per-signature length; aggregate is
+    # all_invalid and ok is False (MultiSignatureResult defaults).
+    _hazard = screen_noncanonicalizable(payload)
+    if _hazard is not None:
+        _hazard_code, _hazard_message = _hazard
+        screened = MultiSignatureResult()
+        for sig in signatures if isinstance(signatures, list) else []:
+            if isinstance(sig, dict):
+                kid_raw = sig.get("kid")
+                alg_raw = sig.get("alg")
+                kid = kid_raw if isinstance(kid_raw, str) else "<unknown>"
+                alg = alg_raw if isinstance(alg_raw, str) else "<unknown>"
+            else:
+                kid = "<unknown>"
+                alg = "<unknown>"
+            screened.signatures_checked.append(
+                SignatureCheck(
+                    kid=kid,
+                    alg=alg,
+                    ok=False,
+                    reason=_hazard_message,
+                    code=_hazard_code,
+                )
+            )
+        return screened
+
     canonical_bytes = canonical_json_bytes(payload)
     result = MultiSignatureResult()
     if not isinstance(signatures, list) or not signatures:

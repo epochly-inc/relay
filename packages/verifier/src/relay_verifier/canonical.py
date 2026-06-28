@@ -296,8 +296,124 @@ def bundle_digest(value: Any, *, strip_signatures: bool = True) -> str:
     return hashlib.sha256(jcs_canonicalize(payload)).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Cross-runtime canonicalisability screen (keystone invariant #11/#16)
+# ---------------------------------------------------------------------------
+#
+# Two value classes cannot be canonicalised to byte-identical JCS across the
+# Python and TypeScript verifiers, so any signed payload carrying them would
+# verify on one runtime and be rejected as tampered on the other:
+#
+#   1. A supplementary-plane (non-BMP, >= U+10000) object KEY -- Python sorts
+#      keys by code point, JS by UTF-16 code unit; the orderings diverge.
+#   2. An integer (or whole-valued float) VALUE with magnitude > 2**53 - 1 --
+#      Python keeps it exact while a float64 host (TS JSON.parse) rounds it.
+#
+# These helpers detect both at the VALUE boundary, BEFORE canonicalisation, so
+# every public verifier entrypoint can fail closed IDENTICALLY (same code +
+# message) on both runtimes. The bound is deliberately NOT in the encoder:
+# jcs_canonicalize stays RFC 8785-conformant for large floats (the W17 IETF
+# number corpus), mirroring how relay_contracts gates results in its evaluator
+# (`_check_finite`) rather than its (unbounded) canonicaliser.
+
+# IEEE-754 safe-integer bound (== Number.MAX_SAFE_INTEGER); matches
+# relay_contracts.evaluator.SAFE_INTEGER_BOUND. 2**53 itself is unsafe (a
+# rounded overflow can land on it), so the bound is strict.
+SAFE_INTEGER_BOUND: Final[int] = 2**53 - 1  # 9007199254740991
+
+# Word-form subcode of the registered RELAY-CANON-001 code (see
+# packages/schemas/raw/error-codes.yaml). Parallels CANONICAL_NON_BMP_KEY_CODE.
+CANONICAL_UNSAFE_INTEGER_CODE: Final[str] = "RELAY-CANON-UNSAFE-INTEGER"
+
+# Byte-identical (Py<->TS) rejection messages. Worded generically ("value",
+# not "bundle") because the same constants are reused by every entrypoint
+# (validate_bundle, verify_bundle, verify_detached_claim_signature,
+# verify_multi_signatures). Name NO specific key/value (a Python exact int and
+# a rounded float64 render differently) -- fixed messages are parity-safe.
+NON_BMP_KEY_REJECTION_MESSAGE: Final[str] = (
+    "value contains a non-BMP (supplementary-plane, >= U+10000) object key; "
+    "supplementary-plane object keys produce runtime-divergent canonical "
+    "bytes between the Python and TypeScript verifiers and are refused. "
+    "Re-key any such object with BMP-only strings."
+)
+UNSAFE_INTEGER_REJECTION_MESSAGE: Final[str] = (
+    "value contains a number whose magnitude exceeds the IEEE-754 "
+    "safe-integer range (abs > 2**53 - 1 = 9007199254740991); such a value "
+    "cannot round-trip byte-identically through a float64 JSON parser, so the "
+    "Python and TypeScript verifiers would canonicalise it to different bytes "
+    "and it is refused. Keep numeric values within the safe-integer range, or "
+    "carry large magnitudes as strings."
+)
+
+
+def _has_non_bmp_key(value: Any) -> bool:
+    """Return True iff ``value`` contains an object KEY with a codepoint
+    >= U+10000 anywhere in its nested structure. Only object KEYS are screened
+    (string VALUES may carry supplementary-plane chars). The boolean result is
+    independent of key-iteration order, so Python and TypeScript agree.
+    """
+    if isinstance(value, dict):
+        for k, v in value.items():
+            for ch in str(k):
+                if ord(ch) >= 0x10000:
+                    return True
+            if _has_non_bmp_key(v):
+                return True
+        return False
+    if isinstance(value, list | tuple):
+        return any(_has_non_bmp_key(item) for item in value)
+    return False
+
+
+def _has_unsafe_integer(value: Any) -> bool:
+    """Return True iff ``value`` contains a number VALUE outside the IEEE-754
+    safe-integer range (abs > ``SAFE_INTEGER_BOUND``) anywhere in its nested
+    structure. Mirrors ``relay_contracts.evaluator._check_finite``: an ``int``
+    (bool excluded) or a whole-valued ``float`` over the bound is rejected.
+    ``float.is_integer()`` excludes NaN/Inf and genuinely fractional doubles
+    (always in range; the ULP at 2**53 is 2.0). Order-independent -> Py<->TS
+    parity. Only VALUES are screened (object KEYS are JSON strings).
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return abs(value) > SAFE_INTEGER_BOUND
+    if isinstance(value, float):
+        return value.is_integer() and abs(value) > SAFE_INTEGER_BOUND
+    if isinstance(value, dict):
+        return any(_has_unsafe_integer(v) for v in value.values())
+    if isinstance(value, list | tuple):
+        return any(_has_unsafe_integer(item) for item in value)
+    return False
+
+
+def screen_noncanonicalizable(value: Any) -> tuple[str, str] | None:
+    """Return ``(code, message)`` for the first cross-runtime canonicalisation
+    hazard in ``value`` (non-BMP object key, then out-of-safe-range number), or
+    ``None`` if ``value`` is canonicalisable byte-identically on both runtimes.
+
+    Shared by every public verifier entrypoint that canonicalises
+    attacker-controllable signed-payload data, so all of them fail closed
+    IDENTICALLY. The returned ``code`` is a word-form subcode of the registered
+    RELAY-CANON-001 code; the ``message`` is byte-identical across runtimes.
+    Non-BMP keys take precedence over unsafe integers (deterministic, matched
+    by the TypeScript twin ``screenNonCanonicalizable``).
+    """
+    if _has_non_bmp_key(value):
+        return (CANONICAL_NON_BMP_KEY_CODE, NON_BMP_KEY_REJECTION_MESSAGE)
+    if _has_unsafe_integer(value):
+        return (CANONICAL_UNSAFE_INTEGER_CODE, UNSAFE_INTEGER_REJECTION_MESSAGE)
+    return None
+
+
 __all__ = [
+    "CANONICAL_NON_BMP_KEY_CODE",
+    "CANONICAL_UNSAFE_INTEGER_CODE",
     "JCSEncodeError",
+    "NON_BMP_KEY_REJECTION_MESSAGE",
+    "SAFE_INTEGER_BOUND",
+    "UNSAFE_INTEGER_REJECTION_MESSAGE",
     "bundle_digest",
     "jcs_canonicalize",
+    "screen_noncanonicalizable",
 ]

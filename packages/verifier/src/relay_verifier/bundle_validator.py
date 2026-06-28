@@ -52,9 +52,9 @@ from typing import Any, Final
 
 from .bundle_paths import check_artifact_path
 from .canonical import (
-    CANONICAL_NON_BMP_KEY_CODE,
     bundle_digest,
     jcs_canonicalize,
+    screen_noncanonicalizable,
 )
 from .key_lifecycle import (
     RELAY_EVID_041,
@@ -236,120 +236,16 @@ def _py_ascii(value: Any) -> str:
     return ascii(value)
 
 
-# Structured-rejection tokens for a bundle the JCS encoder refuses to
-# canonicalise (currently: a supplementary-plane / non-BMP object KEY).
-# RFC 8785 sorts object keys by UTF-16 code unit; Python sorts by code
-# point. For keys with a codepoint >= U+10000 the orderings diverge, so
-# the Python and TypeScript verifiers would canonicalise the same bundle
-# to DIFFERENT bytes -> different SHA-256 -> a bundle that verifies on one
-# runtime and is rejected as tampered on the other (keystone invariant
-# #11). The encoder fails-closed (relay_verifier.canonical raises
-# JCSEncodeError); the validator pre-screens and emits this structured
-# error so validate_bundle keeps its "never raises" contract. The reason
-# token and message MUST be byte-identical to the TypeScript twin in
-# packages/verifier-typescript/src/bundle_validator.ts so the two
-# runtimes return identical structured rejections (keystone invariant
-# #16). The message names NO specific key on purpose: JS Object.keys
-# reorders integer-like keys relative to Python's insertion order, so a
-# key-naming message could diverge across runtimes for adversarial nested
-# inputs -- a fixed message is parity-safe by construction.
+# The validate_bundle structured-error reason token shared by BOTH
+# canonicalisability hazards (non-BMP object key, out-of-safe-range integer).
+# The discriminating wire CODE and the byte-identical MESSAGE come from the
+# shared screen relay_verifier.canonical.screen_noncanonicalizable, which every
+# public verifier entrypoint uses so all fail closed identically across Python
+# and TypeScript (keystone invariant #11/#16). Detection helpers, the
+# safe-integer bound, the RELAY-CANON-* subcodes, and the rejection messages
+# now live in relay_verifier.canonical (single source of truth for both this
+# validator and the verifier.py signature entrypoints).
 _NON_CANONICALIZABLE_BUNDLE_REASON: Final[str] = "non_canonicalizable_bundle"
-_NON_CANONICALIZABLE_BUNDLE_MESSAGE: Final[str] = (
-    "bundle contains a non-BMP (supplementary-plane, >= U+10000) object "
-    "key; supplementary-plane object keys produce runtime-divergent "
-    "canonical bytes between the Python and TypeScript verifiers and are "
-    "refused. Re-key any such object with BMP-only strings."
-)
-
-
-def _has_non_bmp_key(value: Any) -> bool:
-    """Return True iff ``value`` contains an object KEY with a codepoint
-    >= U+10000 anywhere in its nested structure.
-
-    Detects -- BEFORE any canonicalisation -- a bundle the JCS encoder
-    would refuse (see :func:`relay_verifier.canonical.jcs_canonicalize`,
-    which fails-closed on non-BMP keys to keep Python<->TypeScript
-    canonical bytes identical, keystone invariant #11). The check screens
-    only object KEYS (mirroring the encoder); string VALUES may carry
-    supplementary-plane characters. The boolean result is independent of
-    key-iteration order, so it is identical to the TypeScript twin
-    ``_hasNonBmpKey`` regardless of the JS-vs-Python object-key ordering
-    difference.
-    """
-    if isinstance(value, dict):
-        for k, v in value.items():
-            for ch in str(k):
-                if ord(ch) >= 0x10000:
-                    return True
-            if _has_non_bmp_key(v):
-                return True
-        return False
-    if isinstance(value, list | tuple):
-        return any(_has_non_bmp_key(item) for item in value)
-    return False
-
-
-# IEEE-754 safe-integer bound (== Number.MAX_SAFE_INTEGER). An integer (or
-# whole-valued float) VALUE whose magnitude exceeds this cannot round-trip
-# byte-identically through a float64 JSON parser: a Python host keeps it
-# exact (str(9007199254740993) == "9007199254740993") while the TypeScript
-# verifier's JSON.parse rounds it (9007199254740993 -> 9007199254740992 ->
-# "9007199254740992"), so the same wire bundle canonicalises to DIFFERENT
-# bytes -> different SHA-256 -> a cross-runtime verify split (keystone
-# invariant #11/#16). 2**53 itself is NOT safe (a rounded overflow can land
-# on it), so the bound is strict (abs > 2**53 - 1 is rejected; abs <= 2**53
-# - 1 is accepted) -- matching relay_contracts.evaluator.SAFE_INTEGER_BOUND.
-SAFE_INTEGER_BOUND: Final[int] = 2**53 - 1  # 9007199254740991
-
-# Word-form subcode of the registered RELAY-CANON-001 canonicalization code
-# (see packages/schemas/raw/error-codes.yaml). Mirrors the F1 non-BMP-key
-# subcode pattern; the reason token is shared (non_canonicalizable_bundle),
-# the code discriminates the cause.
-CANONICAL_UNSAFE_INTEGER_CODE: Final[str] = "RELAY-CANON-UNSAFE-INTEGER"
-
-# Byte-identical (Py<->TS) structured-error message for the safe-integer
-# screen. Names NO specific value on purpose (a Python exact int and a
-# rounded float64 would render differently, breaking message parity) -- a
-# fixed message is parity-safe by construction, exactly like the F1 message.
-_NON_CANONICALIZABLE_UNSAFE_INT_MESSAGE: Final[str] = (
-    "bundle contains a number whose magnitude exceeds the IEEE-754 "
-    "safe-integer range (abs > 2**53 - 1 = 9007199254740991); such a value "
-    "cannot round-trip byte-identically through a float64 JSON parser, so "
-    "the Python and TypeScript verifiers would canonicalise it to different "
-    "bytes and it is refused. Keep numeric values within the safe-integer "
-    "range, or carry large magnitudes as strings."
-)
-
-
-def _has_unsafe_integer(value: Any) -> bool:
-    """Return True iff ``value`` contains a number VALUE outside the IEEE-754
-    safe-integer range (abs > ``SAFE_INTEGER_BOUND``) anywhere in its nested
-    structure.
-
-    Detects -- BEFORE any canonicalisation -- a bundle whose digest would
-    diverge between a Python exact-int host and a float64 host. Mirrors
-    ``relay_contracts.evaluator._check_finite``: an ``int`` (bool excluded)
-    or a whole-valued ``float`` with magnitude > the bound is rejected. No
-    representable float64 of magnitude > the bound is non-integral (the ULP
-    at 2**53 is 2.0), so ``float.is_integer()`` only excludes genuinely
-    fractional doubles (e.g. 1.5), which are always in range. NaN/Inf have
-    ``is_integer() == False`` and are not flagged here (they cannot arise
-    from standard JSON and are rejected by the encoder if reached). The
-    boolean result is order-independent, so it is identical to the
-    TypeScript twin ``_hasUnsafeInteger``. Only VALUES are screened; object
-    KEYS are JSON strings (never numbers).
-    """
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, int):
-        return abs(value) > SAFE_INTEGER_BOUND
-    if isinstance(value, float):
-        return value.is_integer() and abs(value) > SAFE_INTEGER_BOUND
-    if isinstance(value, dict):
-        return any(_has_unsafe_integer(v) for v in value.values())
-    if isinstance(value, list | tuple):
-        return any(_has_unsafe_integer(item) for item in value)
-    return False
 
 
 @dataclass
@@ -705,58 +601,33 @@ def validate_bundle(
     output["signatures_present"] = signatures_count
 
     # --- Non-canonicalisable-bundle screen (keystone invariant #11/#16) ------
-    # A supplementary-plane (non-BMP, >= U+10000) object KEY cannot be
-    # canonicalised to identical bytes across runtimes (RFC 8785 sorts keys
-    # by UTF-16 code unit; Python sorts by code point), so the JCS encoder
-    # fails-closed by raising JCSEncodeError. This screen runs BEFORE the
-    # over-cap signature check because a bundle whose canonical bytes are not
-    # even well-defined across runtimes is the most fundamental failure: its
-    # signature count, digest, and every downstream check are meaningless if
-    # the bundle cannot be canonicalised at all. Running first also guarantees
-    # the over-cap branch's diagnostic bundle_digest canonicalisation only
-    # ever runs on canonicalisable payloads, so its
-    # contextlib.suppress(TypeError, ValueError) never silently swallows the
-    # JCSEncodeError this screen raises (it subclasses ValueError). All
-    # canonicalisation sites (verify_bundle, _claim_digests_in_order,
-    # _compute_binding_digest) operate on the bundle MINUS the top-level
-    # 'signatures' field or subsets of it, so the screened payload strips
-    # 'signatures'; a non-BMP key confined to a signature entry is not a
-    # canonicalisation hazard. The TypeScript twin emits an identical
-    # reason/code/message (keystone invariant #16).
+    # A bundle carrying a value the JCS encoder cannot canonicalise to
+    # byte-identical bytes across runtimes -- a supplementary-plane (non-BMP,
+    # >= U+10000) object KEY, or an out-of-safe-range integer (abs > 2**53 - 1)
+    # -- would verify on one runtime and be rejected as tampered on the other.
+    # This screen runs BEFORE the over-cap signature check because a bundle
+    # whose canonical bytes are not even well-defined is the most fundamental
+    # failure (every downstream check is meaningless), and running first keeps
+    # the over-cap branch's diagnostic bundle_digest canonicalisation on
+    # canonicalisable payloads only (so its contextlib.suppress never silently
+    # swallows the screen's JCSEncodeError). It runs on the bundle MINUS the
+    # top-level 'signatures' field because every canonicalisation site
+    # (verify_bundle, _claim_digests_in_order, _compute_binding_digest)
+    # operates on that payload or a subset; a hazard confined to a signature
+    # entry is not a canonicalisation hazard. The detection + byte-identical
+    # (code, message) come from the shared
+    # relay_verifier.canonical.screen_noncanonicalizable so this validator and
+    # the verifier.py signature entrypoints fail closed IDENTICALLY across
+    # Python and TypeScript.
     _payload_to_canon = {k: v for k, v in bundle.items() if k != "signatures"}
-    if _has_non_bmp_key(_payload_to_canon):
+    _hazard = screen_noncanonicalizable(_payload_to_canon)
+    if _hazard is not None:
+        _hazard_code, _hazard_message = _hazard
         _append_error(
             output,
             reason=_NON_CANONICALIZABLE_BUNDLE_REASON,
-            message=_NON_CANONICALIZABLE_BUNDLE_MESSAGE,
-            code=CANONICAL_NON_BMP_KEY_CODE,
-        )
-        claims = bundle.get("claims")
-        output["claims_count"] = len(claims) if isinstance(claims, list) else 0
-        output["overall"] = _compute_overall(output)
-        return output
-
-    # --- Out-of-safe-range integer screen (keystone invariant #11/#16) -------
-    # A number VALUE whose magnitude exceeds the IEEE-754 safe-integer bound
-    # (abs > 2**53 - 1) is non-canonicalisable cross-runtime: a Python host
-    # keeps the integer exact while the TypeScript verifier's JSON.parse
-    # rounds it, so the same wire bundle canonicalises to DIFFERENT bytes ->
-    # different SHA-256 -> a verify split. Like the non-BMP screen above, this
-    # runs BEFORE the over-cap check (non-canonicalisability is the most
-    # fundamental failure) and BEFORE any canonicalisation, on the SAME
-    # signatures-stripped payload (no canonicalisation path includes the
-    # top-level 'signatures' array). The bound is enforced HERE at the value-
-    # boundary, NOT in the JCS encoder, so jcs_canonicalize stays RFC 8785-
-    # conformant for large floats (the W17 IETF corpus) -- mirroring the
-    # contracts evaluator's _check_finite, which gates results before its
-    # (unbounded) canonicaliser. The TypeScript twin emits an identical
-    # reason/code/message (keystone invariant #16).
-    if _has_unsafe_integer(_payload_to_canon):
-        _append_error(
-            output,
-            reason=_NON_CANONICALIZABLE_BUNDLE_REASON,
-            message=_NON_CANONICALIZABLE_UNSAFE_INT_MESSAGE,
-            code=CANONICAL_UNSAFE_INTEGER_CODE,
+            message=_hazard_message,
+            code=_hazard_code,
         )
         claims = bundle.get("claims")
         output["claims_count"] = len(claims) if isinstance(claims, list) else 0
