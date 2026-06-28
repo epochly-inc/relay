@@ -41,6 +41,14 @@ from starlette.responses import JSONResponse
 from ..db import SidecarDatabase
 from ..errors import RELAY_SIDECAR_CONTEXT_NOT_REHYDRATED_CODE
 from .compare_and_set import (
+    ACTOR_NOT_ALLOWED,
+    EXPECTED_FROM_MISMATCH,
+    GUARD_FAILED,
+    HANDOFF_INVALID,
+    INVALID_TRANSITION,
+    TERMINAL_STATE,
+    UNKNOWN_GUARD,
+    UNKNOWN_SCOPE,
     ActorRef,
     StateTransitionResult,
     compare_and_set_state,
@@ -58,6 +66,17 @@ from .handoff import (
 # anchor handoff per spec C.5).
 RELAY_GATE_021_CODE: str = "RELAY-GATE-021"
 RELAY_GATE_021_CLASS: str = "RELAY-GATE-021"
+
+# RELAY-GATE-001 is the registered gate-namespace catch-all (spec C; docs
+# error-codes.yaml: "Gate decision request failed in a way more specific
+# codes do not classify"). The state-engine compare_and_set reason codes
+# (EXPECTED_FROM_MISMATCH, TERMINAL_STATE, INVALID_TRANSITION,
+# ACTOR_NOT_ALLOWED, GUARD_FAILED, UNKNOWN_SCOPE, UNKNOWN_GUARD) have no
+# dedicated wire-format code in packages/schemas/raw/relay-error-codes.yaml,
+# so the canonical ErrorEnvelope for those rejections carries this catch-all
+# code with the specific reason preserved in ``details.reason``. HANDOFF_INVALID
+# is the sole exception: it maps to RELAY-GATE-021 (three-anchor handoff).
+RELAY_GATE_001_CODE: str = "RELAY-GATE-001"
 
 # Per-surface ``blocked_surface`` constant for every ErrorEnvelope emitted
 # by the POST /v1/state/transition route. Mirrors runtime.py's per-surface
@@ -398,25 +417,59 @@ def build_state_router(
                     "event_id": result.event_id,
                 },
             )
-        # Map state-engine reason codes to HTTP status.
+        # Map state-engine reason codes to HTTP status. Every post-CAS
+        # rejection MUST surface as a canonical ErrorEnvelope (spec B.4) --
+        # the route declares its 4xx bodies as ``$ref: ErrorEnvelope`` in
+        # openapi.yaml (closed schema, code pattern ^RELAY-[A-Z]+-[0-9]{3}$).
+        # The prior implementation returned a BARE dict here, violating that
+        # contract and the module docstring's "every 400/409 body MUST be a
+        # canonical ErrorEnvelope" invariant.
+        #
+        # HANDOFF_INVALID is the CAS-internal three-anchor handoff guard
+        # rejection (keystone #4 / spec C.5): HTTP 409 + RELAY-GATE-021,
+        # identical to the pre-CAS handoff rejection above. The prior map had
+        # NO entry for it, so a cross-project handoff fell through to an
+        # UNDECLARED 422. UNKNOWN_GUARD (fail-closed defense against
+        # transition-table drift) shares INVALID_TRANSITION's 422.
         status_map = {
-            "UNKNOWN_SCOPE": 404,
-            "EXPECTED_FROM_MISMATCH": 409,
-            "INVALID_TRANSITION": 422,
-            "ACTOR_NOT_ALLOWED": 403,
-            "GUARD_FAILED": 422,
-            "TERMINAL_STATE": 409,
+            UNKNOWN_SCOPE: 404,
+            EXPECTED_FROM_MISMATCH: 409,
+            INVALID_TRANSITION: 422,
+            ACTOR_NOT_ALLOWED: 403,
+            GUARD_FAILED: 422,
+            TERMINAL_STATE: 409,
+            HANDOFF_INVALID: 409,
+            UNKNOWN_GUARD: 422,
         }
-        status = status_map.get(str(result.reason), 422)
+        reason = str(result.reason)
+        status = status_map.get(reason, 422)
+        # HANDOFF_INVALID -> RELAY-GATE-021; every other reason -> the
+        # registered gate-namespace catch-all RELAY-GATE-001 (the specific
+        # reason rides in details.reason). The transition is still REJECTED
+        # exactly as before (fail-closed) -- only the response SHAPE changes.
+        code = RELAY_GATE_021_CODE if reason == HANDOFF_INVALID else RELAY_GATE_001_CODE
+        details: dict[str, Any] = {"reason": reason}
+        if result.observed_state is not None:
+            details["observed_state"] = result.observed_state
+        if result.epoch is not None:
+            details["epoch"] = result.epoch
+        if result.event_id is not None:
+            details["event_id"] = result.event_id
+        if result.extras:
+            details["extras"] = result.extras
         return JSONResponse(
             status_code=status,
-            content={
-                "ok": False,
-                "reason": result.reason,
-                "observed_state": result.observed_state,
-                "epoch": result.epoch,
-                "event_id": result.event_id,
-            },
+            content=_relay_error_envelope(
+                code=code,
+                http_status=status,
+                message=f"state transition rejected: {reason}",
+                blocked_surface=_STATE_TRANSITION_SURFACE,
+                # The rejected request is terminal as submitted: the caller
+                # must change the scope state, actor, or manifest anchor (a
+                # new request), not blindly retry the identical body.
+                retry_advice="do_not_retry",
+                details=details,
+            ),
         )
 
     return router

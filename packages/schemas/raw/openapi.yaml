@@ -1204,8 +1204,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: |
+            Actor kind not allowed for the requested transition
+            (ACTOR_NOT_ALLOWED). Canonical ErrorEnvelope; the structured
+            reason rides in details.reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: |
+            Scope not found (UNKNOWN_SCOPE). Canonical ErrorEnvelope; the
+            structured reason rides in details.reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '409':
-          description: Stale three-anchor handoff or guard failure.
+          description: |
+            Stale three-anchor handoff (RELAY-GATE-021) or state-machine
+            conflict (EXPECTED_FROM_MISMATCH / TERMINAL_STATE). Canonical
+            ErrorEnvelope; the structured reason rides in details.reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          description: |
+            Transition rejected (INVALID_TRANSITION, GUARD_FAILED, or the
+            fail-closed UNKNOWN_GUARD drift defense). Canonical
+            ErrorEnvelope; the structured reason rides in details.reason.
           content:
             application/json:
               schema:

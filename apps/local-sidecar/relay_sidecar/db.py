@@ -1238,4 +1238,13 @@ def _allowed_tables() -> Iterable[str]:
         # banned bypass per the audit-r3 BUG-A1 precedent.
         "run_result_contract_results",
         "run_result_gate_decisions",
+        # F5 (manifest persistence): POST /v1/manifests persists the
+        # ManifestVersion anchor row to ``manifest_versions`` via
+        # ``transactional_db_write_raw`` (natural_key=commit_hash) so the
+        # DB-backed three-anchor handoff lookup
+        # (handoff._manifest_is_active_or_in_grace) can find it -- keystone
+        # invariant #4. Listing it here makes the writable surface explicit
+        # and keeps keystone invariant #8 ("four atomic primitives") the
+        # single source of truth for what the writer queue may target.
+        "manifest_versions",
     )

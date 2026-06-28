@@ -12,6 +12,8 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 import json
+import sqlite3
+from typing import Any
 
 import pytest
 from _v2m02_w25_helpers import (
@@ -99,3 +101,76 @@ async def test_get_manifest_version_enforces_scope(
     )
     assert r.status_code == 403
     assert json.loads(r.text)["code"] == "RELAY-AUTH-014"
+
+
+# ---------------------------------------------------------------------------
+# F5: the manifest_versions persistence write MUST NOT be silently swallowed.
+# Before the fix it was wrapped in ``contextlib.suppress(Exception)``: a failed
+# write returned HTTP 201 with the commit_hash while the DB row was absent ->
+# in-memory/DB split-brain (GET works via the in-memory views, but the
+# DB-backed three-anchor handoff lookup finds nothing). The fix persists the
+# row FIRST as the durable gate, surfaces a structured 5xx on failure, and
+# registers NOTHING in memory on failure (no split-brain in either direction).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M02-057")
+@pytest.mark.asyncio
+async def test_post_manifest_persistence_failure_surfaces_error_not_201(
+    v2m02_client: V2M02Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manifest_versions write failure -> structured 5xx, NOT a silent 201."""
+    c, _db_path, app = v2m02_client
+    runtime = app.state.runtime
+    db = runtime.database
+    assert db is not None
+    orig = db.transactional_db_write_raw
+
+    async def _boom(
+        *,
+        table: str,
+        row: dict[str, Any],
+        natural_key: str,
+        natural_key_column: str,
+    ) -> Any:
+        if table == "manifest_versions":
+            raise sqlite3.OperationalError(
+                "simulated manifest_versions persistence failure"
+            )
+        return await orig(
+            table=table,
+            row=row,
+            natural_key=natural_key,
+            natural_key_column=natural_key_column,
+        )
+
+    monkeypatch.setattr(db, "transactional_db_write_raw", _boom)
+    body = {"manifest_id": "mfst-f5-fail", "name": "m-fail", "commands": []}
+    r = await c.post(
+        "/v1/manifests", json=body, headers=scope_header("gates:configure")
+    )
+    # NOT a silent 201; the caller learns registration did not persist.
+    assert r.status_code != 201, r.text
+    assert r.status_code >= 500, r.text
+    payload = json.loads(r.text)
+    # Structured canonical envelope with a registered RELAY-* code.
+    assert payload["code"].startswith("RELAY-"), payload
+    assert payload["schema_version"] == "relay.error.v1", payload
+    # No split-brain: the manifest was NOT registered in memory.
+    assert "mfst-f5-fail" not in runtime.manifests, runtime.manifests
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M02-057")
+def test_manifest_versions_in_allowed_tables_whitelist() -> None:
+    """F5: ``manifest_versions`` is written via transactional_db_write_raw,
+    so it MUST be listed in db._allowed_tables() (keystone invariant #8 --
+    the writable-table allowlist is the single source of truth)."""
+    from relay_sidecar.db import _allowed_tables
+
+    assert "manifest_versions" in tuple(_allowed_tables()), (
+        "manifest_versions missing from _allowed_tables(); the manifest "
+        "create endpoint persists it via transactional_db_write_raw."
+    )

@@ -96,7 +96,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
 from .db import DEFAULT_READER_COUNT, SidecarDatabase
-from .errors import RelaySQLiteBusyExhausted
+from .errors import (
+    RELAY_SIDECAR_DB_CORRUPT_CODE,
+    RelayDiskFullError,
+    RelaySQLiteBusyExhausted,
+)
 from .health import HealthState, _register_health_routes
 from .lockfile import relay_home, resolve_lockfile_path
 from .manifest_enforcement import (
@@ -5344,12 +5348,105 @@ def build_runtime_app(
         ).encode("utf-8")
         commit_hash = _sha256_canonical(canonical)
         manifest_id = body.get("manifest_id") or f"mfst-{uuid.uuid4().hex}"
-        # Audit fix (2026-05-17 P0): parent Manifest envelope pins
-        # ``relay.manifest_parent.v1`` (envelopes.yaml:847) to avoid
-        # colliding with ManifestVersion's ``relay.manifest.v1``
-        # literal (envelopes.yaml:236). Prior implementation used the
-        # same literal for both, violating the Pydantic-discriminator
-        # contract.
+
+        # Parse the declared command_hashes from the body up front (pure
+        # parse, no side effects). They are registered in-memory below, AFTER
+        # the durable write succeeds. The list is filtered to the sha256-
+        # wire form so the later register_commands call cannot raise on it.
+        commands = body.get("commands") or []
+        declared_hashes: list[str] = []
+        if isinstance(commands, list):
+            for cmd in commands:
+                if isinstance(cmd, dict):
+                    ch = cmd.get("command_hash")
+                    if isinstance(ch, str) and ch.startswith("sha256-"):
+                        declared_hashes.append(ch)
+
+        # F5 (manifest persistence): persist the ManifestVersion anchor row to
+        # ``manifest_versions`` FIRST, as the durable gate, so the DB-backed
+        # three-anchor handoff lookup (handoff._manifest_is_active_or_in_grace)
+        # can find it (keystone invariant #4). The prior implementation
+        # registered the manifest in memory and then wrapped this write in
+        # ``contextlib.suppress(Exception)``: a failed write returned HTTP 201
+        # with the commit_hash while the DB row was absent -- an in-memory/DB
+        # split-brain (GET worked via the in-memory views, but the handoff
+        # lookup found nothing). We now make durable persistence the gate: on
+        # failure we surface a structured 5xx and register NOTHING in memory,
+        # so there is no split-brain in either direction.
+        manifest_version_id = f"mv-{uuid.uuid4().hex}"
+        db = runtime.database
+        if db is not None:
+            try:
+                await db.transactional_db_write_raw(
+                    table="manifest_versions",
+                    row={
+                        "manifest_version_id": manifest_version_id,
+                        "manifest_id": manifest_id,
+                        "project_id": (
+                            body.get("project_id", "") or "default"
+                        ),
+                        "commit_hash": commit_hash,
+                        "schema_version": "relay.manifest.v1",
+                        "effective_at": _now_iso_z(),
+                    },
+                    natural_key=commit_hash,
+                    natural_key_column="commit_hash",
+                )
+            except RelaySQLiteBusyExhausted:
+                # The dedicated app-level exception handler renders the
+                # canonical RELAY-SQLITE-001 (503) envelope. Re-raise so the
+                # durable-write failure surfaces loudly; nothing is registered
+                # in memory yet, so there is no split-brain.
+                raise
+            except RelayDiskFullError as exc:
+                # ENOSPC mid-write -> registered RELAY-SIDECAR-011 (507).
+                return JSONResponse(
+                    status_code=exc.http_status,
+                    content=_build_error_envelope(
+                        code=exc.code,
+                        http_status=exc.http_status,
+                        message=exc.message,
+                        blocked_surface=_MANIFEST_CREATE_SURFACE,
+                        retry_advice="after_retry_after",
+                        details={
+                            "manifest_id": manifest_id,
+                            "commit_hash": commit_hash,
+                        },
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Any other persistence failure (schema drift, IntegrityError,
+                # OperationalError, etc.). Do NOT swallow -- a silent 201 with
+                # a missing manifest_versions row is exactly the F5 split-brain.
+                # Surface a structured 5xx (registered RELAY-SIDECAR-010 local
+                # sidecar-database error code; the concrete failure class is
+                # recorded in details) and register NOTHING in memory.
+                return JSONResponse(
+                    status_code=500,
+                    content=_build_error_envelope(
+                        code=RELAY_SIDECAR_DB_CORRUPT_CODE,
+                        http_status=500,
+                        message=(
+                            "manifest_versions persistence failed; manifest "
+                            "registration was not made durable"
+                        ),
+                        blocked_surface=_MANIFEST_CREATE_SURFACE,
+                        retry_advice="after_retry_after",
+                        details={
+                            "manifest_id": manifest_id,
+                            "commit_hash": commit_hash,
+                            "error_class": type(exc).__name__,
+                        },
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                )
+
+        # Durable row committed (or no DB attached, e.g. pure-asgi unit tests)
+        # -> now register the derived in-memory views. Audit fix (2026-05-17
+        # P0): parent Manifest envelope pins ``relay.manifest_parent.v1``
+        # (envelopes.yaml:847) to avoid colliding with ManifestVersion's
+        # ``relay.manifest.v1`` literal (envelopes.yaml:236).
         runtime.manifests[manifest_id] = {
             "schema_version": "relay.manifest_parent.v1",
             "manifest_id": manifest_id,
@@ -5367,64 +5464,31 @@ def build_runtime_app(
             "written_by": "control_plane",
             "effective_at": _now_iso_z(),
         }
-        # Audit fix (2026-05-17 P0): seed the ManifestRegistry with
-        # declared command_hashes (if the body carries them) so the
-        # newly-created manifest can serve as the manifest_commit_hash
-        # anchor for subsequent ingest. Prior implementation never
-        # seeded the registry, breaking the keystone invariant #3
-        # (manifest as source of truth for declared commands).
-        commands = body.get("commands") or []
-        if isinstance(commands, list):
-            declared_hashes: list[str] = []
-            for cmd in commands:
-                if isinstance(cmd, dict):
-                    ch = cmd.get("command_hash")
-                    if isinstance(ch, str) and ch.startswith("sha256-"):
-                        declared_hashes.append(ch)
-            if declared_hashes:
-                try:
-                    runtime.manifest_registry.register_commands(
-                        manifest_commit_hash=commit_hash,
-                        command_hashes=declared_hashes,
-                    )
-                except (TypeError, ValueError):
-                    return JSONResponse(
-                        status_code=422,
-                        content=_build_error_envelope(
-                            code="RELAY-ING-001",
-                            http_status=422,
-                            message=(
-                                "manifest body 'commands[].command_hash' "
-                                "entries must be sha256-<hex> wire form"
-                            ),
-                            blocked_surface=_MANIFEST_CREATE_SURFACE,
+        # Audit fix (2026-05-17 P0): seed the ManifestRegistry with declared
+        # command_hashes so the newly-created manifest can serve as the
+        # manifest_commit_hash anchor for subsequent ingest (keystone
+        # invariant #3). ``declared_hashes`` is pre-filtered to the sha256-
+        # wire form, so register_commands cannot raise on it; the guard
+        # stays defensive against future drift.
+        if declared_hashes:
+            try:
+                runtime.manifest_registry.register_commands(
+                    manifest_commit_hash=commit_hash,
+                    command_hashes=declared_hashes,
+                )
+            except (TypeError, ValueError):
+                return JSONResponse(
+                    status_code=422,
+                    content=_build_error_envelope(
+                        code="RELAY-ING-001",
+                        http_status=422,
+                        message=(
+                            "manifest body 'commands[].command_hash' "
+                            "entries must be sha256-<hex> wire form"
                         ),
-                        headers=_rate_limit_headers_for(request),
-                    )
-        # Audit fix (2026-05-17 P0): persist the manifest_versions row
-        # via the writer queue so the three-anchor handoff lookup
-        # (handoff._manifest_is_active_or_in_grace) can find it. Prior
-        # implementation only wrote to the in-memory dict, so the
-        # newly-created manifest could never satisfy the keystone
-        # invariant #4 (three-anchor handoff) on subsequent ingest.
-        manifest_version_id = f"mv-{uuid.uuid4().hex}"
-        db = runtime.database
-        if db is not None:
-            with contextlib.suppress(Exception):
-                await db.transactional_db_write_raw(
-                    table="manifest_versions",
-                    row={
-                        "manifest_version_id": manifest_version_id,
-                        "manifest_id": manifest_id,
-                        "project_id": (
-                            body.get("project_id", "") or "default"
-                        ),
-                        "commit_hash": commit_hash,
-                        "schema_version": "relay.manifest.v1",
-                        "effective_at": _now_iso_z(),
-                    },
-                    natural_key=commit_hash,
-                    natural_key_column="commit_hash",
+                        blocked_surface=_MANIFEST_CREATE_SURFACE,
+                    ),
+                    headers=_rate_limit_headers_for(request),
                 )
         resp_body = {
             "manifest_id": manifest_id,

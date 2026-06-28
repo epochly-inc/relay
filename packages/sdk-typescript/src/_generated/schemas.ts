@@ -3280,8 +3280,50 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Stale three-anchor handoff or guard failure. */
+            /**
+             * @description Actor kind not allowed for the requested transition
+             *     (ACTOR_NOT_ALLOWED). Canonical ErrorEnvelope; the structured
+             *     reason rides in details.reason.
+             */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Scope not found (UNKNOWN_SCOPE). Canonical ErrorEnvelope; the
+             *     structured reason rides in details.reason.
+             */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Stale three-anchor handoff (RELAY-GATE-021) or state-machine
+             *     conflict (EXPECTED_FROM_MISMATCH / TERMINAL_STATE). Canonical
+             *     ErrorEnvelope; the structured reason rides in details.reason.
+             */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Transition rejected (INVALID_TRANSITION, GUARD_FAILED, or the
+             *     fail-closed UNKNOWN_GUARD drift defense). Canonical
+             *     ErrorEnvelope; the structured reason rides in details.reason.
+             */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
