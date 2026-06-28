@@ -630,12 +630,11 @@ async def test_manifest_single_malformed_row_is_caught_not_raised() -> None:
     L312 ExceptionReplacer rewrites ``except ValueError`` to
     ``except CosmicRayTestingException`` (which does NOT catch ValueError), so
     the ValueError propagates and the guard RAISES instead of returning a
-    verdict. A single row makes this kill independent of SQLite scan order
-    (the prior two-row variant relied on a malformed-before-active visitation
-    order that ``SELECT`` without ``ORDER BY`` does not guarantee -- roborev
-    20fe8b6). L313 ``continue`` -> ``break`` is INDISTINGUISHABLE here (one row:
-    both exit the loop to the same ``return``) and is justified equivalent --
-    see docs/architecture/mutation-equivalents.md Class C5.
+    verdict. A single row makes this kill independent of row order. L313
+    ``continue`` -> ``break`` is INDISTINGUISHABLE here (one row: both exit the
+    loop to the same ``return``); it is killed separately and deterministically
+    by ``test_manifest_malformed_before_active_continues_to_pass`` (two rows,
+    explicit rowids + the guard's ``ORDER BY rowid``).
     """
     async with aiosqlite.connect(":memory:") as conn:
         await conn.execute(_DDL_SCOPE_STATE)
@@ -669,12 +668,14 @@ async def test_manifest_malformed_before_active_continues_to_pass() -> None:
     ``(False, expired)`` -- so the mutant VIOLATES the guard's contract (returns
     expired while an active row exists). That is a real, non-equivalent mutant.
 
-    Determinism: the guard runs EXCLUSIVELY on SQLite (aiosqlite). The minimal
-    test table has no index on (project_id, commit_hash), so SQLite performs a
-    full-table scan, which visits rows in rowid order -- a documented SQLite
-    property. Explicit ascending rowids therefore pin rowid 1 (malformed) strictly
-    before rowid 2 (active). Verified empirically: 10/10 runs visit malformed-first
-    and real(continue)=True vs mutant(break)=False. (roborev ee49c85: this is a
+    Determinism: the guard's manifest_versions query is ``ORDER BY rowid`` (added
+    for deterministic, auditable control-plane evaluation), so visitation order is
+    part of the QUERY CONTRACT, not the planner's discretion. Explicit ascending
+    rowids therefore pin rowid 1 (malformed) strictly before rowid 2 (active),
+    independent of SQLite version/planner/settings. Verified empirically: 10/10
+    runs visit malformed-first and real(continue)=True vs mutant(break)=False.
+    (roborev 3b33ebc: the prior scan-order reliance is replaced by an explicit
+    ORDER BY; this is a
     deterministic kill, not an equivalence -- the earlier equivalent claim was
     withdrawn.)
     """
