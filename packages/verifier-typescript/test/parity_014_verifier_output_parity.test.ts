@@ -296,6 +296,54 @@ describe("parity-014 claim_namespace_unknown non-ASCII operand bytes match Pytho
 });
 
 // ===========================================================================
+// Precedence: a non-canonicalisable (non-BMP-key) bundle that is ALSO over the
+// signature cap MUST return non_canonicalizable_bundle, NOT
+// signature_count_exceeded. The over-cap branch canonicalises for a diagnostic
+// digest inside a swallow-all guard (Python contextlib.suppress(ValueError),
+// which JCSEncodeError subclasses; TS try/catch), so if it ran first the
+// fundamental non-canonicalisability failure would be masked. Both runtimes
+// run the non-BMP screen BEFORE the over-cap check (keystone invariant #11/#16;
+// roborev follow-on on the F1 fix).
+// ===========================================================================
+
+describe("parity-014 non-BMP key outranks over-cap signature count (Py<->TS)", () => {
+  test("over-cap AND non-BMP namespace key => non_canonicalizable_bundle on both", () => {
+    const key = "x\u{1f600}y";
+    // 5 signatures (> MAX_BUNDLE_SIGNATURES = 4) AND a supplementary-plane
+    // object key in the signed payload.
+    const bundle: Record<string, unknown> = {
+      schema_version: "relay.evidence_bundle.v1",
+      trust_anchor: "https://relay.epochly.com/.well-known/jwks.json",
+      decided_at: "2026-05-15T12:00:00Z",
+      claims: [{ id: "c1", namespaces: { [key]: {} } }],
+      signatures: [
+        PLACEHOLDER_SIG,
+        PLACEHOLDER_SIG,
+        PLACEHOLDER_SIG,
+        PLACEHOLDER_SIG,
+        PLACEHOLDER_SIG,
+      ],
+    };
+
+    const pyErrors = pyValidateErrors(bundle, {});
+    const tsErrors = tsValidateErrors(bundle, {});
+
+    const pyErr = findByReason(pyErrors, "non_canonicalizable_bundle");
+    const tsErr = findByReason(tsErrors, "non_canonicalizable_bundle");
+
+    expect(pyErr).toBeDefined();
+    expect(tsErr).toBeDefined();
+    // The non-canonicalisable rejection wins on BOTH runtimes, byte-identical.
+    expect(pyErr!["code"]).toBe("RELAY-CANON-NON-BMP-KEY");
+    expect(tsErr!["code"]).toBe("RELAY-CANON-NON-BMP-KEY");
+    expect(tsErr!["message"]).toBe(pyErr!["message"]);
+    // The over-cap reason must NOT appear on either runtime.
+    expect(findByReason(pyErrors, "signature_count_exceeded")).toBeUndefined();
+    expect(findByReason(tsErrors, "signature_count_exceeded")).toBeUndefined();
+  });
+});
+
+// ===========================================================================
 // #2: TSA gen_time skew reason is the structured "tsa_skew_exceeded"
 // ===========================================================================
 

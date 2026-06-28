@@ -633,17 +633,52 @@ def validate_bundle(
             code=RELAY_EVID_MISSING_TRUST_ANCHOR,
         )
 
+    # Record the wire signature count early so EVERY return path -- including
+    # the non-canonicalisable-bundle early return below -- carries it.
+    raw_sigs = bundle.get("signatures")
+    signatures_count = (
+        len(raw_sigs) if isinstance(raw_sigs, list) else 0
+    )
+    output["signatures_present"] = signatures_count
+
+    # --- Non-canonicalisable-bundle screen (keystone invariant #11/#16) ------
+    # A supplementary-plane (non-BMP, >= U+10000) object KEY cannot be
+    # canonicalised to identical bytes across runtimes (RFC 8785 sorts keys
+    # by UTF-16 code unit; Python sorts by code point), so the JCS encoder
+    # fails-closed by raising JCSEncodeError. This screen runs BEFORE the
+    # over-cap signature check because a bundle whose canonical bytes are not
+    # even well-defined across runtimes is the most fundamental failure: its
+    # signature count, digest, and every downstream check are meaningless if
+    # the bundle cannot be canonicalised at all. Running first also guarantees
+    # the over-cap branch's diagnostic bundle_digest canonicalisation only
+    # ever runs on canonicalisable payloads, so its
+    # contextlib.suppress(TypeError, ValueError) never silently swallows the
+    # JCSEncodeError this screen raises (it subclasses ValueError). All
+    # canonicalisation sites (verify_bundle, _claim_digests_in_order,
+    # _compute_binding_digest) operate on the bundle MINUS the top-level
+    # 'signatures' field or subsets of it, so the screened payload strips
+    # 'signatures'; a non-BMP key confined to a signature entry is not a
+    # canonicalisation hazard. The TypeScript twin emits an identical
+    # reason/code/message (keystone invariant #16).
+    _payload_to_canon = {k: v for k, v in bundle.items() if k != "signatures"}
+    if _has_non_bmp_key(_payload_to_canon):
+        _append_error(
+            output,
+            reason=_NON_CANONICALIZABLE_BUNDLE_REASON,
+            message=_NON_CANONICALIZABLE_BUNDLE_MESSAGE,
+            code=CANONICAL_NON_BMP_KEY_CODE,
+        )
+        claims = bundle.get("claims")
+        output["claims_count"] = len(claims) if isinstance(claims, list) else 0
+        output["overall"] = _compute_overall(output)
+        return output
+
     # --- Signature-count cap (VAL-V2M08-041) ---------------------------------
     # Per spec L.5 line 4481 bundles can carry up to 4 cross-signing
     # signatures. An over-cap bundle is rejected BEFORE per-signature
     # verification work runs (defends against DoS and against producers
     # abusing the cross-signing slot for non-signature data). The
     # signatures_checked[] array stays empty for the over-cap bundle.
-    raw_sigs = bundle.get("signatures")
-    signatures_count = (
-        len(raw_sigs) if isinstance(raw_sigs, list) else 0
-    )
-    output["signatures_present"] = signatures_count
     if signatures_count > MAX_BUNDLE_SIGNATURES:
         _append_error(
             output,
@@ -670,32 +705,6 @@ def validate_bundle(
             output["bundle_digest_sha256"] = hashlib.sha256(
                 _vcjb(_pfs(bundle))
             ).hexdigest()
-        claims = bundle.get("claims")
-        output["claims_count"] = len(claims) if isinstance(claims, list) else 0
-        output["overall"] = _compute_overall(output)
-        return output
-
-    # --- Non-canonicalisable-bundle screen (keystone invariant #11/#16) ------
-    # A supplementary-plane (non-BMP, >= U+10000) object KEY cannot be
-    # canonicalised to identical bytes across runtimes (RFC 8785 sorts keys
-    # by UTF-16 code unit; Python sorts by code point), so the JCS encoder
-    # fails-closed by raising JCSEncodeError. Screen for such a key BEFORE
-    # any canonicalisation runs (verify_bundle, _claim_digests_in_order, and
-    # _compute_binding_digest all canonicalise the bundle MINUS the
-    # top-level 'signatures' field, or subsets of it) and return a structured
-    # rejection -- preserving this function's "never raises" contract and
-    # emitting a runtime-identical reason/code/message (the TypeScript twin
-    # emits the same). The 'signatures' array is stripped from the screened
-    # payload because no canonicalisation path includes it, so a non-BMP key
-    # confined to a signature entry is not a canonicalisation hazard.
-    _payload_to_canon = {k: v for k, v in bundle.items() if k != "signatures"}
-    if _has_non_bmp_key(_payload_to_canon):
-        _append_error(
-            output,
-            reason=_NON_CANONICALIZABLE_BUNDLE_REASON,
-            message=_NON_CANONICALIZABLE_BUNDLE_MESSAGE,
-            code=CANONICAL_NON_BMP_KEY_CODE,
-        )
         claims = bundle.get("claims")
         output["claims_count"] = len(claims) if isinstance(claims, list) else 0
         output["overall"] = _compute_overall(output)

@@ -845,6 +845,47 @@ export function validateBundle(args: {
     });
   }
 
+  // Record the wire signature count early so EVERY return path -- including
+  // the non-canonicalisable-bundle early return below -- carries it.
+  const rawSigs = bundle["signatures"];
+  const signaturesCount = Array.isArray(rawSigs) ? rawSigs.length : 0;
+  output.signatures_present = signaturesCount;
+
+  // --- Non-canonicalisable-bundle screen (keystone invariant #11/#16) ------
+  // A supplementary-plane (non-BMP, >= U+10000) object KEY cannot be
+  // canonicalised to identical bytes across runtimes (RFC 8785 sorts keys by
+  // UTF-16 code unit; Python sorts by code point), so the JCS encoder
+  // fails-closed by throwing JCSEncodeError. This screen runs BEFORE the
+  // over-cap signature check because a bundle whose canonical bytes are not
+  // even well-defined across runtimes is the most fundamental failure: its
+  // signature count, digest, and every downstream check are meaningless if the
+  // bundle cannot be canonicalised at all. Running first also guarantees the
+  // over-cap branch's diagnostic bundleDigest only ever runs on
+  // canonicalisable payloads, so its swallow-all try/catch never silently
+  // hides the JCSEncodeError this screen throws. All canonicalisation sites
+  // (_verifyBundle, _claimDigestsInOrder, _computeBindingDigest) operate on the
+  // bundle MINUS the top-level 'signatures' field or subsets of it, so the
+  // screened payload strips 'signatures'; a non-BMP key confined to a signature
+  // entry is not a canonicalisation hazard. The Python twin emits an identical
+  // reason/code/message (keystone invariant #16).
+  const payloadToCanon: Record<string, unknown> = {};
+  for (const k of Object.keys(bundle)) {
+    if (k !== "signatures") {
+      payloadToCanon[k] = bundle[k];
+    }
+  }
+  if (_hasNonBmpKey(payloadToCanon)) {
+    _appendError(output, {
+      reason: NON_CANONICALIZABLE_BUNDLE_REASON,
+      message: NON_CANONICALIZABLE_BUNDLE_MESSAGE,
+      code: CANONICAL_NON_BMP_KEY_CODE,
+    });
+    const claims = bundle["claims"];
+    output.claims_count = Array.isArray(claims) ? claims.length : 0;
+    output.overall = _computeOverall(output);
+    return output;
+  }
+
   // --- Signature-count cap (VAL-V2M08-041) ---------------------------------
   // Per spec L.5 line 4481 bundles can carry up to MAX_BUNDLE_SIGNATURES
   // cross-signing signatures. An over-cap bundle is rejected BEFORE
@@ -852,9 +893,6 @@ export function validateBundle(args: {
   // against producers abusing the cross-signing slot for non-signature
   // data). The signatures_checked[] array stays empty for the over-cap
   // bundle.
-  const rawSigs = bundle["signatures"];
-  const signaturesCount = Array.isArray(rawSigs) ? rawSigs.length : 0;
-  output.signatures_present = signaturesCount;
   if (signaturesCount > MAX_BUNDLE_SIGNATURES) {
     _appendError(output, {
       reason: "signature_count_exceeded",
@@ -874,37 +912,6 @@ export function validateBundle(args: {
       // Defensive: malformed payload that breaks canonicalisation leaves
       // bundle_digest_sha256 at its safe default "".
     }
-    const claims = bundle["claims"];
-    output.claims_count = Array.isArray(claims) ? claims.length : 0;
-    output.overall = _computeOverall(output);
-    return output;
-  }
-
-  // --- Non-canonicalisable-bundle screen (keystone invariant #11/#16) ------
-  // A supplementary-plane (non-BMP, >= U+10000) object KEY cannot be
-  // canonicalised to identical bytes across runtimes (RFC 8785 sorts keys by
-  // UTF-16 code unit; Python sorts by code point), so the JCS encoder
-  // fails-closed by throwing JCSEncodeError. Screen for such a key BEFORE any
-  // canonicalisation runs (_verifyBundle, _claimDigestsInOrder, and
-  // _computeBindingDigest all canonicalise the bundle MINUS the top-level
-  // 'signatures' field, or subsets of it) and return a structured rejection --
-  // preserving validateBundle's never-throws contract and emitting a
-  // runtime-identical reason/code/message (the Python twin emits the same).
-  // The 'signatures' array is stripped from the screened payload because no
-  // canonicalisation path includes it, so a non-BMP key confined to a
-  // signature entry is not a canonicalisation hazard.
-  const payloadToCanon: Record<string, unknown> = {};
-  for (const k of Object.keys(bundle)) {
-    if (k !== "signatures") {
-      payloadToCanon[k] = bundle[k];
-    }
-  }
-  if (_hasNonBmpKey(payloadToCanon)) {
-    _appendError(output, {
-      reason: NON_CANONICALIZABLE_BUNDLE_REASON,
-      message: NON_CANONICALIZABLE_BUNDLE_MESSAGE,
-      code: CANONICAL_NON_BMP_KEY_CODE,
-    });
     const claims = bundle["claims"];
     output.claims_count = Array.isArray(claims) ? claims.length : 0;
     output.overall = _computeOverall(output);

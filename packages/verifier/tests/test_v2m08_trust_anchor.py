@@ -121,6 +121,54 @@ def test_verifier_rejects_more_than_four_signatures() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M08-041")
+def test_non_bmp_key_takes_precedence_over_signature_count_cap() -> None:
+    """A bundle that is BOTH over-cap (5 signatures) AND carries a non-BMP
+    (supplementary-plane, >= U+10000) object key MUST be rejected as
+    ``non_canonicalizable_bundle`` (RELAY-CANON-NON-BMP-KEY), NOT merely
+    ``signature_count_exceeded``.
+
+    A bundle whose canonical bytes are not well-defined across runtimes is a
+    more fundamental failure than an over-cap signature count: every
+    downstream check -- including the over-cap branch's diagnostic
+    bundle_digest, whose ``contextlib.suppress(TypeError, ValueError)`` would
+    otherwise silently swallow the JCSEncodeError (it subclasses ValueError)
+    -- is meaningless if the bundle cannot be canonicalised at all. The
+    non-BMP screen therefore runs BEFORE the over-cap check (keystone
+    invariant #11/#16; roborev follow-on on the F1 fix).
+    """
+    # Build a normal (BMP) signed bundle, then INJECT a non-BMP object key
+    # into the signed payload AFTER signing. Signing canonicalises, so a
+    # non-BMP key present at sign time would (correctly) raise in the signer;
+    # injecting it post-signing leaves a stale signature, but both the non-BMP
+    # screen and the over-cap check run BEFORE per-signature verification.
+    built = build_bundle()
+    built.bundle["claims"][0]["namespaces"] = {"x" + chr(0x1F600) + "y": {}}
+    original_sigs = list(built.bundle["signatures"])
+    built.bundle["signatures"] = original_sigs * 5
+    assert len(built.bundle["signatures"]) == 5
+
+    output = validate_bundle(
+        bundle=built.bundle,
+        jwks=built.jwks,
+        trust_anchor_source="live",
+    )
+
+    assert output["overall"] == "fail", output
+    reasons = [e.get("reason") for e in output["errors"]]
+    # The non-canonicalisable rejection wins; the over-cap reason is absent.
+    assert "non_canonicalizable_bundle" in reasons, output["errors"]
+    assert "signature_count_exceeded" not in reasons, output["errors"]
+    nb = next(
+        e for e in output["errors"]
+        if e.get("reason") == "non_canonicalizable_bundle"
+    )
+    assert nb["code"] == "RELAY-CANON-NON-BMP-KEY", nb
+    # signatures_present is still recorded for diagnostic continuity.
+    assert output["signatures_present"] == 5, output
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-041")
 def test_verifier_signature_cap_constant_matches_spec() -> None:
     """The cap MUST be the spec-pinned value 4 (section L.5 line 4481)."""
     assert MAX_BUNDLE_SIGNATURES == 4
