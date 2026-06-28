@@ -385,6 +385,55 @@ def _model_from_body(body: dict[str, Any]) -> str | None:
     return None
 
 
+def _build_mitmdump_argv(
+    *, binary: str, port: int, session_dir: Path, addon_path: Path
+) -> list[str]:
+    """Build the ``mitmdump`` argv with default-deny egress hardening.
+
+    Two options keep an intercepted request from EVER reaching the live
+    upstream provider at the CONNECTION layer (keystone invariant #9),
+    independent of the addon's request() hook:
+
+      * ``upstream_cert=false`` -- with mitmproxy's default ``true`` the
+        proxy opens a TLS connection to the real upstream during the
+        handshake to copy its certificate (a real outbound connection
+        BEFORE the request hook runs). Disabling it makes mitmproxy serve a
+        generic generated cert and never contact the upstream for cert
+        details.
+      * ``connection_strategy=lazy`` -- the default ``eager`` opens the
+        upstream connection as soon as the client connects, again before the
+        request hook. ``lazy`` defers the upstream connection until it is
+        actually needed; because the addon's request() hook always sets
+        ``flow.response`` (cassette hit or fail-closed block), it is never
+        needed, so no upstream connection is ever made.
+
+    Both options are valid for the pinned mitmproxy (``>=10,<13``; verified
+    against the installed 12.1.2: ``upstream_cert`` is a core bool option and
+    ``connection_strategy`` is a proxyserver-addon str option with choices
+    ``eager``/``lazy``, and both accept the ``--set key=value`` string form).
+    """
+    return [
+        binary,
+        "--listen-host",
+        "127.0.0.1",
+        "--listen-port",
+        str(port),
+        "--set",
+        f"confdir={session_dir!s}",
+        "--set",
+        f"relay_session_dir={session_dir!s}",
+        # Default-deny egress hardening (keystone #9): never touch the live
+        # upstream, not even during TLS setup / eager connect.
+        "--set",
+        "upstream_cert=false",
+        "--set",
+        "connection_strategy=lazy",
+        "-s",
+        str(addon_path),
+        "--quiet",
+    ]
+
+
 class _MitmProxyDriver(_ProxyDriver):
     """Spawn the ``mitmdump`` binary as a subprocess.
 
@@ -413,20 +462,12 @@ class _MitmProxyDriver(_ProxyDriver):
         addon_path = server.session_dir / "_addon.py"
         addon_path.write_bytes(_MITMPROXY_ADDON_SOURCE.encode("utf-8"))
         self._addon_path = addon_path
-        cmd = [
-            binary,
-            "--listen-host",
-            "127.0.0.1",
-            "--listen-port",
-            str(port),
-            "--set",
-            f"confdir={server.session_dir!s}",
-            "--set",
-            f"relay_session_dir={server.session_dir!s}",
-            "-s",
-            str(addon_path),
-            "--quiet",
-        ]
+        cmd = _build_mitmdump_argv(
+            binary=binary,
+            port=port,
+            session_dir=server.session_dir,
+            addon_path=addon_path,
+        )
         try:
             proc = subprocess.Popen(  # noqa: S603 - args is a list, not shell=True
                 cmd,

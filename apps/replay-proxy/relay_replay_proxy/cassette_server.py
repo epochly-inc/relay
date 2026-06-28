@@ -36,7 +36,7 @@ import hmac
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from relay_cli.cassette import (
     Cassette,
@@ -350,6 +350,19 @@ class ProxyDecision:
     body_bytes: bytes
 
 
+class CassetteLookup(Protocol):
+    """Structural type for the cassette lookup surface the proxy needs.
+
+    :func:`decide_replay_response` depends only on a ``lookup`` method, not
+    on the concrete :class:`CassetteServer`. Typing the parameter against
+    this Protocol keeps the decision function testable with lightweight fakes
+    while still accepting the real ``CassetteServer`` (which satisfies it
+    structurally).
+    """
+
+    def lookup(self, request: IncomingRequest) -> CassetteResponse | None: ...
+
+
 def _block_decision(
     code: str, status: int, message: str, **extra: str
 ) -> ProxyDecision:
@@ -369,7 +382,7 @@ def _block_decision(
 
 
 def decide_replay_response(
-    server: CassetteServer | None,
+    server: CassetteLookup | None,
     *,
     raw_body: bytes,
     provider_header: str,
@@ -398,6 +411,9 @@ def decide_replay_response(
 
       * ``server is None`` -> ``RELAY-REPLAY-021`` (proxy not configured /
         not functional), HTTP 503.
+      * non-empty body that is not valid JSON, or is valid JSON but not an
+        object -> ``RELAY-REPLAY-025`` (refuse to match a malformed request),
+        HTTP 502. A genuinely empty body is legitimate and maps to ``{}``.
       * ``server.lookup`` raises -> ``RELAY-REPLAY-025`` (cassette corrupt /
         integrity failure), HTTP 502.
       * lookup miss -> ``RELAY-CASSETTE-MISS``, HTTP 404 (mirrors the
@@ -413,18 +429,38 @@ def decide_replay_response(
             "replay proxy not configured: cassette server unavailable",
         )
 
-    try:
-        parsed: Any = json.loads(raw_body.decode("utf-8")) if raw_body else {}
-    except Exception:  # noqa: BLE001 - any decode/parse failure -> empty body
-        parsed = {}
-    body = parsed if isinstance(parsed, dict) else {}
+    # Fail-closed path 2: body parsing. A genuinely EMPTY body is legitimate
+    # (a no-body request, or a recorded empty-object request) and maps to {}.
+    # But a NON-EMPTY body that is not valid JSON, or is valid JSON that is
+    # not an object, MUST block -- never silently coerce to {} and fall
+    # through to lookup, because that would let a malformed / different
+    # request HIT an empty-object ({}) cassette entry instead of being
+    # refused. Reuse the corrupt/integrity code (RELAY-REPLAY-025).
+    if raw_body:
+        try:
+            parsed: Any = json.loads(raw_body.decode("utf-8"))
+        except Exception:  # noqa: BLE001 - any decode/parse failure blocks
+            return _block_decision(
+                RELAY_REPLAY_CASSETTE_CORRUPT,
+                502,
+                "request body is not valid JSON; refusing to match against cassette",
+            )
+        if not isinstance(parsed, dict):
+            return _block_decision(
+                RELAY_REPLAY_CASSETTE_CORRUPT,
+                502,
+                "request body is not a JSON object; refusing to match against cassette",
+            )
+        body = parsed
+    else:
+        body = {}
     req = IncomingRequest(
         provider=provider_header or "unknown",
         model=model_header or "unknown",
         body=body,
     )
 
-    # Fail-closed path 2: any failure in lookup (cassette corruption,
+    # Fail-closed path 3: any failure in lookup (cassette corruption,
     # response_digest / file_digest mismatch, integrity-anchor-required, or
     # any unexpected error) MUST block, never escape to the live upstream.
     try:
@@ -437,7 +473,7 @@ def decide_replay_response(
             detail=str(exc),
         )
 
-    # Fail-closed path 3: a plain miss blocks with the cassette-miss code.
+    # Fail-closed path 4: a plain miss blocks with the cassette-miss code.
     if response is None:
         return _block_decision(
             RELAY_CASSETTE_MISS_WIRE_CODE,

@@ -51,15 +51,22 @@ from typing import Any
 
 import pytest
 from relay_cli.cassette import CassetteFormatError
+from relay_replay_proxy import harness as harness_mod
 from relay_replay_proxy.cassette_server import (
+    CassetteServer,
     ProxyDecision,
     decide_replay_response,
 )
+from relay_replay_proxy.cert_authority import generate_ca
 from relay_replay_proxy.errors import (
     RELAY_REPLAY_CASSETTE_CORRUPT,
     RELAY_REPLAY_PROXY_DOWN,
 )
-from relay_replay_proxy.harness import _MITMPROXY_ADDON_SOURCE
+from relay_replay_proxy.harness import (
+    _MITMPROXY_ADDON_SOURCE,
+    _build_mitmdump_argv,
+    _MitmProxyDriver,
+)
 
 pytestmark = pytest.mark.plumbing
 
@@ -168,8 +175,12 @@ def test_decide_blocks_on_miss() -> None:
     assert envelope["code"] == "RELAY-CASSETTE-MISS"
 
 
-def test_decide_blocks_on_unparseable_body() -> None:
-    """A non-JSON body still resolves to a decision (here: a miss)."""
+def test_decide_blocks_malformed_body() -> None:
+    """A non-empty body that is not valid JSON MUST block (corrupt), not miss.
+
+    Pre-fix this coerced to ``{}`` and fell through to lookup; a different /
+    malformed request could then HIT an empty-object cassette entry.
+    """
     decision = decide_replay_response(
         _MissServer(),
         raw_body=b"\xff\xfe not json",
@@ -177,7 +188,58 @@ def test_decide_blocks_on_unparseable_body() -> None:
         model_header="",
     )
     assert decision.kind == "block"
-    assert decision.status == 404
+    assert decision.status == 502
+    envelope = json.loads(decision.body_bytes)
+    assert envelope["code"] == RELAY_REPLAY_CASSETTE_CORRUPT
+
+
+def test_decide_malformed_body_never_matches_empty_entry() -> None:
+    """REGRESSION: a malformed body MUST NOT match a ``{}`` cassette entry.
+
+    ``_HitServer`` returns a hit for ANY lookup (including the empty-object
+    digest). If the malformed body were coerced to ``{}`` and looked up, it
+    would be served this hit. The fix blocks BEFORE lookup, so the result
+    must be a block, never the hit.
+    """
+    resp = _FakeResponse(200, {"Content-Type": "application/json"}, b'{"id":"leak"}')
+    decision = decide_replay_response(
+        _HitServer(resp),
+        raw_body=b"\xff\xfe not json",
+        provider_header="openai",
+        model_header="m",
+    )
+    assert decision.kind == "block", "malformed body leaked a cassette hit"
+    assert decision.status == 502
+    assert decision.body_bytes != b'{"id":"leak"}'
+
+
+def test_decide_blocks_non_object_json_body() -> None:
+    """Valid JSON that is not an object (list/scalar) MUST block, not coerce."""
+    resp = _FakeResponse(200, {"Content-Type": "application/json"}, b'{"id":"leak"}')
+    for raw in (b"[1,2,3]", b'"hi"', b"5", b"true", b"null"):
+        decision = decide_replay_response(
+            _HitServer(resp),
+            raw_body=raw,
+            provider_header="openai",
+            model_header="m",
+        )
+        assert decision.kind == "block", f"non-object body {raw!r} leaked a hit"
+        assert decision.status == 502
+        envelope = json.loads(decision.body_bytes)
+        assert envelope["code"] == RELAY_REPLAY_CASSETTE_CORRUPT
+
+
+def test_decide_empty_body_still_looks_up() -> None:
+    """A genuinely EMPTY body is legitimate (-> {}) and MUST reach lookup."""
+    resp = _FakeResponse(200, {"Content-Type": "application/json"}, b'{"id":"ok"}')
+    decision = decide_replay_response(
+        _HitServer(resp),
+        raw_body=b"",
+        provider_header="openai",
+        model_header="m",
+    )
+    assert decision.kind == "hit"
+    assert decision.body_bytes == b'{"id":"ok"}'
 
 
 def test_decide_hit_serves_recorded_response() -> None:
@@ -344,3 +406,76 @@ def test_addon_hook_last_resort_guard_blocks() -> None:
     assert flow.response.status_code == 502
     envelope = json.loads(flow.response.content)
     assert envelope["code"] == RELAY_REPLAY_CASSETTE_CORRUPT
+
+
+def test_addon_hook_blocks_malformed_body() -> None:
+    """REGRESSION: a malformed body MUST be blocked, never matched to a hit."""
+    resp = _FakeResponse(200, {"Content-Type": "application/json"}, b'{"id":"leak"}')
+    addon = _load_addon(server=_HitServer(resp))
+    flow = _FakeFlow(raw=b"\xff\xfe not json", headers={})
+    addon["request"](flow)
+    assert flow.response is not None
+    assert flow.response.status_code == 502, "malformed body leaked a cassette hit"
+    assert flow.response.content != b'{"id":"leak"}'
+
+
+# -----------------------------------------------------------------------------
+# Connection-layer egress hardening: the mitmdump launch must disable upstream
+# certificate probing and eager upstream connect (keystone #9). Without these,
+# mitmproxy contacts the LIVE upstream during TLS setup BEFORE the request hook
+# runs -- a real outbound connection despite the hook always responding.
+# -----------------------------------------------------------------------------
+
+
+def _flag_pair_present(argv: list[str], flag: str, value: str) -> bool:
+    """True if ``argv`` contains ``flag`` immediately followed by ``value``."""
+    return any(
+        argv[i] == flag and argv[i + 1] == value for i in range(len(argv) - 1)
+    )
+
+
+def test_build_mitmdump_argv_includes_egress_hardening(tmp_path: Any) -> None:
+    """The built argv MUST disable upstream_cert and use the lazy strategy."""
+    argv = _build_mitmdump_argv(
+        binary="/usr/bin/mitmdump",
+        port=8888,
+        session_dir=tmp_path,
+        addon_path=tmp_path / "_addon.py",
+    )
+    assert _flag_pair_present(argv, "--set", "upstream_cert=false"), argv
+    assert _flag_pair_present(argv, "--set", "connection_strategy=lazy"), argv
+
+
+def test_mitmdump_start_passes_egress_hardening_flags(
+    cassette_root: Any,
+    session_dir_with_cassette: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real ``_MitmProxyDriver.start`` MUST pass the hardening flags to Popen."""
+    captured: dict[str, list[str]] = {}
+
+    class _FakeProc:
+        pid = 4321
+
+        def poll(self) -> None:
+            return None
+
+    def _fake_popen(cmd: list[str], **_kwargs: Any) -> _FakeProc:
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(harness_mod.shutil, "which", lambda _name: "/usr/bin/mitmdump")
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", _fake_popen)
+
+    ca = generate_ca(
+        session_id=session_dir_with_cassette.name,
+        session_dir=session_dir_with_cassette,
+        cassette_root=cassette_root,
+    )
+    server = CassetteServer(session_dir_with_cassette)
+    driver = _MitmProxyDriver()
+    driver.start(port=12345, ca=ca, server=server)
+
+    cmd = captured["cmd"]
+    assert _flag_pair_present(cmd, "--set", "upstream_cert=false"), cmd
+    assert _flag_pair_present(cmd, "--set", "connection_strategy=lazy"), cmd
