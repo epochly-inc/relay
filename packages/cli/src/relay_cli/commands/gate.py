@@ -572,7 +572,17 @@ def _flush_backoff_log(entries: list[dict[str, int]]) -> None:
     try:
         fd = os.open(path, flags, 0o600)
         try:
-            os.write(fd, payload)
+            # os.write may write FEWER bytes than requested (a short write);
+            # loop until the whole batch is flushed so a JSONL line is never left
+            # truncated. O_APPEND keeps each write atomic at end-of-file, so the
+            # successive writes still land contiguously and in order.
+            view = memoryview(payload)
+            written = 0
+            while written < len(view):
+                n = os.write(fd, view[written:])
+                if n <= 0:
+                    break
+                written += n
         finally:
             os.close(fd)
     except OSError:

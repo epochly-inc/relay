@@ -103,12 +103,17 @@ const KNOWN_ACTIONS: ReadonlySet<string> = new Set(["redact", "hash", "drop"]);
 //       with code ``RELAY-SDK-017`` and ``details.reason == "redos_pattern"``.
 //
 //   (2) An input-length CLAMP: a leaf longer than ``MAX_REDACTION_LEAF_LENGTH``
-//       UTF-16 code units is truncated to the cap before matching, with the
-//       removed tail replaced by ``REDACTION_TRUNCATION_MARKER``. This bounds
-//       total matcher work even for linear-but-slow patterns over very large
-//       inputs (and keeps raw plaintext beyond the cap from ever crossing the
-//       wire). Trace leaves are bounded in practice; payloads larger than the
-//       cap are a denial-of-service vector, not a legitimate redaction target.
+//       Unicode CODE POINTS (NOT UTF-16 code units -- matching the Python SDK's
+//       ``len(value)`` / ``value[:N]`` so the clamp boundary is byte-identical
+//       cross-runtime for supplementary-plane leaves; F8) is truncated to the cap
+//       before matching, with the removed tail replaced by
+//       ``REDACTION_TRUNCATION_MARKER``. This bounds total matcher work even for
+//       linear-but-slow patterns over very large inputs (and keeps raw plaintext
+//       beyond the cap from ever crossing the wire); the clamp walks the code-
+//       point iterator only up to the cap, so its own allocation is O(cap) and it
+//       does not re-introduce an unbounded copy of the oversized leaf. Trace
+//       leaves are bounded in practice; payloads larger than the cap are a
+//       denial-of-service vector, not a legitimate redaction target.
 //
 // BOTH constants and the marker are identical on the Python SDK
 // (``relay.redaction.MAX_REDACTION_LEAF_LENGTH`` /
@@ -1744,14 +1749,29 @@ export class RedactionEngine {
     // WITHIN it in code points -- Python would not clamp it but a UTF-16 clamp
     // would, AND `slice` on code units can split a surrogate pair into a lone
     // surrogate. Clamp by CODE POINTS to match Python exactly and never split a
-    // surrogate (F8 parity fix, keystone #16). The code-point materialisation
-    // only runs on the rare over-(code-unit)-cap path; since code points <= code
-    // units always, a leaf within the code-unit cap is also within the code-point
-    // cap, so the common path skips it.
+    // surrogate (F8 parity fix, keystone #16).
+    //
+    // The cheap `value.length > cap` gate runs first: code points <= code units
+    // always, so a leaf within the code-unit cap is also within the code-point
+    // cap and the common path skips the rest. On the over-(code-unit)-cap path we
+    // walk the code-point ITERATOR up to at most `cap + 1` code points and STOP --
+    // we never materialise the whole (attacker-controlled) leaf into an array, so
+    // the size-clamp's memory bound is O(cap), not O(leaf) (roborev 3da28d3: the
+    // clamp exists to bound work on huge inputs; a full Array.from would have
+    // re-introduced the unbounded allocation it defends against).
     if (leaf.length > MAX_REDACTION_LEAF_LENGTH) {
-      const codePoints = Array.from(leaf);
-      if (codePoints.length > MAX_REDACTION_LEAF_LENGTH) {
-        leaf = codePoints.slice(0, MAX_REDACTION_LEAF_LENGTH).join("");
+      const kept: string[] = [];
+      let exceeded = false;
+      for (const cp of leaf) {
+        if (kept.length >= MAX_REDACTION_LEAF_LENGTH) {
+          // A (cap+1)th code point exists -> the leaf is over the code-point cap.
+          exceeded = true;
+          break;
+        }
+        kept.push(cp);
+      }
+      if (exceeded) {
+        leaf = kept.join("");
         truncated = true;
       }
     }

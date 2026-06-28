@@ -510,6 +510,33 @@ def test_f9_backoff_log_uses_atomic_append_not_truncating_open(
     gate_mod._flush_backoff_log([])
     assert log.read_text().count("\n") == 3
 
+    # Pin the IMPLEMENTATION (not just behaviour): the write MUST go through
+    # os.open with O_WRONLY|O_APPEND|O_CREAT and os.write -- a regression to a
+    # buffered ``open(path, "a")`` (which this test's behavioural assertions alone
+    # would NOT catch) must fail here (roborev 047f6d8).
+    captured_flags: list[int] = []
+    real_open = gate_mod.os.open
+    wrote: list[int] = []
+    real_write = gate_mod.os.write
+
+    def _spy_open(p: object, fl: int, *a: object) -> int:
+        captured_flags.append(fl)
+        return real_open(p, fl, *a)  # type: ignore[arg-type]
+
+    def _spy_write(fd: int, data: object) -> int:
+        wrote.append(len(data))  # type: ignore[arg-type]
+        return real_write(fd, data)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(gate_mod.os, "open", _spy_open)
+    monkeypatch.setattr(gate_mod.os, "write", _spy_write)
+    gate_mod._flush_backoff_log([{"backoff_ms": 8000}])
+    assert len(captured_flags) == 1, captured_flags
+    fl = captured_flags[0]
+    assert fl & gate_mod.os.O_WRONLY, fl
+    assert fl & gate_mod.os.O_APPEND, fl
+    assert fl & gate_mod.os.O_CREAT, fl
+    assert wrote and wrote[0] > 0, wrote
+
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M07-016")
