@@ -770,16 +770,37 @@ const _PRIVATE_IPV6_EXCEPTIONS: ReadonlyArray<{
   return { first: r.first, last: r.last };
 });
 
-// The 2001::/23 IETF protocol-assignments PRIVATE block as a {first,last} range.
-// A CIDR allowlist entry is denied for OVERLAPPING the PRIVATE portion of
-// 2001::/23, but an entry FULLY CONTAINED in a global exception
-// (_PRIVATE_IPV6_EXCEPTIONS) is NOT over-blocked -- it is global space the
-// single-host path also allows. Mirrors network_policy._IPV6_2001_23_NETWORK.
-const _IPV6_2001_23: { first: bigint; last: bigint } = (() => {
-  const r = _cidrToRange("2001::/23");
+// The PRIVATE REMAINDER of 2001::/23: the supernet minus the union of all global
+// carve-out exceptions, as a sorted list of {first,last} bigint intervals. A CIDR
+// allowlist entry is denied ONLY when it overlaps one of these PRIVATE intervals;
+// an entry fully inside the global portion -- one exception (2001:20::/28) OR a
+// span of ADJACENT exceptions (2001:20::/27 == 2001:20::/28 + 2001:30::/28) --
+// hits no private interval and is allowed (global space the single-host path also
+// allows). Same interval-subtraction algorithm as
+// network_policy._private_remainder so both SDKs deny EXACTLY the same CIDRs.
+const _IPV6_2001_23_PRIVATE_REMAINDER: ReadonlyArray<{
+  first: bigint;
+  last: bigint;
+}> = (() => {
+  const sup = _cidrToRange("2001::/23");
   /* c8 ignore next */
-  if (r === null) throw new Error("bad 2001::/23 literal");
-  return { first: r.first, last: r.last };
+  if (sup === null) throw new Error("bad 2001::/23 literal");
+  // Sweep the exceptions in address order, accumulating the gaps; adjacent or
+  // overlapping exceptions merge via the cursor max so a CIDR spanning two
+  // touching exception blocks leaves no spurious private sliver.
+  const excs = _PRIVATE_IPV6_EXCEPTIONS.map((e) => ({
+    first: e.first,
+    last: e.last,
+  })).sort((a, b) => (a.first < b.first ? -1 : a.first > b.first ? 1 : 0));
+  const remainder: Array<{ first: bigint; last: bigint }> = [];
+  let cursor = sup.first;
+  for (const e of excs) {
+    if (e.first > cursor) remainder.push({ first: cursor, last: e.first - 1n });
+    const next = e.last + 1n;
+    if (next > cursor) cursor = next;
+  }
+  if (cursor <= sup.last) remainder.push({ first: cursor, last: sup.last });
+  return remainder;
 })();
 
 /** CPython ``IPv6Address.is_private`` for a native IPv6 integer: in ANY
@@ -833,20 +854,18 @@ function _classify(host: string): readonly [string, string] | null {
       }
     }
     // 2001::/23 with EXCEPTION-awareness (mirrors network_policy.py): deny a CIDR
-    // overlapping 2001::/23 UNLESS it is fully contained in a global exception
-    // block (then it is all-global space the single-host path also allows -- no
-    // over-block). A CIDR that straddles private + exception space (e.g.
-    // 2001:3::1/31, spanning private 2001:2::/48 and exception 2001:3::/32) is
+    // ONLY when it overlaps the PRIVATE REMAINDER of 2001::/23 (the supernet minus
+    // the union of all global exceptions). A CIDR fully inside the global portion
+    // -- one exception (2001:20::/28) OR a span of adjacent exceptions
+    // (2001:20::/27) -- hits no private interval and is allowed; a CIDR straddling
+    // private + exception space (2001:3::1/31) hits a private interval and is
     // denied.
-    if (
-      range.v === 6 &&
-      range.first <= _IPV6_2001_23.last &&
-      _IPV6_2001_23.first <= range.last
-    ) {
-      const inException = _PRIVATE_IPV6_EXCEPTIONS.some(
-        (exc) => range.first >= exc.first && range.last <= exc.last,
-      );
-      if (!inException) return ["rfc1918", "2001::/23"];
+    if (range.v === 6) {
+      for (const r of _IPV6_2001_23_PRIVATE_REMAINDER) {
+        if (range.first <= r.last && r.first <= range.last) {
+          return ["rfc1918", "2001::/23"];
+        }
+      }
     }
     return null;
   }

@@ -185,6 +185,16 @@ describe("F6: native-IPv6 is_private egress parity with CPython", () => {
         why: "a /128 inside the global exception 2001:20::/28",
       },
       {
+        entry: "2001:20::/27",
+        expected: null,
+        why: "spans ADJACENT exceptions 2001:20::/28 + 2001:30::/28 (all global, no private gap)",
+      },
+      {
+        entry: "2001:20::/26",
+        expected: { reason: "rfc1918", cidr: "2001::/23" },
+        why: "broader than the merged exceptions -> reaches private 2001:40:: remainder",
+      },
+      {
         entry: "2606:4700::/32",
         expected: null,
         why: "a public global-unicast CIDR overlaps no denied supernet",

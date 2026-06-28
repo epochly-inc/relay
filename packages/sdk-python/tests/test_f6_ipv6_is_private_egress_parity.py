@@ -114,16 +114,23 @@ _CIDR_DENY: tuple[tuple[str, str, str], ...] = (
     # /31 straddles private 2001:2::/48 and the 2001:3::/32 global exception ->
     # denied (the private portion is reachable).
     ("2001:3::1/31", "rfc1918", "2001::/23"),
+    # /26 is broader than the merged 2001:20::/28 + 2001:30::/28 exceptions, so it
+    # reaches the private 2001:40:: remainder -> denied.
+    ("2001:20::/26", "rfc1918", "2001::/23"),
 )
 
-# EXCEPTION-aware: a CIDR FULLY CONTAINED in a 2001::/23 global carve-out is NOT
-# over-blocked (it is all-global space the single-host path also allows). Plus a
-# public global-unicast CIDR as a control.
+# EXCEPTION-aware: a CIDR FULLY CONTAINED in the GLOBAL portion of 2001::/23 is
+# NOT over-blocked (it is all-global space the single-host path also allows) --
+# whether it is one exception OR a span of ADJACENT exceptions. Plus a public
+# global-unicast CIDR as a control.
 _CIDR_ALLOW: tuple[str, ...] = (
     "2001:20::/28",  # the whole ORCHIDv2 exception block
     "2001:3::/32",  # the whole AMT exception block
     "2001:20::1/128",  # a /128 inside the exception
     "2001:30::/28",  # another exception block
+    # the union of the ADJACENT 2001:20::/28 + 2001:30::/28 exceptions, all global
+    # (the interval-subtraction remainder leaves NO private sliver between them).
+    "2001:20::/27",
     "2606:4700::/32",  # public global-unicast
 )
 

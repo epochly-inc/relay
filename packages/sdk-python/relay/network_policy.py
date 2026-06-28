@@ -126,10 +126,15 @@ _DENIED_SUPERNETS: Final[
 # EXCEPTIONS (CPython _private_networks_exceptions: the sub-blocks that are
 # is_private == False / is_global == True even though they sit inside 2001::/23).
 # A CIDR allowlist entry is denied for OVERLAPPING the PRIVATE portion of
-# 2001::/23, but an entry FULLY CONTAINED in a global exception (e.g. the whole
-# 2001:20::/28 ORCHIDv2 block, or 2001:3::/32 AMT) is NOT over-blocked -- it is
-# global address space the single-host path also allows. Mirrored byte-for-byte
-# in run.ts (_IPV6_2001_23_NETWORK / _IPV6_2001_23_EXCEPTIONS).
+# 2001::/23, but an entry FULLY CONTAINED in the GLOBAL portion (any one
+# exception OR a CIDR spanning ADJACENT exceptions, e.g. 2001:20::/27 == the
+# union of 2001:20::/28 + 2001:30::/28) is NOT over-blocked -- it is global
+# address space the single-host path also allows. To get that exactly right we
+# precompute the PRIVATE REMAINDER of 2001::/23 (the supernet minus the union of
+# all exceptions) as a sorted list of [first, last] integer intervals and deny a
+# CIDR only when it overlaps one of those private intervals. Mirrored byte-for-
+# byte in run.ts (_IPV6_2001_23 / _PRIVATE_IPV6_EXCEPTIONS /
+# _IPV6_2001_23_PRIVATE_REMAINDER -- same interval-subtraction algorithm).
 _IPV6_2001_23_NETWORK: Final[ipaddress.IPv6Network] = ipaddress.IPv6Network(
     "2001::/23"
 )
@@ -143,6 +148,39 @@ _IPV6_2001_23_EXCEPTIONS: Final[tuple[ipaddress.IPv6Network, ...]] = tuple(
         "2001:20::/28",
         "2001:30::/28",
     )
+)
+
+
+def _private_remainder(
+    supernet: ipaddress.IPv6Network,
+    exceptions: tuple[ipaddress.IPv6Network, ...],
+) -> tuple[tuple[int, int], ...]:
+    """The half-open-free [first, last] integer intervals of ``supernet`` that are
+    NOT covered by any exception (the PRIVATE remainder).
+
+    Sweeps the exceptions in address order, accumulating gaps; ADJACENT or
+    overlapping exceptions merge via ``max(cursor, e_last + 1)`` so a CIDR
+    spanning two touching exception blocks leaves no spurious private sliver.
+    Deterministic and side-effect free -- the TS mirror runs the identical
+    algorithm so both SDKs deny exactly the same CIDRs."""
+    first = int(supernet.network_address)
+    last = int(supernet.broadcast_address)
+    excs = sorted(
+        (int(e.network_address), int(e.broadcast_address)) for e in exceptions
+    )
+    remainder: list[tuple[int, int]] = []
+    cursor = first
+    for e_first, e_last in excs:
+        if e_first > cursor:
+            remainder.append((cursor, e_first - 1))
+        cursor = max(cursor, e_last + 1)
+    if cursor <= last:
+        remainder.append((cursor, last))
+    return tuple(remainder)
+
+
+_IPV6_2001_23_PRIVATE_REMAINDER: Final[tuple[tuple[int, int], ...]] = (
+    _private_remainder(_IPV6_2001_23_NETWORK, _IPV6_2001_23_EXCEPTIONS)
 )
 
 # Link-local IPv4 range.
@@ -415,18 +453,18 @@ def _classify(host: str) -> tuple[str, str] | None:
             if isinstance(net, type(denied)) and net.overlaps(denied):
                 return ("rfc1918", str(denied))
         # 2001::/23 with EXCEPTION-awareness (it has global carve-outs, unlike
-        # the flat supernets above): deny a CIDR overlapping 2001::/23 UNLESS the
-        # CIDR is fully contained in a global exception block (then it is all
-        # global address space the single-host path also allows -- no over-block).
-        # A CIDR that straddles private + exception space (e.g. 2001:3::1/31,
-        # which spans private 2001:2::/48 and exception 2001:3::/32) is denied.
-        if isinstance(net, ipaddress.IPv6Network) and net.overlaps(
-            _IPV6_2001_23_NETWORK
-        ):
-            if not any(
-                net.subnet_of(exc) for exc in _IPV6_2001_23_EXCEPTIONS
-            ):
-                return ("rfc1918", "2001::/23")
+        # the flat supernets above): deny a CIDR ONLY when it overlaps the PRIVATE
+        # remainder of 2001::/23 (the supernet minus the union of all global
+        # exceptions). A CIDR fully inside the global portion -- one exception
+        # (2001:20::/28) OR a span of adjacent exceptions (2001:20::/27) -- hits
+        # no private interval and is ALLOWED; a CIDR straddling private +
+        # exception space (2001:3::1/31) hits a private interval and is denied.
+        if isinstance(net, ipaddress.IPv6Network):
+            n_first = int(net.network_address)
+            n_last = int(net.broadcast_address)
+            for r_first, r_last in _IPV6_2001_23_PRIVATE_REMAINDER:
+                if n_first <= r_last and r_first <= n_last:
+                    return ("rfc1918", "2001::/23")
         return None
     # IPv4 / IPv6 range checks.
     try:
