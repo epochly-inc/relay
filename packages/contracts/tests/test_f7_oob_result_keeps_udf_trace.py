@@ -125,6 +125,41 @@ def test_oob_result_udf_outputs_jcs_is_byte_stable() -> None:
 
 
 @pytest.mark.plumbing
+def test_engine_error_after_udf_does_not_carry_trace() -> None:
+    """An ok:FALSE ENGINE error after a UDF ran must NOT carry the trace --
+    udf_outputs_jcs stays "{}" (byte-identical to the TS host).
+
+    The wasm crate attaches a PARTIAL udf_trace to an ok:false engine-error
+    envelope (forensic-only; lib.rs udf_trace_drain on the error path) when a
+    relay.* UDF ran before the error. The TS host (evaluateUdfOutputs) THROWS on
+    a non-ok envelope BEFORE extracting that trace, so the host udf_outputs_jcs
+    for an engine error must stay empty on BOTH runtimes (keystone #16). This is
+    the discriminator between an ok:true post-success host-guard rejection (carry
+    the real trace) and an ok:false engine error (do NOT carry).
+
+    relay.tool_arg runs first (recording a trace entry), then `1 / 0` forces a
+    runtime division-by-zero EXEC error (ok:false, RELAY-CEL-009); `+` evaluates
+    both operands so the UDF is NOT short-circuited (mirrors the crate test
+    udf_trace_attached_on_error_envelope).
+
+    Pre-gate RED: udf_outputs_jcs == '{"relay.tool_arg":[{"t":"string","v":"v"}]}'
+    and udfs_invoked == ['relay.tool_arg'] (the engine-error trace leaked)."""
+    expression = "size(relay.tool_arg(call, 'k')) + (1 / 0) == 0"
+    parsed = parse_contract(_doc(expression))
+
+    envelope = evaluate_assertion(
+        parsed, bindings={"call": {"args": {"k": "v"}}}, extra_udfs=RELAY_UDFS
+    )
+
+    # Runtime engine error -> outcome error.
+    assert envelope["outcome"] == "error", envelope["outcome"]
+    # The partial engine-error trace is NOT surfaced as udf_outputs (matches TS,
+    # which throws before reconstructing it).
+    assert envelope["udfs_invoked"] == [], envelope["udfs_invoked"]
+    assert envelope["udf_outputs_jcs"] == "{}", envelope["udf_outputs_jcs"]
+
+
+@pytest.mark.plumbing
 def test_short_circuited_oob_udf_is_not_recorded() -> None:
     """A relay.* call in a SHORT-CIRCUITED branch is NOT recorded even when the
     taken branch is itself out-of-safe-range.

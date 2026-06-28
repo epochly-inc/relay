@@ -708,29 +708,39 @@ class WasmCelEvaluator:
             self._quarantine_thread_handle()
             raise
 
-        # Extract the udf_trace from the SUCCESS envelope BEFORE the host
-        # finiteness guard runs (locked cross-host contract; keystone #16). The
-        # udf_trace is forensic evidence that the relay.* UDFs genuinely RAN; a
-        # host-side finiteness / safe-integer rejection (RELAY-CEL-006) of the
-        # DECODED result value does not erase that evidence. The crate attaches
-        # udf_trace ONLY on an {"ok": true} envelope, so on a non-ok (profile /
-        # engine / timeout) envelope this is the empty dict and the decode below
-        # raises the structured error carrying that empty trace (a no-op). The TS
-        # host (pipeline.ts evaluateUdfOutputs) emits the trace from the SAME
-        # ok:true envelope WITHOUT running its finiteness guard, so both hosts
-        # reconstruct byte-identical udf_outputs_jcs for a finiteness-failing
-        # result -- only the outcome differs (error on both, computed downstream).
-        udf_trace = self._extract_udf_trace(envelope)
+        # Extract the udf_trace from a SUCCESS ({"ok": true}) envelope BEFORE the
+        # host finiteness guard runs (locked cross-host contract; keystone #16).
+        # On an ok:true envelope the udf_trace is forensic evidence that the
+        # relay.* UDFs genuinely RAN, and a host-side finiteness / safe-integer
+        # rejection (RELAY-CEL-006) of the DECODED result value does not erase it
+        # -- the TS host (contracts-typescript pipeline.ts evaluateUdfOutputs)
+        # emits the trace from that SAME ok:true envelope WITHOUT running a
+        # finiteness guard, so both hosts reconstruct byte-identical
+        # udf_outputs_jcs for a finiteness-failing result (only the outcome
+        # differs: error on both, computed downstream).
+        #
+        # CRITICAL (gate on ok:true): the wasm crate ALSO attaches a PARTIAL
+        # udf_trace to an {"ok": false} ENGINE-error envelope when a relay.* UDF
+        # ran before the error (lib.rs udf_trace_drain on the error path;
+        # "treat udf_trace on an error envelope as forensic-only"). The TS host
+        # THROWS on a non-ok envelope BEFORE reaching extractUdfTrace, so it never
+        # reconstructs that partial trace. Extracting + carrying it here would
+        # make the Python host emit a NON-EMPTY udf_outputs_jcs for an engine
+        # error while TS emits none -- a cross-host digest divergence (keystone
+        # #16). So we extract the trace ONLY for an ok:true envelope; an
+        # engine-error envelope leaves udf_trace as the empty dict, matching TS
+        # (and matching the pre-F7 behavior for engine errors).
+        is_ok_envelope = isinstance(envelope, dict) and envelope.get("ok") is True
+        udf_trace = self._extract_udf_trace(envelope) if is_ok_envelope else {}
         try:
             value = self._decode_envelope(envelope)
         except RelayCelError as exc:
-            # A POST-success host-guard rejection (the RELAY-CEL-006 finiteness /
-            # safe-integer guard inside _decode_envelope) of the result value
-            # still leaves udf_trace as real cross-runtime evidence -- the UDFs
-            # ran. Carry the already-extracted trace on the exception so the
-            # pipeline records byte-identical udf_outputs while the outcome stays
-            # error. For a non-ok envelope udf_trace is {} (the crate omits it),
-            # so this attaches an empty trace and the behavior is unchanged.
+            # ok:true + a POST-success host-guard rejection (the RELAY-CEL-006
+            # finiteness / safe-integer guard inside _decode_envelope) -> carry
+            # the real trace so the pipeline records byte-identical udf_outputs
+            # while the outcome stays error. ok:false ENGINE error -> udf_trace is
+            # the empty dict (gated out above), so this attaches {} and the
+            # engine-error udf_outputs stays empty, identical to the TS host.
             exc.udf_trace = udf_trace
             raise
         return value, udf_trace
