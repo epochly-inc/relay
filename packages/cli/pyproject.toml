@@ -24,7 +24,13 @@ name = "epochly-relay-cli"
 version = "0.1.20"
 description = "Relay CLI (rly): Apache 2.0 control surface for the Relay agent reliability OS."
 readme = "README.md"
-requires-python = ">=3.12"
+# >=3.12.4 (not >=3.12): the CLI hard-depends on `epochly-relay` (the SDK), which
+# pins >=3.12.4 because its egress SSRF guard's is_private classification is only
+# correct on the CVE-2024-4032-patched CPython. A pip/uv install of the CLI on
+# 3.12.0-3.12.3 would already fail to resolve that transitive dep; declaring the
+# floor here makes the metadata honest instead of advertising a lower floor than
+# the dependency graph supports.
+requires-python = ">=3.12.4"
 license = { text = "Apache-2.0" }
 authors = [
   { name = "Epochly, Inc.", email = "engineering@epochly.com" },

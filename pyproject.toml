@@ -14,7 +14,13 @@
 name = "epochly-relay-workspace"
 version = "0.0.0"
 description = "Relay v0.1 OSS workspace root (not published)."
-requires-python = ">=3.12"
+# >=3.12.4 (not >=3.12): the workspace member packages/sdk-python pins
+# requires-python = ">=3.12.4" (its egress SSRF guard's is_private classification
+# is only correct on the CVE-2024-4032-patched CPython), so the workspace lock's
+# resolved floor is >=3.12.4. Keep this root declaration consistent with the lock
+# and the transitive dependency graph. Independent leaf packages (schemas, acef,
+# contracts, ...) that do NOT depend on sdk-python keep their own >=3.12 floor.
+requires-python = ">=3.12.4"
 
 [project.optional-dependencies]
 # Documentation site dependencies (m4-f04, VAL-DOCS-M4-004).
