@@ -637,20 +637,16 @@ const _DENIED_SUPERNETS: ReadonlyArray<{
     "fe80::/10",
     "ff00::/8",
     "2001:db8::/32",
-    // IETF special-registry PRIVATE blocks that single-host _classifyIpv6 denies
-    // via _ipv6IsPrivate (2001::/23 protocol-assignments, 3fff::/20 RFC 9637
-    // documentation, 64:ff9b:1::/48 NAT64 local-use). Without these the OVERLAP
-    // check admitted a BROAD CIDR whose network address is public but whose range
-    // CONTAINS the private block -- e.g. 3fff:ffff::1/16 (the /16 spans 3fff::/20)
-    // or 2001:2::/31 (spans private 2001:2::/48) -- an SSRF gap and an
-    // inconsistency with the single-host deny. CONSERVATIVE over-block: a CIDR
-    // overlapping the global carve-out EXCEPTIONS inside 2001::/23 (2001:20::/28
-    // etc.) is also denied here (overlap, not the exception-aware single-host
-    // is_private); the bare exception HOST stays allowed via _ipv6IsPrivate.
-    // Byte-for-byte mirror of the Python network_policy._DENIED_SUPERNETS entries
-    // (str(ip_network(c)) renders each identically: "2001::/23", "3fff::/20",
-    // "64:ff9b:1::/48").
-    "2001::/23",
+    // IETF special-registry PRIVATE blocks (no global carve-out exceptions) that
+    // single-host _classifyIpv6 denies via _ipv6IsPrivate: 3fff::/20 (RFC 9637
+    // documentation) and 64:ff9b:1::/48 (NAT64 local-use). Without these the
+    // OVERLAP check admitted a BROAD CIDR whose network address is public but
+    // whose range CONTAINS the private block -- e.g. 3fff:ffff::1/16 (the /16
+    // spans 3fff::/20) -- an SSRF gap and an inconsistency with the single-host
+    // deny. 2001::/23 is handled SEPARATELY below (it HAS global carve-out
+    // exceptions) so an all-global exception CIDR is not over-blocked. Byte-for-
+    // byte mirror of the Python network_policy._DENIED_SUPERNETS entries
+    // (str(ip_network(c)) renders each: "3fff::/20", "64:ff9b:1::/48").
     "3fff::/20",
     "64:ff9b:1::/48",
     // IPv4-in-IPv6 transition prefixes: a broad CIDR over IPv4-mapped
@@ -774,6 +770,18 @@ const _PRIVATE_IPV6_EXCEPTIONS: ReadonlyArray<{
   return { first: r.first, last: r.last };
 });
 
+// The 2001::/23 IETF protocol-assignments PRIVATE block as a {first,last} range.
+// A CIDR allowlist entry is denied for OVERLAPPING the PRIVATE portion of
+// 2001::/23, but an entry FULLY CONTAINED in a global exception
+// (_PRIVATE_IPV6_EXCEPTIONS) is NOT over-blocked -- it is global space the
+// single-host path also allows. Mirrors network_policy._IPV6_2001_23_NETWORK.
+const _IPV6_2001_23: { first: bigint; last: bigint } = (() => {
+  const r = _cidrToRange("2001::/23");
+  /* c8 ignore next */
+  if (r === null) throw new Error("bad 2001::/23 literal");
+  return { first: r.first, last: r.last };
+})();
+
 /** CPython ``IPv6Address.is_private`` for a native IPv6 integer: in ANY
  * _PRIVATE_IPV6_NETWORKS block AND in NO _PRIVATE_IPV6_EXCEPTIONS block. */
 function _ipv6IsPrivate(value: bigint): boolean {
@@ -823,6 +831,22 @@ function _classify(host: string): readonly [string, string] | null {
       if (d.v === range.v && range.first <= d.last && d.first <= range.last) {
         return ["rfc1918", d.cidr];
       }
+    }
+    // 2001::/23 with EXCEPTION-awareness (mirrors network_policy.py): deny a CIDR
+    // overlapping 2001::/23 UNLESS it is fully contained in a global exception
+    // block (then it is all-global space the single-host path also allows -- no
+    // over-block). A CIDR that straddles private + exception space (e.g.
+    // 2001:3::1/31, spanning private 2001:2::/48 and exception 2001:3::/32) is
+    // denied.
+    if (
+      range.v === 6 &&
+      range.first <= _IPV6_2001_23.last &&
+      _IPV6_2001_23.first <= range.last
+    ) {
+      const inException = _PRIVATE_IPV6_EXCEPTIONS.some(
+        (exc) => range.first >= exc.first && range.last <= exc.last,
+      );
+      if (!inException) return ["rfc1918", "2001::/23"];
     }
     return null;
   }

@@ -95,18 +95,15 @@ _DENIED_SUPERNETS: Final[
         "fe80::/10",
         "ff00::/8",
         "2001:db8::/32",
-        # IETF special-registry PRIVATE blocks that the single-host IPv6 path
-        # denies via ip.is_private (2001::/23 protocol-assignments, 3fff::/20
-        # RFC 9637 documentation, 64:ff9b:1::/48 NAT64 local-use). Without these
+        # IETF special-registry PRIVATE blocks (no global carve-out exceptions)
+        # that the single-host IPv6 path denies via ip.is_private: 3fff::/20 (RFC
+        # 9637 documentation) and 64:ff9b:1::/48 (NAT64 local-use). Without these
         # the OVERLAP check admitted a BROAD CIDR whose network address is public
         # but whose range CONTAINS the private block -- e.g. 3fff:ffff::1/16 (the
-        # /16 spans 3fff::/20) or 2001:2::/31 (spans private 2001:2::/48) -- an
-        # SSRF gap and an inconsistency with the single-host deny. CONSERVATIVE
-        # over-block: a CIDR overlapping the global carve-out EXCEPTIONS inside
-        # 2001::/23 (2001:20::/28 etc.) is also denied here (overlap, not the
-        # exception-aware single-host is_private); the bare exception HOST stays
-        # allowed via the single-host path. Mirrored byte-for-byte in run.ts.
-        "2001::/23",
+        # /16 spans 3fff::/20) -- an SSRF gap and an inconsistency with the
+        # single-host deny. 2001::/23 is handled SEPARATELY (it HAS global
+        # carve-out exceptions; see _classify) so an all-global exception CIDR is
+        # not over-blocked. Mirrored byte-for-byte in run.ts.
         "3fff::/20",
         "64:ff9b:1::/48",
         # IPv4-in-IPv6 TRANSITION prefixes: a broad CIDR over the IPv4-mapped
@@ -122,6 +119,29 @@ _DENIED_SUPERNETS: Final[
         "2002::/16",
         "64:ff9b::/96",
         "::/96",
+    )
+)
+
+# The 2001::/23 IETF protocol-assignments PRIVATE block and its global carve-out
+# EXCEPTIONS (CPython _private_networks_exceptions: the sub-blocks that are
+# is_private == False / is_global == True even though they sit inside 2001::/23).
+# A CIDR allowlist entry is denied for OVERLAPPING the PRIVATE portion of
+# 2001::/23, but an entry FULLY CONTAINED in a global exception (e.g. the whole
+# 2001:20::/28 ORCHIDv2 block, or 2001:3::/32 AMT) is NOT over-blocked -- it is
+# global address space the single-host path also allows. Mirrored byte-for-byte
+# in run.ts (_IPV6_2001_23_NETWORK / _IPV6_2001_23_EXCEPTIONS).
+_IPV6_2001_23_NETWORK: Final[ipaddress.IPv6Network] = ipaddress.IPv6Network(
+    "2001::/23"
+)
+_IPV6_2001_23_EXCEPTIONS: Final[tuple[ipaddress.IPv6Network, ...]] = tuple(
+    ipaddress.IPv6Network(c)
+    for c in (
+        "2001:1::1/128",
+        "2001:1::2/128",
+        "2001:3::/32",
+        "2001:4:112::/48",
+        "2001:20::/28",
+        "2001:30::/28",
     )
 )
 
@@ -394,6 +414,19 @@ def _classify(host: str) -> tuple[str, str] | None:
         for denied in _DENIED_SUPERNETS:
             if isinstance(net, type(denied)) and net.overlaps(denied):
                 return ("rfc1918", str(denied))
+        # 2001::/23 with EXCEPTION-awareness (it has global carve-outs, unlike
+        # the flat supernets above): deny a CIDR overlapping 2001::/23 UNLESS the
+        # CIDR is fully contained in a global exception block (then it is all
+        # global address space the single-host path also allows -- no over-block).
+        # A CIDR that straddles private + exception space (e.g. 2001:3::1/31,
+        # which spans private 2001:2::/48 and exception 2001:3::/32) is denied.
+        if isinstance(net, ipaddress.IPv6Network) and net.overlaps(
+            _IPV6_2001_23_NETWORK
+        ):
+            if not any(
+                net.subnet_of(exc) for exc in _IPV6_2001_23_EXCEPTIONS
+            ):
+                return ("rfc1918", "2001::/23")
         return None
     # IPv4 / IPv6 range checks.
     try:

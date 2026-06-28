@@ -144,14 +144,13 @@ describe("F6: native-IPv6 is_private egress parity with CPython", () => {
     });
   });
 
-  // CIDR-OVERLAP path (run.ts _classify "/" branch -> _DENIED_SUPERNETS). A
-  // BROAD CIDR whose literal network address is public but whose range CONTAINS
-  // a new private block was admitted before the _DENIED_SUPERNETS extension --
-  // an SSRF gap and an inconsistency with the single-host deny above. Every
-  // verdict is the verbatim CPython network_policy._classify output (the Python
-  // SDK reference). The bare exception HOST stays allowed (single-host path),
-  // but a CIDR overlapping 2001::/23 is conservatively denied (overlap, not the
-  // exception-aware single-host is_private) -- identical on both runtimes.
+  // CIDR-OVERLAP path (run.ts _classify "/" branch -> _DENIED_SUPERNETS +
+  // exception-aware 2001::/23). A BROAD CIDR whose literal network address is
+  // public but whose range CONTAINS a private block was admitted before the
+  // _DENIED_SUPERNETS extension -- an SSRF gap and an inconsistency with the
+  // single-host deny. A CIDR FULLY CONTAINED in a 2001::/23 global exception
+  // (2001:20::/28 etc.) is NOT over-blocked (it is all-global space). Every
+  // verdict is the verbatim CPython network_policy._classify output.
   describe("CIDR overlap with the new private blocks", () => {
     const CIDR_CASES: ReadonlyArray<{
       entry: string;
@@ -166,12 +165,24 @@ describe("F6: native-IPv6 is_private egress parity with CPython", () => {
       {
         entry: "2001:3::1/31",
         expected: { reason: "rfc1918", cidr: "2001::/23" },
-        why: "the /31 spans private 2001:2::/48 (network addr is a 2001:3::/32 exception)",
+        why: "the /31 straddles private 2001:2::/48 and exception 2001:3::/32 -> denied",
       },
+      // Exception-aware: a CIDR fully inside a 2001::/23 global carve-out is
+      // ALLOWED (not over-blocked) -- it is all-global space.
       {
         entry: "2001:20::/28",
-        expected: { reason: "rfc1918", cidr: "2001::/23" },
-        why: "conservative over-block: an exception CIDR still overlaps 2001::/23",
+        expected: null,
+        why: "the whole CIDR is the global exception 2001:20::/28 (ORCHIDv2)",
+      },
+      {
+        entry: "2001:3::/32",
+        expected: null,
+        why: "the whole CIDR is the global exception 2001:3::/32 (AMT)",
+      },
+      {
+        entry: "2001:20::1/128",
+        expected: null,
+        why: "a /128 inside the global exception 2001:20::/28",
       },
       {
         entry: "2606:4700::/32",

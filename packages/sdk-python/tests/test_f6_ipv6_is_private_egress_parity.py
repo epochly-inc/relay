@@ -24,14 +24,16 @@ NAT64 local-use 64:ff9b:1::/48, so 2001::1 / 2001:2::1 / 2001:10::1 / 3fff::1 /
 64:ff9b:1::1 were ALLOWED by the TS replay allowlist while CPython DENIES them --
 an SSRF default-deny bypass.
 
-Supported-matrix note (CI runs Python 3.12 / 3.13 / 3.14 per CLAUDE.md): although
-is_private tracks a moving definition, the expanded private-networks table used
-here -- the 2001::/23 + 3fff::/20 (RFC 9637) blocks AND the
-_private_networks_exceptions carve-outs -- was BACKPORTED to 3.12.4+, 3.13, and
-3.14 by the CVE-2024-4032 is_private/is_global correctness fix. Verified empirically:
-3.12.10 and 3.14.3 return IDENTICAL is_private for EVERY address below, so these
-assertions hold across the entire supported matrix (the minimum CI 3.12.x is far
-past 3.12.4). The tripwire only fires if a FUTURE CPython mutates the table again.
+Supported-version note: the SSRF guard's correctness on these blocks DEPENDS on
+the CVE-2024-4032 is_private/is_global fix, which added the expanded
+private-networks table -- the 2001::/23 + 3fff::/20 (RFC 9637) blocks AND the
+_private_networks_exceptions carve-outs -- in CPython 3.12.4 (and 3.13, 3.14).
+On 3.12.0-3.12.3 the OLD table is in effect and the Python guard would UNDER-deny
+(a real residual Py<->TS gap), so packages/sdk-python/pyproject.toml pins
+``requires-python = ">=3.12.4"`` -- this guard is only supported where is_private
+is correct. Verified empirically: 3.12.10 and 3.14.3 return IDENTICAL is_private
+for EVERY address below. The tripwire below fires if a FUTURE CPython mutates the
+table again (signalling the run.ts hand-rolled copy must be re-synced).
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -109,10 +111,20 @@ def test_global_ipv6_allowed_no_over_block(host: str) -> None:
 _CIDR_DENY: tuple[tuple[str, str, str], ...] = (
     # /16 range contains private 3fff::/20 (network address public).
     ("3fff:ffff::1/16", "rfc1918", "3fff::/20"),
-    # /31 spans private 2001:2::/48 (network address is a 2001:3::/32 exception).
+    # /31 straddles private 2001:2::/48 and the 2001:3::/32 global exception ->
+    # denied (the private portion is reachable).
     ("2001:3::1/31", "rfc1918", "2001::/23"),
-    # CONSERVATIVE over-block: an exception CIDR still overlaps 2001::/23.
-    ("2001:20::/28", "rfc1918", "2001::/23"),
+)
+
+# EXCEPTION-aware: a CIDR FULLY CONTAINED in a 2001::/23 global carve-out is NOT
+# over-blocked (it is all-global space the single-host path also allows). Plus a
+# public global-unicast CIDR as a control.
+_CIDR_ALLOW: tuple[str, ...] = (
+    "2001:20::/28",  # the whole ORCHIDv2 exception block
+    "2001:3::/32",  # the whole AMT exception block
+    "2001:20::1/128",  # a /128 inside the exception
+    "2001:30::/28",  # another exception block
+    "2606:4700::/32",  # public global-unicast
 )
 
 
@@ -121,8 +133,8 @@ _CIDR_DENY: tuple[tuple[str, str, str], ...] = (
 def test_broad_cidr_overlapping_private_block_denied(
     entry: str, reason: str, cidr: str
 ) -> None:
-    """A broad CIDR overlapping a new private block is denied via the overlap
-    check -- closing the SSRF gap and matching the single-host deny.
+    """A broad CIDR overlapping the PRIVATE portion of a new block is denied via
+    the overlap check -- closing the SSRF gap and matching the single-host deny.
 
     Pre-fix RED: validate_egress_entries returned silently (the overlap list
     lacked 2001::/23 and 3fff::/20)."""
@@ -136,11 +148,13 @@ def test_broad_cidr_overlapping_private_block_denied(
 
 
 @pytest.mark.plumbing
-def test_public_cidr_not_over_blocked() -> None:
-    """A public global-unicast CIDR overlaps no denied supernet -> ALLOWED."""
+@pytest.mark.parametrize("entry", _CIDR_ALLOW)
+def test_exception_or_public_cidr_not_over_blocked(entry: str) -> None:
+    """A CIDR fully inside a 2001::/23 global exception (or a public CIDR) is
+    ALLOWED -- the exception-aware overlap check must NOT over-block it."""
     from relay.network_policy import validate_egress_entries
 
-    validate_egress_entries(["2606:4700::/32"])
+    validate_egress_entries([entry])
 
 
 @pytest.mark.plumbing
