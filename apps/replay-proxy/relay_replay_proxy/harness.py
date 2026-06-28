@@ -74,6 +74,7 @@ from typing import Any, Final
 from .cassette_server import CassetteServer, IncomingRequest
 from .cert_authority import GeneratedCA, generate_ca, remove_ca
 from .errors import (
+    RELAY_REPLAY_CASSETTE_CORRUPT,
     RelayProxyDownError,
     RelayProxyError,
     RelayProxyMissingCassetteError,
@@ -229,13 +230,44 @@ class _InProcDriver(_ProxyDriver):
             ) -> None:  # noqa: A002,A003 - parameter name matches the base override
                 LOG.debug("inproc proxy: " + format, *args)
 
+            def _send_corrupt_block(self) -> None:
+                # Fail-closed 502 for a malformed / non-object request body.
+                block = json.dumps(
+                    {
+                        "code": RELAY_REPLAY_CASSETTE_CORRUPT,
+                        "message": (
+                            "replay proxy: malformed or non-object request "
+                            "body; refusing cassette lookup"
+                        ),
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(block)))
+                self.end_headers()
+                self.wfile.write(block)
+
             def _serve_from_cassette(self) -> None:
                 length = _parse_content_length(self.headers.get("Content-Length"))
                 raw = self.rfile.read(length) if length > 0 else b""
-                try:
-                    body = json.loads(raw.decode("utf-8")) if raw else {}
-                except (json.JSONDecodeError, UnicodeDecodeError):
+                # Fail CLOSED on a non-empty malformed / non-object body
+                # (roborev e93594b): coercing it to {} would let a malformed or
+                # different request HIT an empty-object cassette entry. A
+                # genuinely EMPTY body still maps to {} (legitimate). Mirrors
+                # cassette_server.decide_replay_response (the mitmproxy driver).
+                if not raw:
                     body = {}
+                else:
+                    try:
+                        parsed = json.loads(raw.decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        self._send_corrupt_block()
+                        return
+                    if not isinstance(parsed, dict):
+                        self._send_corrupt_block()
+                        return
+                    body = parsed
                 # Provider / model derivation: prefer explicit headers
                 # set by the SDK adapter shim (X-Relay-Provider,
                 # X-Relay-Model) so a single proxy can disambiguate
