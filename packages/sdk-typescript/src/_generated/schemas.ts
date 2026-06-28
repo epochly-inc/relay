@@ -3072,6 +3072,46 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            /**
+             * @description Manifest version persistence failed (e.g. schema drift /
+             *     integrity error); the manifest was NOT made durable. Canonical
+             *     ErrorEnvelope (RELAY-SIDECAR-010); the concrete failure class
+             *     rides in details.error_class.
+             */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Manifest version persistence could not acquire the SQLite write
+             *     lock within the busy-retry budget (RELAY-SQLITE-001). Canonical
+             *     ErrorEnvelope; retry after the Retry-After window.
+             */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Manifest version persistence hit ENOSPC mid-write; the
+             *     transaction was rolled back (RELAY-SIDECAR-011). Canonical
+             *     ErrorEnvelope. Free disk space and retry.
+             */
+            507: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     getManifestVersion: {

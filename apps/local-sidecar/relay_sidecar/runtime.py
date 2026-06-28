@@ -5375,9 +5375,10 @@ def build_runtime_app(
         # so there is no split-brain in either direction.
         manifest_version_id = f"mv-{uuid.uuid4().hex}"
         db = runtime.database
+        write_result = None
         if db is not None:
             try:
-                await db.transactional_db_write_raw(
+                write_result = await db.transactional_db_write_raw(
                     table="manifest_versions",
                     row={
                         "manifest_version_id": manifest_version_id,
@@ -5392,12 +5393,32 @@ def build_runtime_app(
                     natural_key=commit_hash,
                     natural_key_column="commit_hash",
                 )
-            except RelaySQLiteBusyExhausted:
-                # The dedicated app-level exception handler renders the
-                # canonical RELAY-SQLITE-001 (503) envelope. Re-raise so the
-                # durable-write failure surfaces loudly; nothing is registered
-                # in memory yet, so there is no split-brain.
-                raise
+            except RelaySQLiteBusyExhausted as exc:
+                # SQLITE_BUSY budget exhausted -> registered RELAY-SQLITE-001
+                # (503). We build the CANONICAL ErrorEnvelope here rather than
+                # re-raising to the global RelaySQLiteBusyExhausted handler:
+                # that handler returns ``exc.to_envelope()``, which is NOT a
+                # canonical ErrorEnvelope (it omits schema_version/
+                # blocked_surface/retry_advice/request_id/trace_id and carries
+                # the forbidden ``error_class`` field, which the closed
+                # ErrorEnvelope schema rejects). Nothing is registered in
+                # memory yet, so there is no split-brain.
+                return JSONResponse(
+                    status_code=exc.http_status,
+                    content=_build_error_envelope(
+                        code=exc.code,
+                        http_status=exc.http_status,
+                        message=exc.message,
+                        blocked_surface=_MANIFEST_CREATE_SURFACE,
+                        retry_advice="after_retry_after",
+                        details={
+                            "manifest_id": manifest_id,
+                            "commit_hash": commit_hash,
+                            "attempts": exc.attempts,
+                        },
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                )
             except RelayDiskFullError as exc:
                 # ENOSPC mid-write -> registered RELAY-SIDECAR-011 (507).
                 return JSONResponse(
@@ -5441,6 +5462,29 @@ def build_runtime_app(
                     ),
                     headers=_rate_limit_headers_for(request),
                 )
+
+        # F5 follow-on (orphan manifest_id): the raw writer dedups on
+        # ``commit_hash`` (its natural_key_column), but the manifest_versions
+        # uniqueness constraint is UNIQUE(manifest_id, commit_hash) (migration
+        # 0006) and an auto-generated manifest_id is NOT part of the dedupe key.
+        # On an idempotent re-post -- the same body re-submitted WITHOUT a
+        # manifest_id generates a fresh random manifest_id each time -- the
+        # writer finds the existing commit_hash row and inserts NOTHING for our
+        # freshly-generated manifest_id; returning that id would orphan it (no
+        # durable manifest_versions row). Adopt the EXISTING row's manifest_id
+        # so the returned/registered id ALWAYS resolves to a persisted row.
+        # (When the body DOES carry a manifest_id it is part of commit_hash, so
+        # the existing row's manifest_id equals ours and this is a no-op.)
+        if db is not None and write_result is not None and write_result.idempotent:
+            reader = db.acquire_reader()
+            async with reader.execute(
+                "SELECT manifest_id FROM manifest_versions "
+                "WHERE commit_hash = ? LIMIT 1",
+                (commit_hash,),
+            ) as cur:
+                existing_row = await cur.fetchone()
+            if existing_row is not None:
+                manifest_id = str(existing_row[0])
 
         # Durable row committed (or no DB attached, e.g. pure-asgi unit tests)
         # -> now register the derived in-memory views. Audit fix (2026-05-17
