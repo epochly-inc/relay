@@ -31,6 +31,17 @@
 
 import { createHash } from "node:crypto";
 
+// Wire-stable code for the BMP-only object-key screen. JS strings sort
+// by UTF-16 code unit; Python strings sort by codepoint. For Basic
+// Multilingual Plane keys (< U+10000) these match. For supplementary-
+// plane keys (>= U+10000) they diverge -- the same input produces
+// DIFFERENT canonical bytes between runtimes, silently breaking
+// cross-runtime signature verification (CLAUDE.md keystone invariant
+// #11). Both verifiers fail-closed on supplementary-plane KEYS; values
+// may contain supplementary-plane chars (only keys are sorted). Mirrors
+// @epochly/relay-contracts canonical.ts CANONICAL_NON_BMP_KEY_CODE.
+export const CANONICAL_NON_BMP_KEY_CODE = "RELAY-CANON-NON-BMP-KEY" as const;
+
 // JCSEncodeError mirrors the Python class. TypeScript has no protected
 // distinction between Error subclasses across module boundaries, so the
 // class is exported and consumers branch on `instanceof JCSEncodeError`.
@@ -130,13 +141,39 @@ function encode(value: unknown): string {
   }
   if (t === "object") {
     // RFC 8785 section 3.2.3: keys sorted by UTF-16 code-unit
-    // sequence. JS string `<` operator compares by code unit, which
-    // is exactly the spec's requirement; Object.keys + .sort() with
-    // no comparator implements it.
+    // sequence. JS string `<` compares by code unit, matching the spec
+    // for BMP. For supplementary-plane (>= U+10000) characters JS
+    // compares by surrogate-pair code units while Python sorts by
+    // codepoint -- divergent canonical bytes silently break
+    // cross-runtime signature verification (CLAUDE.md keystone
+    // invariant #11). Fail-closed on supplementary-plane object KEYS
+    // BEFORE sorting. Values may contain supplementary-plane chars;
+    // only keys are screened. Mirrors @epochly/relay-contracts
+    // canonical.ts.
     const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj).slice().sort();
-    const parts: string[] = [];
+    const keys = Object.keys(obj);
     for (const k of keys) {
+      // for...of iterates Unicode codepoints (surrogate pairs collapse
+      // to a single step yielding the full codepoint via codePointAt(0)).
+      for (const ch of k) {
+        const cp = ch.codePointAt(0);
+        if (cp !== undefined && cp >= 0x10000) {
+          throw new JCSEncodeError(
+            CANONICAL_NON_BMP_KEY_CODE +
+              ": non-BMP codepoint U+" +
+              cp.toString(16).toUpperCase().padStart(4, "0") +
+              " in object key " +
+              JSON.stringify(k) +
+              "; supplementary-plane keys produce runtime-divergent " +
+              "canonical bytes and are refused. Re-key the object " +
+              "with BMP-only strings.",
+          );
+        }
+      }
+    }
+    const sortedKeys = keys.slice().sort();
+    const parts: string[] = [];
+    for (const k of sortedKeys) {
       const v = obj[k];
       parts.push(encodeString(k) + ":" + encode(v));
     }

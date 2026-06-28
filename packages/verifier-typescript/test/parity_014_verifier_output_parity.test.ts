@@ -244,24 +244,35 @@ describe("parity-014 claim_namespace_unknown non-ASCII operand bytes match Pytho
     expect(String(tsErr!["message"])).toContain("'x\\u200ba'");
   });
 
-  test("non-BMP U+1F600 in a namespace key: message byte-identical (\\U escape)", () => {
+  test("non-BMP U+1F600 in a namespace key: structured non_canonicalizable_bundle rejection (Py<->TS parity)", () => {
+    // A supplementary-plane object KEY cannot be canonicalised to identical
+    // bytes across runtimes (RFC 8785 sorts object keys by UTF-16 code unit;
+    // Python sorts by code point), so the JCS encoder fails-closed. BOTH
+    // verifiers therefore refuse the bundle with a STRUCTURED
+    // non_canonicalizable_bundle error (keystone invariant #11) BEFORE
+    // namespace evaluation -- rather than (divergently) canonicalising it and
+    // surfacing claim_namespace_unknown. Keystone invariant #16: the reason,
+    // code, and message bytes are identical across runtimes.
     const key = "x\u{1f600}y";
     const bundle = bundleWithNamespaceKey(key);
 
-    const pyErr = findByReason(
-      pyValidateErrors(bundle, {}),
-      "claim_namespace_unknown",
-    );
-    const tsErr = findByReason(
-      tsValidateErrors(bundle, {}),
-      "claim_namespace_unknown",
-    );
+    const pyErrors = pyValidateErrors(bundle, {});
+    const tsErrors = tsValidateErrors(bundle, {});
+
+    const pyErr = findByReason(pyErrors, "non_canonicalizable_bundle");
+    const tsErr = findByReason(tsErrors, "non_canonicalizable_bundle");
 
     expect(pyErr).toBeDefined();
     expect(tsErr).toBeDefined();
+    // Structured discriminators byte-identical across runtimes (the
+    // keystone-#16 parity proof: same non-BMP-key bundle, same rejection).
+    expect(pyErr!["code"]).toBe("RELAY-CANON-NON-BMP-KEY");
+    expect(tsErr!["code"]).toBe("RELAY-CANON-NON-BMP-KEY");
     expect(tsErr!["message"]).toBe(pyErr!["message"]);
-    // CPython ascii() renders a non-BMP code point as \U + 8 hex.
-    expect(String(tsErr!["message"])).toContain("'x\\U0001f600y'");
+    // The bundle is refused at canonicalisation, so the old
+    // claim_namespace_unknown path is unreachable for a non-BMP key.
+    expect(findByReason(pyErrors, "claim_namespace_unknown")).toBeUndefined();
+    expect(findByReason(tsErrors, "claim_namespace_unknown")).toBeUndefined();
   });
 
   test("C1 control U+0080 and U+00A0 in a namespace key: message byte-identical", () => {

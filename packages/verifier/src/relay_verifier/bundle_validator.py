@@ -51,7 +51,11 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from .bundle_paths import check_artifact_path
-from .canonical import bundle_digest, jcs_canonicalize
+from .canonical import (
+    CANONICAL_NON_BMP_KEY_CODE,
+    bundle_digest,
+    jcs_canonicalize,
+)
 from .key_lifecycle import (
     RELAY_EVID_041,
     RELAY_EVID_042,
@@ -230,6 +234,59 @@ def _py_ascii(value: Any) -> str:
     to ``ascii([...])`` because ``ascii()`` recurses into the container.
     """
     return ascii(value)
+
+
+# Structured-rejection tokens for a bundle the JCS encoder refuses to
+# canonicalise (currently: a supplementary-plane / non-BMP object KEY).
+# RFC 8785 sorts object keys by UTF-16 code unit; Python sorts by code
+# point. For keys with a codepoint >= U+10000 the orderings diverge, so
+# the Python and TypeScript verifiers would canonicalise the same bundle
+# to DIFFERENT bytes -> different SHA-256 -> a bundle that verifies on one
+# runtime and is rejected as tampered on the other (keystone invariant
+# #11). The encoder fails-closed (relay_verifier.canonical raises
+# JCSEncodeError); the validator pre-screens and emits this structured
+# error so validate_bundle keeps its "never raises" contract. The reason
+# token and message MUST be byte-identical to the TypeScript twin in
+# packages/verifier-typescript/src/bundle_validator.ts so the two
+# runtimes return identical structured rejections (keystone invariant
+# #16). The message names NO specific key on purpose: JS Object.keys
+# reorders integer-like keys relative to Python's insertion order, so a
+# key-naming message could diverge across runtimes for adversarial nested
+# inputs -- a fixed message is parity-safe by construction.
+_NON_CANONICALIZABLE_BUNDLE_REASON: Final[str] = "non_canonicalizable_bundle"
+_NON_CANONICALIZABLE_BUNDLE_MESSAGE: Final[str] = (
+    "bundle contains a non-BMP (supplementary-plane, >= U+10000) object "
+    "key; supplementary-plane object keys produce runtime-divergent "
+    "canonical bytes between the Python and TypeScript verifiers and are "
+    "refused. Re-key any such object with BMP-only strings."
+)
+
+
+def _has_non_bmp_key(value: Any) -> bool:
+    """Return True iff ``value`` contains an object KEY with a codepoint
+    >= U+10000 anywhere in its nested structure.
+
+    Detects -- BEFORE any canonicalisation -- a bundle the JCS encoder
+    would refuse (see :func:`relay_verifier.canonical.jcs_canonicalize`,
+    which fails-closed on non-BMP keys to keep Python<->TypeScript
+    canonical bytes identical, keystone invariant #11). The check screens
+    only object KEYS (mirroring the encoder); string VALUES may carry
+    supplementary-plane characters. The boolean result is independent of
+    key-iteration order, so it is identical to the TypeScript twin
+    ``_hasNonBmpKey`` regardless of the JS-vs-Python object-key ordering
+    difference.
+    """
+    if isinstance(value, dict):
+        for k, v in value.items():
+            for ch in str(k):
+                if ord(ch) >= 0x10000:
+                    return True
+            if _has_non_bmp_key(v):
+                return True
+        return False
+    if isinstance(value, list | tuple):
+        return any(_has_non_bmp_key(item) for item in value)
+    return False
 
 
 @dataclass
@@ -613,6 +670,32 @@ def validate_bundle(
             output["bundle_digest_sha256"] = hashlib.sha256(
                 _vcjb(_pfs(bundle))
             ).hexdigest()
+        claims = bundle.get("claims")
+        output["claims_count"] = len(claims) if isinstance(claims, list) else 0
+        output["overall"] = _compute_overall(output)
+        return output
+
+    # --- Non-canonicalisable-bundle screen (keystone invariant #11/#16) ------
+    # A supplementary-plane (non-BMP, >= U+10000) object KEY cannot be
+    # canonicalised to identical bytes across runtimes (RFC 8785 sorts keys
+    # by UTF-16 code unit; Python sorts by code point), so the JCS encoder
+    # fails-closed by raising JCSEncodeError. Screen for such a key BEFORE
+    # any canonicalisation runs (verify_bundle, _claim_digests_in_order, and
+    # _compute_binding_digest all canonicalise the bundle MINUS the
+    # top-level 'signatures' field, or subsets of it) and return a structured
+    # rejection -- preserving this function's "never raises" contract and
+    # emitting a runtime-identical reason/code/message (the TypeScript twin
+    # emits the same). The 'signatures' array is stripped from the screened
+    # payload because no canonicalisation path includes it, so a non-BMP key
+    # confined to a signature entry is not a canonicalisation hazard.
+    _payload_to_canon = {k: v for k, v in bundle.items() if k != "signatures"}
+    if _has_non_bmp_key(_payload_to_canon):
+        _append_error(
+            output,
+            reason=_NON_CANONICALIZABLE_BUNDLE_REASON,
+            message=_NON_CANONICALIZABLE_BUNDLE_MESSAGE,
+            code=CANONICAL_NON_BMP_KEY_CODE,
+        )
         claims = bundle.get("claims")
         output["claims_count"] = len(claims) if isinstance(claims, list) else 0
         output["overall"] = _compute_overall(output)

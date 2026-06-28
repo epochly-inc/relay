@@ -27,8 +27,10 @@ What this module pins (RFC 8785):
   * Section 3.2.3: object keys sorted by their UTF-16 code-unit
     sequence. Python's ``str`` compares by code point; for the BMP these
     match. SMP code points (>= U+10000) -- where the orderings would
-    diverge -- are not used in Relay evidence bundle keys (asserted by
-    the corpus).
+    diverge -- are refused as object KEYS with :class:`JCSEncodeError`
+    (code ``RELAY-CANON-NON-BMP-KEY``); see the dict branch of
+    :func:`_encode`. SMP code points in string VALUES are permitted
+    (values are not sorted, so no cross-runtime divergence arises).
 
 Bundle-digest helper (VAL-W10-020):
 
@@ -49,7 +51,19 @@ from __future__ import annotations
 import hashlib
 import math
 import unicodedata
-from typing import Any
+from typing import Any, Final
+
+# Wire-stable code for the BMP-only object-key screen. Python ``str``
+# sorts by code point; JS strings sort by UTF-16 code unit. For Basic
+# Multilingual Plane keys (< U+10000) these match. For supplementary-
+# plane keys (>= U+10000) the orderings diverge, silently producing
+# DIFFERENT JCS bytes between the Python and TS verifiers for the same
+# input -- which breaks cross-runtime signature verification (CLAUDE.md
+# keystone invariant #11). Both verifiers fail-closed on supplementary-
+# plane KEYS; values may still contain supplementary-plane chars (only
+# keys are sorted). Mirrors
+# ``relay_contracts.canonical.CANONICAL_NON_BMP_KEY_CODE``.
+CANONICAL_NON_BMP_KEY_CODE: Final[str] = "RELAY-CANON-NON-BMP-KEY"
 
 # RFC 8785 section 3.2.2.1: control characters U+0000..U+001F MUST be
 # escaped using the short forms (\b, \t, \n, \f, \r) or \u00xx; the
@@ -203,11 +217,26 @@ def _encode(value: Any) -> str:
         return "[" + ",".join(parts) + "]"
     if isinstance(value, dict):
         # RFC 8785 section 3.2.3: keys sorted by UTF-16 code-unit
-        # sequence. For BMP-only keys (the Relay evidence-bundle
-        # contract), str-by-code-point and UTF-16-by-code-unit produce
-        # the same ordering. The corpus pins BMP-only keys to keep
-        # this guarantee load-bearing.
-        items = sorted(((str(k), v) for k, v in value.items()), key=lambda kv: kv[0])
+        # sequence. Python str compares by code point; for the BMP these
+        # match. For supplementary-plane keys (>= U+10000) the orderings
+        # diverge silently -- the Python verifier and the JS verifier
+        # produce DIFFERENT canonical bytes for the same input, which
+        # breaks cross-runtime signature verification (CLAUDE.md keystone
+        # invariant #11). Fail-closed on supplementary-plane object KEYS
+        # BEFORE sorting. Values may contain supplementary-plane chars --
+        # only keys are screened. Mirrors relay_contracts.canonical._encode.
+        items_raw = [(str(k), v) for k, v in value.items()]
+        for k, _v in items_raw:
+            for ch in k:
+                if ord(ch) >= 0x10000:
+                    raise JCSEncodeError(
+                        f"{CANONICAL_NON_BMP_KEY_CODE}: non-BMP codepoint "
+                        f"U+{ord(ch):04X} in object key {k!r}; "
+                        f"supplementary-plane keys produce runtime-divergent "
+                        f"canonical bytes and are refused. Re-key the object "
+                        f"with BMP-only strings."
+                    )
+        items = sorted(items_raw, key=lambda kv: kv[0])
         parts = [_encode_string(k) + ":" + _encode(v) for k, v in items]
         return "{" + ",".join(parts) + "}"
     raise JCSEncodeError(

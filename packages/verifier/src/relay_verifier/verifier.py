@@ -42,7 +42,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
     encode_dss_signature,
 )
 
-from .canonical import jcs_canonicalize
+from .canonical import JCSEncodeError, jcs_canonicalize
 from .errors import (
     RELAY_VERIFY_ALG_MISMATCH,
     RELAY_VERIFY_UNSUPPORTED_ALG,
@@ -396,7 +396,22 @@ def verify_bundle(
         return result
 
     payload = _payload_for_signing(bundle)
-    canonical_bytes = canonical_json_bytes(payload)
+    try:
+        canonical_bytes = canonical_json_bytes(payload)
+    except JCSEncodeError as exc:
+        # The JCS encoder fails-closed on a payload it cannot canonicalise
+        # to runtime-identical bytes -- specifically a supplementary-plane
+        # (non-BMP, >= U+10000) object KEY, which Python sorts by code point
+        # while the TypeScript verifier sorts by UTF-16 code unit, so the two
+        # runtimes would otherwise produce DIFFERENT canonical bytes (keystone
+        # invariant #11). Preserve this function's documented "does NOT raise"
+        # contract: record the failure structurally and return the all-default
+        # result (structure_ok stays False), exactly like the no-signatures
+        # early-return above. The higher-level validate_bundle pre-screens for
+        # this and emits a structured 'non_canonicalizable_bundle' error before
+        # reaching here; this guard protects DIRECT callers of verify_bundle.
+        result.errors.append(f"bundle payload is not canonicalisable: {exc}")
+        return result
     payload_digest = hashlib.sha256(canonical_bytes).hexdigest()
     result.bundle_digest_sha256 = payload_digest
     result.structure_ok = True
