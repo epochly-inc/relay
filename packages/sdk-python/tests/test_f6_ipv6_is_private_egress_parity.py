@@ -92,6 +92,48 @@ def test_global_ipv6_allowed_no_over_block(host: str) -> None:
     validate_egress_entries([host])
 
 
+# CIDR-OVERLAP path (_classify "/" branch -> _DENIED_SUPERNETS). A broad CIDR
+# whose literal network address is public but whose range CONTAINS a new private
+# block (2001::/23, 3fff::/20) was admitted before the _DENIED_SUPERNETS
+# extension -- an SSRF gap. Each ``(entry, reason, cidr)`` is the verbatim
+# _classify verdict, mirrored byte-for-byte by the TS parity suite.
+_CIDR_DENY: tuple[tuple[str, str, str], ...] = (
+    # /16 range contains private 3fff::/20 (network address public).
+    ("3fff:ffff::1/16", "rfc1918", "3fff::/20"),
+    # /31 spans private 2001:2::/48 (network address is a 2001:3::/32 exception).
+    ("2001:3::1/31", "rfc1918", "2001::/23"),
+    # CONSERVATIVE over-block: an exception CIDR still overlaps 2001::/23.
+    ("2001:20::/28", "rfc1918", "2001::/23"),
+)
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(("entry", "reason", "cidr"), _CIDR_DENY)
+def test_broad_cidr_overlapping_private_block_denied(
+    entry: str, reason: str, cidr: str
+) -> None:
+    """A broad CIDR overlapping a new private block is denied via the overlap
+    check -- closing the SSRF gap and matching the single-host deny.
+
+    Pre-fix RED: validate_egress_entries returned silently (the overlap list
+    lacked 2001::/23 and 3fff::/20)."""
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    with pytest.raises(EgressDenied) as exc:
+        validate_egress_entries([entry])
+    env = exc.value.envelope
+    assert env["denied_reason"] == reason, (entry, env["denied_reason"])
+    assert env["denied_cidr"] == cidr, (entry, env["denied_cidr"])
+
+
+@pytest.mark.plumbing
+def test_public_cidr_not_over_blocked() -> None:
+    """A public global-unicast CIDR overlaps no denied supernet -> ALLOWED."""
+    from relay.network_policy import validate_egress_entries
+
+    validate_egress_entries(["2606:4700::/32"])
+
+
 @pytest.mark.plumbing
 def test_cpython_is_private_oracle_unchanged() -> None:
     """LIVE oracle tripwire: pin CPython ``is_private`` for every address.

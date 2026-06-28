@@ -637,6 +637,22 @@ const _DENIED_SUPERNETS: ReadonlyArray<{
     "fe80::/10",
     "ff00::/8",
     "2001:db8::/32",
+    // IETF special-registry PRIVATE blocks that single-host _classifyIpv6 denies
+    // via _ipv6IsPrivate (2001::/23 protocol-assignments, 3fff::/20 RFC 9637
+    // documentation, 64:ff9b:1::/48 NAT64 local-use). Without these the OVERLAP
+    // check admitted a BROAD CIDR whose network address is public but whose range
+    // CONTAINS the private block -- e.g. 3fff:ffff::1/16 (the /16 spans 3fff::/20)
+    // or 2001:2::/31 (spans private 2001:2::/48) -- an SSRF gap and an
+    // inconsistency with the single-host deny. CONSERVATIVE over-block: a CIDR
+    // overlapping the global carve-out EXCEPTIONS inside 2001::/23 (2001:20::/28
+    // etc.) is also denied here (overlap, not the exception-aware single-host
+    // is_private); the bare exception HOST stays allowed via _ipv6IsPrivate.
+    // Byte-for-byte mirror of the Python network_policy._DENIED_SUPERNETS entries
+    // (str(ip_network(c)) renders each identically: "2001::/23", "3fff::/20",
+    // "64:ff9b:1::/48").
+    "2001::/23",
+    "3fff::/20",
+    "64:ff9b:1::/48",
     // IPv4-in-IPv6 transition prefixes: a broad CIDR over IPv4-mapped
     // (::ffff:0.0.0.0/96), 6to4 (2002::/16), NAT64 (64:ff9b::/96), or the
     // deprecated IPv4-compatible (::/96) space can embed denied IPv4 ranges with

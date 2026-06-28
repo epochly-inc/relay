@@ -95,6 +95,20 @@ _DENIED_SUPERNETS: Final[
         "fe80::/10",
         "ff00::/8",
         "2001:db8::/32",
+        # IETF special-registry PRIVATE blocks that the single-host IPv6 path
+        # denies via ip.is_private (2001::/23 protocol-assignments, 3fff::/20
+        # RFC 9637 documentation, 64:ff9b:1::/48 NAT64 local-use). Without these
+        # the OVERLAP check admitted a BROAD CIDR whose network address is public
+        # but whose range CONTAINS the private block -- e.g. 3fff:ffff::1/16 (the
+        # /16 spans 3fff::/20) or 2001:2::/31 (spans private 2001:2::/48) -- an
+        # SSRF gap and an inconsistency with the single-host deny. CONSERVATIVE
+        # over-block: a CIDR overlapping the global carve-out EXCEPTIONS inside
+        # 2001::/23 (2001:20::/28 etc.) is also denied here (overlap, not the
+        # exception-aware single-host is_private); the bare exception HOST stays
+        # allowed via the single-host path. Mirrored byte-for-byte in run.ts.
+        "2001::/23",
+        "3fff::/20",
+        "64:ff9b:1::/48",
         # IPv4-in-IPv6 TRANSITION prefixes: a broad CIDR over the IPv4-mapped
         # (::ffff:0:0/96), 6to4 (2002::/16), NAT64 (64:ff9b::/96), or the
         # deprecated IPv4-compatible (::/96) space can embed denied IPv4 ranges

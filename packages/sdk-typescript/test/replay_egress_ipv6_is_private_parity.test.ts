@@ -143,4 +143,52 @@ describe("F6: native-IPv6 is_private egress parity with CPython", () => {
       cidr: "fc00::/7",
     });
   });
+
+  // CIDR-OVERLAP path (run.ts _classify "/" branch -> _DENIED_SUPERNETS). A
+  // BROAD CIDR whose literal network address is public but whose range CONTAINS
+  // a new private block was admitted before the _DENIED_SUPERNETS extension --
+  // an SSRF gap and an inconsistency with the single-host deny above. Every
+  // verdict is the verbatim CPython network_policy._classify output (the Python
+  // SDK reference). The bare exception HOST stays allowed (single-host path),
+  // but a CIDR overlapping 2001::/23 is conservatively denied (overlap, not the
+  // exception-aware single-host is_private) -- identical on both runtimes.
+  describe("CIDR overlap with the new private blocks", () => {
+    const CIDR_CASES: ReadonlyArray<{
+      entry: string;
+      expected: { reason: string; cidr: string } | null;
+      why: string;
+    }> = [
+      {
+        entry: "3fff:ffff::1/16",
+        expected: { reason: "rfc1918", cidr: "3fff::/20" },
+        why: "the /16 range contains private 3fff::/20 (network addr public)",
+      },
+      {
+        entry: "2001:3::1/31",
+        expected: { reason: "rfc1918", cidr: "2001::/23" },
+        why: "the /31 spans private 2001:2::/48 (network addr is a 2001:3::/32 exception)",
+      },
+      {
+        entry: "2001:20::/28",
+        expected: { reason: "rfc1918", cidr: "2001::/23" },
+        why: "conservative over-block: an exception CIDR still overlaps 2001::/23",
+      },
+      {
+        entry: "2606:4700::/32",
+        expected: null,
+        why: "a public global-unicast CIDR overlaps no denied supernet",
+      },
+      {
+        entry: "2001:db8::/32",
+        expected: { reason: "rfc1918", cidr: "fc00::/7" },
+        why: "pre-existing: the 2001:db8:: network address is itself private",
+      },
+    ];
+
+    for (const c of CIDR_CASES) {
+      it(`${c.entry} -> ${c.expected ? c.expected.cidr : "ALLOWED"} (${c.why})`, () => {
+        expect(classifyEntry(c.entry)).toEqual(c.expected);
+      });
+    }
+  });
 });
