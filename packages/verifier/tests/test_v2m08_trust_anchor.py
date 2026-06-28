@@ -169,6 +169,67 @@ def test_non_bmp_key_takes_precedence_over_signature_count_cap() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M08-041")
+def test_unsafe_integer_value_rejected_as_non_canonicalizable() -> None:
+    """A bundle carrying an integer VALUE outside the IEEE-754 safe range
+    (abs > 2**53 - 1) MUST be rejected as ``non_canonicalizable_bundle``
+    with code ``RELAY-CANON-UNSAFE-INTEGER``.
+
+    A Python host keeps such an integer exact while a float64 host
+    (TypeScript ``JSON.parse``) rounds it (9007199254740993 ->
+    9007199254740992), so the same wire bundle would canonicalise to
+    DIFFERENT bytes -> different SHA-256 -> a cross-runtime verify split
+    (keystone invariant #11/#16). The verifier screens the bundle
+    value-boundary BEFORE canonicalisation and fails closed, mirroring the
+    contracts evaluator's safe-integer guard. The low-level JCS encoder is
+    intentionally unbounded (RFC 8785 conformance for large floats), so the
+    bound lives at this value-boundary.
+    """
+    built = build_bundle()
+    # Inject an out-of-safe-range integer VALUE into the signed payload
+    # AFTER signing (stale signature is irrelevant: the value-boundary
+    # screen runs BEFORE any signature / canonicalisation work).
+    built.bundle["claims"][0]["oversized_count"] = 9007199254740993  # 2**53 + 1
+    assert 9007199254740993 > 2**53 - 1
+
+    output = validate_bundle(
+        bundle=built.bundle,
+        jwks=built.jwks,
+        trust_anchor_source="live",
+    )
+
+    assert output["overall"] == "fail", output
+    reasons = [e.get("reason") for e in output["errors"]]
+    assert "non_canonicalizable_bundle" in reasons, output["errors"]
+    nb = next(
+        e for e in output["errors"]
+        if e.get("reason") == "non_canonicalizable_bundle"
+    )
+    assert nb["code"] == "RELAY-CANON-UNSAFE-INTEGER", nb
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-041")
+def test_safe_integer_value_at_bound_is_accepted() -> None:
+    """The bound is exclusive of MAX_SAFE_INTEGER itself: a value of exactly
+    2**53 - 1 (9007199254740991) is within the safe range and MUST NOT be
+    flagged ``non_canonicalizable_bundle`` -- it round-trips byte-identically
+    through a float64 host. (The bundle may still fail for other reasons such
+    as a stale signature; only the non-canonicalisable rejection is asserted
+    absent.)
+    """
+    built = build_bundle()
+    built.bundle["claims"][0]["max_safe"] = 9007199254740991  # 2**53 - 1
+    output = validate_bundle(
+        bundle=built.bundle,
+        jwks=built.jwks,
+        trust_anchor_source="live",
+    )
+    reasons = [e.get("reason") for e in output["errors"]]
+    assert "non_canonicalizable_bundle" not in reasons, output["errors"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-041")
 def test_verifier_signature_cap_constant_matches_spec() -> None:
     """The cap MUST be the spec-pinned value 4 (section L.5 line 4481)."""
     assert MAX_BUNDLE_SIGNATURES == 4

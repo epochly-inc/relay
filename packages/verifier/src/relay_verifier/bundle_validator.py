@@ -289,6 +289,69 @@ def _has_non_bmp_key(value: Any) -> bool:
     return False
 
 
+# IEEE-754 safe-integer bound (== Number.MAX_SAFE_INTEGER). An integer (or
+# whole-valued float) VALUE whose magnitude exceeds this cannot round-trip
+# byte-identically through a float64 JSON parser: a Python host keeps it
+# exact (str(9007199254740993) == "9007199254740993") while the TypeScript
+# verifier's JSON.parse rounds it (9007199254740993 -> 9007199254740992 ->
+# "9007199254740992"), so the same wire bundle canonicalises to DIFFERENT
+# bytes -> different SHA-256 -> a cross-runtime verify split (keystone
+# invariant #11/#16). 2**53 itself is NOT safe (a rounded overflow can land
+# on it), so the bound is strict (abs > 2**53 - 1 is rejected; abs <= 2**53
+# - 1 is accepted) -- matching relay_contracts.evaluator.SAFE_INTEGER_BOUND.
+SAFE_INTEGER_BOUND: Final[int] = 2**53 - 1  # 9007199254740991
+
+# Word-form subcode of the registered RELAY-CANON-001 canonicalization code
+# (see packages/schemas/raw/error-codes.yaml). Mirrors the F1 non-BMP-key
+# subcode pattern; the reason token is shared (non_canonicalizable_bundle),
+# the code discriminates the cause.
+CANONICAL_UNSAFE_INTEGER_CODE: Final[str] = "RELAY-CANON-UNSAFE-INTEGER"
+
+# Byte-identical (Py<->TS) structured-error message for the safe-integer
+# screen. Names NO specific value on purpose (a Python exact int and a
+# rounded float64 would render differently, breaking message parity) -- a
+# fixed message is parity-safe by construction, exactly like the F1 message.
+_NON_CANONICALIZABLE_UNSAFE_INT_MESSAGE: Final[str] = (
+    "bundle contains a number whose magnitude exceeds the IEEE-754 "
+    "safe-integer range (abs > 2**53 - 1 = 9007199254740991); such a value "
+    "cannot round-trip byte-identically through a float64 JSON parser, so "
+    "the Python and TypeScript verifiers would canonicalise it to different "
+    "bytes and it is refused. Keep numeric values within the safe-integer "
+    "range, or carry large magnitudes as strings."
+)
+
+
+def _has_unsafe_integer(value: Any) -> bool:
+    """Return True iff ``value`` contains a number VALUE outside the IEEE-754
+    safe-integer range (abs > ``SAFE_INTEGER_BOUND``) anywhere in its nested
+    structure.
+
+    Detects -- BEFORE any canonicalisation -- a bundle whose digest would
+    diverge between a Python exact-int host and a float64 host. Mirrors
+    ``relay_contracts.evaluator._check_finite``: an ``int`` (bool excluded)
+    or a whole-valued ``float`` with magnitude > the bound is rejected. No
+    representable float64 of magnitude > the bound is non-integral (the ULP
+    at 2**53 is 2.0), so ``float.is_integer()`` only excludes genuinely
+    fractional doubles (e.g. 1.5), which are always in range. NaN/Inf have
+    ``is_integer() == False`` and are not flagged here (they cannot arise
+    from standard JSON and are rejected by the encoder if reached). The
+    boolean result is order-independent, so it is identical to the
+    TypeScript twin ``_hasUnsafeInteger``. Only VALUES are screened; object
+    KEYS are JSON strings (never numbers).
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return abs(value) > SAFE_INTEGER_BOUND
+    if isinstance(value, float):
+        return value.is_integer() and abs(value) > SAFE_INTEGER_BOUND
+    if isinstance(value, dict):
+        return any(_has_unsafe_integer(v) for v in value.values())
+    if isinstance(value, list | tuple):
+        return any(_has_unsafe_integer(item) for item in value)
+    return False
+
+
 @dataclass
 class ValidateBundleOptions:
     """Caller-supplied options that gate per-policy behaviors.
@@ -667,6 +730,33 @@ def validate_bundle(
             reason=_NON_CANONICALIZABLE_BUNDLE_REASON,
             message=_NON_CANONICALIZABLE_BUNDLE_MESSAGE,
             code=CANONICAL_NON_BMP_KEY_CODE,
+        )
+        claims = bundle.get("claims")
+        output["claims_count"] = len(claims) if isinstance(claims, list) else 0
+        output["overall"] = _compute_overall(output)
+        return output
+
+    # --- Out-of-safe-range integer screen (keystone invariant #11/#16) -------
+    # A number VALUE whose magnitude exceeds the IEEE-754 safe-integer bound
+    # (abs > 2**53 - 1) is non-canonicalisable cross-runtime: a Python host
+    # keeps the integer exact while the TypeScript verifier's JSON.parse
+    # rounds it, so the same wire bundle canonicalises to DIFFERENT bytes ->
+    # different SHA-256 -> a verify split. Like the non-BMP screen above, this
+    # runs BEFORE the over-cap check (non-canonicalisability is the most
+    # fundamental failure) and BEFORE any canonicalisation, on the SAME
+    # signatures-stripped payload (no canonicalisation path includes the
+    # top-level 'signatures' array). The bound is enforced HERE at the value-
+    # boundary, NOT in the JCS encoder, so jcs_canonicalize stays RFC 8785-
+    # conformant for large floats (the W17 IETF corpus) -- mirroring the
+    # contracts evaluator's _check_finite, which gates results before its
+    # (unbounded) canonicaliser. The TypeScript twin emits an identical
+    # reason/code/message (keystone invariant #16).
+    if _has_unsafe_integer(_payload_to_canon):
+        _append_error(
+            output,
+            reason=_NON_CANONICALIZABLE_BUNDLE_REASON,
+            message=_NON_CANONICALIZABLE_UNSAFE_INT_MESSAGE,
+            code=CANONICAL_UNSAFE_INTEGER_CODE,
         )
         claims = bundle.get("claims")
         output["claims_count"] = len(claims) if isinstance(claims, list) else 0

@@ -187,6 +187,20 @@ def _encode_number(n: int | float) -> str:
         # bits). The encoder accepts arbitrary integers byte-for-byte
         # (decimal form) for parity with the contract canonicaliser
         # which has the same behaviour.
+        #
+        # NOTE (keystone #16 / RELAY-CANON-UNSAFE-INTEGER): the
+        # safe-integer bound (abs > 2**53 - 1 diverges between a Python
+        # exact-int host and a float64 host) is deliberately NOT enforced
+        # here. This encoder must stay RFC 8785-conformant for large
+        # *floats* (the W17 IETF number corpus canonicalises 1e21, 1e20,
+        # 1.7976931348623157e+308, etc. directly), and a magnitude bound
+        # cannot distinguish an int token from a float token. The bound is
+        # therefore applied at the bundle value-boundary instead --
+        # `relay_verifier.bundle_validator.validate_bundle` screens
+        # out-of-safe-range number VALUES pre-canonicalisation and emits
+        # `non_canonicalizable_bundle` -- exactly as the contracts
+        # evaluator's `_check_finite` gates results before its (also
+        # unbounded) canonicaliser. Do NOT add a numeric bound here.
         return str(n)
     # Float path: caller responsible for rejecting NaN/Inf upstream;
     # the defensive check below ensures we never silently emit a

@@ -344,6 +344,48 @@ describe("parity-014 non-BMP key outranks over-cap signature count (Py<->TS)", (
 });
 
 // ===========================================================================
+// F2: out-of-safe-range integer VALUE => non_canonicalizable_bundle on both.
+//
+// A JSON integer whose magnitude exceeds 2**53 - 1 cannot round-trip
+// byte-identically: the Python verifier keeps it exact (json.loads -> int)
+// while the TypeScript verifier rounds it (JSON.parse -> float64), so the same
+// wire bundle would canonicalise to different bytes -> different SHA-256 -> a
+// cross-runtime verify split. BOTH verifiers screen the bundle value-boundary
+// (BEFORE canonicalisation) and fail closed with a STRUCTURED
+// non_canonicalizable_bundle error (code RELAY-CANON-UNSAFE-INTEGER), keeping
+// the low-level JCS encoder RFC 8785-conformant for large floats. Keystone
+// invariant #11/#16: identical reason + code + message bytes on both runtimes.
+// ===========================================================================
+
+describe("parity-014 out-of-safe-range integer => non_canonicalizable_bundle (Py<->TS)", () => {
+  test("integer value > 2**53-1 yields identical structured rejection on both", () => {
+    // 9007199254740994 == 2**53 + 2: > MAX_SAFE_INTEGER and exactly
+    // representable as a float64, so it round-trips through JSON.stringify ->
+    // Python json.loads unambiguously (both runtimes see the same magnitude).
+    const bundle: Record<string, unknown> = {
+      schema_version: "relay.evidence_bundle.v1",
+      trust_anchor: "https://relay.epochly.com/.well-known/jwks.json",
+      decided_at: "2026-05-15T12:00:00Z",
+      claims: [{ id: "c1", oversized_count: 9007199254740994 }],
+      signatures: [PLACEHOLDER_SIG],
+    };
+
+    const pyErrors = pyValidateErrors(bundle, {});
+    const tsErrors = tsValidateErrors(bundle, {});
+
+    const pyErr = findByReason(pyErrors, "non_canonicalizable_bundle");
+    const tsErr = findByReason(tsErrors, "non_canonicalizable_bundle");
+
+    expect(pyErr).toBeDefined();
+    expect(tsErr).toBeDefined();
+    // Structured discriminators byte-identical across runtimes (keystone #16).
+    expect(pyErr!["code"]).toBe("RELAY-CANON-UNSAFE-INTEGER");
+    expect(tsErr!["code"]).toBe("RELAY-CANON-UNSAFE-INTEGER");
+    expect(tsErr!["message"]).toBe(pyErr!["message"]);
+  });
+});
+
+// ===========================================================================
 // #2: TSA gen_time skew reason is the structured "tsa_skew_exceeded"
 // ===========================================================================
 

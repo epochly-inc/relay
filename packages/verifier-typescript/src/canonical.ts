@@ -109,6 +109,19 @@ function encodeNumber(n: number): string {
   // ToString, which JCS section 3.2.2 also mandates. Whole-valued
   // doubles like 1.0 stringify as "1" natively (matching the Python
   // encoder's special case at canonical.py:_encode_number).
+  //
+  // NOTE (keystone #16 / RELAY-CANON-UNSAFE-INTEGER): the safe-integer
+  // bound (abs > 2**53 - 1 diverges between a Python exact-int host and a
+  // float64 host) is deliberately NOT enforced here. This encoder must
+  // stay RFC 8785-conformant for large *floats* (the W17 IETF number
+  // corpus canonicalises 1e21, 1e20, 1.7976931348623157e+308, etc.
+  // directly via jcsCanonicalize), and after JSON.parse a number carries
+  // no int/float token distinction to bound on. The bound is applied at
+  // the bundle value-boundary instead -- `validateBundle` in
+  // bundle_validator.ts screens out-of-safe-range number VALUES
+  // pre-canonicalisation and emits `non_canonicalizable_bundle` (mirroring
+  // the Python verifier and the contracts evaluator). Do NOT add a numeric
+  // bound here.
   return String(n);
 }
 
