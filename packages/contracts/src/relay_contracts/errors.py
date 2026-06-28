@@ -39,7 +39,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 from relay_schemas.error_codes import RelayErrorCode
 
@@ -103,6 +103,22 @@ class RelayCelError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+        # Forensic udf_trace carried alongside a POST-success host-guard
+        # rejection. When the wasm returns an ``{"ok": true}`` envelope that
+        # carries a real ``udf_trace`` (the relay.* UDFs genuinely ran) but the
+        # HOST finiteness / safe-integer guard then rejects the decoded result
+        # value (RELAY-CEL-006 / NUMERIC-OOB), the trace is still REAL evidence:
+        # the UDFs ran and their typed-canonical call-order outputs are identical
+        # cross-runtime. The wasm-backed evaluator attaches that trace here so the
+        # pipeline reconstructs byte-identical ``udf_outputs_jcs`` to the TS host
+        # (which emits the trace from the SAME ok:true envelope without running a
+        # finiteness guard) -- keystone invariant #16. Defaults to the empty
+        # per-name list map: an error raised for a NON-ok envelope (profile /
+        # engine / timeout) carries no trace (the crate omits ``udf_trace``),
+        # and every error raised before any envelope likewise carries {}. It is
+        # NOT part of the cross-runtime error envelope (``code``/``subtype``/
+        # ``message``); it is a Python-host runtime carry-field only.
+        self.udf_trace: dict[str, list[Any]] = {}
 
     @property
     def envelope(self) -> RelayCelErrorEnvelope:

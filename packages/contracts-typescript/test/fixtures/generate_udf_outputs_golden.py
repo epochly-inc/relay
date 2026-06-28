@@ -100,6 +100,23 @@ _CASES: list[dict[str, Any]] = [
         "expression": "1 + 1 == 2",
         "bindings": {},
     },
+    {
+        # F7 (keystone #16): relay.coverage RUNS (recorded in udf_trace), but the
+        # ternary RESULT 2**53 (9007199254740992) is an int > SAFE_INTEGER_BOUND,
+        # so the Python host _check_finite rejects the DECODED result value
+        # (RELAY-CEL-006 / NUMERIC-OOB) -> outcome=error. The udf_trace is REAL
+        # forensic evidence (the UDF ran), so BOTH hosts MUST reconstruct the
+        # SAME non-empty udf_outputs_jcs while the outcome differs only as error.
+        # Before the F7 fix the Python host extracted the trace AFTER decoding +
+        # finiteness-guarding the result, so a guard rejection zeroed udf_outputs
+        # to "{}" -- diverging from the TS host (whose evaluateUdfOutputs never
+        # runs a finiteness guard and emits the real trace from the SAME ok:true
+        # envelope). That was a P0 cross-host byte split on a digest input. This
+        # case pins byte-identity for the finiteness-failing-but-UDF-ran path.
+        "label": "coverage_then_oob_result_keeps_trace",
+        "expression": 'relay.coverage(t, "alpha") ? 9007199254740992 : 0',
+        "bindings": {"t": {"steps": [{"name": "alpha"}, {"name": "beta"}]}},
+    },
 ]
 
 

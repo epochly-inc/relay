@@ -267,9 +267,19 @@ def _evaluate_with_trace(
             expression, dict(bindings or {})
         )
         outcome = _classify_outcome(value)
-    except RelayCelError:
+    except RelayCelError as exc:
         outcome = "error"
-        udf_trace = {}
+        # A POST-success host-guard rejection (RELAY-CEL-006 finiteness /
+        # safe-integer guard) of the result value still carries the REAL
+        # udf_trace: the relay.* UDFs ran on the wasm ok:true envelope, so their
+        # typed-canonical call-order outputs are identical cross-runtime.
+        # evaluate_with_trace attaches that already-extracted trace to the
+        # exception so udf_outputs stays BYTE-IDENTICAL with the TS host (which
+        # emits the same trace from the SAME ok:true envelope) while the outcome
+        # is error -- keystone invariant #16. For a non-ok envelope (profile /
+        # engine / timeout) there is no trace (the crate omits udf_trace), so
+        # the carried value is the empty dict and the behavior is unchanged.
+        udf_trace = exc.udf_trace
     wall_time_ms = (time.perf_counter() - t0) * 1000.0
 
     # udfs_invoked from the udf_trace keys (sorted); udf_outputs is the trace

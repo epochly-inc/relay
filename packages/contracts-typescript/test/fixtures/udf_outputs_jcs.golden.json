@@ -82,6 +82,27 @@
       "udf_outputs_jcs": "{}",
       "udfs_invoked": [],
       "outcome": "pass"
+    },
+    {
+      "label": "coverage_then_oob_result_keeps_trace",
+      "expression": "relay.coverage(t, \"alpha\") ? 9007199254740992 : 0",
+      "bindings": {
+        "t": {
+          "steps": [
+            {
+              "name": "alpha"
+            },
+            {
+              "name": "beta"
+            }
+          ]
+        }
+      },
+      "udf_outputs_jcs": "{\"relay.coverage\":[{\"t\":\"bool\",\"v\":true}]}",
+      "udfs_invoked": [
+        "relay.coverage"
+      ],
+      "outcome": "error"
     }
   ]
 }

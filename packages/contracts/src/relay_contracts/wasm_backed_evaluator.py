@@ -708,12 +708,31 @@ class WasmCelEvaluator:
             self._quarantine_thread_handle()
             raise
 
-        # Capture the udf_trace BEFORE decoding (decode may raise a structured
-        # error; the trace is only meaningful on the success envelope, and the
-        # crate only attaches it on {"ok": true}). _decode_envelope enforces the
-        # host finiteness guard and error mapping on the value itself.
-        value = self._decode_envelope(envelope)
+        # Extract the udf_trace from the SUCCESS envelope BEFORE the host
+        # finiteness guard runs (locked cross-host contract; keystone #16). The
+        # udf_trace is forensic evidence that the relay.* UDFs genuinely RAN; a
+        # host-side finiteness / safe-integer rejection (RELAY-CEL-006) of the
+        # DECODED result value does not erase that evidence. The crate attaches
+        # udf_trace ONLY on an {"ok": true} envelope, so on a non-ok (profile /
+        # engine / timeout) envelope this is the empty dict and the decode below
+        # raises the structured error carrying that empty trace (a no-op). The TS
+        # host (pipeline.ts evaluateUdfOutputs) emits the trace from the SAME
+        # ok:true envelope WITHOUT running its finiteness guard, so both hosts
+        # reconstruct byte-identical udf_outputs_jcs for a finiteness-failing
+        # result -- only the outcome differs (error on both, computed downstream).
         udf_trace = self._extract_udf_trace(envelope)
+        try:
+            value = self._decode_envelope(envelope)
+        except RelayCelError as exc:
+            # A POST-success host-guard rejection (the RELAY-CEL-006 finiteness /
+            # safe-integer guard inside _decode_envelope) of the result value
+            # still leaves udf_trace as real cross-runtime evidence -- the UDFs
+            # ran. Carry the already-extracted trace on the exception so the
+            # pipeline records byte-identical udf_outputs while the outcome stays
+            # error. For a non-ok envelope udf_trace is {} (the crate omits it),
+            # so this attaches an empty trace and the behavior is unchanged.
+            exc.udf_trace = udf_trace
+            raise
         return value, udf_trace
 
     # --- helpers -----------------------------------------------------
