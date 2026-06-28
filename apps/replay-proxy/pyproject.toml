@@ -20,10 +20,11 @@ name = "epochly-relay-replay-proxy"
 version = "0.0.0"
 description = "Relay localhost mitmproxy harness for rly replay run (W7.1)."
 readme = "README.md"
-# >=3.12.4 (not >=3.12): replay-proxy depends on `epochly-relay-sidecar` and
-# `epochly-relay-cli`, both of which reach `epochly-relay` (the SDK) -- pinned
-# >=3.12.4 for its CVE-2024-4032-dependent egress SSRF guard. The transitive path
-# makes 3.12.0-3.12.3 unresolvable, so the floor is declared honestly here.
+# >=3.12.4 (not >=3.12): replay-proxy runtime-depends on `epochly-relay-sidecar`,
+# which hard-depends on `epochly-relay` (the SDK) -- pinned >=3.12.4 for its
+# CVE-2024-4032-dependent egress SSRF guard. The transitive path makes
+# 3.12.0-3.12.3 unresolvable, so the floor is declared honestly here. (The CLI
+# is a test-only extra and is no longer part of the runtime floor justification.)
 requires-python = ">=3.12.4"
 license = { text = "Apache-2.0" }
 authors = [
@@ -35,16 +36,10 @@ dependencies = [
   "cryptography>=42,<46",
   # Atomic file primitive (CA cert + key writes go through this so a
   # process kill mid-write does not leave a half-written PEM that the
-  # proxy might silently accept).
+  # proxy might silently accept). Also exposes `relay_sidecar.cassette`,
+  # the parser/digest the driver + mitmproxy addon use (moved here when the
+  # cli<->replay-proxy import cycle was broken). Genuine runtime dependency.
   "epochly-relay-sidecar",
-  # The cassette parser/digest the driver + mitmproxy addon use moved to
-  # `relay_sidecar.cassette` (above) when the cli<->replay-proxy import cycle was
-  # broken, so PRODUCTION no longer imports relay_cli. Retained because the
-  # replay-proxy TEST suite imports the CLI's exit-code / replay-side-effect
-  # constants (relay_cli.exit_codes, relay_cli.commands.replay) for cross-package
-  # contract assertions. A future packaging pass can recategorize this as a
-  # test-only extra once a relay-proxy [test] extra exists.
-  "epochly-relay-cli",
 ]
 
 [project.optional-dependencies]
@@ -63,6 +58,13 @@ test = [
   # itself.
   "requests>=2.31",
   "aiohttp>=3.9",
+  # PRODUCTION does not import relay_cli (the cassette parser moved to
+  # relay_sidecar). The W7.5 contract tests, however, import the CLI's
+  # exit-code / replay-side-effect constants (relay_cli.exit_codes,
+  # relay_cli.commands.replay) to assert cross-package contract parity, so
+  # the CLI is declared here as a test-only dependency rather than in the
+  # runtime [project.dependencies] surface.
+  "epochly-relay-cli",
 ]
 
 [tool.hatch.build.targets.wheel]

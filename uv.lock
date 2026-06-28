@@ -930,7 +930,6 @@ version = "0.0.0"
 source = { editable = "apps/replay-proxy" }
 dependencies = [
     { name = "cryptography" },
-    { name = "epochly-relay-cli" },
     { name = "epochly-relay-sidecar" },
 ]
 
@@ -940,6 +939,7 @@ mitmproxy = [
 ]
 test = [
     { name = "aiohttp" },
+    { name = "epochly-relay-cli" },
     { name = "pytest" },
     { name = "pytest-timeout" },
     { name = "requests" },
@@ -949,7 +949,7 @@ test = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'test'", specifier = ">=3.9" },
     { name = "cryptography", specifier = ">=42,<46" },
-    { name = "epochly-relay-cli", editable = "packages/cli" },
+    { name = "epochly-relay-cli", marker = "extra == 'test'", editable = "packages/cli" },
     { name = "epochly-relay-sidecar", editable = "apps/local-sidecar" },
     { name = "mitmproxy", marker = "extra == 'mitmproxy'", specifier = ">=10,<13" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
