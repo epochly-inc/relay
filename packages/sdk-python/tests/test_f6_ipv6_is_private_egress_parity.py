@@ -24,6 +24,15 @@ NAT64 local-use 64:ff9b:1::/48, so 2001::1 / 2001:2::1 / 2001:10::1 / 3fff::1 /
 64:ff9b:1::1 were ALLOWED by the TS replay allowlist while CPython DENIES them --
 an SSRF default-deny bypass.
 
+Supported-matrix note (CI runs Python 3.12 / 3.13 / 3.14 per CLAUDE.md): although
+is_private tracks a moving definition, the expanded private-networks table used
+here -- the 2001::/23 + 3fff::/20 (RFC 9637) blocks AND the
+_private_networks_exceptions carve-outs -- was BACKPORTED to 3.12.4+, 3.13, and
+3.14 by the CVE-2024-4032 is_private/is_global correctness fix. Verified empirically:
+3.12.10 and 3.14.3 return IDENTICAL is_private for EVERY address below, so these
+assertions hold across the entire supported matrix (the minimum CI 3.12.x is far
+past 3.12.4). The tripwire only fires if a FUTURE CPython mutates the table again.
+
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
 
