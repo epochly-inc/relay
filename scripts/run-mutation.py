@@ -185,6 +185,17 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
                        "override=...) is syntactic, not arithmetic; no runtime effect."},
         ],
     },
+    "merkle": {
+        "module": "packages/verifier/src/relay_verifier/merkle.py",
+        "test_groups": [
+            [
+                "packages/verifier/tests/test_merkle_property.py",
+                "packages/verifier/tests/test_parity_006_merkle_inclusion.py",
+            ],
+        ],
+        "why": "RFC-6962 merkle inclusion/root -- keystone #16 (Py<->TS parity); "
+               "lonely-leaf promotion for non-power-of-2 trees.",
+    },
 }
 
 # cosmic-ray's per-mutant wall budget (s): a BACKSTOP above the group-runner's

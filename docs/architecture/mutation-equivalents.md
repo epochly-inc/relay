@@ -87,7 +87,7 @@ row test for the `except` and a deterministic two-row rowid-ordered test for
 equivalents`). Each was verified unobservable by a sandboxed harness that execs a
 copy of the predicate with the mutation applied across every reaching scenario.
 
-### C1. Single-column `row[-1]` / dead `else 0` (NumberReplacer; L243, L244, L277, L373, L409, L514, L515, L746, L783)
+### C1. Single-column `row[-1]` / dead `else 0` (NumberReplacer; L243, L244, L284, L380, L416, L521, L522, L753, L790)
 
 cosmic-ray's `NumberReplacer` offsets are exactly `+1`/`-1`. On a row from a
 single-column `SELECT` (`project_id`, `contract_id`, `COUNT(*)`), `row[-1]` is
@@ -106,12 +106,12 @@ mutant can therefore NEVER be a SURVIVOR, so it never reaches `_classify_survivo
 to be mis-bucketed as equivalent. The authoritative `real_survivor_count == 0`
 re-run confirms no real survivor hides behind this whitelist.
 
-### C2. `== 0` vs `<= 0` over COUNT(*) (Eq_LtE; L278, L410, L747)
+### C2. `== 0` vs `<= 0` over COUNT(*) (Eq_LtE; L285, L417, L754)
 
 `count/total = int(COUNT(*))` is non-negative for every input, so `== 0` and
 `<= 0` cannot diverge.
 
-### C3. Subset set-difference (Sub_BitXor; L376)
+### C3. Subset set-difference (Sub_BitXor; L383)
 
 `set(required) - evaluated == set(required) ^ evaluated` because `evaluated` is
 always a subset of `required` (built from `WHERE contract_id IN (required)`), so
