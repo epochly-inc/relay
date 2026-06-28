@@ -50,7 +50,6 @@ import types
 from typing import Any
 
 import pytest
-from relay_cli.cassette import CassetteFormatError
 from relay_replay_proxy import harness as harness_mod
 from relay_replay_proxy.cassette_server import (
     CassetteServer,
@@ -67,6 +66,7 @@ from relay_replay_proxy.harness import (
     _build_mitmdump_argv,
     _MitmProxyDriver,
 )
+from relay_sidecar.cassette import CassetteFormatError
 
 pytestmark = pytest.mark.plumbing
 

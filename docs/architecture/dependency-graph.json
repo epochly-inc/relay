@@ -47,11 +47,9 @@
         "sdk-python",
         "verifier"
       ],
-      "depended_on_by": [
-        "replay-proxy"
-      ],
+      "depended_on_by": [],
       "fan_out": 7,
-      "fan_in": 1
+      "fan_in": 0
     },
     {
       "name": "contracts",
@@ -149,7 +147,6 @@
       ],
       "path": "apps/replay-proxy",
       "depends_on": [
-        "cli",
         "contracts",
         "local-sidecar",
         "schemas"
@@ -157,7 +154,7 @@
       "depended_on_by": [
         "cli"
       ],
-      "fan_out": 4,
+      "fan_out": 3,
       "fan_in": 1
     },
     {
@@ -381,14 +378,6 @@
     },
     {
       "from": "replay-proxy",
-      "to": "cli",
-      "lang": "python",
-      "examples": [
-        "relay_cli"
-      ]
-    },
-    {
-      "from": "replay-proxy",
       "to": "contracts",
       "lang": "python",
       "examples": [
@@ -437,11 +426,31 @@
       ]
     }
   ],
-  "cycles": [
+  "cycles": [],
+  "layers": [
     [
-      "cli",
-      "replay-proxy"
+      "acef",
+      "contracts-typescript",
+      "replay-sandbox-protocol",
+      "schemas",
+      "sdk-typescript",
+      "verifier",
+      "verifier-typescript"
+    ],
+    [
+      "contracts",
+      "explain",
+      "local-sidecar",
+      "sdk-typescript-sidecar-bundle"
+    ],
+    [
+      "evals",
+      "gate",
+      "replay-proxy",
+      "sdk-python"
+    ],
+    [
+      "cli"
     ]
-  ],
-  "layers": null
+  ]
 }

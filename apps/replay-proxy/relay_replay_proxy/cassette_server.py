@@ -3,7 +3,7 @@
 Given an HTTPS request the agent sent through the proxy, find the
 matching cassette entry and return the recorded response. The cassette
 file format is the JSONL format defined in
-``packages/cli/src/relay_cli/cassette.py`` (parsed via
+``apps/local-sidecar/relay_sidecar/cassette.py`` (parsed via
 ``parse_cassette``).
 
 VAL-W7-008: lookups are confined to ``~/.relay/cassettes/<session>/``.
@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Protocol
 
-from relay_cli.cassette import (
+from relay_sidecar.cassette import (
     Cassette,
     CassetteEntry,
     CassetteFormatError,

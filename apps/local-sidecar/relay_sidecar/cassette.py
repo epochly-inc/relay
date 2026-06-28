@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from relay_sidecar.primitives import local_atomic_file_write
+from .primitives import local_atomic_file_write
 
 CASSETTE_HEADER_SCHEMA_VERSION: Final[str] = "relay.cassette.v1"
 CASSETTE_ENTRY_SCHEMA_VERSION: Final[str] = "relay.cassette_entry.v1"

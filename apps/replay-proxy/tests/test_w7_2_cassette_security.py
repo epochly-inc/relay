@@ -26,7 +26,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from relay_cli.cassette import (
+from relay_replay_proxy.cassette_format import (
+    CanonicalKeyConfig,
+    CanonicalRequest,
+    _filter_headers,
+    _read_output_body,
+    _verify_output_digest,
+)
+from relay_replay_proxy.cassette_server import CassetteServer, IncomingRequest
+from relay_replay_proxy.errors import RelayCassetteCorruptError
+from relay_sidecar.cassette import (
     CASSETTE_ENTRY_SCHEMA_VERSION,
     CASSETTE_HEADER_SCHEMA_VERSION,
     CassetteEntry,
@@ -38,15 +47,6 @@ from relay_cli.cassette import (
     serialize_cassette,
     write_cassette_file,
 )
-from relay_replay_proxy.cassette_format import (
-    CanonicalKeyConfig,
-    CanonicalRequest,
-    _filter_headers,
-    _read_output_body,
-    _verify_output_digest,
-)
-from relay_replay_proxy.cassette_server import CassetteServer, IncomingRequest
-from relay_replay_proxy.errors import RelayCassetteCorruptError
 
 pytestmark = pytest.mark.plumbing
 

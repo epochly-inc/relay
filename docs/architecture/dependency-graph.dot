@@ -32,7 +32,6 @@ digraph relay_deps {
   "gate" -> "local-sidecar";
   "gate" -> "schemas";
   "local-sidecar" -> "schemas";
-  "replay-proxy" -> "cli";
   "replay-proxy" -> "contracts";
   "replay-proxy" -> "local-sidecar";
   "replay-proxy" -> "schemas";
