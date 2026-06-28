@@ -51,7 +51,6 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import shutil
 import subprocess
