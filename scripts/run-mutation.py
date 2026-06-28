@@ -191,10 +191,45 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
             [
                 "packages/verifier/tests/test_merkle_property.py",
                 "packages/verifier/tests/test_parity_006_merkle_inclusion.py",
+                "packages/verifier/tests/test_merkle_mut_root_hex.py",
+                "packages/verifier/tests/test_merkle_mut_build.py",
+                "packages/verifier/tests/test_merkle_mut_verify.py",
             ],
         ],
         "why": "RFC-6962 merkle inclusion/root -- keystone #16 (Py<->TS parity); "
                "lonely-leaf promotion for non-power-of-2 trees.",
+        # 19 logic equivalents (docs/architecture/mutation-equivalents.md Class D),
+        # all proven by structural invariants of the tree walk. Killable same-line
+        # same-op variants are killed by the corpus, so only the equivalent variant
+        # survives on each (line, op).
+        "justified_equivalents": [
+            # Even-index sibling arithmetic: the reduction/build loops index with
+            # `range(0, n-1, 2)` (i always even) or the even-branch of `idx % 2`,
+            # so for the reachable operand `i + 1 == i | 1 == i ^ 1`.
+            {"lines": [95, 208, 209, 214], "op_contains": "Add_BitOr",
+             "reason": "even index i (range step 2 / even idx-branch) -> i+1 == i|1."},
+            {"lines": [95, 208, 209, 214], "op_contains": "Add_BitXor",
+             "reason": "even index i -> i+1 == i^1 (flips the clear low bit)."},
+            {"lines": [207], "op_contains": "Sub_BitXor",
+             "reason": "reached only when idx is ODD (idx%2==1), so idx-1 == idx^1."},
+            # x % 2 is always in {0,1}; idx <= last invariant holds in the walk:
+            {"lines": [96, 153, 166, 206, 215], "op_contains": "Eq_GtE",
+             "reason": "x%2 in {0,1} -> ==1 equiv >=1; OR idx<=last invariant -> "
+                       "idx==last equiv idx>=last. Killable same-line == variants "
+                       "(idx%2>=0 always-true) are killed by the corpus."},
+            {"lines": [153], "op_contains": "Eq_LtE",
+             "reason": "idx%2==0 -> <=0 equiv (==0 over {0,1}). The idx<=last == "
+                       "variant is killed by the corpus."},
+            # Loop bounds are non-negative integers, so > 0 cannot diverge from != 0:
+            {"lines": [91, 152, 204], "op_contains": "Gt_NotEq",
+             "reason": "loop bound (len(level)/last) is always >= 0 -> `> 0` equiv "
+                       "`!= 0` (they only diverge for negative, unreachable)."},
+            # Reduction terminates at len(level)==1, so level[-1] is level[0]:
+            {"lines": [99], "op_contains": "NumberReplacer",
+             "reason": "loop exits at len(level)==1 -> level[-1] == level[0]. +1 "
+                       "sibling level[1] raises IndexError and is killed by the "
+                       "single-leaf property test; only the -1 variant survives."},
+        ],
     },
 }
 

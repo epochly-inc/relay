@@ -123,4 +123,47 @@ always a subset of `required` (built from `WHERE contract_id IN (required)`), so
 *, override=...)`: the `*` is the keyword-only-args separator, not an arithmetic
 operator; mutating it has no runtime behavior (same class as B5).
 
-Spec: §C, §H, §AM
+## Class D -- verifier merkle.py logic equivalents (19)
+
+`packages/verifier/src/relay_verifier/merkle.py` (RFC-6962). After 16 of 35
+survivors were killed by targeted tests (`tests/test_merkle_mut_*.py`: out-of-range
+`build_inclusion_proof` index guard, `_hex_to_bytes` length/hex validation, the
+`verify_inclusion_proof` size/bounds checks and identity (`is`) swaps), 19 remain
+as structural equivalents (encoded in `scripts/run-mutation.py` `merkle.justified_
+equivalents`). On any line with multiple same-operator mutants, the KILLABLE
+variant is killed by the corpus, so only the equivalent variant survives.
+
+### D1. Even-index sibling arithmetic (Add_BitOr / Add_BitXor; L95, L208, L209, L214)
+
+The reduction (`compute_merkle_root`) and build (`build_inclusion_proof`) loops
+index siblings with `range(0, len(level) - 1, 2)` (so `i` is always even) or the
+even branch of `idx % 2`. For an even integer the low bit is clear, so
+`i + 1 == i | 1 == i ^ 1`. The mutated sibling index is identical on every
+reachable iteration -> same root/proof.
+
+### D2. Odd-index sibling (Sub_BitXor; L207)
+
+`level[idx - 1]` runs only inside `if idx % 2 == 1` (idx odd); for an odd integer
+`idx - 1 == idx ^ 1`. Same sibling.
+
+### D3. `% 2` and `idx <= last` comparisons (Eq_GtE; L96, L153, L166, L206, L215 / Eq_LtE; L153)
+
+`x % 2` is always in `{0, 1}`, so `== 1` is identical to `>= 1` and `== 0` to
+`<= 0`. The walk also maintains the invariant `idx <= last` (both floor-divided by
+2 each level), so `idx == last` is identical to `idx >= last`. The killable
+same-line `==` variants (e.g. `idx % 2 >= 0`, always true) are killed by the
+corpus.
+
+### D4. Non-negative loop bound (Gt_NotEq; L91, L152, L204)
+
+`len(level)` / `last` are non-negative integers that terminate at >= 0, so the
+loop guard `> 0` cannot diverge from `!= 0` (they differ only for a negative
+value, which is unreachable).
+
+### D5. Single-element return (NumberReplacer; L99)
+
+The reduction loop exits at `len(level) == 1`, so `level[-1]` is `level[0]`. The
+`+1` sibling `level[1]` raises IndexError and is killed by the single-leaf
+property test; only the unobservable `-1` variant survives.
+
+Spec: §C, §H, §AM, §AO
