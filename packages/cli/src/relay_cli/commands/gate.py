@@ -553,10 +553,28 @@ def _flush_backoff_log(entries: list[dict[str, int]]) -> None:
     path = os.environ.get(ENV_GATE_BACKOFF_LOG, "").strip()
     if not path or not entries:
         return
+    # Append-only diagnostic JSONL. Use the sanctioned local-append pattern
+    # (os.open with O_WRONLY|O_APPEND|O_CREAT + a SINGLE os.write of the whole
+    # batch) instead of a buffered ``open(path, "a")``: POSIX O_APPEND makes each
+    # write land atomically at end-of-file, so a crash mid-flush never leaves a
+    # torn JSONL line, and the raw os.open does NOT bypass the keystone-#8
+    # atomic-persistence primitives -- VAL-W5-034 / spec sec H scope the
+    # primitives to atomic-REPLACE writes of state/evidence (open(..., "w")),
+    # whereas this is best-effort append-only diagnostic telemetry (mirrors the
+    # sanctioned relay_replay_proxy.cassette_format.append_record O_APPEND write).
+    # Any OSError is swallowed: the backoff log is diagnostics, never evidence.
+    payload = "".join(
+        json.dumps(e, separators=(",", ":")) + "\n" for e in entries
+    ).encode("utf-8")
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
     try:
-        with open(path, "a", encoding="utf-8") as fh:
-            for e in entries:
-                fh.write(json.dumps(e, separators=(",", ":")) + "\n")
+        fd = os.open(path, flags, 0o600)
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
     except OSError:
         pass
 

@@ -473,6 +473,45 @@ def test_gate_evaluate_network_partition_backoff(tmp_path: Path) -> None:
 
 
 @pytest.mark.plumbing
+def test_f9_backoff_log_uses_atomic_append_not_truncating_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F9 (keystone #8 hygiene): the backoff log writer APPENDS atomically.
+
+    The diagnostic backoff log was written with a bare ``open(path, "a")`` --
+    which the VAL-W5-034 atomic-primitives guard (scoped to ``open(..., "w")``
+    atomic-REPLACE writes) does not flag, but which is buffered and can leave a
+    torn JSONL line on a crash. It now uses the sanctioned local-append pattern
+    (os.open O_WRONLY|O_APPEND|O_CREAT + a single os.write), mirroring
+    cassette_format.append_record. This pins the behaviour: a SECOND flush
+    APPENDS (does not truncate the first), every line is valid JSON, and the file
+    is created 0o600."""
+    from relay_cli.commands import gate as gate_mod
+
+    log = tmp_path / "backoff.log"
+    monkeypatch.setenv(gate_mod.ENV_GATE_BACKOFF_LOG, str(log))
+
+    gate_mod._flush_backoff_log([{"backoff_ms": 1000}])
+    # A SECOND call MUST append, not truncate (the O_APPEND property).
+    gate_mod._flush_backoff_log([{"backoff_ms": 2000}, {"backoff_ms": 4000}])
+
+    lines = [
+        json.loads(ln) for ln in log.read_text().splitlines() if ln.strip()
+    ]
+    assert lines == [
+        {"backoff_ms": 1000},
+        {"backoff_ms": 2000},
+        {"backoff_ms": 4000},
+    ], lines
+    # Created with owner-only perms (the sanctioned 0o600 mode).
+    assert (log.stat().st_mode & 0o777) == 0o600
+
+    # Empty entries / unset env are no-ops (best-effort telemetry).
+    gate_mod._flush_backoff_log([])
+    assert log.read_text().count("\n") == 3
+
+
+@pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-V2M07-016")
 def test_gate_evaluate_ttl_expired_exits_4(tmp_path: Path) -> None:
     """RELAY-GATE-024 (draft TTL expired) exits 4."""
