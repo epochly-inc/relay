@@ -57,7 +57,7 @@ def cel():
             "relay_cel_wasm.wasm",
         )
     )
-    if not os.path.exists(wasm):
+    if not os.path.exists(wasm) and not os.environ.get("CEL_WASM"):
         pytest.skip(
             "wasm not built: run "
             "`cargo build --release --target wasm32-unknown-unknown` "
