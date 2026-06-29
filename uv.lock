@@ -1051,12 +1051,12 @@ source = { editable = "packages/verifier" }
 dependencies = [
     { name = "asn1crypto" },
     { name = "cryptography" },
-    { name = "epochly-relay-schemas" },
     { name = "rfc3161-client" },
 ]
 
 [package.optional-dependencies]
 test = [
+    { name = "epochly-relay-schemas" },
     { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-timeout" },
@@ -1066,7 +1066,7 @@ test = [
 requires-dist = [
     { name = "asn1crypto", specifier = ">=1.5" },
     { name = "cryptography", specifier = ">=42" },
-    { name = "epochly-relay-schemas", editable = "packages/schemas" },
+    { name = "epochly-relay-schemas", marker = "extra == 'test'", editable = "packages/schemas" },
     { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.100" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
