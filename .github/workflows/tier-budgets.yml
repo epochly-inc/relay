@@ -61,6 +61,15 @@ on:
 permissions:
   contents: read
 
+# The cel-wasm plumbing tests load the CEL engine from $CEL_WASM; these jobs do
+# not build the Rust crate, so point it at the committed, pinned-sha wasm under
+# packages/contracts (byte-identical to the crate build per the cel-wasm
+# reproducible-build + pinned-sha gates). The wasm-build time is NOT counted in
+# the tier budget (the budget times only the `pytest` step); the cel-wasm tests'
+# own runtime IS included, consistent with the 1380s plumbing budget.
+env:
+  CEL_WASM: ${{ github.workspace }}/packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.wasm
+
 jobs:
   # ---------------------------------------------------------------------------
   # Tier 1: plumbing.
