@@ -177,12 +177,16 @@ def test_sdist_ships_every_wheel_package(dist: str, src_rel: str) -> None:
     wheel, sdist = _wheel_packages_and_sdist_include(REPO_ROOT / src_rel)
     if not wheel or sdist is None:
         pytest.skip(f"{dist}: no explicit wheel packages or sdist ships all")
+    # An sdist entry covers wheel package ``w`` ONLY if it is ``w`` exactly or an
+    # ANCESTOR directory of ``w`` (e.g. ``src/`` covers ``src/verify_self``). A
+    # CHILD path (``src/verify_self/finding_codes.py``) does NOT cover the whole
+    # package, so the earlier ``s.startswith(w + "/")`` branch was a false
+    # negative (roborev 6755) and is intentionally absent.
     missing = [
         w
         for w in wheel
         if not any(
-            s.rstrip("/") == w or s.startswith(w + "/") or w.startswith(s.rstrip("/") + "/")
-            for s in sdist
+            s.rstrip("/") == w or w.startswith(s.rstrip("/") + "/") for s in sdist
         )
     ]
     assert not missing, (
