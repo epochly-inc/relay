@@ -72,6 +72,12 @@ dependencies = [
   # (VAL-W2-040). Pinned with a conservative upper bound to keep the wire
   # format stable across patch releases.
   "zstandard>=0.22,<0.24",
+  # state_engine.transitions hard-imports `yaml` at module scope and calls
+  # yaml.safe_load at import time to load the canonical state-machine YAML.
+  # Declared directly (matching the CLI's range) so the sidecar never relies
+  # on a transitive PyYAML provider -- it previously arrived via the SDK ->
+  # CLI edge, which was removed when the SDK <-> sidecar cycle was broken.
+  "PyYAML>=6.0,<7",
 ]
 
 [project.optional-dependencies]

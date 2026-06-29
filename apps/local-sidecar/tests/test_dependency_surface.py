@@ -72,6 +72,26 @@ def test_sidecar_does_not_runtime_depend_on_sdk() -> None:
 
 
 @pytest.mark.plumbing
+def test_pyyaml_is_a_declared_runtime_dependency() -> None:
+    """``PyYAML`` MUST be a direct sidecar runtime dependency.
+
+    ``relay_sidecar.state_engine.transitions`` hard-imports ``yaml`` at
+    module scope (``import yaml``) and calls ``yaml.safe_load`` at import
+    time. Before the SDK runtime edge was removed, PyYAML arrived
+    transitively (sidecar -> SDK -> CLI -> PyYAML). With that edge gone, a
+    fresh ``pip install epochly-relay-sidecar`` would crash on
+    ``import yaml`` unless the sidecar declares PyYAML directly. A hard
+    third-party import must never rely on a transitive provider.
+    """
+    deps = _runtime_dep_names()
+    assert "pyyaml" in deps, (
+        "PyYAML must be a direct sidecar runtime dependency "
+        "(relay_sidecar.state_engine.transitions hard-imports yaml); "
+        f"got {sorted(deps)!r}"
+    )
+
+
+@pytest.mark.plumbing
 def test_sidecar_production_does_not_import_sdk() -> None:
     """No production sidecar module may import the SDK (``relay``) at runtime."""
     offenders: list[str] = []
