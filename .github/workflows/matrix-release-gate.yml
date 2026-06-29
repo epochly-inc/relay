@@ -77,7 +77,15 @@ jobs:
       - name: build typescript contracts package
         run: npm run build --workspace @epochly/relay-contracts
       - name: install workspace deps
-        run: uv sync --all-packages --all-extras
+        # Exclude the `mitmproxy` extra: it is only needed for the smoke-tier
+        # mitmdump driver (the plumbing tier these legs run uses the in-process
+        # driver, and no plumbing test imports the mitmproxy package -- the
+        # addon is an executed string, mitmdump is spawned as a subprocess). It
+        # also has NO py3.14 wheel for its transitive mitmproxy-linux-ebpf, which
+        # then tries to build from source and fails ("Failed to find bpf-linker
+        # on PATH"), breaking the py3.14 leg. Smoke tier (py3.12, wheel present)
+        # keeps it.
+        run: uv sync --all-packages --all-extras --no-extra mitmproxy
       - name: run plumbing tier
         id: plumb
         run: uv run pytest -m plumbing --timeout=60 -q
@@ -115,7 +123,15 @@ jobs:
       - name: build typescript contracts package
         run: npm run build --workspace @epochly/relay-contracts
       - name: install workspace deps
-        run: uv sync --all-packages --all-extras
+        # Exclude the `mitmproxy` extra: it is only needed for the smoke-tier
+        # mitmdump driver (the plumbing tier these legs run uses the in-process
+        # driver, and no plumbing test imports the mitmproxy package -- the
+        # addon is an executed string, mitmdump is spawned as a subprocess). It
+        # also has NO py3.14 wheel for its transitive mitmproxy-linux-ebpf, which
+        # then tries to build from source and fails ("Failed to find bpf-linker
+        # on PATH"), breaking the py3.14 leg. Smoke tier (py3.12, wheel present)
+        # keeps it.
+        run: uv sync --all-packages --all-extras --no-extra mitmproxy
       - name: run plumbing tier
         id: plumb
         run: uv run pytest -m plumbing --timeout=60 -q
@@ -154,7 +170,15 @@ jobs:
       - name: build typescript contracts package
         run: npm run build --workspace @epochly/relay-contracts
       - name: install workspace deps
-        run: uv sync --all-packages --all-extras
+        # Exclude the `mitmproxy` extra: it is only needed for the smoke-tier
+        # mitmdump driver (the plumbing tier these legs run uses the in-process
+        # driver, and no plumbing test imports the mitmproxy package -- the
+        # addon is an executed string, mitmdump is spawned as a subprocess). It
+        # also has NO py3.14 wheel for its transitive mitmproxy-linux-ebpf, which
+        # then tries to build from source and fails ("Failed to find bpf-linker
+        # on PATH"), breaking the py3.14 leg. Smoke tier (py3.12, wheel present)
+        # keeps it.
+        run: uv sync --all-packages --all-extras --no-extra mitmproxy
       - name: run plumbing tier
         id: plumb
         run: uv run pytest -m plumbing --timeout=60 -q
