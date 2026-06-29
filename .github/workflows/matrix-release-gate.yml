@@ -60,7 +60,13 @@ jobs:
   leg-py312:
     name: "leg: py3.12"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30 min (was 20): the cel-wasm cutover grew the plumbing tier (the
+    # cel-wasm tests now run via CEL_WASM, plus the ~300s corpus-staleness
+    # regen), pushing a leg's full run to ~19-20 min -- py3.12 finished at
+    # 19m17s but py3.13/py3.14 tipped over 20 min and were cancelled. Matches
+    # the tier-budgets plumbing job timeout (also 30) and clears the 1380s
+    # (23 min) plumbing tier budget plus install/build overhead.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -106,7 +112,13 @@ jobs:
   leg-py313:
     name: "leg: py3.13"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30 min (was 20): the cel-wasm cutover grew the plumbing tier (the
+    # cel-wasm tests now run via CEL_WASM, plus the ~300s corpus-staleness
+    # regen), pushing a leg's full run to ~19-20 min -- py3.12 finished at
+    # 19m17s but py3.13/py3.14 tipped over 20 min and were cancelled. Matches
+    # the tier-budgets plumbing job timeout (also 30) and clears the 1380s
+    # (23 min) plumbing tier budget plus install/build overhead.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -153,7 +165,13 @@ jobs:
   leg-py314:
     name: "leg: py3.14"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30 min (was 20): the cel-wasm cutover grew the plumbing tier (the
+    # cel-wasm tests now run via CEL_WASM, plus the ~300s corpus-staleness
+    # regen), pushing a leg's full run to ~19-20 min -- py3.12 finished at
+    # 19m17s but py3.13/py3.14 tipped over 20 min and were cancelled. Matches
+    # the tier-budgets plumbing job timeout (also 30) and clears the 1380s
+    # (23 min) plumbing tier budget plus install/build overhead.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
