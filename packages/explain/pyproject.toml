@@ -45,6 +45,12 @@ dependencies = [
   # epochly-relay-schemas. Workspace dependency; uv resolves from the
   # workspace tree (CLAUDE.md import-boundary rule).
   "epochly-relay-schemas",
+  # relay_explain.api exposes the FastAPI router for the explanation surface,
+  # and relay_explain.engine does a late module-scope import of
+  # InMemoryPromotionService FROM api, so `import relay_explain` requires
+  # FastAPI at import time. Pinned to match the sidecar's range so the
+  # workspace resolves one FastAPI version.
+  "fastapi>=0.115,<0.117",
 ]
 
 [project.optional-dependencies]

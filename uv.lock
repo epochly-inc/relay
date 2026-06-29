@@ -791,8 +791,10 @@ dependencies = [
     { name = "cryptography" },
     { name = "epochly-relay" },
     { name = "epochly-relay-acef" },
+    { name = "epochly-relay-contracts" },
     { name = "epochly-relay-schemas" },
     { name = "epochly-relay-sidecar" },
+    { name = "epochly-relay-verifier" },
     { name = "httpx" },
     { name = "pyyaml" },
     { name = "sigstore" },
@@ -811,8 +813,10 @@ requires-dist = [
     { name = "cryptography", specifier = ">=44,<46" },
     { name = "epochly-relay", editable = "packages/sdk-python" },
     { name = "epochly-relay-acef", editable = "packages/acef" },
+    { name = "epochly-relay-contracts", editable = "packages/contracts" },
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
     { name = "epochly-relay-sidecar", editable = "apps/local-sidecar" },
+    { name = "epochly-relay-verifier", editable = "packages/verifier" },
     { name = "httpx", specifier = ">=0.27,<0.29" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
@@ -878,6 +882,7 @@ version = "0.0.0"
 source = { editable = "packages/explain" }
 dependencies = [
     { name = "epochly-relay-schemas" },
+    { name = "fastapi" },
 ]
 
 [package.optional-dependencies]
@@ -889,6 +894,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "epochly-relay-schemas", editable = "packages/schemas" },
+    { name = "fastapi", specifier = ">=0.115,<0.117" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
 ]
@@ -930,6 +936,7 @@ version = "0.0.0"
 source = { editable = "apps/replay-proxy" }
 dependencies = [
     { name = "cryptography" },
+    { name = "epochly-relay-contracts" },
     { name = "epochly-relay-sidecar" },
 ]
 
@@ -950,6 +957,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'test'", specifier = ">=3.9" },
     { name = "cryptography", specifier = ">=42,<46" },
     { name = "epochly-relay-cli", marker = "extra == 'test'", editable = "packages/cli" },
+    { name = "epochly-relay-contracts", editable = "packages/contracts" },
     { name = "epochly-relay-sidecar", editable = "apps/local-sidecar" },
     { name = "mitmproxy", marker = "extra == 'mitmproxy'", specifier = ">=10,<13" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
@@ -981,7 +989,9 @@ name = "epochly-relay-schemas"
 version = "0.1.20"
 source = { editable = "packages/schemas" }
 dependencies = [
+    { name = "jsonschema" },
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -996,9 +1006,11 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "jsonschema", specifier = ">=4.21" },
     { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "pyyaml", marker = "extra == 'codegen'", specifier = ">=6.0" },
     { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },
 ]

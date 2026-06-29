@@ -40,6 +40,11 @@ dependencies = [
   # the parser/digest the driver + mitmproxy addon use (moved here when the
   # cli<->replay-proxy import cycle was broken). Genuine runtime dependency.
   "epochly-relay-sidecar",
+  # cassette_format.py imports `relay_contracts.canonical.jcs_canonicalize`
+  # (RFC 8785 JCS) at module scope to canonicalize the request/response digest
+  # inputs; relay_replay_proxy/__init__ re-exports cassette_format, so this is
+  # a hard import-time dependency (a standalone install fails without it).
+  "epochly-relay-contracts",
 ]
 
 [project.optional-dependencies]
@@ -79,3 +84,4 @@ include = [
 [tool.uv.sources]
 epochly-relay-sidecar = { workspace = true }
 epochly-relay-cli = { workspace = true }
+epochly-relay-contracts = { workspace = true }
