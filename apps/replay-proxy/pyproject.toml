@@ -20,12 +20,12 @@ name = "epochly-relay-replay-proxy"
 version = "0.0.0"
 description = "Relay localhost mitmproxy harness for rly replay run (W7.1)."
 readme = "README.md"
-# >=3.12.4 (not >=3.12): replay-proxy runtime-depends on `epochly-relay-sidecar`,
-# which hard-depends on `epochly-relay` (the SDK) -- pinned >=3.12.4 for its
-# CVE-2024-4032-dependent egress SSRF guard. The transitive path makes
-# 3.12.0-3.12.3 unresolvable, so the floor is declared honestly here. (The CLI
-# is a test-only extra and is no longer part of the runtime floor justification.)
-requires-python = ">=3.12.4"
+# >=3.12: the workspace baseline. The harness denies egress at the proxy layer
+# (cassette-miss rejection), not via the SDK's ipaddress-based SSRF classifier,
+# so it has no CVE-2024-4032-dependent code. Its only first-party runtime dep is
+# `epochly-relay-sidecar` (>=3.12, loopback-only); the SDK is not on the runtime
+# path, and the CLI is a test-only extra. (The SDK/CLI keep >=3.12.4.)
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [
   { name = "Epochly, Inc.", email = "engineering@epochly.com" },

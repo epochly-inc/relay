@@ -22,11 +22,12 @@ name = "epochly-relay-sidecar"
 version = "0.1.20"
 description = "Relay local sidecar (W2.1 lockfile + spawn skeleton)."
 readme = "README.md"
-# >=3.12.4 (not >=3.12): the sidecar hard-depends on `epochly-relay` (the SDK),
-# which pins >=3.12.4 for its CVE-2024-4032-dependent egress SSRF guard. Declaring
-# the floor here keeps the metadata consistent with the resolvable dependency
-# graph (a 3.12.0-3.12.3 install cannot resolve the transitive SDK dep anyway).
-requires-python = ">=3.12.4"
+# >=3.12: the workspace baseline (matches epochly-relay-schemas). The sidecar
+# binds loopback only and has no CVE-2024-4032-dependent egress SSRF code of its
+# own; it no longer runtime-depends on `epochly-relay` (the SDK), so the stricter
+# >=3.12.4 SDK floor no longer applies to this standalone publish surface. (The
+# SDK and CLI keep >=3.12.4; the dev workspace root also stays >=3.12.4.)
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [
   { name = "Epochly, Inc.", email = "engineering@epochly.com" },
@@ -58,13 +59,15 @@ dependencies = [
   # all three OSes.
   "portalocker>=2.10,<3",
   # Schemas package: the W1 EventLogEntry Pydantic model is reused by the
-  # local JSONL event log writer (spec H.5 "local-only event log").
+  # local JSONL event log writer (spec H.5 "local-only event log"). Also
+  # the home of the shared ReDoS budget: the server-side enforcement at
+  # POST /v1/redaction-policies reuses
+  # ``relay_schemas.redaction_budget.evaluate_matcher_budget`` rather than
+  # duplicating the 50 ms wall-clock budget logic (VAL-V3M5-004, spec AI
+  # line 5665). The budget moved here from the SDK when the SDK <-> sidecar
+  # package cycle was broken, so the sidecar no longer runtime-depends on
+  # ``epochly-relay`` (the SDK).
   "epochly-relay-schemas",
-  # SDK package: the server-side ReDoS budget enforcement at
-  # POST /v1/redaction-policies reuses ``relay.redaction_budget.
-  # evaluate_matcher_budget`` rather than duplicating the 50 ms
-  # wall-clock budget logic (VAL-V3M5-004, spec AI line 5665).
-  "epochly-relay",
   # W2.5: zstandard compression for the rolling event-log archive
   # (VAL-W2-040). Pinned with a conservative upper bound to keep the wire
   # format stable across patch releases.
