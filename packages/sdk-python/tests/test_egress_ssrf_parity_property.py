@@ -278,12 +278,24 @@ def _ipv6_transition(draw: st.DrawFn) -> str:
     return f"::{a}.{b}.{c}.{d}"
 
 
+# RFC 6874 zone identifiers spanning the CPython<->Node net.isIP acceptance
+# boundary: CPython ipaddress accepts ANY non-empty scope without ``%`` (so a
+# space / underscore / punctuation zone parses + classifies), while Node net.isIP
+# is stricter and rejects those (returns 0). The isIP-rejected-but-CPython-valid
+# zones ("eth_0", "bad zone", "eth0!") are the fail-open class the final re-hunt
+# surfaced; the empty / double-% zones are the CPython-REJECTS class. Both must
+# stay Py<->TS byte-identical.
+_ipv6_zone = st.sampled_from(
+    ["eth0", "eth-0", "1", "eth_0", "bad zone", "eth0!", "%", "a%b", ""]
+)
+
+
 @st.composite
 def _ipv6_bracketed(draw: st.DrawFn) -> str:
     """RFC 3986 bracketed IPv6 authority, optionally with :port and zone id."""
     inner = draw(st.one_of(_ipv6_special, _ipv6_random()))
     if draw(st.booleans()):
-        inner = inner + "%eth0"
+        inner = inner + "%" + draw(_ipv6_zone)
     bracketed = f"[{inner}]"
     if draw(st.booleans()):
         bracketed = bracketed + ":" + str(draw(st.integers(min_value=1, max_value=65535)))

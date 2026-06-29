@@ -256,4 +256,48 @@ describe("IPv6 zone identifiers (RFC 6874) parity with CPython", () => {
       expect(classifyEntry(entry)).toBeNull();
     });
   }
+
+  // ACCEPTANCE-BOUNDARY divergence (final-rehunt P1): CPython
+  // ipaddress._split_scope_id accepts ANY non-empty scope that contains no
+  // ``%`` -- including spaces, underscores, and punctuation -- but Node
+  // net.isIP is STRICTER and returns 0 for those. Relying on isIP(host) to
+  // gate IPv6 classification therefore FAILS OPEN: CPython parses + DENIES the
+  // address while TS would skip the IPv6 path and ALLOW. _classify must strip a
+  // CPython-valid zone iff the address part is a valid IPv6 literal.
+  const ISIP_REJECTED_ZONE_DENY = [
+    { entry: "fe80::1%eth_0", reason: "link_local", cidr: "fe80::/10" },
+    { entry: "fe80::1%eth 0", reason: "link_local", cidr: "fe80::/10" },
+    { entry: "fe80::1%eth0!", reason: "link_local", cidr: "fe80::/10" },
+    // The AWS/cloud metadata endpoint via IPv4-mapped IPv6 with an
+    // isIP-rejected zone -- the load-bearing fail-open case.
+    {
+      entry: "::ffff:169.254.169.254%bad zone",
+      reason: "cloud_metadata",
+      cidr: "169.254.169.254",
+    },
+    {
+      entry: "[::ffff:169.254.169.254%bad zone]",
+      reason: "cloud_metadata",
+      cidr: "169.254.169.254",
+    },
+  ] as const;
+  for (const c of ISIP_REJECTED_ZONE_DENY) {
+    it(`denies ${c.entry} as ${c.reason} (CPython-valid zone, isIP rejects)`, () => {
+      expect(classifyEntry(c.entry)).toEqual({ reason: c.reason, cidr: c.cidr });
+    });
+  }
+
+  // Zones are IPv6-ONLY in CPython: an IPv4 (or non-IPv6) address with a
+  // ``%zone`` does NOT parse there (ip_address raises) -> hostname path ->
+  // ALLOWED, even for a private/metadata IPv4. TS must NOT strip the zone and
+  // classify the bare IPv4 (that would over-block and diverge from CPython).
+  for (const entry of [
+    "10.0.0.1%eth0",
+    "169.254.169.254%x",
+    "example.com%20foo",
+  ] as const) {
+    it(`allows ${entry} (zones are IPv6-only; IPv4/host with %zone does not parse)`, () => {
+      expect(classifyEntry(entry)).toBeNull();
+    });
+  }
 });

@@ -878,12 +878,37 @@ function _classify(host: string): readonly [string, string] | null {
     }
     return null;
   }
-  const kind = isIP(host);
+  // RFC 6874 IPv6 zone identifier (``addr%zone``). CPython
+  // ipaddress.ip_address parses a zone on an IPv6 literal (classifying on the
+  // address bits; the scope is metadata) and accepts ANY non-empty scope that
+  // contains no ``%`` (ipaddress._split_scope_id). Node net.isIP is STRICTER --
+  // it returns 0 for a scope with a space/underscore/punctuation -- so gating
+  // IPv6 classification on isIP(host) alone FAILS OPEN: an address with a
+  // CPython-valid-but-isIP-rejected zone (e.g. the cloud-metadata endpoint
+  // ``::ffff:169.254.169.254%bad zone``) would skip the IPv6 path, fall to the
+  // hostname denylist, miss, and ALLOW -- diverging from CPython which DENIES
+  // (keystone #9 default-deny egress, #16 Py<->TS parity). Strip a CPython-valid
+  // zone here, but ONLY when the address part is a valid IPv6 literal: zones are
+  // IPv6-ONLY in CPython, so an IPv4 (or invalid) address carrying a ``%zone``
+  // does NOT parse there (ip_address raises) -> hostname path -> ALLOW (e.g.
+  // ``10.0.0.1%eth0``). Preserve that by NOT stripping unless isIP(addr) === 6.
+  let singleHost = host;
+  const zonePct = host.indexOf("%");
+  if (zonePct >= 0) {
+    const scope = host.slice(zonePct + 1);
+    if (scope.length > 0 && !scope.includes("%")) {
+      const addr = host.slice(0, zonePct);
+      if (isIP(addr) === 6) {
+        singleHost = addr;
+      }
+    }
+  }
+  const kind = isIP(singleHost);
   if (kind === 4) {
-    return _classifyIpv4(host);
+    return _classifyIpv4(singleHost);
   }
   if (kind === 6) {
-    return _classifyIpv6(host);
+    return _classifyIpv6(singleHost);
   }
   // Not a literal IP per the strict parser. First, the numeric-IPv4
   // encodings the libc resolver accepts (integer / hex / octal / short-form):
