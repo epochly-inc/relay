@@ -72,6 +72,20 @@ class RelayCel:
 
     def __init__(self, wasm_path: str | None = None):
         path = wasm_path or os.environ.get("CEL_WASM", _DEFAULT_WASM)
+        # Fall back to $CEL_WASM when the requested module is absent -- e.g. a
+        # Python-only CI leg (or a fresh checkout) that did NOT run
+        # `cargo build --release --target wasm32-unknown-unknown`, so the crate
+        # build at _DEFAULT_WASM (and the explicit crate path several tests pass)
+        # does not exist. CEL_WASM points at the committed, pinned-sha wasm,
+        # which is byte-identical to the crate build (enforced by the cel-wasm
+        # reproducible-build + pinned-sha gates), so the fallback is equivalent
+        # to the crate artifact. A present `path` is loaded unchanged; only the
+        # missing-artifact case (which would otherwise raise FileNotFoundError)
+        # consults the env override.
+        if not os.path.exists(path):
+            env_path = os.environ.get("CEL_WASM")
+            if env_path and os.path.exists(env_path):
+                path = env_path
         self._engine = Engine()
         self._module = Module.from_file(self._engine, path)
         self._reinit()
