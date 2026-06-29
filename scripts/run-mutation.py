@@ -67,9 +67,14 @@ TARGETS: Final[dict[str, dict[str, object]]] = {
                 "packages/sdk-python/tests/test_iso018_ssrf_ipv4_mapped_ipv6.py",
                 "packages/sdk-python/tests/test_v3m5_idn_homograph_sdk.py",
             ],
-            # Separate process: this hardening file fails 5 SSRF tests if run in
-            # the SAME process (cross-package conftest/state pollution -- a real
-            # test-isolation finding) but composes fine on its own.
+            # Own process group. The harness runs every group in a separate
+            # process and unions their kills, so a dedicated group is the
+            # default design (not a workaround). An earlier same-process run of
+            # this file alongside the group-1 SSRF tests reportedly failed 5
+            # SSRF tests (cross-package state pollution); that is NOT
+            # reproducible in the current tree -- verified both orders, 81
+            # passed -- so the separate group is retained defensively, not as a
+            # known-active isolation defect.
             ["tests/hardening/test_v2m08_ai_hardening.py"],
         ],
         "why": "SSRF egress classifier + manifest homograph guard; Py<->TS parity-critical.",
