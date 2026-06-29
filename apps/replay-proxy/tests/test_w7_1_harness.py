@@ -295,6 +295,35 @@ def test_agent_env_atomically_sets_all_required_vars(
         ENV_REPLAY_PROXY_URL,
     ):
         assert var in env, f"required env var {var} missing from agent env"
+
+
+@pytest.mark.fulfills("VAL-W7-083")
+def test_agent_env_strips_no_proxy_and_overrides_lowercase_proxy(
+    harness: HarnessSession,
+) -> None:
+    """The layered default-deny (VAL-W7-083) forces the agent subprocess
+    through the replay proxy. A hostile/inherited ``NO_PROXY``/``no_proxy``
+    (a bypass list, or ``*``) or a lowercase ``https_proxy``/``http_proxy``
+    pointing elsewhere would let the agent reach hosts WITHOUT the proxy.
+    agent_env must neutralize NO_PROXY (both cases) and force BOTH the upper-
+    and lower-case proxy vars to the replay proxy (re-hunt #9)."""
+    env = harness.agent_env(
+        parent_env={
+            "PATH": "/usr/bin",
+            "NO_PROXY": "example.com,localhost",
+            "no_proxy": "*",
+            "https_proxy": "http://evil.invalid:8080",
+            "http_proxy": "http://evil.invalid:8080",
+        }
+    )
+    proxy = env[ENV_HTTPS_PROXY]
+    assert proxy.startswith("http://127.0.0.1:")
+    # Lowercase variants forced to the replay proxy, NOT the hostile value.
+    assert env["https_proxy"] == proxy
+    assert env["http_proxy"] == proxy
+    # NO_PROXY / no_proxy neutralized so nothing carves out a bypass.
+    assert "NO_PROXY" not in env
+    assert "no_proxy" not in env
     # Parent env still flowed through (PATH was preserved).
     assert env["PATH"] == "/usr/bin"
 
@@ -724,6 +753,156 @@ def test_harness_signint_during_start_does_not_deadlock(
         completed = True
     assert completed, "stop() returned"
     assert time.time() < deadline, "stop() exceeded 5s budget (deadlock)"
+
+
+# -----------------------------------------------------------------------------
+# Malformed Content-Length must not crash the in-proc handler thread.
+#
+# The in-proc proxy's request handler parses the Content-Length header to
+# decide how many body bytes to read. A non-integer value ("abc", "1e9") or a
+# negative value ("-5") is attacker-controllable. A naive ``int(...)`` raises
+# an uncaught ValueError that crashes the handler thread instead of returning a
+# clean response. A robust HTTP server treats a missing / non-integer / negative
+# Content-Length as a zero-length body and still serves a controlled response.
+# -----------------------------------------------------------------------------
+
+
+def _send_raw_request(port: int, raw: bytes, *, timeout_s: float = 2.0) -> bytes:
+    """Send ``raw`` bytes to the proxy on ``port`` and return the full reply.
+
+    Returns the accumulated response bytes (possibly empty if the handler
+    crashed and the connection was reset/closed without a reply).
+    """
+    response = b""
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout_s) as sock:
+        sock.sendall(raw)
+        sock.settimeout(timeout_s)
+        while True:
+            try:
+                chunk = sock.recv(4096)
+            except (TimeoutError, ConnectionResetError, OSError):
+                break
+            if not chunk:
+                break
+            response += chunk
+    return response
+
+
+@pytest.mark.fulfills("VAL-W7-009")
+@pytest.mark.parametrize("bad_value", ["abc", "1e9", "-5", "", "0x10", " 12 "])
+def test_malformed_content_length_does_not_crash_handler(
+    harness: HarnessSession, bad_value: str
+) -> None:
+    """A request with a non-numeric or negative Content-Length is handled
+    without an unhandled exception AND fails CLOSED.
+
+    Previously a malformed Content-Length was coerced to length 0 and treated as
+    an empty body, so it flowed into the cassette lookup as {} -- which could HIT
+    an empty-object cassette entry and replay a recorded response for a DIFFERENT
+    (non-empty) request (roborev d4b5c6f). A malformed Content-Length is malformed
+    input (RFC 7230 sec 3.3.2), so the in-process driver now BLOCKS it with a
+    controlled 502 (RELAY-REPLAY-025) instead of treating it as empty. The
+    handler still never crashes the thread (it returns a controlled HTTP reply).
+    """
+    handle = harness.handle
+    assert handle is not None
+    raw = (
+        b"POST / HTTP/1.1\r\n"
+        b"Host: api.openai.com\r\n"
+        b"X-Relay-Provider: openai\r\n"
+        b"X-Relay-Model: gpt-4o-mini\r\n"
+        + f"Content-Length: {bad_value}\r\n".encode("ascii")
+        + b"Content-Type: application/json\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+    response = _send_raw_request(handle.proxy_port, raw)
+    # The handler must have produced a controlled HTTP status line. A crashed
+    # handler thread closes/resets the socket without writing any HTTP reply.
+    assert response.startswith(b"HTTP/"), (
+        f"handler did not return a controlled response for "
+        f"Content-Length={bad_value!r}; got: {response[:200]!r}"
+    )
+    # Fail-closed: a malformed Content-Length is BLOCKED (502), not treated as an
+    # empty body that could hit a {} cassette entry.
+    assert b"502" in response.split(b"\r\n", 1)[0], (
+        f"expected a 502 fail-closed block for malformed Content-Length; "
+        f"got: {response[:200]!r}"
+    )
+    assert b"RELAY-REPLAY-025" in response
+
+
+@pytest.mark.fulfills("VAL-W7-009")
+def test_proxy_still_alive_after_malformed_content_length(
+    harness: HarnessSession,
+) -> None:
+    """After a malformed Content-Length request, the proxy must remain alive
+    and continue serving subsequent valid requests (the handler thread did
+    not die and the server keeps accepting connections).
+    """
+    handle = harness.handle
+    assert handle is not None
+    # Fire a malformed request first.
+    bad = (
+        b"POST / HTTP/1.1\r\n"
+        b"Host: api.openai.com\r\n"
+        b"X-Relay-Provider: openai\r\n"
+        b"X-Relay-Model: gpt-4o-mini\r\n"
+        b"Content-Length: not-a-number\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+    _send_raw_request(handle.proxy_port, bad)
+    # Now a well-formed request must still get the canonical cassette hit.
+    request_body = json.dumps(
+        {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    good = (
+        b"POST / HTTP/1.1\r\n"
+        b"Host: api.openai.com\r\n"
+        b"X-Relay-Provider: openai\r\n"
+        b"X-Relay-Model: gpt-4o-mini\r\n"
+        + f"Content-Length: {len(request_body)}\r\n".encode("ascii")
+        + b"Content-Type: application/json\r\n"
+        b"Connection: close\r\n\r\n"
+        + request_body
+    )
+    response = _send_raw_request(handle.proxy_port, good)
+    assert b'"id":"resp1"' in response, (
+        f"proxy did not serve the canonical body after a malformed request; "
+        f"got: {response[:200]!r}"
+    )
+
+
+@pytest.mark.fulfills("VAL-W7-009")
+def test_valid_numeric_content_length_reads_body(
+    harness: HarnessSession,
+) -> None:
+    """A valid numeric Content-Length must still read the body and match the
+    recorded cassette entry (guards against the defensive fix breaking the
+    normal path)."""
+    handle = harness.handle
+    assert handle is not None
+    request_body = json.dumps(
+        {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    raw = (
+        b"POST / HTTP/1.1\r\n"
+        b"Host: api.openai.com\r\n"
+        b"X-Relay-Provider: openai\r\n"
+        b"X-Relay-Model: gpt-4o-mini\r\n"
+        + f"Content-Length: {len(request_body)}\r\n".encode("ascii")
+        + b"Content-Type: application/json\r\n"
+        b"Connection: close\r\n\r\n"
+        + request_body
+    )
+    response = _send_raw_request(handle.proxy_port, raw)
+    assert b'"id":"resp1"' in response, (
+        f"valid numeric Content-Length did not read the body / serve the hit; "
+        f"got: {response[:200]!r}"
+    )
 
 
 # Suppress unused-import lint on threading + EPHEMERAL_PORT_LOW/HIGH:

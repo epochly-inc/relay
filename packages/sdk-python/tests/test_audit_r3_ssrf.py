@@ -87,6 +87,109 @@ def test_ipv4_multicast_unspecified_and_documentation_rejected() -> None:
 
 
 @pytest.mark.plumbing
+def test_cidr_block_allowlist_entries_classified_by_network_address() -> None:
+    """A CIDR block whose network/address is internal must be DENIED -- the
+    replay sandbox accepts CIDR allowlist entries, so allowlisting a private
+    range (e.g. 10.0.0.0/8, fc00::/7) would otherwise authorize the whole block
+    (SSRF default-deny bypass). A public-network CIDR stays ALLOWED."""
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    for cidr in ("10.0.0.0/8", "192.168.0.0/16", "127.0.0.0/8", "fc00::/7"):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([cidr])
+    # BROAD supernets with a public-looking network address that nevertheless
+    # CONTAIN internal ranges must also be denied (overlap, not just the network
+    # address): 8.0.0.0/6 contains 10/8; 64.0.0.0/2 contains 127/8; /0 / /1 span
+    # everything.
+    for broad in ("0.0.0.0/0", "8.8.8.8/0", "8.8.8.0/1", "8.0.0.0/6", "64.0.0.0/2"):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([broad])
+    # A CIDR fully within public space is allowed (no exception).
+    validate_egress_entries(["8.8.8.0/24"])
+    validate_egress_entries(["8.0.0.0/8"])  # 8/8 is entirely public
+
+
+@pytest.mark.plumbing
+def test_ipv4_in_ipv6_transition_cidr_blocks_are_denied() -> None:
+    """A BROAD CIDR over an IPv4-in-IPv6 transition prefix (IPv4-mapped
+    ::ffff:0:0/96, 6to4 2002::/16, NAT64 64:ff9b::/96) must be DENIED.
+
+    A single transition address unwraps + classifies on its embedded IPv4
+    (so ``::ffff:10.0.0.1`` is already caught and ``::ffff:8.8.8.8`` stays
+    allowed), but a broad CIDR over the transition space has a public-looking
+    IPv6 network address while spanning denied embedded IPv4 ranges. Without
+    the transition supernets in ``_DENIED_SUPERNETS`` the overlap check would
+    pass it (SSRF default-deny bypass). The transition supernets themselves and
+    any sub-block must be refused.
+    """
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    for cidr in (
+        "::ffff:0:0/96",  # entire IPv4-mapped space
+        "::ffff:800:0/102",  # ::ffff:8.0.0.0/X sub-block (public-looking network)
+        "2002::/16",  # entire 6to4 space
+        "2002:800::/22",  # 6to4 sub-block
+        "64:ff9b::/96",  # entire NAT64 space
+        "64:ff9b::800:0/102",  # NAT64 sub-block
+        # Deprecated IPv4-compatible ::/96 (both SDKs unwrap single
+        # IPv4-compatible hosts, so a broad CIDR over it must deny too).
+        "::/96",  # entire IPv4-compatible space
+        "::800:0/102",  # public-looking network ::8.0.0.0 yet spans ::a00:0 (10.0.0.0)
+        "::a00:0/104",  # IPv4-compatible wrapping 10.0.0.0/8
+    ):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([cidr])
+
+
+@pytest.mark.plumbing
+def test_bracketed_host_url_does_not_crash_and_matches_ts() -> None:
+    """Round-7 re-hunt: a URL-form entry with a bracketed authority must NOT
+    crash the SSRF screen with an uncaught ValueError (CPython 3.12+ urlparse
+    raises on bracketed-IPv4 / empty-bracket / malformed-bracket). The function
+    contract is silent-allow or EgressDenied. The TS SDK strips brackets and
+    classifies the inner string; Python now falls back to the same lenient
+    extraction, so both SDKs give byte-identical verdicts (no raw ValueError).
+    """
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    # Bracketed authority resolving to an internal IP -> DENIED (not crash).
+    for host in ("https://[10.0.0.1]/", "https://[::1]extra]/"):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([host])
+
+    # Bracketed authority resolving to a public IP / non-IP / empty -> ALLOWED
+    # (no crash, no EgressDenied) -- matches the TS SDK verdict exactly.
+    validate_egress_entries(
+        [
+            "https://[1.2.3.4]/",  # bracketed public IPv4
+            "https://[]/",  # empty bracket
+            "https://[not-an-ip]/",  # non-IP bracket content
+            "http://foo[bar/",  # stray/malformed bracket
+        ]
+    )
+
+
+@pytest.mark.plumbing
+def test_single_transition_addresses_classify_on_embedded_ipv4() -> None:
+    """A single IPv4-in-IPv6 transition address is denied iff its embedded
+    IPv4 is internal -- a public embedded IPv4 stays ALLOWED (no over-block)."""
+    from relay.network_policy import EgressDenied, validate_egress_entries
+
+    # Internal embedded IPv4 -> denied.
+    for host in (
+        "::ffff:127.0.0.1",  # IPv4-mapped loopback
+        "::ffff:10.0.0.1",  # IPv4-mapped RFC1918
+        "2002:a00:1::",  # 6to4 wrapping 10.0.0.1
+        "64:ff9b::a00:1",  # NAT64 wrapping 10.0.0.1
+    ):
+        with pytest.raises(EgressDenied):
+            validate_egress_entries([host])
+
+    # Public embedded IPv4 -> allowed (single address, no broad CIDR).
+    validate_egress_entries(["::ffff:8.8.8.8"])
+
+
+@pytest.mark.plumbing
 def test_hostname_localhost_bypass_now_blocked() -> None:
     """BUG-B2: literal 'localhost' is rejected with reason 'reserved_hostname'.
 

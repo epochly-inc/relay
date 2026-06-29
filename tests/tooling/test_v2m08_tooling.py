@@ -13,7 +13,7 @@ Covers:
 Per CLAUDE.md TDD discipline each test binds to its contract assertion via
 ``@pytest.mark.fulfills``. All tests are plumbing-tier (offline; no
 network) per the contract evidence clause; the enforced plumbing wall
-budget is 900 s (see scripts/tier_budget_gate.py).
+budget is 1380 s (see scripts/tier_budget_gate.py).
 
 ASCII-only per CLAUDE.md "ASCII-Safe Source".
 """
@@ -300,7 +300,7 @@ def test_evidence_bundle_registry_artifact_prefix(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# VAL-V2M08-038/039/040: tier_budget_gate enforces 900s / 480s / 720s budgets.
+# VAL-V2M08-038/039/040: tier_budget_gate enforces 1380s / 480s / 720s budgets.
 # ---------------------------------------------------------------------------
 
 
@@ -343,19 +343,22 @@ def test_tier_budget_gate_plumbing_budget_boundary(tmp_path: Path) -> None:
     ebc4777, accommodating ~4-7min measured local runtime) -> 900s
     (commit 9ad1181 follow-up, accommodating ~14min measured CI
     serial runtime after xdist parallelism was reverted due to
-    shared-state races). The test continues to verify the contract
-    structure (boundary behavior + RELAY-CI-TIER-BUDGET-EXCEEDED
-    emission) at the current threshold (901 fails, 895 passes).
+    shared-state races) -> 1380s (cel-wasm cutover follow-up:
+    the ~5382-test suite measured ~1196s peak on CI serial, and
+    the 900s budget had begun tipping over on slow runner days).
+    The test continues to verify the contract structure (boundary
+    behavior + RELAY-CI-TIER-BUDGET-EXCEEDED emission) at the
+    current threshold (1381 fails, 1375 passes).
     """
     assert TIER_BUDGET_GATE.is_file(), f"missing gate script: {TIER_BUDGET_GATE}"
-    fail = _run_gate("plumbing", 901.0, tmp_path)
+    fail = _run_gate("plumbing", 1381.0, tmp_path)
     assert fail.returncode != 0, (
-        f"plumbing 901.0s must fail; got rc={fail.returncode}, stdout={fail.stdout!r}"
+        f"plumbing 1381.0s must fail; got rc={fail.returncode}, stdout={fail.stdout!r}"
     )
     assert "RELAY-CI-TIER-BUDGET-EXCEEDED" in fail.stdout
-    passed = _run_gate("plumbing", 895.0, tmp_path)
+    passed = _run_gate("plumbing", 1375.0, tmp_path)
     assert passed.returncode == 0, (
-        f"plumbing 895.0s must pass; got rc={passed.returncode}, stderr={passed.stderr!r}"
+        f"plumbing 1375.0s must pass; got rc={passed.returncode}, stderr={passed.stderr!r}"
     )
 
 

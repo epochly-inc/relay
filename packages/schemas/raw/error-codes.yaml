@@ -87,11 +87,11 @@ codes:
   domain: canonicalization
   severity: error
   description: |
-    Canonical-JSON encoder refused to produce cross-runtime-stable bytes. The current emit site is the BMP-only object-key screen: a JSON object key contains a supplementary-plane codepoint (>= U+10000), where the Python-codepoint sort order and the JS UTF-16 code-unit sort order diverge and would silently yield different JCS bytes between cel-python and cel-js. The wire envelope's word-form subcode `RELAY-CANON-NON-BMP-KEY` discriminates this specific reason.
+    Canonical-JSON encoder refused to produce cross-runtime-stable bytes. Two emit sites discriminated by a word-form subcode. (1) BMP-only object-key screen, subcode `RELAY-CANON-NON-BMP-KEY`: a JSON object key contains a supplementary-plane codepoint (>= U+10000), where the Python-codepoint sort order and the JS UTF-16 code-unit sort order diverge and would silently yield different JCS bytes between cel-python and cel-js. (2) Safe-integer screen, subcode `RELAY-CANON-UNSAFE-INTEGER`: a JSON number VALUE is an integer (or whole-valued float) whose magnitude exceeds the IEEE-754 safe-integer bound (abs > 2**53 - 1 = 9007199254740991), where a Python host keeps the integer exact but a float64 host (TypeScript JSON.parse) rounds it, yielding different JCS bytes -- the same divergence class the contracts evaluator guards with `RELAY-CEL-NUMERIC-OOB`. The offline evidence verifier screens both at the bundle value-boundary (`validate_bundle` / `validateBundle`) so a non-canonicalisable bundle is rejected structurally as `non_canonicalizable_bundle` rather than canonicalised divergently; the low-level JCS encoder itself stays RFC 8785-conformant for large floats (it does NOT carry the safe-integer bound, so direct large-float canonicalisation is unaffected).
   triggers: |
-    JCS canonicalisation invoked over a value whose object keys include a supplementary-plane codepoint. Raised by `jcs_canonicalize` in both `packages/contracts/src/relay_contracts/canonical.py` and `packages/contracts-typescript/src/canonical.ts`.
+    (1) `RELAY-CANON-NON-BMP-KEY`: JCS canonicalisation invoked over a value whose object keys include a supplementary-plane codepoint. Raised by `jcs_canonicalize` in both `packages/contracts/src/relay_contracts/canonical.py` and `packages/contracts-typescript/src/canonical.ts`, and screened pre-canonicalisation by the verifier in `packages/verifier/src/relay_verifier/bundle_validator.py` and `packages/verifier-typescript/src/bundle_validator.ts`. (2) `RELAY-CANON-UNSAFE-INTEGER`: a bundle carries an integer / whole-valued number whose magnitude exceeds 2**53 - 1; screened pre-canonicalisation by the same verifier value-boundary in both runtimes.
   how_to_fix: |
-    Re-encode the offending object so all keys are in the Basic Multilingual Plane (< U+10000); supplementary-plane characters remain legal in string values. Cross-runtime byte equality is required for trust-anchor signing (CLAUDE.md keystone invariant 11).
+    For `RELAY-CANON-NON-BMP-KEY`: re-encode the offending object so all keys are in the Basic Multilingual Plane (< U+10000); supplementary-plane characters remain legal in string values. For `RELAY-CANON-UNSAFE-INTEGER`: keep numeric values within the IEEE-754 safe-integer range [-(2**53 - 1), 2**53 - 1], or carry large magnitudes as strings so they canonicalise byte-identically. Cross-runtime byte equality is required for trust-anchor signing (CLAUDE.md keystone invariant 11).
   introduced_in: v0.1.0
 - code: RELAY-CEL-001
   domain: contract-cel
@@ -109,7 +109,7 @@ codes:
   description: |
     Relay CEL profile violation: the expression uses a construct the profile forbids. Discriminating subtypes: `RELAY-CEL-PROFILE-DYN-DISABLED` (dyn(...) erases the type lattice), `RELAY-CEL-PROFILE-TS-DISABLED` (native timestamp(...)), `RELAY-CEL-PROFILE-DUR-DISABLED` (native duration(...)). Raised at `compile()` time so contract publish fails before any assertion is stored.
   triggers: |
-    `RelayCelEvaluator.compile` called on an expression containing `dyn(...)`, `timestamp(...)`, or `duration(...)`. Emit site: `packages/contracts/src/relay_contracts/evaluator.py` and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`. Surfaced via `RelayCelProfileError`.
+    Evaluation called on an expression containing `dyn(...)`, `timestamp(...)`, or `duration(...)`. Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (the host profile screen) and the TypeScript wasm host at `packages/contracts-typescript/src/wasm-evaluator.ts` (the wasm engine emits the structured RELAY-CEL-002 envelope, mapped by `decodeWasmEnvelope`). Surfaced via `RelayCelProfileError`.
   how_to_fix: |
     Replace the disallowed construct with a profile-safe form: use typed inputs instead of `dyn`, the `relay.timestamp_*` UDFs instead of native temporal types, and structured field access instead of duration arithmetic. See `docs/contracts/udf-reference.md`.
   introduced_in: v0.1.0
@@ -119,7 +119,7 @@ codes:
   description: |
     Wall-clock evaluation timeout. The Relay CEL evaluator enforces a per-evaluation wall-clock budget; expressions (including UDF execution) that exceed the budget are rejected with subtype `RELAY-CEL-TIMEOUT-001`. Per CLAUDE.md banned-pattern #16 every Relay UDF is pure and bounded; a timeout is a defensive cap, not a normal outcome.
   triggers: |
-    `RelayCelEvaluator.evaluate` exceeded the configured wall-clock budget (VAL-W6-003). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelTimeoutError`) and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`.
+    Evaluation exceeded the configured wall-clock budget (VAL-W6-003). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelTimeoutError`) and the TypeScript wasm host at `packages/contracts-typescript/src/wasm-evaluator.ts` (the node:worker_threads Worker is hard-killed on budget exceed, raising `RelayCelTimeoutError`).
   how_to_fix: |
     Simplify the expression, shorten the UDF call chain, or raise the per-evaluation budget after auditing the cause. A persistent timeout on a pure UDF indicates either a pathological input or a UDF bug; re-verify the UDF against the conformance corpus.
   introduced_in: v0.1.0
@@ -129,7 +129,7 @@ codes:
   description: |
     UDF purity violation. A user-defined function was registered with `pure=False`, which the Relay CEL profile forbids: replay must be byte-deterministic, and an impure UDF breaks cross-runtime evidence parity. Subtype: `RELAY-CEL-UDF-IMPURE`. Per CLAUDE.md banned-pattern #16, every registered UDF must be pure (no wall clock, no network, no filesystem, no random, no mutable globals, no locale-dependent ops).
   triggers: |
-    `RelayCelEvaluator` UDF registration attempted with `pure=False` (VAL-W6-004). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` and `packages/contracts-typescript/src/evaluator.ts`. Raised as `RelayUdfPurityError`.
+    UDF registration attempted with `pure=False` (VAL-W6-004), or a caller-supplied non-allowlist UDF was forwarded to the wasm engine. Emit site: `packages/contracts/src/relay_contracts/udf.py` and `packages/contracts-typescript/src/udf.ts` (raise `RelayUdfPurityError` on a non-pure registration); the wasm host at `packages/contracts-typescript/src/wasm-evaluator.ts` raises `RelayCelUnsupportedUdfError` for a non-allowlist UDF.
   how_to_fix: |
     Remove all non-deterministic dependencies from the UDF body (eliminate `time.time` / `Date.now`, network, fs, random, locale-dependent sorts). Re-register with `pure=True` and add a case to the Relay Conformance Corpus (`tests/conformance/cel/`) demonstrating cross-runtime determinism before re-publishing.
   introduced_in: v0.1.0
@@ -149,7 +149,7 @@ codes:
   description: |
     Evaluation produced a non-finite numeric (NaN, +Inf, or -Inf). Subtype: `RELAY-CEL-NUMERIC-OOB`. RFC 8785 (JCS) section 3.2.2 cannot canonicalise NaN or Infinity, so the evaluator rejects the result before any digest or evidence binding is attempted; emitting such a value would silently break cross-runtime signature parity.
   triggers: |
-    An arithmetic operation or UDF return produced NaN / +Inf / -Inf during evaluation (VAL-W6-006). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelNumericOutOfBoundsError`) and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`.
+    An arithmetic operation or UDF return produced NaN / +Inf / -Inf, or an out-of-safe-range integer, during evaluation (VAL-W6-006). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelNumericOutOfBoundsError`) and the TypeScript host guard at `packages/contracts-typescript/src/host-guards.ts` (`checkFinite`, applied on the wasm result, raises `RelayCelNumericOutOfBoundsError`).
   how_to_fix: |
     Guard division and exponentiation against zero / overflow in the expression. If the value legitimately needs a non-finite sentinel, represent it as an explicit enum string (e.g. `"infinity"`) so JCS can canonicalise it.
   introduced_in: v0.1.0
@@ -159,7 +159,7 @@ codes:
   description: |
     Regex literal contains a backreference, which RE2 forbids. Subtype: `RELAY-CEL-PROFILE-REGEX-BACKREF`. RE2 is the only regex engine the Relay CEL profile permits because PCRE-style backtracking opens a ReDoS attack surface. Rejected at `compile()` so contract publish fails before storage.
   triggers: |
-    `matches(...)` (or a string literal used as a regex) contains a backreference like `\1`, `(.)\1+`, etc. (VAL-W6-007). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelRegexBackreferenceError`) and the cel-js mirror at `packages/contracts-typescript/src/evaluator.ts`.
+    `matches(...)` (or a string literal used as a regex) contains a backreference like `\1`, `(.)\1+`, etc. (VAL-W6-007). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelRegexBackreferenceError`) and the TypeScript host guard at `packages/contracts-typescript/src/host-guards.ts` (`checkRegexBackref`, the host pre-screen run before the wasm call, raises `RelayCelRegexBackreferenceError`).
   how_to_fix: |
     Rewrite the pattern without backreferences. Most backref idioms have an equivalent RE2 formulation using character classes or explicit repetition; otherwise move the check out of CEL into a pure UDF that validates the input structurally.
   introduced_in: v0.1.0
@@ -172,6 +172,16 @@ codes:
     Live orphan thread count reached `MAX_ORPHAN_THREADS` at `RelayCelEvaluator.evaluate` (Round-3 P1 fix #4). Emit site: `packages/contracts/src/relay_contracts/evaluator.py` (raises `RelayCelResourceExhaustedError`); covered by `packages/contracts/tests/test_evaluator_orphan_thread_bound.py`.
   how_to_fix: |
     Investigate why prior evaluations are timing out instead of completing: the cap is reached only when cel-python is wedged on pathological inputs. Reduce concurrency, tighten the CEL timeout, or fix the underlying UDF / expression causing the wedges. The cap can be lifted once cel-python exposes a cancellation handle.
+  introduced_in: v0.1.0
+- code: RELAY-CEL-009
+  domain: contract-cel
+  severity: error
+  description: |
+    The CEL engine reported an internal failure that is NOT one of the classified CEL conditions (profile 002, timeout 003, UDF 004, numeric 006, regex 007, resource 008). Subtypes: `RELAY-CEL-ENGINE-COMPILE` (the engine could not parse/compile the expression), `RELAY-CEL-ENGINE-EXEC` (a runtime execution failure such as a missing overload or division by zero), `RELAY-CEL-ENGINE-REQUEST` (a malformed engine request envelope -- a host marshaling bug), and `RELAY-CEL-ENGINE-PANIC` (the engine reactor trapped and was re-instantiated). Introduced with the single-engine (cel-wasm) evaluator: the WASM engine emits its own `RELAY-CEL-001/004/006/PANIC` envelope codes whose NUMBERS overlap the host's classified set (004 = UDF-impure, 006 = numeric-out-of-bounds) but whose MEANINGS differ; the wasm-backed host adapter translates those into THIS distinct 009 code so a wasm compile/exec/request/panic failure is never confused with a host UDF-impurity or numeric-out-of-bounds classification -- a confusion that would poison the gate's signed per-condition error_code (keystone invariant: cross-runtime byte equality).
+  triggers: |
+    A non-classified `{"ok": false}` envelope from the cel-wasm engine (its own 001/004/006 codes, or an ENGINE_PANIC trap) is translated into this code by `RelayCelEngineError.from_wasm_envelope` and surfaced as `RelayCelEngineError`. Emit site: `packages/contracts/src/relay_contracts/errors.py`; covered by `packages/contracts/tests/test_engine_errors.py`. (The M1 wasm-backed host evaluator constructs this error from the engine envelope; until that evaluator lands, the construction path lives entirely in `errors.py`.) ENGINE-EXEC indicates an expression that compiled but failed at runtime; ENGINE-COMPILE a syntax error; ENGINE-REQUEST / ENGINE-PANIC indicate a host marshaling or engine bug (ENGINE-PANIC should be unreachable for in-profile inputs after the struct/proto fence).
+  how_to_fix: |
+    Read the subtype + the embedded engine code in the message. ENGINE-COMPILE: fix the CEL syntax. ENGINE-EXEC: check the expression's runtime operands (overloads, division by zero). ENGINE-REQUEST / ENGINE-PANIC: file an issue with the envelope contents -- these indicate a host marshaling or engine bug, not a contract-author error.
   introduced_in: v0.1.0
 - code: RELAY-CLI-070
   domain: cli

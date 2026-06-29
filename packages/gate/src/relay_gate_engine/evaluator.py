@@ -6,7 +6,8 @@ Surface:
     submitted :class:`GateDecisionDraft`. Loads evidence_bundle ids
     through a :class:`EvidenceBundleProvider` (VAL-W8-003), sorts
     assertions by ``priority`` (VAL-W8-004), evaluates conditions via
-    the W6 :class:`relay_contracts.RelayCelEvaluator` (VAL-W8-002), and
+    the W6 contract engine -- the wasm-backed evaluator constructed by
+    :func:`relay_contracts.make_cel_evaluator` (VAL-W8-002) -- and
     enforces draft TTL (VAL-W8-006), the anti-bypass guard
     (VAL-W8-041), and the deterministic input contract (VAL-W8-005).
 
@@ -27,7 +28,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
-from relay_contracts import RELAY_UDFS, RelayCelError, RelayCelEvaluator
+from relay_contracts import (
+    RELAY_UDFS,
+    CelEvaluatorProtocol,
+    RelayCelError,
+    make_cel_evaluator,
+)
 
 from .errors import (
     AntiBypassRejectedError,
@@ -509,9 +515,10 @@ class AntiBypassGuard:
 class GateEvaluator:
     """Evaluate a single gate against a submitted draft (VAL-W8-001..007, 041).
 
-    Construction is cheap: a W6 :class:`RelayCelEvaluator` is created
-    once (with the canonical Relay UDF set) and reused across calls so
-    expression compilation caches persist.
+    Construction is cheap: a W6 CEL evaluator is created once via the
+    contracts factory (:func:`relay_contracts.make_cel_evaluator`, typed as
+    :class:`relay_contracts.CelEvaluatorProtocol`) with the canonical Relay
+    UDF set, and reused across calls so expression compilation caches persist.
     """
 
     def __init__(
@@ -521,7 +528,7 @@ class GateEvaluator:
         manifest_resolver: ManifestCommandResolver,
         assertion_loader: AssertionLoader | None = None,
         anti_bypass: AntiBypassGuard | None = None,
-        cel_evaluator: RelayCelEvaluator | None = None,
+        cel_evaluator: CelEvaluatorProtocol | None = None,
     ) -> None:
         self._evidence = evidence_provider
         self._manifest = manifest_resolver
@@ -529,8 +536,19 @@ class GateEvaluator:
         self._anti_bypass = anti_bypass or AntiBypassGuard()
         # Single shared CEL evaluator with the canonical Relay UDF set.
         # VAL-W8-002: gate policy conditions MUST be evaluated by the W6
-        # contract engine, never inlined.
-        self._cel = cel_evaluator or RelayCelEvaluator(udfs=RELAY_UDFS)
+        # contract engine, never inlined. The evaluator is constructed via
+        # the contracts factory -- the single engine-SELECTION (env-read)
+        # site, which returns the wasm-backed engine (the only CEL backend
+        # since the M6 single-engine cutover). Other paths may construct the
+        # wasm evaluator directly; the locked invariant is that the
+        # engine-selection environment variable is read ONLY in the contracts
+        # factory, never here, so gate src stays env-free and deterministic
+        # (VAL-W8-005 / VAL-CWC-P2TSGATE-010). The hint is
+        # the CelEvaluatorProtocol facade so the gate stays decoupled from
+        # engine internals.
+        self._cel: CelEvaluatorProtocol = cel_evaluator or make_cel_evaluator(
+            udfs=RELAY_UDFS
+        )
 
     # --- Public API ---------------------------------------------------
 
@@ -798,12 +816,14 @@ def _extract_bundle_id(ref: Any) -> str:
 def _coerce_bool(value: Any) -> bool:
     """Map a CEL evaluation result to a Python bool.
 
-    cel-python returns ``celpy.celtypes.BoolType`` (subclass of int, NOT
-    bool), so we accept both Python bool and the cel-python BoolType.
-    Detection is by class-name to avoid importing celtypes here -- the
-    evaluator is intentionally decoupled from the CEL implementation
-    internals (mirrors :func:`relay_contracts.pipeline._classify_outcome`).
-    Non-bool returns surface as a runtime error -- contract policies MUST
+    The wasm-backed evaluator returns plain Python ``bool``. The
+    ``BoolType`` class-name branch is a defensive tolerance for an
+    engine-internal bool wrapper (an ``int`` subclass that is NOT
+    ``bool``) handed back through a caller-supplied ``cel_evaluator``.
+    Detection is by class name so the gate engine stays decoupled from
+    CEL implementation internals (mirrors
+    :func:`relay_contracts.pipeline._classify_outcome`). Non-bool
+    returns surface as a runtime error -- contract policies MUST
     evaluate to bool; a non-bool result is a contract authoring bug.
     """
     if isinstance(value, bool):

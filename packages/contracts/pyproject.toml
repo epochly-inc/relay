@@ -1,9 +1,10 @@
 # epochly-relay-contracts (Python contract DSL evaluator package).
 #
-# Houses the Python side of the Relay contract DSL (spec D): the cel-python
-# evaluator wrapper bound to the Relay CEL profile, the pure-only UDF
-# registry, the RFC 8785 JCS canonicalizer, and the structured error
-# envelope. The TypeScript mirror (cel-js) ships in W6.2.
+# Houses the Python side of the Relay contract DSL (spec D): the wasm-backed
+# CEL evaluator bound to the Relay CEL profile (the single CEL engine as of
+# the M6 cutover), the pure-only UDF registry, the RFC 8785 JCS
+# canonicalizer, and the structured error envelope. The TypeScript mirror
+# ships in packages/contracts-typescript.
 #
 # Spec anchors:
 #   D                       contract DSL surface
@@ -26,7 +27,7 @@ build-backend = "hatchling.build"
 [project]
 name = "epochly-relay-contracts"
 version = "0.0.0"
-description = "Relay contract DSL evaluator (Python; cel-python wrapper, JCS canonicalizer, pure UDF registry)."
+description = "Relay contract DSL evaluator (Python; wasm-backed single CEL engine, JCS canonicalizer, pure UDF registry)."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
@@ -34,28 +35,67 @@ authors = [
   { name = "Epochly, Inc.", email = "engineering@epochly.com" },
 ]
 dependencies = [
-  # CQ1 line 145: cel-python is the single Python CEL evaluator.
-  # Pinned to a tested minor; bumped via the W6 release process only.
-  "cel-python>=0.5.0,<0.6",
+  # CQ1 line 145 (as revised by the cel-wasm cutover): the single Python CEL
+  # evaluator is the wasm engine loaded via wasmtime below. The legacy Python
+  # CEL dependency was REMOVED at M6 WS-I (VAL-CWC-P6REMOVE-001).
   # Generated RelayErrorCode constants live here. Workspace dependency;
   # uv resolves from the workspace tree, never from a published index
   # (CLAUDE.md import-boundary rule).
   "epochly-relay-schemas",
+  # WS-A cel-wasm host cutover: the wasm-backed evaluator
+  # (relay_contracts.wasm_backed_evaluator.WasmCelEvaluator) loads the single
+  # CEL engine via the relay-cel-wasm Python loader, which imports wasmtime.
+  # Pinned to a tested major; bumped via the W6 / cutover release process only.
+  "wasmtime>=45,<46",
 ]
 
 [project.optional-dependencies]
 test = [
   "pytest>=8.0",
   "pytest-timeout>=2.3",
+  "hypothesis>=6.100",  # property suites (test_w16_jcs_canonical_parity_property.py)
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/relay_contracts"]
+# WS-G (cel-wasm cutover): ship the reproducible single CEL engine
+# (relay_cel_wasm.wasm, the build.sh deterministic-recipe artifact) as PACKAGE
+# DATA so a fresh-installed wheel resolves the engine via importlib.resources
+# WITHOUT the gitignored crate/target/ tree. The .wasm is Apache-2.0-portable
+# CODE, not key material -- M3 PINS its sha (relay_contracts.wasm_artifact); it
+# is not signed here (signing is relay-platform/KMS, out of scope). force-include
+# guarantees the binary lands in the wheel even though hatchling's default VCS
+# file selection may skip a build-output artifact.
+artifacts = [
+  "src/relay_contracts/_wasm/relay_cel_wasm.wasm",
+  # WS-G loader half: ship the wasm LOADER module as package data too. The
+  # loader (packages/cel-wasm/python/relay_cel_wasm.py) is a loose module with
+  # no pyproject -- it is NOT importable as a top-level package in a wheel-only
+  # install. Without the loader in the wheel, a fresh `pip install
+  # relay-contracts` resolves the .wasm but CANNOT construct the wasm engine
+  # (WasmCelEvaluator._load_relay_cel_class fails). It is a git-tracked vendored
+  # copy of the canonical source (matching the .wasm's vendored-copy pattern); a
+  # byte-identity drift guard (test_wasm_loader_package_data.py) fails CI if the
+  # vendored copy diverges from the canonical loader. The .py is Apache-2.0
+  # CODE, not key material.
+  "src/relay_contracts/_wasm/relay_cel_wasm.py",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/relay_contracts/_wasm/relay_cel_wasm.wasm" = "relay_contracts/_wasm/relay_cel_wasm.wasm"
+"src/relay_contracts/_wasm/relay_cel_wasm.py" = "relay_contracts/_wasm/relay_cel_wasm.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
   "src/relay_contracts",
   "README.md",
+]
+# Mirror the wheel: the reproducible wasm package data AND the wasm loader module
+# are part of the sdist too, so a from-sdist build reproduces the same
+# package-data layout (both the .wasm and the loader .py).
+artifacts = [
+  "src/relay_contracts/_wasm/relay_cel_wasm.wasm",
+  "src/relay_contracts/_wasm/relay_cel_wasm.py",
 ]
 
 [tool.uv.sources]

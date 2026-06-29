@@ -27,8 +27,10 @@ What this module pins (RFC 8785):
   * Section 3.2.3: object keys sorted by their UTF-16 code-unit
     sequence. Python's ``str`` compares by code point; for the BMP these
     match. SMP code points (>= U+10000) -- where the orderings would
-    diverge -- are not used in Relay evidence bundle keys (asserted by
-    the corpus).
+    diverge -- are refused as object KEYS with :class:`JCSEncodeError`
+    (code ``RELAY-CANON-NON-BMP-KEY``); see the dict branch of
+    :func:`_encode`. SMP code points in string VALUES are permitted
+    (values are not sorted, so no cross-runtime divergence arises).
 
 Bundle-digest helper (VAL-W10-020):
 
@@ -49,7 +51,19 @@ from __future__ import annotations
 import hashlib
 import math
 import unicodedata
-from typing import Any
+from typing import Any, Final
+
+# Wire-stable code for the BMP-only object-key screen. Python ``str``
+# sorts by code point; JS strings sort by UTF-16 code unit. For Basic
+# Multilingual Plane keys (< U+10000) these match. For supplementary-
+# plane keys (>= U+10000) the orderings diverge, silently producing
+# DIFFERENT JCS bytes between the Python and TS verifiers for the same
+# input -- which breaks cross-runtime signature verification (CLAUDE.md
+# keystone invariant #11). Both verifiers fail-closed on supplementary-
+# plane KEYS; values may still contain supplementary-plane chars (only
+# keys are sorted). Mirrors
+# ``relay_contracts.canonical.CANONICAL_NON_BMP_KEY_CODE``.
+CANONICAL_NON_BMP_KEY_CODE: Final[str] = "RELAY-CANON-NON-BMP-KEY"
 
 # RFC 8785 section 3.2.2.1: control characters U+0000..U+001F MUST be
 # escaped using the short forms (\b, \t, \n, \f, \r) or \u00xx; the
@@ -173,6 +187,20 @@ def _encode_number(n: int | float) -> str:
         # bits). The encoder accepts arbitrary integers byte-for-byte
         # (decimal form) for parity with the contract canonicaliser
         # which has the same behaviour.
+        #
+        # NOTE (keystone #16 / RELAY-CANON-UNSAFE-INTEGER): the
+        # safe-integer bound (abs > 2**53 - 1 diverges between a Python
+        # exact-int host and a float64 host) is deliberately NOT enforced
+        # here. This encoder must stay RFC 8785-conformant for large
+        # *floats* (the W17 IETF number corpus canonicalises 1e21, 1e20,
+        # 1.7976931348623157e+308, etc. directly), and a magnitude bound
+        # cannot distinguish an int token from a float token. The bound is
+        # therefore applied at the bundle value-boundary instead --
+        # `relay_verifier.bundle_validator.validate_bundle` screens
+        # out-of-safe-range number VALUES pre-canonicalisation and emits
+        # `non_canonicalizable_bundle` -- exactly as the contracts
+        # evaluator's `_check_finite` gates results before its (also
+        # unbounded) canonicaliser. Do NOT add a numeric bound here.
         return str(n)
     # Float path: caller responsible for rejecting NaN/Inf upstream;
     # the defensive check below ensures we never silently emit a
@@ -203,11 +231,26 @@ def _encode(value: Any) -> str:
         return "[" + ",".join(parts) + "]"
     if isinstance(value, dict):
         # RFC 8785 section 3.2.3: keys sorted by UTF-16 code-unit
-        # sequence. For BMP-only keys (the Relay evidence-bundle
-        # contract), str-by-code-point and UTF-16-by-code-unit produce
-        # the same ordering. The corpus pins BMP-only keys to keep
-        # this guarantee load-bearing.
-        items = sorted(((str(k), v) for k, v in value.items()), key=lambda kv: kv[0])
+        # sequence. Python str compares by code point; for the BMP these
+        # match. For supplementary-plane keys (>= U+10000) the orderings
+        # diverge silently -- the Python verifier and the JS verifier
+        # produce DIFFERENT canonical bytes for the same input, which
+        # breaks cross-runtime signature verification (CLAUDE.md keystone
+        # invariant #11). Fail-closed on supplementary-plane object KEYS
+        # BEFORE sorting. Values may contain supplementary-plane chars --
+        # only keys are screened. Mirrors relay_contracts.canonical._encode.
+        items_raw = [(str(k), v) for k, v in value.items()]
+        for k, _v in items_raw:
+            for ch in k:
+                if ord(ch) >= 0x10000:
+                    raise JCSEncodeError(
+                        f"{CANONICAL_NON_BMP_KEY_CODE}: non-BMP codepoint "
+                        f"U+{ord(ch):04X} in object key {k!r}; "
+                        f"supplementary-plane keys produce runtime-divergent "
+                        f"canonical bytes and are refused. Re-key the object "
+                        f"with BMP-only strings."
+                    )
+        items = sorted(items_raw, key=lambda kv: kv[0])
         parts = [_encode_string(k) + ":" + _encode(v) for k, v in items]
         return "{" + ",".join(parts) + "}"
     raise JCSEncodeError(
@@ -253,8 +296,124 @@ def bundle_digest(value: Any, *, strip_signatures: bool = True) -> str:
     return hashlib.sha256(jcs_canonicalize(payload)).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Cross-runtime canonicalisability screen (keystone invariant #11/#16)
+# ---------------------------------------------------------------------------
+#
+# Two value classes cannot be canonicalised to byte-identical JCS across the
+# Python and TypeScript verifiers, so any signed payload carrying them would
+# verify on one runtime and be rejected as tampered on the other:
+#
+#   1. A supplementary-plane (non-BMP, >= U+10000) object KEY -- Python sorts
+#      keys by code point, JS by UTF-16 code unit; the orderings diverge.
+#   2. An integer (or whole-valued float) VALUE with magnitude > 2**53 - 1 --
+#      Python keeps it exact while a float64 host (TS JSON.parse) rounds it.
+#
+# These helpers detect both at the VALUE boundary, BEFORE canonicalisation, so
+# every public verifier entrypoint can fail closed IDENTICALLY (same code +
+# message) on both runtimes. The bound is deliberately NOT in the encoder:
+# jcs_canonicalize stays RFC 8785-conformant for large floats (the W17 IETF
+# number corpus), mirroring how relay_contracts gates results in its evaluator
+# (`_check_finite`) rather than its (unbounded) canonicaliser.
+
+# IEEE-754 safe-integer bound (== Number.MAX_SAFE_INTEGER); matches
+# relay_contracts.evaluator.SAFE_INTEGER_BOUND. 2**53 itself is unsafe (a
+# rounded overflow can land on it), so the bound is strict.
+SAFE_INTEGER_BOUND: Final[int] = 2**53 - 1  # 9007199254740991
+
+# Word-form subcode of the registered RELAY-CANON-001 code (see
+# packages/schemas/raw/error-codes.yaml). Parallels CANONICAL_NON_BMP_KEY_CODE.
+CANONICAL_UNSAFE_INTEGER_CODE: Final[str] = "RELAY-CANON-UNSAFE-INTEGER"
+
+# Byte-identical (Py<->TS) rejection messages. Worded generically ("value",
+# not "bundle") because the same constants are reused by every entrypoint
+# (validate_bundle, verify_bundle, verify_detached_claim_signature,
+# verify_multi_signatures). Name NO specific key/value (a Python exact int and
+# a rounded float64 render differently) -- fixed messages are parity-safe.
+NON_BMP_KEY_REJECTION_MESSAGE: Final[str] = (
+    "value contains a non-BMP (supplementary-plane, >= U+10000) object key; "
+    "supplementary-plane object keys produce runtime-divergent canonical "
+    "bytes between the Python and TypeScript verifiers and are refused. "
+    "Re-key any such object with BMP-only strings."
+)
+UNSAFE_INTEGER_REJECTION_MESSAGE: Final[str] = (
+    "value contains a number whose magnitude exceeds the IEEE-754 "
+    "safe-integer range (abs > 2**53 - 1 = 9007199254740991); such a value "
+    "cannot round-trip byte-identically through a float64 JSON parser, so the "
+    "Python and TypeScript verifiers would canonicalise it to different bytes "
+    "and it is refused. Keep numeric values within the safe-integer range, or "
+    "carry large magnitudes as strings."
+)
+
+
+def _has_non_bmp_key(value: Any) -> bool:
+    """Return True iff ``value`` contains an object KEY with a codepoint
+    >= U+10000 anywhere in its nested structure. Only object KEYS are screened
+    (string VALUES may carry supplementary-plane chars). The boolean result is
+    independent of key-iteration order, so Python and TypeScript agree.
+    """
+    if isinstance(value, dict):
+        for k, v in value.items():
+            for ch in str(k):
+                if ord(ch) >= 0x10000:
+                    return True
+            if _has_non_bmp_key(v):
+                return True
+        return False
+    if isinstance(value, list | tuple):
+        return any(_has_non_bmp_key(item) for item in value)
+    return False
+
+
+def _has_unsafe_integer(value: Any) -> bool:
+    """Return True iff ``value`` contains a number VALUE outside the IEEE-754
+    safe-integer range (abs > ``SAFE_INTEGER_BOUND``) anywhere in its nested
+    structure. Mirrors ``relay_contracts.evaluator._check_finite``: an ``int``
+    (bool excluded) or a whole-valued ``float`` over the bound is rejected.
+    ``float.is_integer()`` excludes NaN/Inf and genuinely fractional doubles
+    (always in range; the ULP at 2**53 is 2.0). Order-independent -> Py<->TS
+    parity. Only VALUES are screened (object KEYS are JSON strings).
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return abs(value) > SAFE_INTEGER_BOUND
+    if isinstance(value, float):
+        return value.is_integer() and abs(value) > SAFE_INTEGER_BOUND
+    if isinstance(value, dict):
+        return any(_has_unsafe_integer(v) for v in value.values())
+    if isinstance(value, list | tuple):
+        return any(_has_unsafe_integer(item) for item in value)
+    return False
+
+
+def screen_noncanonicalizable(value: Any) -> tuple[str, str] | None:
+    """Return ``(code, message)`` for the first cross-runtime canonicalisation
+    hazard in ``value`` (non-BMP object key, then out-of-safe-range number), or
+    ``None`` if ``value`` is canonicalisable byte-identically on both runtimes.
+
+    Shared by every public verifier entrypoint that canonicalises
+    attacker-controllable signed-payload data, so all of them fail closed
+    IDENTICALLY. The returned ``code`` is a word-form subcode of the registered
+    RELAY-CANON-001 code; the ``message`` is byte-identical across runtimes.
+    Non-BMP keys take precedence over unsafe integers (deterministic, matched
+    by the TypeScript twin ``screenNonCanonicalizable``).
+    """
+    if _has_non_bmp_key(value):
+        return (CANONICAL_NON_BMP_KEY_CODE, NON_BMP_KEY_REJECTION_MESSAGE)
+    if _has_unsafe_integer(value):
+        return (CANONICAL_UNSAFE_INTEGER_CODE, UNSAFE_INTEGER_REJECTION_MESSAGE)
+    return None
+
+
 __all__ = [
+    "CANONICAL_NON_BMP_KEY_CODE",
+    "CANONICAL_UNSAFE_INTEGER_CODE",
     "JCSEncodeError",
+    "NON_BMP_KEY_REJECTION_MESSAGE",
+    "SAFE_INTEGER_BOUND",
+    "UNSAFE_INTEGER_REJECTION_MESSAGE",
     "bundle_digest",
     "jcs_canonicalize",
+    "screen_noncanonicalizable",
 ]

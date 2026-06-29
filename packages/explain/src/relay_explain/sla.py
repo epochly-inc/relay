@@ -215,8 +215,38 @@ def age_unreviewed_hypotheses(
     if not new_breaches:
         return 0
 
-    # 3. Allocate the starting ingest_sequence inside the same transaction
-    #    so the per-row sequence numbers are monotonic and contiguous.
+    # 3. Emit the breach rows. The pre-filter above (step 2) reads OUTSIDE this
+    #    write transaction, so two concurrent sweeps can both pass it; the
+    #    deterministic idempotency_key + partial unique index is the DB-level
+    #    backstop that prevents a double-emit regardless of ordering.
+    return _emit_sla_breach_events(
+        conn, new_breaches, project_id=project_id, now_iso=now_iso
+    )
+
+
+def _emit_sla_breach_events(
+    conn: sqlite3.Connection,
+    breaches: list[tuple[str, str, int]],
+    *,
+    project_id: str,
+    now_iso: str,
+) -> int:
+    """Insert one ``explain.reviewer_sla_breached`` event per breach in a single
+    ``BEGIN IMMEDIATE..COMMIT`` block; return the count ACTUALLY inserted.
+
+    Each row carries a DETERMINISTIC ``idempotency_key`` of
+    ``sla-breach:<hypothesis_id>`` so the partial unique index
+    ``uq_event_log_entries_idempotency (scope_id, idempotency_key)`` is the
+    DB-level dedupe backstop. The prior-breach pre-filter in
+    :func:`age_unreviewed_hypotheses` runs outside this transaction (a TOCTOU
+    window), so two concurrent sweeps can both reach this insert for the same
+    hypothesis. The loser's INSERT raises :class:`sqlite3.IntegrityError`, which
+    is swallowed as an idempotent no-op (mirroring the generator auto-disable
+    PK-backed no-op), so exactly one breach row per hypothesis survives a race
+    (re-hunt evals-explain-2). A constraint violation rolls back only the failing
+    statement, not the surrounding transaction, so the loop continues safely.
+    """
+    inserted = 0
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
@@ -225,7 +255,7 @@ def age_unreviewed_hypotheses(
         ).fetchone()
         next_seq = int(row[0]) if row is not None else 0
 
-        for hypothesis_id, run_id, age_days in new_breaches:
+        for hypothesis_id, run_id, age_days in breaches:
             payload = {
                 "event": EVENT_TYPE_SLA_BREACHED,
                 "hypothesis_id": hypothesis_id,
@@ -233,30 +263,59 @@ def age_unreviewed_hypotheses(
                 "age_business_days": age_days,
                 "sla_threshold_business_days": SLA_BUSINESS_DAYS,
             }
-            conn.execute(
-                "INSERT INTO event_log_entries ("
-                "  event_id, schema_version, project_id, scope_type, "
-                "  scope_id, event_type, actor_kind, actor_id, "
-                "  manifest_commit_hash, payload, occurred_at, "
-                "  ingest_sequence, event_kind"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    str(uuid.uuid4()),
-                    _SCHEMA_EVENT_LOG,
-                    project_id,
-                    _SCOPE_TYPE_HYPOTHESIS,
-                    hypothesis_id,
-                    EVENT_TYPE_SLA_BREACHED,
-                    _ACTOR_KIND_EXPLAIN_ENGINE,
-                    None,
-                    None,
-                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
-                    now_iso,
-                    next_seq,
-                    "",
-                ),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO event_log_entries ("
+                    "  event_id, schema_version, project_id, scope_type, "
+                    "  scope_id, event_type, actor_kind, actor_id, "
+                    "  manifest_commit_hash, payload, occurred_at, "
+                    "  ingest_sequence, event_kind, idempotency_key"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(uuid.uuid4()),
+                        _SCHEMA_EVENT_LOG,
+                        project_id,
+                        _SCOPE_TYPE_HYPOTHESIS,
+                        hypothesis_id,
+                        EVENT_TYPE_SLA_BREACHED,
+                        _ACTOR_KIND_EXPLAIN_ENGINE,
+                        None,
+                        None,
+                        json.dumps(
+                            payload, sort_keys=True, separators=(",", ":")
+                        ),
+                        now_iso,
+                        next_seq,
+                        "",
+                        f"sla-breach:{hypothesis_id}",
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                # An IntegrityError here is treated as an idempotent no-op ONLY
+                # when it is genuinely the deterministic-key duplicate (the
+                # partial unique index rejected a row another concurrent sweep
+                # already committed). Confirm that the breach row actually exists
+                # for this (scope_id, idempotency_key); if it does NOT, the
+                # IntegrityError came from some OTHER constraint (NOT NULL, a
+                # trigger, a PK collision, ...) and must NOT be silently swallowed
+                # -- re-raise so the surrounding handler rolls back and surfaces
+                # it (roborev df5390e).
+                existing = conn.execute(
+                    "SELECT 1 FROM event_log_entries "
+                    "WHERE scope_id = ? AND idempotency_key = ? "
+                    "AND event_type = ? LIMIT 1",
+                    (
+                        hypothesis_id,
+                        f"sla-breach:{hypothesis_id}",
+                        EVENT_TYPE_SLA_BREACHED,
+                    ),
+                ).fetchone()
+                if existing is None:
+                    raise
+                # Genuine duplicate: do NOT consume a sequence number or count it.
+                continue
             next_seq += 1
+            inserted += 1
 
         conn.execute("COMMIT")
     except BaseException:
@@ -264,7 +323,7 @@ def age_unreviewed_hypotheses(
             conn.execute("ROLLBACK")
         raise
 
-    return len(new_breaches)
+    return inserted
 
 
 # ---------------------------------------------------------------------------

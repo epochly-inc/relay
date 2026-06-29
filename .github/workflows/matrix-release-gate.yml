@@ -41,6 +41,15 @@ on:
 permissions:
   contents: read
 
+# The cel-wasm plumbing tests (packages/cel-wasm/tests) load the CEL engine
+# from $CEL_WASM, falling back to the crate build output that these Python-only
+# matrix legs do NOT produce (no Rust toolchain). Point CEL_WASM at the
+# committed, pinned-sha wasm under packages/contracts -- byte-identical to the
+# crate build (enforced by the cel-wasm reproducible-build + pinned-sha gates)
+# -- so those tests run in every leg without building Rust.
+env:
+  CEL_WASM: ${{ github.workspace }}/packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.wasm
+
 # Each matrix leg writes its decision (accept/reject) to a JSON
 # artifact named "leg-<id>.json". The aggregate job collects every
 # artifact and feeds them into the MatrixAggregator, then writes the
@@ -51,7 +60,13 @@ jobs:
   leg-py312:
     name: "leg: py3.12"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30 min (was 20): the cel-wasm cutover grew the plumbing tier (the
+    # cel-wasm tests now run via CEL_WASM, plus the ~300s corpus-staleness
+    # regen), pushing a leg's full run to ~19-20 min -- py3.12 finished at
+    # 19m17s but py3.13/py3.14 tipped over 20 min and were cancelled. Matches
+    # the tier-budgets plumbing job timeout (also 30) and clears the 1380s
+    # (23 min) plumbing tier budget plus install/build overhead.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -68,7 +83,15 @@ jobs:
       - name: build typescript contracts package
         run: npm run build --workspace @epochly/relay-contracts
       - name: install workspace deps
-        run: uv sync --all-packages --all-extras
+        # Exclude the `mitmproxy` extra: it is only needed for the smoke-tier
+        # mitmdump driver (the plumbing tier these legs run uses the in-process
+        # driver, and no plumbing test imports the mitmproxy package -- the
+        # addon is an executed string, mitmdump is spawned as a subprocess). It
+        # also has NO py3.14 wheel for its transitive mitmproxy-linux-ebpf, which
+        # then tries to build from source and fails ("Failed to find bpf-linker
+        # on PATH"), breaking the py3.14 leg. Smoke tier (py3.12, wheel present)
+        # keeps it.
+        run: uv sync --all-packages --all-extras --no-extra mitmproxy
       - name: run plumbing tier
         id: plumb
         run: uv run pytest -m plumbing --timeout=60 -q
@@ -89,7 +112,13 @@ jobs:
   leg-py313:
     name: "leg: py3.13"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30 min (was 20): the cel-wasm cutover grew the plumbing tier (the
+    # cel-wasm tests now run via CEL_WASM, plus the ~300s corpus-staleness
+    # regen), pushing a leg's full run to ~19-20 min -- py3.12 finished at
+    # 19m17s but py3.13/py3.14 tipped over 20 min and were cancelled. Matches
+    # the tier-budgets plumbing job timeout (also 30) and clears the 1380s
+    # (23 min) plumbing tier budget plus install/build overhead.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -106,7 +135,15 @@ jobs:
       - name: build typescript contracts package
         run: npm run build --workspace @epochly/relay-contracts
       - name: install workspace deps
-        run: uv sync --all-packages --all-extras
+        # Exclude the `mitmproxy` extra: it is only needed for the smoke-tier
+        # mitmdump driver (the plumbing tier these legs run uses the in-process
+        # driver, and no plumbing test imports the mitmproxy package -- the
+        # addon is an executed string, mitmdump is spawned as a subprocess). It
+        # also has NO py3.14 wheel for its transitive mitmproxy-linux-ebpf, which
+        # then tries to build from source and fails ("Failed to find bpf-linker
+        # on PATH"), breaking the py3.14 leg. Smoke tier (py3.12, wheel present)
+        # keeps it.
+        run: uv sync --all-packages --all-extras --no-extra mitmproxy
       - name: run plumbing tier
         id: plumb
         run: uv run pytest -m plumbing --timeout=60 -q
@@ -128,7 +165,13 @@ jobs:
   leg-py314:
     name: "leg: py3.14"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30 min (was 20): the cel-wasm cutover grew the plumbing tier (the
+    # cel-wasm tests now run via CEL_WASM, plus the ~300s corpus-staleness
+    # regen), pushing a leg's full run to ~19-20 min -- py3.12 finished at
+    # 19m17s but py3.13/py3.14 tipped over 20 min and were cancelled. Matches
+    # the tier-budgets plumbing job timeout (also 30) and clears the 1380s
+    # (23 min) plumbing tier budget plus install/build overhead.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -145,7 +188,15 @@ jobs:
       - name: build typescript contracts package
         run: npm run build --workspace @epochly/relay-contracts
       - name: install workspace deps
-        run: uv sync --all-packages --all-extras
+        # Exclude the `mitmproxy` extra: it is only needed for the smoke-tier
+        # mitmdump driver (the plumbing tier these legs run uses the in-process
+        # driver, and no plumbing test imports the mitmproxy package -- the
+        # addon is an executed string, mitmdump is spawned as a subprocess). It
+        # also has NO py3.14 wheel for its transitive mitmproxy-linux-ebpf, which
+        # then tries to build from source and fails ("Failed to find bpf-linker
+        # on PATH"), breaking the py3.14 leg. Smoke tier (py3.12, wheel present)
+        # keeps it.
+        run: uv sync --all-packages --all-extras --no-extra mitmproxy
       - name: run plumbing tier
         id: plumb
         run: uv run pytest -m plumbing --timeout=60 -q

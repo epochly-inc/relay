@@ -38,7 +38,7 @@ import copy
 from typing import Any
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from relay_acef.bundle_verifier import (
     ACEFVerificationResult,
     count_verified_signatures,
@@ -354,6 +354,67 @@ def test_attacker_kid_collision_still_uses_trusted_key_crypto_004() -> None:
     result = verify_acef_bundle(bundle, trusted_jwks, offline=True)
     assert result.signatures_ok is False
     assert result.verified_signature_count == 0
+
+
+# ---------------------------------------------------------------------------
+# MED #13: weak RSA modulus in a trusted JWK is rejected (spec L.1).
+#
+# The Relay-native verifier (relay_verifier.verifier) and the TSA chain
+# inspector enforce MIN_RSA_BITS=2048. The ACEF trusted-key loader must
+# match: a 1024-bit RSA modulus in the trusted JWKS must NOT be accepted
+# for RS256 verification, while a >=2048-bit key still loads.
+# ---------------------------------------------------------------------------
+
+
+def _rsa_jwk(public_key: rsa.RSAPublicKey, *, kid: str) -> dict[str, Any]:
+    """Build an RFC 7517 RSA public JWK (n/e as unpadded base64url)."""
+    import base64
+
+    def _b64u(i: int) -> str:
+        b = i.to_bytes((i.bit_length() + 7) // 8, "big")
+        return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+    numbers = public_key.public_numbers()
+    return {
+        "kty": "RSA",
+        "kid": kid,
+        "alg": "RS256",
+        "n": _b64u(numbers.n),
+        "e": _b64u(numbers.e),
+    }
+
+
+def test_weak_rsa_modulus_in_trusted_jwk_rejected_spec_l1() -> None:
+    """A 1024-bit RSA modulus must be rejected by the trusted-key loader.
+
+    Spec L.1 allow-list (mirrored by relay_verifier.verifier and the TSA
+    chain inspector's MIN_RSA_BITS) forbids modulus < 2048 bits. The ACEF
+    loader previously built the RSA public key from n/e with no bit-length
+    check, accepting a weak 512/1024-bit key for RS256 verification.
+    """
+    import relay_acef.bundle_verifier as bv
+
+    weak = rsa.generate_private_key(public_exponent=65537, key_size=1024)
+    weak_jwk = _rsa_jwk(weak.public_key(), kid="weak-rsa-1024")
+
+    with pytest.raises(ValueError) as exc:
+        bv._load_public_key_from_jwk(weak_jwk)
+    msg = str(exc.value).lower()
+    assert "2048" in msg
+    assert "modulus" in msg
+    assert "l.1" in msg
+
+
+def test_strong_rsa_modulus_in_trusted_jwk_loads_spec_l1() -> None:
+    """A 2048-bit RSA modulus still loads (no false positive)."""
+    import relay_acef.bundle_verifier as bv
+
+    strong = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    strong_jwk = _rsa_jwk(strong.public_key(), kid="strong-rsa-2048")
+
+    pub = bv._load_public_key_from_jwk(strong_jwk)
+    assert isinstance(pub, rsa.RSAPublicKey)
+    assert pub.key_size == 2048
 
 
 # ---------------------------------------------------------------------------

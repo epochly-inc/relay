@@ -184,7 +184,7 @@ def _sample_call_none(
 @pytest.mark.fulfills("VAL-W5-020")
 def test_cassette_serialize_is_deterministic_in_process() -> None:
     """``serialize_cassette`` MUST produce byte-identical output for same input."""
-    from relay_cli.cassette import (
+    from relay_sidecar.cassette import (
         CASSETTE_ENTRY_SCHEMA_VERSION,
         CASSETTE_HEADER_SCHEMA_VERSION,
         CassetteEntry,
@@ -224,7 +224,7 @@ def test_cassette_serialize_is_deterministic_in_process() -> None:
 @pytest.mark.fulfills("VAL-W5-020")
 def test_cassette_parse_roundtrips_serialized_bytes() -> None:
     """``parse_cassette(serialize_cassette(...))`` MUST roundtrip the entries."""
-    from relay_cli.cassette import (
+    from relay_sidecar.cassette import (
         CASSETTE_ENTRY_SCHEMA_VERSION,
         CASSETTE_HEADER_SCHEMA_VERSION,
         CassetteEntry,
@@ -271,7 +271,7 @@ def test_cassette_parse_roundtrips_serialized_bytes() -> None:
 @pytest.mark.fulfills("VAL-W5-020")
 def test_cassette_rejects_out_of_order_sequence() -> None:
     """A cassette whose entries skip a sequence index MUST fail to parse."""
-    from relay_cli.cassette import CassetteFormatError, parse_cassette
+    from relay_sidecar.cassette import CassetteFormatError, parse_cassette
 
     raw = (
         b'{"case_id":"c","manifest_commit_hash":"sha256-0000000000000000000000000000000000000000000000000000000000000000","recorded_at":"2026-05-14T00:00:00Z","schema_version":"relay.cassette.v1","session_id":"s"}\n'
@@ -771,7 +771,14 @@ def test_replay_module_does_not_call_open_for_writes() -> None:
         / "relay_cli"
         / "commands"
         / "replay.py",
-        REPO_ROOT / "packages" / "cli" / "src" / "relay_cli" / "cassette.py",
+        # cassette.py moved to relay_sidecar (the lowest shared layer) to break
+        # the cli<->replay-proxy import cycle; the atomic-primitives guard follows
+        # it to its new home so its write-safety stays enforced.
+        REPO_ROOT
+        / "apps"
+        / "local-sidecar"
+        / "relay_sidecar"
+        / "cassette.py",
     ]
     banned_write_patterns = [
         r"open\([^)]+['\"]w['\"]",

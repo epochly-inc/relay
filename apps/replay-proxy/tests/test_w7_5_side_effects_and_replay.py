@@ -212,8 +212,8 @@ def test_cassette_hit_produces_byte_identical_response(
     # The cassette in conftest is recorded for {"model": "gpt-4o-mini",
     # "messages": [{"role": "user", "content": "hi"}]}. We replay the
     # exact body and assert the served response's digest matches.
-    from relay_cli.cassette import canonical_request_digest
     from relay_replay_proxy.cassette_server import IncomingRequest
+    from relay_sidecar.cassette import canonical_request_digest
 
     body = {
         "model": "gpt-4o-mini",
@@ -241,8 +241,8 @@ def test_cassette_hit_n_fixtures_all_reproduce(
     digest equals the recorded digest. This is the structural
     invariant the control plane projects into outcome='reproduced'.
     """
-    from relay_cli.cassette import canonical_request_digest
     from relay_replay_proxy.cassette_server import IncomingRequest
+    from relay_sidecar.cassette import canonical_request_digest
 
     sid = "ses91reproducedNNNNNNNNNN"
     sd = cassette_root / sid

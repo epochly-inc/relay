@@ -102,6 +102,121 @@ def test_neutered_trigger_body_is_detected(tmp_path: Path) -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-ISO-036")
+def test_nonfinal_trigger_loses_body_and_terminator_is_detected(
+    tmp_path: Path,
+) -> None:
+    """A non-final trigger whose RAISE body AND its END; are both removed fails.
+
+    This is the borrow-a-neighbor regression: ``gate_decisions_role_check``
+    is a NON-FINAL trigger immediately followed by
+    ``gate_decisions_no_update``. If its enforcement body AND its own
+    terminating ``END;`` are both removed (body collapsed to ``SELECT 1;``
+    with no terminator), a block extractor that stops at the FIRST ``END;``
+    anywhere after the header runs PAST the neutered trigger into the next
+    ``CREATE TRIGGER`` block and matches THAT neighbor's RAISE(ABORT) --
+    falsely reporting the role-check trigger as enforcing. The check MUST
+    bound the block at the trigger's own END; OR the next trigger header,
+    whichever comes first, so a missing terminator cannot borrow a
+    neighbor's enforcement primitive.
+    """
+    text = _read_canonical_migration()
+    # Replace the role-check trigger's ENTIRE ``BEGIN ... END;`` body --
+    # including its terminating ``END;`` -- with a bodyless no-op. The
+    # CREATE TRIGGER header and WHEN clause remain intact, but the trigger
+    # no longer RAISE(ABORT)s AND no longer has its own ``END;``.
+    original_block = (
+        "BEGIN\n"
+        "    SELECT RAISE(ABORT, 'gate_decisions_role_check: only "
+        "relay_gate_engine role may INSERT into gate_decisions');\n"
+        "END;"
+    )
+    assert original_block in text, (
+        "fixture precondition: role-check BEGIN..END; block present"
+    )
+    # No-op replacement that drops both the RAISE and the trigger's END;.
+    neutered = text.replace(original_block, "SELECT 1;", 1)
+
+    # The role-check trigger header survives.
+    assert "CREATE TRIGGER gate_decisions_role_check" in neutered, (
+        "neutered fixture must keep the trigger header"
+    )
+    # The role-check trigger lost its enforcement primitive: between its
+    # header and the NEXT trigger header there is no RAISE(ABORT).
+    role_check_segment = neutered.split(
+        "CREATE TRIGGER gate_decisions_role_check"
+    )[1].split("CREATE TRIGGER gate_decisions_no_update")[0]
+    assert "RAISE(ABORT" not in role_check_segment, (
+        "neutered role-check segment (up to the next trigger header) must "
+        "have no RAISE(ABORT)"
+    )
+    # And the neighbor that follows still carries a RAISE(ABORT) -- this is
+    # exactly the primitive a first-END; extractor would borrow.
+    assert "gate_decisions_no_update: gate_decisions rows are immutable" in (
+        neutered
+    ), "neighbor trigger's RAISE(ABORT) must remain present to be borrowable"
+
+    _write_migration(tmp_path, neutered)
+    _name, findings = gate_engine_invariants.run(tmp_path)
+
+    assert any(
+        f.code == RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING
+        and "gate_decisions_role_check" in f.pattern
+        for f in findings
+    ), (
+        "expected a finding for the neutered (body+terminator removed) "
+        "gate_decisions_role_check trigger; the block extractor must not "
+        "borrow the neighbor's RAISE(ABORT); got " + repr(findings)
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-036")
+def test_nonfinal_trigger_keeps_raise_but_loses_terminator_is_detected(
+    tmp_path: Path,
+) -> None:
+    """A non-final trigger that KEEPS its RAISE(ABORT) but loses ONLY its own
+    ``END;`` must FAIL closed (a finding), not pass.
+
+    Roborev follow-on: a clamp that merely checks whether the truncated block
+    (bounded at the next trigger header) contains RAISE(ABORT) would PASS this
+    trigger -- its own RAISE is before the next header -- even though SQLite
+    cannot create a trigger with no ``END;``. The check must require the
+    trigger's OWN ``END;`` BEFORE the next trigger header; a missing terminator
+    fails closed.
+    """
+    text = _read_canonical_migration()
+    # Drop ONLY the role-check trigger's own terminating ``END;`` -- the
+    # RAISE(ABORT) enforcement line is kept intact.
+    with_terminator = (
+        "    SELECT RAISE(ABORT, 'gate_decisions_role_check: only "
+        "relay_gate_engine role may INSERT into gate_decisions');\n"
+        "END;"
+    )
+    without_terminator = (
+        "    SELECT RAISE(ABORT, 'gate_decisions_role_check: only "
+        "relay_gate_engine role may INSERT into gate_decisions');"
+    )
+    assert with_terminator in text, (
+        "fixture precondition: role-check RAISE + END; present"
+    )
+    mutated = text.replace(with_terminator, without_terminator, 1)
+    # The role-check RAISE survives; only its END; is gone.
+    assert "gate_decisions_role_check: only relay_gate_engine" in mutated
+    _write_migration(tmp_path, mutated)
+    _name, findings = gate_engine_invariants.run(tmp_path)
+    assert any(
+        f.code == RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING
+        and "gate_decisions_role_check" in f.pattern
+        for f in findings
+    ), (
+        "expected a finding for the role-check trigger missing its own END; "
+        "(SQLite-invalid); the check must fail closed, not pass on the RAISE "
+        "before the next header; got " + repr(findings)
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-036")
 def test_missing_trigger_still_detected(tmp_path: Path) -> None:
     """An entirely missing trigger declaration is still a finding.
 

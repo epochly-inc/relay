@@ -26,9 +26,8 @@ from pathlib import Path
 import pytest
 from relay_contracts import (
     RELAY_UDFS,
-    RelayCelEvaluator,
     RelayCelTimeoutError,
-    register_udf,
+    WasmCelEvaluator,
     relay_schema_match,
 )
 from relay_contracts.udfs.schema_match import MAX_DEPTH
@@ -117,27 +116,32 @@ def test_relay_schema_match_depth_cap_returns_false_quickly() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W6-029")
-def test_evaluator_wall_clock_timeout_still_fires_for_a_slow_pure_udf() -> None:
+def test_evaluator_wall_clock_timeout_still_fires_for_a_slow_engine_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Sanity: the evaluator's wall-clock budget is the primary guard.
-    A test-only PURE UDF that sleeps past the budget MUST trigger
-    RELAY-CEL-003 / TIMEOUT. The Relay UDFs themselves do not sleep
-    (verified by VAL-W6-023 / VAL-W6-029 grep) -- this test only
-    proves the upstream bound is wired.
+    An engine call that outlives the budget MUST trigger RELAY-CEL-003 /
+    TIMEOUT. The Relay UDFs themselves do not sleep (verified by
+    VAL-W6-023 / VAL-W6-029 grep) -- this test only proves the upstream
+    bound is wired through ``evaluate()``.
 
-    The slow UDF is registered with pure=True per CLAUDE.md banned
-    pattern #16 (pure-only registration); the sleep is a test
-    instrument, not a production behavior.
+    M6 WS-I port: the wasm engine hosts no caller-registered UDFs, so the
+    slow engine call is simulated by stubbing the per-thread handle's
+    ``eval`` to sleep past the budget -- the evaluate path (compile screens,
+    run_with_timeout, quarantine) is the genuine code under test; the sleep
+    is a test instrument, not a production behavior.
     """
 
-    def slow_pure(_x: int) -> int:
+    evaluator = WasmCelEvaluator(udfs=RELAY_UDFS)
+
+    def slow_eval(expr, bindings=None, container=None, relay_profile=False):
         # 250 ms exceeds the default 50 ms budget by 5x.
         time.sleep(0.250)
-        return _x
+        return {"ok": True, "value": {"t": "int", "v": "1"}}
 
-    udf = register_udf(name="t29_slow_pure", fn=slow_pure, pure=True, arity=1)
-    evaluator = RelayCelEvaluator(udfs=[udf])
+    monkeypatch.setattr(evaluator._thread_handle(), "eval", slow_eval)
     with pytest.raises(RelayCelTimeoutError):
-        evaluator.evaluate("t29_slow_pure(1)")
+        evaluator.evaluate("1 + 1")
 
 
 @pytest.mark.plumbing
@@ -187,9 +191,9 @@ def test_relay_udfs_evaluator_construct_does_not_panic() -> None:
     error and refuses an over-budget timeout request.
     """
 
-    evaluator = RelayCelEvaluator(udfs=RELAY_UDFS, timeout_ms=50)
+    evaluator = WasmCelEvaluator(udfs=RELAY_UDFS, timeout_ms=50)
     assert evaluator.timeout_ms == 50
 
     with pytest.raises(ValueError):
         # MAX_TIMEOUT_MS is 250; 9999 must be rejected.
-        RelayCelEvaluator(udfs=RELAY_UDFS, timeout_ms=9999)
+        WasmCelEvaluator(udfs=RELAY_UDFS, timeout_ms=9999)

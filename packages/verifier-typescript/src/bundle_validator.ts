@@ -24,7 +24,12 @@
 import { createHash } from "node:crypto";
 
 import { checkArtifactPath } from "./bundle_paths.js";
-import { jcsCanonicalize, bundleDigest } from "./canonical.js";
+import {
+  JCSEncodeError,
+  jcsCanonicalize,
+  bundleDigest,
+  screenNonCanonicalizable,
+} from "./canonical.js";
 import { DEFAULT_JWKS_URL } from "./constants.js";
 import {
   RELAY_EVID_041,
@@ -151,20 +156,74 @@ export type TrustAnchorClass =
   | typeof TRUST_ANCHOR_CLASS_BYO;
 
 /**
+ * Raw-authority URL parser that mirrors Python `urllib.parse.urlparse`'s
+ * `.hostname` / `.path` semantics, used by {@link classifyTrustAnchor}.
+ *
+ * CRITICAL (bug verifier-ts-2): we do NOT use WHATWG `new URL()` here.
+ * WHATWG URL NORMALIZES a backslash to a slash, so a backslash-crafted
+ * authority like `https://relay.epochly.com\evil/.well-known/jwks.json`
+ * would parse to host=`relay.epochly.com` (over-classifying relay_inc),
+ * whereas Python `urlparse` keeps the backslash inside the reg-name and
+ * yields host=`relay.epochly.com\evil` (correctly byo). To stay
+ * byte-for-byte parity with Python we parse the raw authority + path
+ * substrings ourselves (same rationale as `_canonicalHostOf` in
+ * jwks_loader.ts).
+ *
+ * Mirrors urlparse: lowercases the host, splits userinfo at the FINAL
+ * `@`, strips a bracketed IPv6 host's brackets, strips the `:port`
+ * suffix, and excludes the query/fragment from the path. A string with
+ * no `scheme://` authority (e.g. `fork.example`) yields an empty host,
+ * matching Python `urlparse("fork.example").hostname == None`.
+ */
+// The port suffix accepts ANY characters up to the path delimiter (`[^/?#]*`),
+// NOT only digits: Python `urlparse(...).hostname`/`.path` extract host and path
+// even when the port is non-numeric (e.g. `host:abc`), because `.port` (which
+// validates digits) is never accessed by classify_trust_anchor. Requiring
+// `[0-9]*` here made the whole regex FAIL to match
+// `https://relay.epochly.com:abc/.well-known/jwks.json`, yielding an empty host
+// (-> `byo`) while Python kept the host (-> `relay_inc`): a verifier-output /
+// signer_role parity break (roborev 7feb671 MEDIUM). Host is still the run up to
+// the FIRST `:` (group 1), matching Python's `partition(':')` hostname split.
+const _RAW_URL_RE =
+  /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^/?#]*@)?(\[[^\]]*\]|[^/:?#@]*)(?::[^/?#]*)?([/?#].*)?$/;
+
+function _urlparseHostPath(url: string): { host: string; path: string } {
+  const m = _RAW_URL_RE.exec(url);
+  if (m === null) {
+    return { host: "", path: "" };
+  }
+  let host = m[1] ?? "";
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+  host = host.toLowerCase();
+  let path = m[2] ?? "";
+  // urlparse .path excludes the query (?) and fragment (#) components.
+  const qi = path.search(/[?#]/);
+  if (qi >= 0) {
+    path = path.slice(0, qi);
+  }
+  return { host, path };
+}
+
+/**
  * Return the `trust_anchor_class` for a bundle-declared `trust_anchor`.
  *
  * Mirrors `relay_verifier.bundle_validator.classify_trust_anchor` so
  * Python and TypeScript verifiers emit the same classification for the
- * same wire value (VAL-V2M08-044).
+ * same wire value (VAL-V2M08-044). Python's `urlparse` is the parity
+ * reference; see {@link _urlparseHostPath}.
  *
  * Returns:
  *   - {@link TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL} when value equals the
  *     `local_dev` sentinel.
  *   - {@link TRUST_ANCHOR_CLASS_RELAY_INC} when value is a URL whose
- *     host is `relay.epochly.com` AND whose path ends with
- *     `/.well-known/jwks.json`. The exact-path check defends against a
- *     producer pointing at an attacker-controlled path on the Relay-Inc
- *     host (e.g. `https://relay.epochly.com/evil`).
+ *     host is EXACTLY `relay.epochly.com` AND whose path is EXACTLY
+ *     `/.well-known/jwks.json` (equality, not a suffix test). The
+ *     exact-path check defends against a producer pointing at an
+ *     attacker-controlled path on the Relay-Inc host (e.g.
+ *     `https://relay.epochly.com/evil` or
+ *     `https://relay.epochly.com/attacker/path/.well-known/jwks.json`).
  *   - {@link TRUST_ANCHOR_CLASS_BYO} for any other non-empty string.
  *   - `""` when value is missing, non-string, or empty; caller emits
  *     {@link RELAY_EVID_MISSING_TRUST_ANCHOR} separately.
@@ -176,21 +235,69 @@ export function classifyTrustAnchor(trustAnchorValue: unknown): TrustAnchorClass
   if (trustAnchorValue === TRUST_ANCHOR_LOCAL_DEV) {
     return TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL;
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(trustAnchorValue);
-  } catch {
-    // Python's urlparse never raises on non-URL strings; it returns an
-    // empty hostname. WHATWG URL throws on non-absolute strings -- treat
-    // those as BYO to preserve Python's "any other non-empty string"
-    // semantics.
-    return TRUST_ANCHOR_CLASS_BYO;
-  }
-  const host = (parsed.hostname || "").trim().toLowerCase();
-  if (host === "relay.epochly.com" && parsed.pathname.endsWith("/.well-known/jwks.json")) {
+  const { host, path } = _urlparseHostPath(trustAnchorValue);
+  if (host === "relay.epochly.com" && path === "/.well-known/jwks.json") {
     return TRUST_ANCHOR_CLASS_RELAY_INC;
   }
   return TRUST_ANCHOR_CLASS_BYO;
+}
+
+// V3M1-F07: signer_role enum (VAL-V3M1-018; spec K line 4427). Parity with
+// Python `bundle_validator.SIGNER_ROLE_*`.
+//
+// Per spec K rule line 4427 ("The signer can only be the control-plane
+// evidence-signer service for hosted bundles. Local OSS bundles can be signed
+// with a local key; the verifier reports the trust path.") the verifier MUST
+// surface a signer_role classification on every output so auditors can
+// attribute the bundle to one of three trust paths. The classification derives
+// ONLY from the bundle's declared trust_anchor value (via trust_anchor_class),
+// never from the JWKS the verifier is configured with: a local_dev bundle stays
+// signer_role='local_dev' even when the verifier runs under the Relay-Inc
+// default anchor (no-auto-promotion guarantee).
+
+/**
+ * Bundle declares the Relay-Inc default trust_anchor URL; the bundle's signer
+ * is attributable to the control-plane evidence-signer service.
+ */
+export const SIGNER_ROLE_CONTROL_PLANE = "control_plane" as const;
+
+/**
+ * Bundle declares `trust_anchor: 'local_dev'`; the bundle's signer is the OSS
+ * local-dev signer. Auditors treat these bundles as informational only.
+ */
+export const SIGNER_ROLE_LOCAL_DEV = "local_dev" as const;
+
+/**
+ * Bundle's declared trust_anchor classifies as BYO (third-party anchor) or is
+ * missing entirely. The verifier cannot attribute the bundle to either trust
+ * path; consumers branching on signer_role see this default rather than an
+ * empty string.
+ */
+export const SIGNER_ROLE_UNKNOWN = "unknown" as const;
+
+export type SignerRole =
+  | typeof SIGNER_ROLE_CONTROL_PLANE
+  | typeof SIGNER_ROLE_LOCAL_DEV
+  | typeof SIGNER_ROLE_UNKNOWN;
+
+/**
+ * Return the signer_role classification for a trust_anchor_class. Pure mapping
+ * (no I/O, no side effects). Mirrors Python `_classify_signer_role`:
+ *   - {@link TRUST_ANCHOR_CLASS_RELAY_INC}       -> {@link SIGNER_ROLE_CONTROL_PLANE}
+ *   - {@link TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL} -> {@link SIGNER_ROLE_LOCAL_DEV}
+ *   - {@link TRUST_ANCHOR_CLASS_BYO}             -> {@link SIGNER_ROLE_UNKNOWN}
+ *   - `""` (missing/non-string anchor)           -> {@link SIGNER_ROLE_UNKNOWN}
+ *   - any other string                           -> {@link SIGNER_ROLE_UNKNOWN}
+ *     (fail-safe default for unrecognised classifications)
+ */
+export function classifySignerRole(trustAnchorClass: string): SignerRole {
+  if (trustAnchorClass === TRUST_ANCHOR_CLASS_RELAY_INC) {
+    return SIGNER_ROLE_CONTROL_PLANE;
+  }
+  if (trustAnchorClass === TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL) {
+    return SIGNER_ROLE_LOCAL_DEV;
+  }
+  return SIGNER_ROLE_UNKNOWN;
 }
 
 export interface ValidateBundleOptions {
@@ -258,6 +365,16 @@ export interface VerifierOutputEnvelope {
    */
   trust_anchor_class: TrustAnchorClass;
   trust_anchor_source: string;
+  /**
+   * VAL-V3M1-018 (spec K line 4427). Signer attribution path derived from the
+   * bundle's declared trust_anchor field (via {@link classifySignerRole}).
+   * Defaults to {@link SIGNER_ROLE_UNKNOWN} so consumers branching on this
+   * field never see an empty string. Emitted on EVERY return path (matching
+   * Python `_new_output` + `validate_bundle` placement) so Python<->TS JCS
+   * byte-parity holds -- signer_role sorts between signer_key_revoked_at and
+   * structure_ok in the canonical envelope.
+   */
+  signer_role: string;
   signer_key_revoked: boolean;
   signer_key_revoked_at: string | null;
   subject_resolution: string;
@@ -291,6 +408,11 @@ function _newOutput(): VerifierOutputEnvelope {
     // error via RELAY-EVID-MISSING-TRUST-ANCHOR).
     trust_anchor_class: "",
     trust_anchor_source: "",
+    // VAL-V3M1-018: signer attribution path derived from the bundle's declared
+    // trust_anchor field. Defaults to SIGNER_ROLE_UNKNOWN so consumers
+    // branching on this field never see an empty string (parity with Python
+    // `_new_output` which seeds SIGNER_ROLE_UNKNOWN).
+    signer_role: SIGNER_ROLE_UNKNOWN,
     signer_key_revoked: false,
     signer_key_revoked_at: null,
     subject_resolution: SUBJECT_RESOLUTION_UNKNOWN,
@@ -310,16 +432,103 @@ function _appendWarning(
   output.warnings.push(entry);
 }
 
+/**
+ * Format a string the way CPython's ``ascii()`` does, so verifier-output
+ * ``message`` bytes match the Python verifier (HIGH #4). The Python side now
+ * interpolates attacker-controllable identifiers via ``_py_ascii(...)`` (the
+ * builtin ``ascii()``) instead of ``!r``, because plain ``repr()`` keeps
+ * PRINTABLE non-ASCII verbatim but ESCAPES non-printable non-ASCII (C1
+ * controls, U+00A0, format/separator chars like U+200B/U+2028/U+FEFF). That
+ * "printable" distinction depends on the Unicode database and is intractable to
+ * mirror byte-for-byte in TS. ``ascii()`` removes the distinction: EVERY
+ * non-ASCII code point is escaped by a pure range rule, so both runtimes agree
+ * by construction.
+ *
+ * Rule (identical to CPython ``ascii()``): single quotes, switching to double
+ * quotes only when the string contains a single quote and no double quote;
+ * backslash-escape the quote char, backslash, and ``\t``/``\n``/``\r``; emit
+ * ASCII control bytes (cp < 0x20) and DEL (0x7f) as ``\xNN``; emit every
+ * non-ASCII code point as ``\xNN`` (cp <= 0xff), ``\uNNNN`` (cp <= 0xffff), or
+ * ``\U`` + 8 hex (astral). Printable ASCII (0x20..0x7e) is emitted verbatim, so
+ * the output is unchanged for the ASCII operand domain (artifact ids, hex
+ * digests, dotted namespace keys, bundle field names) and existing ASCII parity
+ * tests stay byte-identical.
+ */
+function pyReprStr(s: string): string {
+  const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
+  let out = quote;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (ch === quote || ch === "\\") {
+      out += "\\" + ch;
+    } else if (ch === "\t") {
+      out += "\\t";
+    } else if (ch === "\n") {
+      out += "\\n";
+    } else if (ch === "\r") {
+      out += "\\r";
+    } else if (cp < 0x20 || cp === 0x7f) {
+      out += "\\x" + cp.toString(16).padStart(2, "0");
+    } else if (cp >= 0x80) {
+      // Non-ASCII: escape by code-point range exactly like CPython ascii().
+      if (cp <= 0xff) {
+        out += "\\x" + cp.toString(16).padStart(2, "0");
+      } else if (cp <= 0xffff) {
+        out += "\\u" + cp.toString(16).padStart(4, "0");
+      } else {
+        out += "\\U" + cp.toString(16).padStart(8, "0");
+      }
+    } else {
+      out += ch;
+    }
+  }
+  return out + quote;
+}
+
+/**
+ * CPython ``repr()`` for the operand types interpolated with ``!r`` in the
+ * Python verifier's error messages: a string, or a list of strings (e.g.
+ * ``sorted(allowed_keys)``, ``unknown_keys``, ``present_fields``). A list is
+ * rendered ``['a', 'b']`` exactly like Python's ``list.__repr__``.
+ */
+function pyRepr(value: string | readonly string[]): string {
+  if (typeof value === "string") return pyReprStr(value);
+  return "[" + value.map((v) => pyReprStr(v)).join(", ") + "]";
+}
+
 function _appendError(
   output: VerifierOutputEnvelope,
-  args: { reason: string; message: string; code?: string },
+  args: {
+    reason: string;
+    message: string;
+    code?: string;
+    extra?: Record<string, unknown>;
+  },
 ): void {
   const entry: Record<string, unknown> = { reason: args.reason, message: args.message };
   if (args.code) {
     entry["code"] = args.code;
   }
+  // Forward additional discriminator keys verbatim (e.g. path_violation +
+  // offending_path), matching Python _append_error(**extra) (re-hunt #8).
+  if (args.extra) {
+    for (const [k, v] of Object.entries(args.extra)) {
+      entry[k] = v;
+    }
+  }
   output.errors.push(entry);
 }
+
+// The validateBundle structured-error reason token shared by BOTH
+// canonicalisability hazards (non-BMP object key, out-of-safe-range integer).
+// The discriminating wire CODE and the byte-identical MESSAGE come from the
+// shared screen `screenNonCanonicalizable` in canonical.ts, which every public
+// verifier entrypoint uses so all fail closed identically across TypeScript and
+// Python (keystone invariant #11/#16). Detection helpers, the safe-integer
+// bound, the RELAY-CANON-* subcodes, and the rejection messages now live in
+// canonical.ts (single source of truth for this validator and the verifier.ts
+// signature entrypoints).
+const NON_CANONICALIZABLE_BUNDLE_REASON = "non_canonicalizable_bundle";
 
 function _claimDigestsInOrder(bundle: Record<string, unknown>): string[] {
   const claims = bundle["claims"];
@@ -405,10 +614,42 @@ function _verifyBundle(bundle: Record<string, unknown>, jwks: JWKS): JwsResult {
     claims_count: 0,
     signature_checks: [],
   };
-  // Bundle-level digest is over the signature-stripped JCS canonical
-  // bytes (mirrors bundleDigest convention and Python's
-  // `_payload_for_signing` + `canonical_json_bytes`).
-  result.bundle_digest_sha256 = bundleDigest(bundle, { stripSignatures: true });
+  // Mirror Python `verify_bundle` (verifier.py:362-365) ORDER: the
+  // signatures-presence check runs FIRST -- BEFORE the bundle digest and the
+  // claims validation. An absent/empty `signatures` array returns the
+  // ALL-DEFAULT result (structure_ok=false, digest_ok=false, claims_count=0,
+  // bundle_digest_sha256="") because Python returns before computing any of
+  // them. Checking signatures first keeps a no-signatures bundle byte-identical
+  // to Python on EVERY path -- including one whose `claims` is missing or
+  // non-array, which a digest-then-claims order left with a populated
+  // bundle_digest while Python returned all-default (re-hunt
+  // verifier-structure-parity-1/-2; roborev 8b805fc).
+  const signatures = bundle["signatures"];
+  if (!Array.isArray(signatures) || signatures.length === 0) {
+    return result;
+  }
+
+  // Bundle-level digest is over the signature-stripped JCS canonical bytes
+  // (mirrors bundleDigest convention and Python's `_payload_for_signing` +
+  // `canonical_json_bytes`). Only computed once signatures are present, matching
+  // Python (verifier.py:367-370).
+  try {
+    result.bundle_digest_sha256 = bundleDigest(bundle, { stripSignatures: true });
+  } catch (err) {
+    if (err instanceof JCSEncodeError) {
+      // The JCS encoder fails-closed on a payload it cannot canonicalise to
+      // runtime-identical bytes -- specifically a supplementary-plane
+      // (non-BMP, >= U+10000) object KEY, which Python sorts by code point
+      // while this verifier sorts by UTF-16 code unit (keystone invariant
+      // #11). Preserve the never-throws contract: return the all-default
+      // result (structure_ok stays false), exactly like the no-signatures
+      // early return above. The higher-level validateBundle pre-screens for
+      // this and emits a structured 'non_canonicalizable_bundle' error before
+      // reaching here; this guard protects DIRECT callers of _verifyBundle.
+      return result;
+    }
+    throw err;
+  }
 
   const claims = bundle["claims"];
   if (!Array.isArray(claims)) {
@@ -417,12 +658,6 @@ function _verifyBundle(bundle: Record<string, unknown>, jwks: JWKS): JwsResult {
   result.claims_count = claims.length;
   result.structure_ok = true;
   result.digest_ok = true;
-
-  const signatures = bundle["signatures"];
-  if (!Array.isArray(signatures) || signatures.length === 0) {
-    // No signatures: structure_ok stays true, signatures_ok is false.
-    return result;
-  }
 
   // BUG-C3 wire-shape parity: the canonical signing payload is the
   // bundle with `signatures` stripped. Each signature entry carries
@@ -529,6 +764,19 @@ export function validateBundle(args: {
   // running under the Relay-Inc default anchor.
   output.trust_anchor_class = classifyTrustAnchor(trustAnchor);
 
+  // --- Signer-role classification (VAL-V3M1-018) ---------------------------
+  // Per spec K rule line 4427 the verifier surfaces a signer_role on every
+  // output. The classification derives ONLY from the bundle's declared
+  // trust_anchor (via trust_anchor_class), never from the JWKS the verifier is
+  // configured with: a local_dev bundle stays signer_role='local_dev' even
+  // when the verifier is running under the Relay-Inc default anchor
+  // (no-auto-promotion guarantee). This is computed BEFORE the
+  // missing-trust-anchor and signature-count early returns so the field is
+  // populated on EVERY return path (parity with Python placement at
+  // bundle_validator.py validate_bundle, which sets signer_role before both
+  // early returns).
+  output.signer_role = classifySignerRole(output.trust_anchor_class);
+
   // --- Missing-trust_anchor rejection (VAL-V2M08-043) ----------------------
   // Fail-closed when the bundle declares no trust_anchor (or declares a
   // non-string / empty value). This MUST happen before signature work so
@@ -544,6 +792,48 @@ export function validateBundle(args: {
     });
   }
 
+  // Record the wire signature count early so EVERY return path -- including
+  // the non-canonicalisable-bundle early return below -- carries it.
+  const rawSigs = bundle["signatures"];
+  const signaturesCount = Array.isArray(rawSigs) ? rawSigs.length : 0;
+  output.signatures_present = signaturesCount;
+
+  // --- Non-canonicalisable-bundle screen (keystone invariant #11/#16) ------
+  // A bundle carrying a value the JCS encoder cannot canonicalise to
+  // byte-identical bytes across runtimes -- a supplementary-plane (non-BMP,
+  // >= U+10000) object KEY, or an out-of-safe-range integer (abs > 2**53 - 1)
+  // -- would verify on one runtime and be rejected as tampered on the other.
+  // This screen runs BEFORE the over-cap signature check because a bundle
+  // whose canonical bytes are not even well-defined is the most fundamental
+  // failure (every downstream check is meaningless), and running first keeps
+  // the over-cap branch's diagnostic bundleDigest on canonicalisable payloads
+  // only (so its swallow-all try/catch never hides the screen's hazard). It
+  // runs on the bundle MINUS the top-level 'signatures' field because every
+  // canonicalisation site (_verifyBundle, _claimDigestsInOrder,
+  // _computeBindingDigest) operates on that payload or a subset; a hazard
+  // confined to a signature entry is not a canonicalisation hazard. The
+  // detection + byte-identical { code, message } come from the shared
+  // screenNonCanonicalizable so this validator and the verifier.ts signature
+  // entrypoints fail closed IDENTICALLY across TypeScript and Python.
+  const payloadToCanon: Record<string, unknown> = {};
+  for (const k of Object.keys(bundle)) {
+    if (k !== "signatures") {
+      payloadToCanon[k] = bundle[k];
+    }
+  }
+  const hazard = screenNonCanonicalizable(payloadToCanon);
+  if (hazard !== null) {
+    _appendError(output, {
+      reason: NON_CANONICALIZABLE_BUNDLE_REASON,
+      message: hazard.message,
+      code: hazard.code,
+    });
+    const claims = bundle["claims"];
+    output.claims_count = Array.isArray(claims) ? claims.length : 0;
+    output.overall = _computeOverall(output);
+    return output;
+  }
+
   // --- Signature-count cap (VAL-V2M08-041) ---------------------------------
   // Per spec L.5 line 4481 bundles can carry up to MAX_BUNDLE_SIGNATURES
   // cross-signing signatures. An over-cap bundle is rejected BEFORE
@@ -551,9 +841,6 @@ export function validateBundle(args: {
   // against producers abusing the cross-signing slot for non-signature
   // data). The signatures_checked[] array stays empty for the over-cap
   // bundle.
-  const rawSigs = bundle["signatures"];
-  const signaturesCount = Array.isArray(rawSigs) ? rawSigs.length : 0;
-  output.signatures_present = signaturesCount;
   if (signaturesCount > MAX_BUNDLE_SIGNATURES) {
     _appendError(output, {
       reason: "signature_count_exceeded",
@@ -633,9 +920,13 @@ export function validateBundle(args: {
               reason: "path_violation",
               message:
                 `claim[${ci}].evidence_refs[${ri}] artifact_id ` +
-                `${JSON.stringify(artifactId)} rejected by path screen ` +
+                `${pyRepr(artifactId)} rejected by path screen ` +
                 `(${pathViolation.path_violation})`,
               code: pathViolation.code,
+              extra: {
+                path_violation: pathViolation.path_violation,
+                offending_path: pathViolation.offending_path,
+              },
             });
             output.digest_ok = false;
             continue;
@@ -651,7 +942,7 @@ export function validateBundle(args: {
               reason: "artifact_unavailable",
               message:
                 `claim[${ci}].evidence_refs[${ri}] artifact ` +
-                `${JSON.stringify(artifactId)} could not be resolved`,
+                `${pyRepr(artifactId)} could not be resolved`,
               code: RELAY_EVID_014,
             });
             output.digest_ok = false;
@@ -663,8 +954,8 @@ export function validateBundle(args: {
               reason: "artifact_digest_mismatch",
               message:
                 `claim[${ci}].evidence_refs[${ri}] artifact ` +
-                `${JSON.stringify(artifactId)} digest mismatch: declared=` +
-                `${JSON.stringify(declaredDigest)} recomputed=${JSON.stringify(recomputed)}`,
+                `${pyRepr(artifactId)} digest mismatch: declared=` +
+                `${pyRepr(declaredDigest)} recomputed=${pyRepr(recomputed)}`,
               code: RELAY_EVID_014,
             });
             output.digest_ok = false;
@@ -743,7 +1034,7 @@ export function validateBundle(args: {
               reason: "claim_namespace_unknown",
               message:
                 `claim[${ci}].namespaces contains key(s) outside the closed ` +
-                `set ${JSON.stringify(allowed)}: ${JSON.stringify(unknownKeys)}`,
+                `set ${pyRepr(allowed)}: ${pyRepr(unknownKeys)}`,
               code: RELAY_EVID_NAMESPACE_UNKNOWN,
             });
           }
@@ -770,7 +1061,7 @@ export function validateBundle(args: {
               reason: "evidence_ref_artifact_missing_from_manifest",
               message:
                 `claim[${ci}].evidence_refs[${ri}] digest ` +
-                `${JSON.stringify(refDigest)} is not present in the ` +
+                `${pyRepr(refDigest)} is not present in the ` +
                 `bundle's manifest (spec K line 4428); manifest contains ` +
                 `${manifestDigests.size} digest(s)`,
               code: RELAY_EVID_014,
@@ -792,8 +1083,8 @@ export function validateBundle(args: {
       _appendError(output, {
         reason: "merkle_root_mismatch",
         message:
-          `declared merkle_root_hex ${JSON.stringify(declaredMerkle)} does not ` +
-          `match recomputed root ${JSON.stringify(recomputedMerkle)}`,
+          `declared merkle_root_hex ${pyRepr(declaredMerkle)} does not ` +
+          `match recomputed root ${pyRepr(recomputedMerkle)}`,
         code: RELAY_EVID_040,
       });
     }
@@ -862,7 +1153,7 @@ export function validateBundle(args: {
         "anchor (spec section AB); the validator refuses to fall " +
         "back to 'generated_at' or any sibling timestamp because " +
         "the TSA gen_time skew check binds to decided_at " +
-        `specifically. bundle fields present: ${JSON.stringify(presentFields)}`,
+        `specifically. bundle fields present: ${pyRepr(presentFields)}`,
       code: RELAY_EVID_DECIDED_AT_MISSING,
     });
     _appendError(output, {
@@ -962,7 +1253,7 @@ export function validateBundle(args: {
           _appendWarning(output, {
             reason: "signer_key_revoked_after_sign_time",
             message:
-              `key ${JSON.stringify(primaryKid)} was revoked at ` +
+              `key ${pyRepr(primaryKid)} was revoked at ` +
               `${lifeResult.signer_key_revoked_at}; bundle signed before ` +
               `revocation -- auditor decides acceptance`,
           });

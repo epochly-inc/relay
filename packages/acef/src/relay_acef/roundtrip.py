@@ -41,12 +41,29 @@ defined as SHA-256 of the empty string (deterministic empty-tree
 convention; matches the verifier's empty-bundle behaviour).
 
 NFC normalisation (RFC 8785 section 3.2.3 + unicodedata.normalize):
-JSON object keys are key-sorted by raw code-unit sequence AFTER NFC
-normalisation. String VALUES are also NFC-normalised on emit so that an
+JSON object keys are SORTED *and emitted* by their RAW (un-normalised)
+code-point sequence (see _encode_key). Sort key == emitted key, so
+emit -> parse -> emit is a byte-identical fixed point on the wire: the
+signer emits these bytes and the verifier parses + re-canonicalises them
+to recompute the digest. Routing keys through _encode_string (NFC fold)
+while sorting by the raw key -- the round-2 #5/#6 state -- is UNSTABLE for
+NFC-singleton keys (U+2126 OHM -> U+03A9, U+212B ANGSTROM -> U+00C5) and
+BMP CJK-compat ideographs (U+FA6C -> U+242EE), because the re-parse
+re-sorts by the now-NFC key and emits a different stream. The reference
+encoders relay_contracts.canonical and relay_verifier.canonical still
+emit keys NFC-folded, so to avoid DIVERGING from them this module
+FAIL-CLOSES on any key whose NFC form differs from its raw form (the
+NFC-stability guard in _encode): such a key is refused, never emitted. So
+every ACCEPTED key is byte-identical across all encoders, and the
+wire-unstable NFC-singleton / CJK-compat keys cannot be signed at all
+(Relay's schema-declared bundle keys are ASCII -- always NFC-stable).
+
+String VALUES are NFC-normalised at emit time by _encode_string, so an
 input arriving in NFD (e.g. ``"cafe" + U+0301``) and the same input in
 NFC (``"cafe-acute"``) produce identical canonical bytes on the very
-first emit (VAL-W11-020). The parse path also NFC-normalises so a
-malformed inbound bundle (NFD on the wire) re-emits as NFC bytes.
+first emit (VAL-W11-020). The parse path NFC-normalises string VALUES
+(not keys) so a malformed inbound bundle (NFD on the wire) re-emits as
+NFC bytes for its values while keeping its keys a fixed point.
 
 Decimal precision (RFC 8785 section 3.2.2 numbers via ECMA-262
 Number.toString): numeric values that arrive as :class:`decimal.Decimal`
@@ -77,21 +94,32 @@ from relay_extensions.emission import EmissionWriter
 # bool/None/list/dict/str/int/float, with two W11.3-specific extensions
 # required by VAL-W11-020 and VAL-W11-021:
 #
-#   1. unicodedata.normalize("NFC", k) is applied to every dict KEY
-#      before sorting. RFC 8785 section 3.2.3 mandates UTF-16 code-unit
-#      sort order; for the BMP this matches Python's str compare. NFC
-#      normalisation is required because keys arriving in different
-#      normal forms (e.g., NFD with combining marks) would otherwise
-#      sort differently from the same key in NFC.
+#   1. Object keys are SORTED *and emitted* by their RAW (un-normalised)
+#      code-point sequence (via _encode_key, no NFC fold). RFC 8785
+#      section 3.2.3 mandates UTF-16 code-unit sort order; for the BMP
+#      this matches Python's str compare. Sort key == emitted key, so
+#      emit -> parse -> emit is a byte fixed point on the wire. The
+#      reference encoders relay_contracts.canonical and
+#      relay_verifier.canonical emit keys NFC-folded (via _encode_string)
+#      while sorting by the raw key, which is UNSTABLE on the wire for
+#      NFC-singleton keys (U+2126 OHM -> U+03A9, U+212B ANGSTROM ->
+#      U+00C5) and BMP CJK-compat keys that NFC to the supplementary
+#      plane (U+FA6C -> U+242EE). To stay parity-identical with those
+#      reference encoders rather than diverge, this module FAIL-CLOSES on
+#      any key whose NFC form differs from its raw form (the NFC-stability
+#      guard in _encode): such a key is refused, never emitted. Relay's
+#      schema-declared bundle keys are ASCII, where all three agree.
 #
 #   2. decimal.Decimal values bypass the float path entirely and are
 #      emitted via str(Decimal) with the "+" exponent prefix stripped.
 #      This preserves every digit; no value differs by even one ULP
 #      after roundtrip.
 #
-# String VALUES are emitted literally (UTF-8). RFC 8785 leaves string-
-# value normalisation to the application; W11.3 normalises strings to
-# NFC ON PARSE so the second emit is canonical.
+# String VALUES are NFC-normalised at emit time (via _encode_string), so an
+# NFD input and its NFC equivalent produce identical canonical bytes on the
+# first emit (VAL-W11-020). The parse path also NFC-normalises string VALUES
+# (not keys) so a malformed inbound bundle re-emits canonical value bytes
+# while keeping its keys a wire fixed point.
 
 _ESCAPE_MAP: Final[dict[int, str]] = {
     0x00: "\\u0000", 0x01: "\\u0001", 0x02: "\\u0002", 0x03: "\\u0003",
@@ -124,6 +152,38 @@ def _encode_string(s: str) -> str:
     VAL-W11-020 (unicode normalisation is NFC and roundtrips losslessly).
     """
     s = unicodedata.normalize("NFC", s)
+    out = ['"']
+    for ch in s:
+        cp = ord(ch)
+        esc = _ESCAPE_MAP.get(cp)
+        if esc is not None:
+            out.append(esc)
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _encode_key(s: str) -> str:
+    """Emit a JSON object-KEY string literal WITHOUT NFC normalisation.
+
+    RFC 8785 section 3.2.3 sorts object keys by their (un-normalised) UTF-16
+    code-unit sequence and emits the keys exactly as supplied. The W11.3
+    encoder therefore sorts keys by the RAW key and MUST emit the RAW key
+    too: if it instead emitted the NFC-folded key (via :func:`_encode_string`)
+    the emitted-key bytes would differ from the sort-key bytes for keys whose
+    NFC form sorts differently (e.g. U+2126 OHM SIGN emitted as U+03A9
+    OMEGA). The signer would write raw-sorted/NFC-emitted bytes; the verifier
+    parses the NFC keys and re-sorts by the now-NFC key, producing a different
+    byte stream -- a sign/verify byte-divergence on the wire (the round-2 #5/#6
+    fix sorted by the raw key but still emitted via _encode_string, leaving
+    this instability). Emitting the RAW key makes emitted-key == sort-key, so
+    emit -> parse -> emit is a fixed point.
+
+    Escaping (control chars, quote, backslash) is identical to
+    :func:`_encode_string`; only the NFC fold is dropped. String VALUES keep
+    NFC normalisation (VAL-W11-020) via :func:`_encode_string`.
+    """
     out = ['"']
     for ch in s:
         cp = ord(ch)
@@ -285,19 +345,74 @@ def _encode(value: Any) -> str:
         parts = [_encode(item) for item in value]
         return "[" + ",".join(parts) + "]"
     if isinstance(value, dict):
-        # NFC-normalise keys before sorting (RFC 8785 section 3.2.3 +
-        # Unicode Standard Annex #15). For BMP-only keys NFC is a
-        # no-op, but the normalisation step ensures keys arriving as
-        # NFD (e.g., "café" vs "café") collapse to the same
-        # canonical key BEFORE the sort.
-        items = sorted(
-            (
-                (unicodedata.normalize("NFC", str(k)), v)
-                for k, v in value.items()
-            ),
-            key=lambda kv: kv[0],
-        )
-        parts = [_encode_string(k) + ":" + _encode(v) for k, v in items]
+        # RFC 8785 section 3.2.3 sorts object keys by their UTF-16 code-unit
+        # sequence. Python str sorts by code point; for the BMP the two agree,
+        # but for supplementary-plane keys (>= U+10000) they diverge silently,
+        # so a code-point sort emits bytes a UTF-16 sorter would order
+        # differently. The authoritative encoder (relay_contracts.canonical)
+        # fail-CLOSES on such keys; this encoder MUST match it -- refuse
+        # identically rather than emit divergent code-point-ordered bytes
+        # (re-hunt #3). Only object KEYS are bound; values may carry
+        # supplementary-plane characters.
+        #
+        # Keys are sorted AND emitted by the RAW key (str(k)) with NO NFC
+        # normalisation: sort key == emitted key, so emit -> parse -> emit is a
+        # byte-identical fixed point on the wire (the signer emits these bytes;
+        # the verifier parses them and re-canonicalises to recompute the
+        # digest). NFC-folding the emitted key while sorting by the raw key
+        # (the round-2 #5/#6 state, which routed keys through _encode_string)
+        # is UNSTABLE for NFC-singleton keys (U+2126 OHM -> U+03A9, U+212B
+        # ANGSTROM -> U+00C5) and BMP CJK-compat ideographs that NFC to the
+        # supplementary plane (e.g. U+FA6C -> U+242EE): the re-parse re-sorts by
+        # the now-NFC key, yielding a different byte stream -> sign/verify
+        # divergence. _encode_key emits the RAW key bytes; _encode_string still
+        # NFC-normalises string VALUES (VAL-W11-020). To avoid diverging from the
+        # reference encoders (relay_contracts.canonical, relay_verifier.canonical,
+        # the TS canonicalizers, which NFC-FOLD emitted keys), this encoder
+        # FAIL-CLOSES on any key whose NFC form differs from its raw form (the
+        # NFC-stability guard below): such a key would be re-canonicalised to
+        # different bytes by those verifiers and break cross-verifier parity. So
+        # every ACCEPTED key is byte-identical across all encoders, and the
+        # wire-unstable NFC-singleton / CJK-compat keys are refused outright.
+        # Relay's schema-declared bundle keys are ASCII -- always NFC-stable.
+        #
+        # The non-BMP key guard remains: RFC 8785 3.2.3 sorts keys by UTF-16
+        # code-unit order; Python str sorts by code point; for the BMP the two
+        # agree but for supplementary-plane keys (>= U+10000) they diverge
+        # silently. Emitting the RAW BMP key keeps a CJK-compat key BMP on the
+        # wire (its NFC form would be supplementary-plane), so the guard fires
+        # only on keys that are supplementary-plane in their RAW form.
+        items_raw = [(str(k), v) for k, v in value.items()]
+        for k, _v in items_raw:
+            for ch in k:
+                if ord(ch) >= 0x10000:
+                    raise JCSEncodeError(
+                        f"JCS: non-BMP codepoint U+{ord(ch):04X} in object "
+                        f"key {k!r}; supplementary-plane keys produce "
+                        f"runtime-divergent canonical bytes and are refused. "
+                        f"Re-key the object with BMP-only strings."
+                    )
+            # Fail-CLOSED on a key that is NOT already NFC-stable. This encoder
+            # emits the RAW key for wire-stability, but the reference verifiers
+            # (relay_contracts.canonical, relay_verifier.canonical, the TS
+            # canonicalizers) NFC-FOLD emitted keys -- so an NFC-singleton key
+            # (e.g. U+2126 OHM, whose NFC is U+03A9) signed here would be
+            # re-canonicalised to different bytes by those verifiers and fail
+            # digest/signature parity. Refusing non-NFC keys at emit time keeps
+            # a signed bundle verifiable across every encoder (roborev follow-on
+            # on the round-2 acef key-emit fix). Relay's schema-declared bundle
+            # keys are ASCII -- always NFC-stable -- so real bundles are
+            # unaffected.
+            if unicodedata.normalize("NFC", k) != k:
+                raise JCSEncodeError(
+                    f"JCS: non-NFC object key {k!r}; a key whose NFC form "
+                    f"differs from its raw form would be re-canonicalised to "
+                    f"different bytes by the NFC-folding reference verifiers "
+                    f"and break cross-verifier digest/signature parity. "
+                    f"Re-key the object with NFC-normalised strings."
+                )
+        items = sorted(items_raw, key=lambda kv: kv[0])
+        parts = [_encode_key(k) + ":" + _encode(v) for k, v in items]
         return "{" + ",".join(parts) + "}"
     raise JCSEncodeError(
         f"JCS: unsupported type {type(value).__name__} for value {value!r}"
@@ -341,11 +456,12 @@ def parse_bundle(data: bytes) -> dict[str, Any]:
       1. ``json.loads(data, parse_float=Decimal)`` so numeric values
          that were emitted with full Decimal precision parse back as
          Decimal (no ULP drift on the second emit).
-      2. Recursively NFC-normalise every string value so the parse path
+      2. Recursively NFC-normalise every string VALUE so the parse path
          is idempotent against inputs that arrived in NFC-equivalent
-         but byte-different form. Object keys are likewise NFC-collapsed
-         (handled by the encoder's key-sort, but we do it here too so
-         downstream callers see canonical keys).
+         but byte-different form. Object KEYS are passed through RAW (no
+         NFC): the encoder sorts and emits keys by the raw key, so
+         normalising the key here would break the emit -> parse -> emit
+         byte fixed point for NFC-singleton keys (see _encode_key).
       3. Re-validate via the W11.2 EmissionWriter so a bundle that
          arrives missing required control-plane bindings (VAL-W11-023)
          or with an unknown schema_version (VAL-W11-017/018) is
@@ -377,11 +493,19 @@ def roundtrip(bundle: dict[str, Any]) -> bytes:
 
 
 def _nfc_walk(value: Any) -> Any:
-    """Recursively NFC-normalise every str inside a parsed JSON tree.
+    """Recursively NFC-normalise every str VALUE inside a parsed JSON tree.
 
-    Dict keys and string values are normalised. Numeric/None/bool values
-    pass through. Decimals pass through (already canonical text). The
-    walker preserves dict/list identity-types (returns new dict/list).
+    String VALUES are NFC-normalised (VAL-W11-020). Object KEYS are
+    deliberately NOT normalised: the encoder sorts AND emits keys by the RAW
+    key (see :func:`_encode_key`), so normalising the key here would mutate it
+    between the first emit and the re-emit, breaking the emit -> parse -> emit
+    byte fixed point for NFC-singleton keys (e.g. U+2126 OHM, whose NFC form
+    U+03A9 OMEGA sorts differently). Keys therefore pass through verbatim so
+    the parse path is a fixed point of the emit path.
+
+    Numeric/None/bool values pass through. Decimals pass through (already
+    canonical text). The walker preserves dict/list identity-types (returns
+    new dict/list).
     """
     if isinstance(value, str):
         return unicodedata.normalize("NFC", value)
@@ -390,8 +514,8 @@ def _nfc_walk(value: Any) -> Any:
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
-            kk = unicodedata.normalize("NFC", str(k))
-            out[kk] = _nfc_walk(v)
+            # KEY passes through RAW (no NFC); only VALUES are normalised.
+            out[str(k)] = _nfc_walk(v)
         return out
     # Decimal, int, float, bool, None: return as-is.
     return value

@@ -531,3 +531,119 @@ def test_command_hash_cross_language_golden_vector() -> None:
             f"case {case.get('name')!r}: expected {case['expected']!r}, "
             f"got {h!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# VAL-CWC-P3CORPUS-013: M3 manifest + discipline gate
+#
+# Guards that the .ops/manifest.yaml declares the WS-E and WS-G commands
+# introduced in M3 P3CORPUS, with schema-valid network_policy (egress_default
+# must be "deny" and egress_allowlist must be present) on every entry.
+# Also guards that the M3 source deliverables are ASCII-only (no non-ASCII
+# bytes in any non-binary M3 file).
+#
+# The skipif mirrors the parent test_ops_manifest_validates_against_canonical_
+# schema: the .ops/manifest.yaml is a workspace-level artifact that is absent
+# on a public-relay-only checkout; the guard skips gracefully in that case.
+# ---------------------------------------------------------------------------
+
+# M3 command IDs that MUST be present in the manifest.
+_M3_COMMAND_IDS: frozenset[str] = frozenset(
+    {
+        "generate-relay-udf-via-cel-corpus",
+        "test-udf-via-cel-corpus",
+        "test-node-udf-cross-host",
+        "check-wasm-pinned-sha",
+    }
+)
+
+# M3 source files (text, not binary) that must be ASCII-only.
+_M3_ASCII_FILES: tuple[str, ...] = (
+    "scripts/generate-relay-udf-via-cel-corpus.py",
+    "tests/conformance/cel/test_udf_via_cel_byte_match_runner.py",
+    "tests/conformance/cel/test_udf_via_cel_corpus.py",
+    "packages/cel-wasm/conformance/harness/udf_via_cel_cross_host.mjs",
+    "packages/contracts/src/relay_contracts/wasm_artifact.py",
+    "packages/contracts/src/relay_contracts/wasm_backed_evaluator.py",
+    "packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.py",
+    "packages/contracts/tests/test_wasm_loader_package_data.py",
+    "packages/contracts/tests/test_wasm_package_data.py",
+    "packages/contracts-typescript/src/wasm-artifact.ts",
+    "packages/contracts-typescript/test/udf_via_cel_cross_host.test.ts",
+    "packages/contracts-typescript/test/wasm_package_data.test.ts",
+)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P3CORPUS-013")
+@pytest.mark.skipif(
+    not _OPS_MANIFEST_PATH.exists(),
+    reason=(
+        ".ops/manifest.yaml absent (public-relay-only checkout). "
+        "The M3 manifest guard skips; it runs in the workspace environment."
+    ),
+)
+def test_m3_manifest_commands_declared_with_deny_policy() -> None:
+    """M3 WS-E/WS-G commands declared in manifest; each has egress_default deny.
+
+    VAL-CWC-P3CORPUS-013: every M3 command entry MUST carry
+    network_policy.egress_default == "deny". A prior regression set
+    egress_default to "allow" and broke test_ops_manifest_validates_against_
+    canonical_schema (the schema enforces "deny" as a const).
+    """
+    body = yaml.safe_load(_OPS_MANIFEST_PATH.read_text(encoding="utf-8"))
+    commands: list[dict] = body.get("commands", [])
+    declared_ids: set[str] = {c.get("id", "") for c in commands}
+
+    missing = _M3_COMMAND_IDS - declared_ids
+    assert missing == set(), (
+        f"VAL-CWC-P3CORPUS-013: M3 command(s) missing from .ops/manifest.yaml: "
+        f"{sorted(missing)}. Add a schema-valid entry (egress_default: deny, "
+        "egress_allowlist: *id001) for each."
+    )
+
+    bad_policy: list[str] = []
+    for cmd in commands:
+        if cmd.get("id") in _M3_COMMAND_IDS:
+            np = cmd.get("network_policy", {})
+            if np.get("egress_default") != "deny":
+                bad_policy.append(
+                    f"{cmd['id']}: egress_default={np.get('egress_default')!r}"
+                )
+    assert bad_policy == [], (
+        f"VAL-CWC-P3CORPUS-013: M3 command(s) have wrong egress_default "
+        f"(must be 'deny'): {bad_policy}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P3CORPUS-013")
+def test_m3_source_files_ascii_only() -> None:
+    """M3 WS-E/WS-G source deliverables contain no non-ASCII bytes.
+
+    VAL-CWC-P3CORPUS-013 ASCII discipline: every M3 text file (generators,
+    runners, loaders, packaging metadata) must be ASCII-only. Binary files
+    (.wasm) are excluded from this check.
+    """
+    violations: list[str] = []
+    for rel_path in _M3_ASCII_FILES:
+        abs_path = _REPO_ROOT / rel_path
+        if not abs_path.exists():
+            # A missing file is a distinct problem (not an ASCII violation).
+            # The manifest-commands test above catches missing deliverables;
+            # here we only check the ones that exist.
+            continue
+        raw = abs_path.read_bytes()
+        offending_lines: list[tuple[int, bytes]] = []
+        for i, line in enumerate(raw.splitlines(), start=1):
+            try:
+                line.decode("ascii")
+            except UnicodeDecodeError:
+                offending_lines.append((i, line))
+        if offending_lines:
+            for lineno, line in offending_lines[:3]:
+                violations.append(f"{rel_path}:{lineno}: {line[:60]!r}")
+    assert violations == [], (
+        "VAL-CWC-P3CORPUS-013: non-ASCII bytes in M3 source deliverables:\n  "
+        + "\n  ".join(violations)
+    )

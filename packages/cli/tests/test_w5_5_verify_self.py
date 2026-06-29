@@ -22,10 +22,12 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +39,10 @@ from relay_cli.evidence_bundle import (
     ASSERTION_IDS,
     EVIDENCE_BUNDLE_SCHEMA,
 )
+from relay_cli.invariants import runner as runner_module
 from relay_cli.invariants.runner import (
+    _CHECK_DISPATCH,
+    CEL_ENGINE_CHECK,
     CHECK_ORDER,
     VERIFY_SELF_RESULT_SCHEMA,
     run_all_checks,
@@ -59,9 +64,17 @@ def _run_rly(
     *,
     cwd: Path | None = None,
     timeout: float = 90.0,
+    unset_env: Iterable[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Invoke ``uv run rly <args>`` non-TTY (capture_output=True)."""
+    """Invoke ``uv run rly <args>`` non-TTY (capture_output=True).
+
+    ``unset_env`` names are DELETED from the child environment (so a variable can
+    be made truly UNSET, distinct from set-but-blank). ``extra_env`` is applied
+    after the unset, so passing the same name in both makes it set.
+    """
     env = os.environ.copy()
+    for name in unset_env or ():
+        env.pop(name, None)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -142,6 +155,36 @@ def _write_crypto_flag_stubs(root: Path) -> None:
         )
 
 
+def _write_wasm_engine_surface(root: Path) -> None:
+    """Materialize the cel-engine SHA-probe surface under a clean ``repo_root``.
+
+    The cel-engine SHA probe (VAL-ISO-005) reads the ``.wasm`` artifact bytes off
+    disk AND parses ``WASM_PINNED_SHA256`` from the ``wasm_artifact.py`` SOURCE
+    under ``--repo-root`` (so a tampered artifact or stale pin IN the named tree
+    is detected). A clean synthetic tree must therefore carry both surfaces with
+    a pin that MATCHES the artifact's sha256, or the probe (correctly) reports a
+    mismatch.
+    """
+    wasm_dir = root / "packages" / "contracts" / "src" / "relay_contracts" / "_wasm"
+    wasm_dir.mkdir(parents=True, exist_ok=True)
+    wasm_bytes = b"clean-tree-cel-wasm-fixture\n"
+    (wasm_dir / "relay_cel_wasm.wasm").write_bytes(wasm_bytes)
+    pinned = hashlib.sha256(wasm_bytes).hexdigest()
+    artifact_py = (
+        root / "packages" / "contracts" / "src" / "relay_contracts" / "wasm_artifact.py"
+    )
+    artifact_py.write_text(
+        '"""WASM artifact pin stub for the clean-tree fixture."""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "from typing import Final\n"
+        "\n"
+        f'WASM_PINNED_SHA256: Final[str] = "{pinned}"\n',
+        encoding="utf-8",
+    )
+
+
 def _make_clean_tree(root: Path) -> None:
     """Create a synthetic relay-like tree with zero violations."""
     (root / "packages" / "okpkg" / "src").mkdir(parents=True)
@@ -155,6 +198,9 @@ def _make_clean_tree(root: Path) -> None:
     # files with the flags True (mirroring the real repo) so the
     # sigstore/rekor/tsa verifier-implemented checks (VAL-ISO-005) pass.
     _write_crypto_flag_stubs(root)
+    # And the cel-engine SHA-probe surface (wasm artifact + matching pin) so the
+    # now-repo_root-anchored cel-engine check passes on the clean tree.
+    _write_wasm_engine_surface(root)
 
 
 def _make_tree_with_todo(root: Path) -> None:
@@ -776,3 +822,173 @@ def test_verify_self_against_real_repo_exits_zero() -> None:
         + result.stderr
     )
     assert result.returncode == 0
+
+
+# -----------------------------------------------------------------------------
+# VAL-CWC-P5FLIP-007 / -008: rly verify-self --json passes with the cel_engine
+# check green -- on a healthy default install (env unset) AND under an explicit
+# RELAY_CEL_ENGINE=wasm selection. CLI-integration: invoke the real CLI exactly
+# as the contract Evidence command specifies, parse stdout JSON, and assert the
+# cel_engine entry is present with status == "pass".
+# -----------------------------------------------------------------------------
+
+
+def _cel_engine_entry(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the cel_engine check entry from a verify-self JSON payload.
+
+    Locates the ``checks[]`` object whose ``name`` equals the cel_engine
+    ``CHECK_NAME``. Asserts the entry is PRESENT (a missing entry -- the
+    pre-registration state this test guards against -- fails here, so the test is
+    non-vacuous: it would FAIL if the cel_engine check were not wired into the
+    runner / CLI output)."""
+    checks = payload.get("checks")
+    assert isinstance(checks, list), payload
+    names = [c.get("name") for c in checks]
+    assert CEL_ENGINE_CHECK in names, (
+        f"cel_engine check {CEL_ENGINE_CHECK!r} absent from verify-self "
+        f"checks array; present names={names!r}"
+    )
+    return next(c for c in checks if c.get("name") == CEL_ENGINE_CHECK)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-007")
+def test_verify_self_json_cel_engine_pass_default_install() -> None:
+    """``rly verify-self --json`` (RELAY_CEL_ENGINE UNSET) exits 0 with overall
+    pass, failures 0, and the cel_engine check present + status pass.
+
+    This is the VAL-CWC-P5FLIP-007 CLI-integration assertion: it invokes the real
+    CLI exactly as the contract Evidence command (``uv run rly verify-self
+    --json`` with the engine-selection env UNSET), parses stdout JSON, and asserts
+    the cel_engine entry. ``_cel_engine_entry`` fails if the entry is ABSENT, so
+    the test is non-vacuous (it would FAIL if the cel_engine check were not
+    registered into the runner / surfaced in the CLI output)."""
+    # Truly UNSET the engine-selection env in the child process (delete the key,
+    # not merely blank it) so the assertion matches the contract Evidence command
+    # ("RELAY_CEL_ENGINE unset") exactly, regardless of the caller's environment.
+    result = _run_rly(
+        ["verify-self", "--json"],
+        unset_env=["RELAY_CEL_ENGINE"],
+        timeout=90.0,
+    )
+    payload = json.loads(result.stdout.strip())
+    assert payload["overall"] == "pass", (
+        "verify-self --json FAIL (engine unset): "
+        + json.dumps(payload, indent=2)
+        + " stderr="
+        + result.stderr
+    )
+    assert payload["failures"] == 0, payload
+    entry = _cel_engine_entry(payload)
+    assert entry["status"] == "pass", entry
+    assert result.returncode == 0
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-CWC-P5FLIP-008")
+def test_verify_self_json_cel_engine_pass_explicit_wasm_engine() -> None:
+    """``RELAY_CEL_ENGINE=wasm rly verify-self --json`` exits 0 with the
+    cel_engine check green.
+
+    VAL-CWC-P5FLIP-008: the invariant must pass under the EXPLICIT wasm engine
+    selection (release-gate #5 precondition for the default flip). Invokes the
+    real CLI exactly as the contract Evidence command
+    (``RELAY_CEL_ENGINE=wasm uv run rly verify-self --json``), parses stdout JSON,
+    and asserts overall pass + the cel_engine entry status pass. The cel_engine
+    check loads the wasm DIRECTLY (engine-selection-agnostic), so this also
+    confirms the wasm path is healthy under the explicit selection."""
+    result = _run_rly(
+        ["verify-self", "--json"],
+        extra_env={"RELAY_CEL_ENGINE": "wasm"},
+        timeout=90.0,
+    )
+    payload = json.loads(result.stdout.strip())
+    assert payload["overall"] == "pass", (
+        "verify-self --json FAIL (RELAY_CEL_ENGINE=wasm): "
+        + json.dumps(payload, indent=2)
+        + " stderr="
+        + result.stderr
+    )
+    entry = _cel_engine_entry(payload)
+    assert entry["status"] == "pass", entry
+    assert result.returncode == 0
+
+
+# -----------------------------------------------------------------------------
+# CHECK_ORDER sort + dispatch-key lock (VAL-W5-038 determinism / VAL-CWC-P5FLIP-006)
+# -----------------------------------------------------------------------------
+#
+# ``runner.CHECK_ORDER`` MUST stay alphabetic by check NAME so the verify-self
+# JSON ``checks`` array is byte-deterministic across runs, and every ordered
+# check MUST have exactly one dispatch entry (no orphan / missing). The runner
+# enforces both at module-load via ``assert``; these tests LOCK the invariant at
+# test time so a regression is caught by the suite (not only by ``-O``-stripped
+# asserts) and the non-vacuity check proves the guard actually bites.
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W5-038")
+def test_check_order_is_alphabetically_sorted() -> None:
+    """``CHECK_ORDER`` equals its own ``sorted()`` -- alphabetic by check name.
+
+    This is the determinism lock (VAL-W5-038): the JSON ``checks`` array order is
+    pinned by ``CHECK_ORDER``; if the tuple is not alphabetic, two checkouts that
+    differ only in import/constant ordering could emit different ``checks``
+    orders, breaking the determinism contract.
+    """
+    assert tuple(sorted(CHECK_ORDER)) == CHECK_ORDER, (
+        "CHECK_ORDER must be alphabetic by check name (VAL-W5-038 determinism); "
+        f"got {CHECK_ORDER!r}, expected {tuple(sorted(CHECK_ORDER))!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W5-038")
+def test_check_order_sort_guard_is_non_vacuous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shuffled ``CHECK_ORDER`` MUST make the sort lock FAIL (non-vacuity).
+
+    Proves the sort assertion in
+    :func:`test_check_order_is_alphabetically_sorted` actually bites: a tuple that
+    is NOT its own ``sorted()`` is rejected. The monkeypatch is auto-reverted at
+    teardown, so the real module constant is never mutated past this test.
+    """
+    # A deliberately out-of-order tuple drawn from the real names: swap the first
+    # two so the result is provably != sorted() (the real order is alphabetic, so
+    # reversing the first pair breaks the sort).
+    shuffled = (CHECK_ORDER[1], CHECK_ORDER[0], *CHECK_ORDER[2:])
+    assert shuffled != tuple(sorted(shuffled)), (
+        "test setup invariant: the shuffled order must not be sorted"
+    )
+    monkeypatch.setattr(runner_module, "CHECK_ORDER", shuffled)
+
+    # The sort lock, re-evaluated against the (now shuffled) module constant,
+    # MUST fail -- demonstrating the guard is not vacuously true.
+    assert tuple(sorted(runner_module.CHECK_ORDER)) != runner_module.CHECK_ORDER
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W5-038")
+def test_check_dispatch_keys_match_check_order() -> None:
+    """``_CHECK_DISPATCH`` keys are exactly ``CHECK_ORDER`` (1:1, no orphan).
+
+    Every ordered check has a dispatch entry and vice versa -- the runner relies
+    on ``_CHECK_DISPATCH[name]`` for each name in ``CHECK_ORDER``; a missing key
+    would raise mid-run and an orphan dispatch entry would silently never run.
+    Because ``CHECK_ORDER`` is sorted and contains no duplicates, the dispatch
+    keys (a ``dict``, insertion-ordered) when sorted MUST equal ``CHECK_ORDER``.
+    """
+    assert set(_CHECK_DISPATCH) == set(CHECK_ORDER), (
+        "CHECK_ORDER and _CHECK_DISPATCH key sets must match exactly; "
+        f"order-only={set(CHECK_ORDER) - set(_CHECK_DISPATCH)!r}, "
+        f"dispatch-only={set(_CHECK_DISPATCH) - set(CHECK_ORDER)!r}"
+    )
+    # No duplicate names in the order tuple (a duplicate would collapse in the
+    # dispatch dict and silently drop a check).
+    assert len(CHECK_ORDER) == len(set(CHECK_ORDER)), (
+        f"CHECK_ORDER contains duplicate check names: {CHECK_ORDER!r}"
+    )
+    # Sorted dispatch keys equal CHECK_ORDER (CHECK_ORDER is itself sorted), so
+    # the dispatch map covers exactly the ordered checks in the same name set.
+    assert tuple(sorted(_CHECK_DISPATCH)) == CHECK_ORDER

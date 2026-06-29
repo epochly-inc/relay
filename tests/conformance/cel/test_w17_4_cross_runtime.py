@@ -17,14 +17,15 @@ For every per-UDF case under
       ``py_jcs_b64`` golden bytes.
 
 Practical scope (per gap #2 below + the contract's spirit): the Relay
-UDFs are direct-callable from both runtimes. cel-js does NOT natively
-know Relay UDFs as functions (the UDFs are registered on the
-RelayCelEvaluator wrapper, not into cel-js's evaluator). Parity is
-therefore enforced at the UDF-callable level + JCS-canonical-bytes
-level, which is the byte-identical claim the contract names:
-"byte-identical output across cel-python and cel-js after JCS
-canonicalization". The cross-runtime UDF semantics are also exercised
-end-to-end in the W6.5 vitest mirror at
+UDFs are direct-callable from both runtimes (the Python and TypeScript
+host-side UDF implementations). Parity is therefore enforced at the
+UDF-callable level + JCS-canonical-bytes level, which is the
+byte-identical claim the contract names: "byte-identical output across
+the Python and TypeScript hosts after JCS canonicalization". The
+UDF-via-CEL byte parity through the single wasm engine is exercised by
+the WS-E corpus suites (test_udf_via_cel_byte_match_runner.py +
+test_dual_run_cross_host_wasm_parity.py), and the cross-runtime UDF
+semantics are also exercised end-to-end in the W6.5 vitest mirror at
 ``packages/contracts-typescript/test/w6_5_corpus.test.ts``.
 
 ANY divergence fails the suite with a structured diff containing:

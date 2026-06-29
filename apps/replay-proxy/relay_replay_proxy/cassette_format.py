@@ -371,6 +371,86 @@ def _canonicalize_sse_body(body_bytes: bytes) -> str:
     return hashlib.sha256(joined).hexdigest()
 
 
+def _split_unquoted_semicolons(raw: str) -> list[str]:
+    r"""Split ``raw`` on ``;`` that are NOT inside a double-quoted string.
+
+    RFC 2045 parameter values may be quoted-strings that legally contain a
+    ``;`` (``profile="a;b"``); a naive ``str.split(";")`` would break such a
+    value apart. This single-pass scanner toggles a quote flag on each
+    unescaped ``"`` so only top-level semicolons separate parameters, and it
+    honours the RFC 2045 quoted-pair escape: a ``\`` inside a quoted-string
+    escapes the next character (so ``\"`` is a literal quote, NOT a
+    quote-toggle). Without the escape handling, ``profile="abc\";DEF"`` would
+    be mis-split at the ``;`` after the escaped quote and the ``DEF"`` fragment
+    would alias with a different-case sibling.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    in_quote = False
+    escaped = False
+    for ch in raw:
+        if escaped:
+            # Previous char was a backslash inside a quoted-string; emit this
+            # char literally without interpreting it as a quote/separator.
+            buf.append(ch)
+            escaped = False
+        elif ch == "\\" and in_quote:
+            buf.append(ch)
+            escaped = True
+        elif ch == '"':
+            in_quote = not in_quote
+            buf.append(ch)
+        elif ch == ";" and not in_quote:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+def _canonical_part_content_type(raw: str) -> str:
+    """MIME-canonicalize a multipart part's declared Content-Type for the
+    cassette key.
+
+    Per RFC 2045 the media type/subtype and parameter NAMES are
+    case-insensitive, but parameter VALUES are case-sensitive. So:
+
+      * a verbatim hash makes ``Application/JSON`` and ``application/json``
+        (the SAME declaration) derive DIFFERENT keys -> spurious replay miss;
+      * a full lowercase hash makes ``profile=ABC`` and ``profile=abc`` (two
+        DISTINCT declarations) collide -> the wrong recorded response served.
+
+    Fold the type/subtype and each parameter name to lowercase, preserve each
+    parameter value verbatim, and sort parameters by name so declaration order
+    is not significant. Quoted values keep their quotes (the bytes the provider
+    declared). Produces e.g. ``application/json;charset=utf-8;profile=AbC``.
+
+    The parameter split is QUOTE-AWARE: a ``;`` inside a double-quoted value
+    (RFC 2045 quoted-string, e.g. ``profile="abc;DEF"``) is NOT a separator, so
+    two declarations differing only in the case of a quoted value's embedded
+    text stay distinct rather than colliding on a stray lowercased fragment.
+    """
+    pieces = _split_unquoted_semicolons(raw)
+    media = pieces[0].strip().lower()
+    params: list[tuple[str, str | None]] = []
+    for piece in pieces[1:]:
+        piece = piece.strip()
+        if not piece:
+            continue
+        if "=" in piece:
+            name, value = piece.split("=", 1)
+            params.append((name.strip().lower(), value.strip()))
+        else:
+            # A valueless token (rare/malformed); fold its case like a name.
+            params.append((piece.lower(), None))
+    params.sort(key=lambda kv: (kv[0], kv[1] or ""))
+    out = media
+    for name, value in params:
+        out += f";{name}={value}" if value is not None else f";{name}"
+    return out
+
+
 def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str:
     """Per-part canonicalization of a multipart/form-data body.
 
@@ -389,7 +469,7 @@ def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str
     # Multipart bodies use \r\n line endings per RFC 7578; we tolerate
     # bare \n for tests that hand-roll bodies.
     parts_raw = body_bytes.split(delim)
-    canonical_parts: list[tuple[str, bytes]] = []
+    canonical_parts: list[tuple[str, str, bytes]] = []
     for part in parts_raw:
         # Skip the preamble (before the first delimiter) and the closing
         # ``--<boundary>--`` marker.
@@ -402,13 +482,31 @@ def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str
             header_block, _, body = part.partition(b"\n\n")
         if not body:
             continue
-        # Trim trailing line ending the body block always carries.
-        body = body.rstrip(b"\r\n")
-        # Extract the part name from Content-Disposition.
+        # Strip EXACTLY the single framing line ending that RFC 7578
+        # inserts between the part body and the next ``--<boundary>``
+        # delimiter -- NOT every trailing CR/LF. ``rstrip(b"\r\n")`` would
+        # collapse genuine trailing content newlines, aliasing distinct
+        # uploads (e.g. b"hello" and b"hello\n") onto the same key and
+        # serving the wrong recorded response. Remove the canonical
+        # ``\r\n`` framing when present; otherwise tolerate a bare ``\n``
+        # for hand-rolled bodies. Only ONE suffix is removed so a part
+        # whose genuine content ends in ``\n`` keeps that newline.
+        body = (
+            body.removesuffix(b"\r\n")
+            if body.endswith(b"\r\n")
+            else body.removesuffix(b"\n")
+        )
+        # Extract the part name from Content-Disposition AND the part's
+        # declared Content-Type. Both participate in the per-part digest
+        # so two uploads that differ only in declared media type (e.g.
+        # audio/wav vs audio/mpeg over identical bytes) yield DISTINCT
+        # canonical keys, honoring the documented contract (VAL-W7-022).
         name = "_unnamed"
+        part_content_type = ""
         for header_line in header_block.split(b"\n"):
             line = header_line.strip().decode("utf-8", errors="replace")
-            if line.lower().startswith("content-disposition:"):
+            lower = line.lower()
+            if lower.startswith("content-disposition:"):
                 for chunk in line.split(";"):
                     chunk = chunk.strip()
                     if chunk.lower().startswith("name="):
@@ -421,11 +519,23 @@ def _canonicalize_multipart_body(body_bytes: bytes, boundary: str | None) -> str
                             raw_name = raw_name[1:-1]
                         name = raw_name
                         break
-        canonical_parts.append((name, body))
+            elif lower.startswith("content-type:"):
+                # MIME-canonicalize: fold the case-insensitive media type +
+                # parameter names but preserve case-sensitive parameter values
+                # (see _canonical_part_content_type). This avoids BOTH
+                # aliasing two distinct declarations (full lowercase) AND
+                # spuriously distinguishing the same declaration written in a
+                # different case (verbatim).
+                part_content_type = _canonical_part_content_type(
+                    line.split(":", 1)[1]
+                )
+        canonical_parts.append((name, part_content_type, body))
     canonical_parts.sort(key=lambda x: x[0])
     h = hashlib.sha256()
-    for name, body in canonical_parts:
+    for name, part_content_type, body in canonical_parts:
         h.update(name.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(part_content_type.encode("utf-8"))
         h.update(b"\x00")
         h.update(body)
         h.update(b"\x00")
@@ -961,16 +1071,85 @@ def _read_canonical_key_for_fixture(
     obj = json.loads(raw)
     import base64
 
+    method = obj["method"]
+    url = obj["url"]
+    # Read the OPTIONAL string fields defaulting to "" ONLY on ABSENCE. The
+    # previous ``obj.get(k, "") or ""`` collapsed a PRESENT but FALSEY non-string
+    # (``0`` / ``false`` / ``[]`` / ``null``) to "" BEFORE the type check, so a
+    # malformed sidecar slipped past quarantine and was canonicalized as if the
+    # field were absent -- a wrong (empty) ``body_b64`` / ``content_type``
+    # (roborev 7feb671 LOW). An absent key still defaults to "" (a str, accepted);
+    # a present non-string is validated below and quarantined.
+    body_b64 = obj.get("body_b64", "")
+    content_type = obj.get("content_type", "")
+    # Validate the string-typed CanonicalRequest fields BEFORE any use (decode or
+    # dataclass construction). CanonicalRequest performs no runtime type checking,
+    # so a non-string ``url`` / ``method`` / ``content_type`` would otherwise
+    # surface as an uncaught ``AttributeError`` deeper inside
+    # ``derive_canonical_key`` -- ``urlparse(<int>)`` raises ``AttributeError``
+    # ('int' has no attribute 'decode') and ``self.method.upper()`` raises
+    # ``AttributeError`` ('int' has no attribute 'upper') -- and a non-string
+    # ``body_b64`` would raise ``TypeError`` inside ``base64.b64decode``: none of
+    # which are in load_cassette's iso-010 catch tuple, so they bypass quarantine
+    # entirely. Raise ``KeyError`` (already in that catch tuple) so the malformed
+    # sidecar is quarantined like every other corrupt-field case, keeping the
+    # catch tuple narrow per its design comment (VAL-ISO-010).
+    for field_name, value in (
+        ("method", method),
+        ("url", url),
+        ("body_b64", body_b64),
+        ("content_type", content_type),
+    ):
+        if not isinstance(value, str):
+            raise KeyError(
+                f"canonical request field {field_name!r} MUST be a string; "
+                f"got {type(value).__name__}"
+            )
+    # ``headers`` (optional) MUST be an object; CanonicalRequest is a frozen
+    # dataclass with no runtime type validation and derive_canonical_key calls
+    # ``headers.items()``. A non-object headers (list/str/number) would raise an
+    # uncaught AttributeError that escapes the iso-010 quarantine catch tuple.
+    # Raise KeyError (which load_cassette catches + quarantines) instead
+    # (re-hunt #13). Absent headers defaults to an empty mapping.
+    headers = obj.get("headers", {})
+    if not isinstance(headers, dict):
+        raise KeyError(
+            f"canonical request field 'headers' MUST be an object; "
+            f"got {type(headers).__name__}"
+        )
+    # Every header KEY and VALUE MUST be a string. ``_filter_headers`` (via
+    # derive_canonical_key) calls ``raw_name.lower()`` on each key and
+    # ``raw_value.split(...)`` / ``raw_value.strip()`` on each value; a
+    # non-string key or value raises an uncaught ``AttributeError`` that
+    # escapes load_cassette's iso-010 quarantine catch tuple. A non-string
+    # value under a header name that is NOT in the relevant allow-list is
+    # silently SKIPPED by _filter_headers' ``continue`` rather than crashing,
+    # which is equally wrong -- a malformed value MUST be rejected, not
+    # quietly dropped. Raise ``KeyError`` (already in the catch tuple) so the
+    # malformed sidecar is quarantined like every other corrupt-field case,
+    # keeping the catch tuple narrow per its design comment (re-hunt #14,
+    # VAL-ISO-010).
+    for header_key, header_value in headers.items():
+        if not isinstance(header_key, str):
+            raise KeyError(
+                f"canonical request header key MUST be a string; "
+                f"got {type(header_key).__name__}"
+            )
+        if not isinstance(header_value, str):
+            raise KeyError(
+                f"canonical request header value for {header_key!r} MUST be a "
+                f"string; got {type(header_value).__name__}"
+            )
     # validate=True so a non-base64 body_b64 raises binascii.Error (which
-    # load_cassette catches and quarantines) rather than silently
-    # discarding invalid characters (VAL-ISO-010).
-    body_bytes = base64.b64decode(obj.get("body_b64", "") or "", validate=True)
+    # load_cassette catches and quarantines) rather than silently discarding
+    # invalid characters (VAL-ISO-010). ``body_b64`` is now guaranteed a str.
+    body_bytes = base64.b64decode(body_b64, validate=True)
     req = CanonicalRequest(
-        method=obj["method"],
-        url=obj["url"],
-        headers=obj.get("headers", {}),
+        method=method,
+        url=url,
+        headers=headers,
         body_bytes=body_bytes,
-        content_type=obj.get("content_type", "") or "",
+        content_type=content_type,
     )
     return derive_canonical_key(req)
 

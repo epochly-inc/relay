@@ -290,6 +290,295 @@ def test_canonical_key_is_deterministic_multipart_branch(
     assert derive_canonical_key(a) == derive_canonical_key(b)
 
 
+def _multipart_body(
+    boundary: str,
+    *,
+    name: str,
+    part_body: bytes,
+    content_type: str | None = None,
+) -> bytes:
+    """Assemble a single-part multipart/form-data body.
+
+    ``part_body`` is the exact content of the part; the framing CRLF that
+    RFC 7578 inserts between the body and the next ``--boundary`` delimiter
+    is appended here (NOT part of ``part_body``). When ``part_body`` itself
+    ends in ``\\n`` that newline is genuine content and MUST survive
+    canonicalization.
+    """
+    ct_line = (
+        f"Content-Type: {content_type}\r\n".encode() if content_type else b""
+    )
+    return (
+        f"--{boundary}\r\n".encode()
+        + f'Content-Disposition: form-data; name="{name}"\r\n'.encode()
+        + ct_line
+        + b"\r\n"
+        + part_body
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+
+
+@pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_trailing_newline_in_part_body_yields_distinct_key(
+    make_canonical_request: Any,
+) -> None:
+    """Defect (A): a genuine trailing newline in a part body MUST NOT be
+    stripped along with the single framing CRLF.
+
+    ``b"transcribe THIS audio"`` and ``b"transcribe THIS audio\\n"`` are
+    distinct uploads; their canonical keys MUST differ so a later request
+    is not served a response recorded for the OTHER payload.
+    """
+    boundary = "----A1B2C3"
+    body_no_nl = _multipart_body(
+        boundary, name="prompt", part_body=b"transcribe THIS audio"
+    )
+    body_with_nl = _multipart_body(
+        boundary, name="prompt", part_body=b"transcribe THIS audio\n"
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_no_nl,
+        content_type=ct,
+        headers={"content-type": ct},
+    )
+    b = make_canonical_request(
+        body_bytes=body_with_nl,
+        content_type=ct,
+        headers={"content-type": ct},
+    )
+    assert derive_canonical_key(a) != derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_distinct_content_type_yields_distinct_key(
+    make_canonical_request: Any,
+) -> None:
+    """Defect (B): two uploads identical except a part's declared
+    Content-Type (audio/wav vs audio/mpeg over the SAME bytes) MUST produce
+    DISTINCT canonical keys, honoring the documented contract that the
+    part's Content-Type is fed into the per-part digest.
+    """
+    boundary = "----A1B2C3"
+    same_bytes = b"RIFFxxxxWAVEfmt "
+    body_wav = _multipart_body(
+        boundary, name="file", part_body=same_bytes, content_type="audio/wav"
+    )
+    body_mpeg = _multipart_body(
+        boundary, name="file", part_body=same_bytes, content_type="audio/mpeg"
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_wav,
+        content_type=ct,
+        headers={"content-type": ct},
+    )
+    b = make_canonical_request(
+        body_bytes=body_mpeg,
+        content_type=ct,
+        headers={"content-type": ct},
+    )
+    assert derive_canonical_key(a) != derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_content_type_param_value_case_is_significant(
+    make_canonical_request: Any,
+) -> None:
+    """Roborev follow-on: two uploads differing ONLY in the CASE of a
+    case-sensitive Content-Type parameter value (e.g. a ``profile`` token) MUST
+    produce DISTINCT keys. The declared Content-Type is hashed VERBATIM (not
+    case-folded) so a case-sensitive parameter value cannot alias two genuinely
+    distinct declarations onto one key.
+    """
+    boundary = "----CASE9Z"
+    same_bytes = b"{}"
+    body_upper = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type="application/json; profile=ABC",
+    )
+    body_lower = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type="application/json; profile=abc",
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_upper, content_type=ct, headers={"content-type": ct}
+    )
+    b = make_canonical_request(
+        body_bytes=body_lower, content_type=ct, headers={"content-type": ct}
+    )
+    assert derive_canonical_key(a) != derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_content_type_semicolon_inside_quoted_value_is_significant(
+    make_canonical_request: Any,
+) -> None:
+    """Roborev follow-on: a ``;`` inside a double-quoted parameter value
+    (RFC 2045 quoted-string) is NOT a parameter separator, so two declarations
+    differing only in the CASE of a quoted value's embedded text after the
+    ``;`` (``profile="abc;DEF"`` vs ``profile="abc;def"``) MUST stay distinct,
+    not collide on a stray lowercased fragment from a naive split."""
+    boundary = "----QSEMI8"
+    same_bytes = b"{}"
+    body_upper = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type='application/json; profile="abc;DEF"',
+    )
+    body_lower = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type='application/json; profile="abc;def"',
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_upper, content_type=ct, headers={"content-type": ct}
+    )
+    b = make_canonical_request(
+        body_bytes=body_lower, content_type=ct, headers={"content-type": ct}
+    )
+    assert derive_canonical_key(a) != derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_content_type_escaped_quote_in_value_is_significant(
+    make_canonical_request: Any,
+) -> None:
+    """Roborev follow-on: the RFC 2045 quoted-pair escape (``\\"`` inside a
+    quoted-string is a LITERAL quote, not a quote-toggle) must be honoured so a
+    ``;`` after an escaped quote stays inside the value. Two declarations
+    differing only in the case of text after such a ``;`` MUST stay distinct."""
+    boundary = "----ESC4Q"
+    same_bytes = b"{}"
+    body_upper = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type='application/json; profile="abc\\";DEF"',
+    )
+    body_lower = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type='application/json; profile="abc\\";def"',
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_upper, content_type=ct, headers={"content-type": ct}
+    )
+    b = make_canonical_request(
+        body_bytes=body_lower, content_type=ct, headers={"content-type": ct}
+    )
+    assert derive_canonical_key(a) != derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-022")
+def test_multipart_content_type_media_and_param_name_case_insensitive(
+    make_canonical_request: Any,
+) -> None:
+    """Roborev follow-on: the media type/subtype and parameter NAMES are
+    case-insensitive (RFC 2045), so the SAME declaration written in a different
+    case (``Application/JSON; Profile=abc`` vs ``application/json; profile=abc``)
+    MUST derive the SAME key -- no spurious replay miss. Only the case-sensitive
+    parameter VALUE distinguishes (asserted by the sibling test)."""
+    boundary = "----MIME7Q"
+    same_bytes = b"{}"
+    body_mixed = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type="Application/JSON; Profile=abc",
+    )
+    body_lower = _multipart_body(
+        boundary,
+        name="file",
+        part_body=same_bytes,
+        content_type="application/json; profile=abc",
+    )
+    ct = f"multipart/form-data; boundary={boundary}"
+    a = make_canonical_request(
+        body_bytes=body_mixed, content_type=ct, headers={"content-type": ct}
+    )
+    b = make_canonical_request(
+        body_bytes=body_lower, content_type=ct, headers={"content-type": ct}
+    )
+    assert derive_canonical_key(a) == derive_canonical_key(b)
+
+
+@pytest.mark.fulfills("VAL-W7-031")
+def test_multipart_trailing_newline_serves_correct_response_e2e(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """Defect (A) end-to-end: two multipart uploads differing only by a
+    trailing newline in a part body MUST be addressable as DISTINCT cassette
+    records; a lookup for one MUST NOT serve the OTHER's recorded response.
+    """
+    boundary = "----A1B2C3"
+    ct = f"multipart/form-data; boundary={boundary}"
+
+    body_no_nl = _multipart_body(
+        boundary, name="prompt", part_body=b"transcribe THIS audio"
+    )
+    body_with_nl = _multipart_body(
+        boundary, name="prompt", part_body=b"transcribe THIS audio\n"
+    )
+    req_no_nl = make_canonical_request(
+        body_bytes=body_no_nl, content_type=ct, headers={"content-type": ct}
+    )
+    req_with_nl = make_canonical_request(
+        body_bytes=body_with_nl, content_type=ct, headers={"content-type": ct}
+    )
+
+    fid_no_nl = "00000000-0000-4000-8000-0000000000a1"
+    fid_with_nl = "00000000-0000-4000-8000-0000000000a2"
+    resp_no_nl = b'{"text":"response for the no-newline upload"}'
+    resp_with_nl = b'{"text":"response for the trailing-newline upload"}'
+
+    fixture_no_nl = make_replay_fixture(
+        fixture_id=fid_no_nl,
+        output_digest="sha256-" + hashlib.sha256(resp_no_nl).hexdigest(),
+        output_ref=f"file://bodies/{fid_no_nl}.body",
+    )
+    fixture_with_nl = make_replay_fixture(
+        fixture_id=fid_with_nl,
+        output_digest="sha256-" + hashlib.sha256(resp_with_nl).hexdigest(),
+        output_ref=f"file://bodies/{fid_with_nl}.body",
+    )
+
+    key_no_nl = _record_one(
+        empty_cassette_dir,
+        fixture=fixture_no_nl,
+        request=req_no_nl,
+        response_bytes=resp_no_nl,
+    )
+    key_with_nl = _record_one(
+        empty_cassette_dir,
+        fixture=fixture_with_nl,
+        request=req_with_nl,
+        response_bytes=resp_with_nl,
+    )
+    assert key_no_nl != key_with_nl
+
+    index = load_cassette(empty_cassette_dir / CASSETTE_FILENAME)
+    assert len(index) == 2
+
+    rec_no_nl = index.lookup(derive_canonical_key(req_no_nl))
+    rec_with_nl = index.lookup(derive_canonical_key(req_with_nl))
+    assert rec_no_nl is not None and rec_with_nl is not None
+    assert rec_no_nl.response_bytes == resp_no_nl
+    assert rec_with_nl.response_bytes == resp_with_nl
+
+
 @pytest.mark.fulfills("VAL-W7-022")
 def test_canonical_key_is_deterministic_sse_branch(
     make_canonical_request: Any,
@@ -623,6 +912,373 @@ def test_canonical_request_missing_method_key_quarantines(
     assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
     assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
     assert not cassette_path.exists()
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_non_string_url_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json that is valid JSON with a
+    NON-STRING ``url`` (e.g. an int) MUST raise ``RelayCassetteCorruptError``
+    and quarantine -- NOT an uncaught ``AttributeError`` escaping from
+    ``urlparse(<int>)`` inside ``derive_canonical_key``.
+
+    ``_read_canonical_key_for_fixture`` builds ``CanonicalRequest`` (a frozen
+    dataclass with no runtime type validation) from the sidecar fields, then
+    ``derive_canonical_key`` calls ``urlparse(url)``. When ``url`` is an int,
+    ``urlparse`` raises ``AttributeError`` ('int' has no attribute 'decode'),
+    which was NOT in the iso-010 quarantine catch tuple, so the malformed
+    fixture escaped quarantine.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": 12345,
+                "headers": {},
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    # The malformed cassette MUST have been moved to quarantine.
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_non_object_headers_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json that is valid JSON with a
+    NON-OBJECT ``headers`` (e.g. a list) MUST raise
+    ``RelayCassetteCorruptError`` and quarantine -- NOT an uncaught
+    ``AttributeError`` escaping downstream when ``CanonicalRequest.headers``
+    (built without runtime type validation) is treated as a mapping
+    (re-hunt #13). ``_read_canonical_key_for_fixture`` validated method/url/
+    body_b64/content_type as strings but passed ``headers`` straight through.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": [1, 2, 3],
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+@pytest.mark.parametrize(
+    "bad_headers",
+    [
+        # Non-string VALUE under a RELEVANT header name (content-type is in
+        # KEY_DEFAULT_RELEVANT_HEADERS): _filter_headers reaches
+        # ``raw_value.split(";",1)[0].strip()`` -> AttributeError today.
+        {"content-type": 123},
+        {"content-type": [1]},
+        {"accept": None},
+        {"accept": {"y": 1}},
+        # Non-string VALUE under a NON-RELEVANT header name (X): the prior
+        # _filter_headers allow-list ``continue`` skipped the value before
+        # touching it, so it did NOT crash but silently flowed a malformed
+        # (non-string) value through the canonical request. The up-front
+        # validation rejects it consistently with the relevant-name case.
+        {"X": 123},
+        {"X": [1]},
+    ],
+)
+def test_canonical_request_non_string_header_value_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+    bad_headers: Any,
+) -> None:
+    """VAL-ISO-010 regression (re-hunt #14 / HIGH): a request.json that is
+    valid JSON with a dict ``headers`` whose VALUE is non-string MUST raise
+    ``RelayCassetteCorruptError`` and quarantine.
+
+    The prior fix validated ``headers`` is a dict but passed a non-string
+    value straight into ``CanonicalRequest``; ``derive_canonical_key`` then
+    calls ``_filter_headers``. For a RELEVANT header name (content-type /
+    accept) that does ``raw_value.split(...)`` / ``raw_value.strip()`` on the
+    value -- ``AttributeError`` ('int'/'list'/'NoneType'/'dict' has no
+    attribute 'split'/'strip'), which is NOT in load_cassette's iso-010 catch
+    tuple, so the malformed fixture escaped quarantine. For a NON-RELEVANT
+    name the allow-list ``continue`` skipped the value entirely, silently
+    flowing a malformed non-string value through. Validating every header
+    VALUE is a string up front (raising ``KeyError``, which IS in the catch
+    tuple) rejects both cases consistently.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": bad_headers,
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_non_string_header_key_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+    monkeypatch: Any,
+) -> None:
+    """VAL-ISO-010 regression (re-hunt #14 / HIGH): a ``headers`` dict whose
+    KEY is non-string MUST raise ``RelayCassetteCorruptError`` and quarantine
+    -- NOT an uncaught ``AttributeError`` from ``raw_name.lower()`` inside
+    ``_filter_headers``.
+
+    Standard JSON cannot encode a non-string object key, so a corrupted /
+    hand-rolled sidecar reaches a non-string key only after parsing. We
+    simulate that post-parse state by patching ``json.loads`` (inside the
+    cassette module) to inject a non-string key into the parsed headers, then
+    drive the public ``load_cassette`` path. A non-string key raises
+    ``KeyError`` (in the iso-010 catch tuple) which quarantines, mirroring the
+    non-string value case.
+    """
+    import relay_replay_proxy.cassette_format as cf
+
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {"content-type": "application/json"},
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    orig_loads = cf.json.loads
+
+    def _patched_loads(s: Any, *a: Any, **k: Any) -> Any:
+        obj = orig_loads(s, *a, **k)
+        if isinstance(obj, dict) and isinstance(obj.get("headers"), dict):
+            obj["headers"] = {123: "application/json"}
+        return obj
+
+    monkeypatch.setattr(cf.json, "loads", _patched_loads)
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+def test_canonical_request_non_string_method_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+) -> None:
+    """VAL-ISO-010 regression: a request.json that is valid JSON with a
+    NON-STRING ``method`` (e.g. an int) MUST raise
+    ``RelayCassetteCorruptError`` and quarantine -- NOT an uncaught
+    ``AttributeError`` escaping from ``self.method.upper()`` inside
+    ``CanonicalRequest.canonical_method`` (called by ``derive_canonical_key``).
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": 12345,
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {},
+                "body_b64": "",
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    # The malformed cassette MUST have been moved to quarantine.
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+@pytest.mark.parametrize("bad_content_type", [False, 0, [], None])
+def test_canonical_request_falsey_non_string_content_type_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+    bad_content_type: Any,
+) -> None:
+    """VAL-ISO-010 regression (roborev 7feb671 LOW): a request.json with a
+    PRESENT but FALSEY non-string ``content_type`` (``false`` / ``0`` / ``[]`` /
+    ``null``) MUST quarantine -- NOT slip past the type check.
+
+    The pre-fix read ``obj.get("content_type", "") or ""`` coerced any falsey
+    value to ``""`` BEFORE the ``isinstance(..., str)`` validation, so the
+    malformed sidecar was canonicalized as if the field were absent instead of
+    being quarantined. The fix defaults ONLY on absence and validates a present
+    value, so a falsey non-string raises ``KeyError`` (in the iso-010 catch
+    tuple) and quarantines.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {},
+                "body_b64": "",
+                "content_type": bad_content_type,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
+
+
+@pytest.mark.fulfills("VAL-ISO-010")
+@pytest.mark.parametrize("bad_body", [False, 0, []])
+def test_canonical_request_falsey_non_string_body_b64_quarantines(
+    empty_cassette_dir: Path,
+    make_replay_fixture: Any,
+    make_canonical_request: Any,
+    bad_body: Any,
+) -> None:
+    """VAL-ISO-010 regression (roborev 7feb671 LOW, sibling): a request.json
+    with a PRESENT but FALSEY non-string ``body_b64`` (``false`` / ``0`` /
+    ``[]``) MUST quarantine -- NOT be silently treated as an EMPTY body.
+
+    The pre-fix read ``base64.b64decode(obj.get("body_b64", "") or "", ...)``
+    coerced a falsey non-string to ``""`` (decoding to an empty body) BEFORE any
+    type validation, so a malformed sidecar was canonicalized with a wrong
+    (empty) body. The fix validates ``body_b64`` is a string before decoding, so
+    a falsey non-string raises ``KeyError`` and quarantines.
+    """
+    fixture = _seed_one_recorded_fixture(
+        empty_cassette_dir, make_replay_fixture, make_canonical_request
+    )
+    request_path = (
+        empty_cassette_dir / "requests" / f"{fixture.fixture_id}.request.json"
+    )
+    assert request_path.is_file(), "sidecar request.json must have been written"
+    request_path.write_text(
+        json.dumps(
+            {
+                "method": "POST",
+                "url": "https://api.openai.com/v1/chat/completions",
+                "headers": {},
+                "body_b64": bad_body,
+                "content_type": "application/json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = empty_cassette_dir / CASSETTE_FILENAME
+    with pytest.raises(RelayCassetteCorruptError) as excinfo:
+        load_cassette(cassette_path, quarantine_on_error=True)
+    assert excinfo.value.code == RELAY_REPLAY_CASSETTE_CORRUPT
+    assert excinfo.value.details["fixture_id"] == str(fixture.fixture_id)
+    assert not cassette_path.exists()
+    quarantine_dir = empty_cassette_dir / QUARANTINE_DIR_NAME
+    assert quarantine_dir.is_dir()
+    assert len(list(quarantine_dir.iterdir())) == 1
 
 
 @pytest.mark.fulfills("VAL-ISO-010")

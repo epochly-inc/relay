@@ -36,7 +36,11 @@ from verify_self.finding_codes import (
     RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
 )
 
-from .atomic_primitives import _match_is_documentation
+from .atomic_primitives import (
+    _match_is_documentation,
+    documentation_string_spans,
+    position_in_documentation_string,
+)
 from .util import (
     Finding,
     iter_canonical_source_files,
@@ -137,25 +141,43 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
         # (``.py``/``.pyi``) uses ``//`` as floor division and SQL uses
         # ``--`` for comments, so neither may treat ``//`` as a comment.
         slash_is_comment = path.suffix not in (".py", ".pyi", ".sql")
+        # Positions inside a standalone documentation-string statement (e.g. a
+        # module docstring that documents the grep guard, mentioning a canonical
+        # run_results / gate_decisions write in prose) are documentation, not
+        # executable writes -- but a canonical write passed to execute(...) or
+        # after ``"x"; ...`` on the same line still IS flagged (column-precise).
+        doc_spans = documentation_string_spans(
+            text, is_python=path.suffix in (".py", ".pyi")
+        )
         for line_no_minus_one, line in enumerate(text.split("\n")):
-            m = _CANONICAL_WRITE_RE.search(line)
-            if m is None:
-                continue
-            if _match_is_documentation(
-                line, m.start(), sql=is_sql, slash_comment=slash_is_comment
-            ):
-                continue
-            findings.append(
-                Finding(
-                    file=rel,
-                    line=line_no_minus_one + 1,
-                    code=RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
-                    suggested_fix=suggested_fix_for(
-                        RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP
+            # Scan EVERY match on the line, not just the first: a documentation
+            # match (inside a doc string / SQL comment / string literal) earlier
+            # on the line must not hide a later EXECUTABLE canonical write on the
+            # same line (roborev cbd01f8). Record the first NON-documentation
+            # match.
+            for m in _CANONICAL_WRITE_RE.finditer(line):
+                if _match_is_documentation(
+                    line,
+                    m.start(),
+                    sql=is_sql,
+                    slash_comment=slash_is_comment,
+                    in_docstring=position_in_documentation_string(
+                        line_no_minus_one + 1, m.start(), doc_spans
                     ),
-                    pattern=m.group(0),
+                ):
+                    continue
+                findings.append(
+                    Finding(
+                        file=rel,
+                        line=line_no_minus_one + 1,
+                        code=RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
+                        suggested_fix=suggested_fix_for(
+                            RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP
+                        ),
+                        pattern=m.group(0),
+                    )
                 )
-            )
+                break
     findings.sort(key=lambda f: (f.file, f.line, f.code))
     return CHECK_NAME, findings
 

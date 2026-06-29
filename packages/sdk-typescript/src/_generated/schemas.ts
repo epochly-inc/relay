@@ -3072,6 +3072,46 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            /**
+             * @description Manifest version persistence failed (e.g. schema drift /
+             *     integrity error); the manifest was NOT made durable. Canonical
+             *     ErrorEnvelope (RELAY-SIDECAR-010); the concrete failure class
+             *     rides in details.error_class.
+             */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Manifest version persistence could not acquire the SQLite write
+             *     lock within the busy-retry budget (RELAY-SQLITE-001). Canonical
+             *     ErrorEnvelope; retry after the Retry-After window.
+             */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Manifest version persistence hit ENOSPC mid-write; the
+             *     transaction was rolled back (RELAY-SIDECAR-011). Canonical
+             *     ErrorEnvelope. Free disk space and retry.
+             */
+            507: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     getManifestVersion: {
@@ -3280,8 +3320,50 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Stale three-anchor handoff or guard failure. */
+            /**
+             * @description Actor kind not allowed for the requested transition
+             *     (ACTOR_NOT_ALLOWED). Canonical ErrorEnvelope; the structured
+             *     reason rides in details.reason.
+             */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Scope not found (UNKNOWN_SCOPE). Canonical ErrorEnvelope; the
+             *     structured reason rides in details.reason.
+             */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Stale three-anchor handoff (RELAY-GATE-021) or state-machine
+             *     conflict (EXPECTED_FROM_MISMATCH / TERMINAL_STATE). Canonical
+             *     ErrorEnvelope; the structured reason rides in details.reason.
+             */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description Transition rejected (INVALID_TRANSITION, GUARD_FAILED, or the
+             *     fail-closed UNKNOWN_GUARD drift defense). Canonical
+             *     ErrorEnvelope; the structured reason rides in details.reason.
+             */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -198,6 +198,173 @@ def test_escaped_backslash_does_not_hide_real_bypass() -> None:
 
 
 @pytest.mark.fulfills("VAL-ISO-014")
+@pytest.mark.parametrize(
+    "line",
+    [
+        'marker = "``"; db.execute(query)',
+        'raw = "``"; db.execute("SELECT 1 FROM t WHERE id = 1")',
+        "x = '``' or db.execute(q)",
+    ],
+)
+def test_double_backtick_token_does_not_hide_bypass(line: str) -> None:
+    r"""A real banned call on a line that merely CONTAINS a ``"``"`` token
+    inside a string literal must NOT be classified as documentation.
+
+    The removed "Heuristic 4" counted backtick TOKENS on a single executable
+    line and called an odd count an "RST inline-code span" -> documentation. But
+    a ``"``"`` inside an ordinary string literal is not RST, so the banned
+    ``db.execute(`` / ``cur.execute(`` that followed was masked vacuously
+    (re-hunt cli-inv-1). The closed-backtick-pair check (heuristic 3) already
+    suppresses legitimate RST inline code, so the token-counting heuristic is
+    removed; the function falls through to ``return False`` for these lines.
+    """
+    match_start = next(
+        line.index(c) for c in ("db.execute(", "cur.execute(") if c in line
+    )
+    is_doc = atomic_primitives._match_is_documentation(line, match_start)
+    assert is_doc is False, (
+        "a banned persistence call on a line that merely contains a '``' token "
+        f"in a string literal must NOT be documentation; line={line!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Multi-line docstring region tracking (re-hunt cli-inv-1 follow-up). Removing
+# the backtick-token "Heuristic 4" regressed exclusion of a banned pattern
+# mentioned inside a MULTI-LINE docstring (e.g. a module docstring documenting a
+# grep guard across an unclosed ``...`` RST span). The correct fix is real
+# tokenizer-based multi-line-string tracking: a match inside such a region is
+# prose; an EXECUTABLE banned call is still flagged. (The fixture below mentions
+# ``db.execute(`` -- not a canonical-DML literal -- so this test file does not
+# itself trip the state-engine writes-only grep guard.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.fulfills("VAL-ISO-014")
+def test_multiline_docstring_mention_is_not_flagged_but_real_call_is(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "packages" / "okpkg" / "src"
+    src.mkdir(parents=True)
+    # A module whose DOCSTRING documents the guard across multiple lines (an
+    # unclosed ``...`` RST span mentioning the banned ``db.execute(`` token),
+    # followed by a genuinely executable bypass.
+    (src / "mod.py").write_text(
+        '"""Module.\n'
+        "\n"
+        'Guard prose: ``grep -rn "db.execute(" packages/`` documents the ban,\n'
+        "and a second mention of db.execute( on this continuation line.\n"
+        '"""\n'
+        "\n"
+        "\n"
+        "def writer(conn, q):\n"
+        "    db.execute(q)\n",  # executable bypass on the last line
+        encoding="utf-8",
+    )
+    _, findings = atomic_primitives.run(tmp_path)
+    flagged_lines = {f.line for f in findings if f.file.endswith("mod.py")}
+    # The executable db.execute( is flagged; the multi-line-docstring mentions
+    # of db.execute( are NOT.
+    exec_line = (
+        (src / "mod.py").read_text(encoding="utf-8").splitlines().index("    db.execute(q)")
+        + 1
+    )
+    assert exec_line in flagged_lines, (
+        f"the executable db.execute( on line {exec_line} must be flagged; "
+        f"flagged={flagged_lines!r}"
+    )
+    # No docstring line (3-4) is flagged.
+    assert flagged_lines == {exec_line}, (
+        f"only the executable call must be flagged, not the docstring mentions; "
+        f"flagged={flagged_lines!r}"
+    )
+
+
+@pytest.mark.fulfills("VAL-ISO-014")
+def test_documentation_string_spans_cover_docstring_positions() -> None:
+    text = (
+        '"""Line1.\n'
+        "Line2 with db.execute( mention.\n"
+        'Line3."""\n'
+        "x = 1\n"
+    )
+    spans = atomic_primitives.documentation_string_spans(text, is_python=True)
+    # The module docstring spans lines 1-3; a match anywhere inside it is prose.
+    assert atomic_primitives.position_in_documentation_string(2, 11, spans) is True
+    assert atomic_primitives.position_in_documentation_string(1, 0, spans) is True
+    # Line 4 (`x = 1`) is NOT inside any documentation string.
+    assert atomic_primitives.position_in_documentation_string(4, 0, spans) is False
+    # Non-Python sources get no docstring tracking (empty tuple).
+    assert (
+        atomic_primitives.documentation_string_spans(text, is_python=False) == ()
+    )
+
+
+@pytest.mark.fulfills("VAL-ISO-014")
+def test_semicolon_statement_after_bare_string_is_not_suppressed(
+    tmp_path: Path,
+) -> None:
+    """Python permits several statements on one physical line. A banned call
+    AFTER a bare string statement (``"x"; db.execute(q)``) must be FLAGGED -- the
+    column-precise span check suppresses only matches INSIDE the string's own
+    columns, not the whole line (roborev 9b94c47)."""
+    src = tmp_path / "packages" / "okpkg" / "src"
+    src.mkdir(parents=True)
+    (src / "semi.py").write_text(
+        '"""Module docstring."""\n'
+        "\n"
+        "\n"
+        "def write(conn, q):\n"
+        '    "a bare string comment"; db.execute(q)\n',  # banned call after ;
+        encoding="utf-8",
+    )
+    _, findings = atomic_primitives.run(tmp_path)
+    flagged = {f.line for f in findings if f.file.endswith("semi.py")}
+    exec_line = (
+        (src / "semi.py").read_text(encoding="utf-8").splitlines().index(
+            '    "a bare string comment"; db.execute(q)'
+        )
+        + 1
+    )
+    assert exec_line in flagged, (
+        "a db.execute( after a bare string statement on the same line MUST be "
+        f"flagged; flagged={flagged!r}"
+    )
+
+
+@pytest.mark.fulfills("VAL-ISO-014")
+def test_banned_token_inside_then_outside_string_same_line_is_flagged(
+    tmp_path: Path,
+) -> None:
+    """When a bare documentation string CONTAINS the banned token BEFORE a real
+    executable violation on the same line (``"db.execute("; db.execute(q)``), the
+    scanner must still flag the executable call -- a single-match-per-line scan
+    suppresses the in-string match and misses the live one (roborev cbd01f8)."""
+    src = tmp_path / "packages" / "okpkg" / "src"
+    src.mkdir(parents=True)
+    (src / "twomatch.py").write_text(
+        '"""Module."""\n'
+        "\n"
+        "\n"
+        "def write(conn, q):\n"
+        '    "mentions db.execute( in prose"; db.execute(q)\n',
+        encoding="utf-8",
+    )
+    _, findings = atomic_primitives.run(tmp_path)
+    flagged = {f.line for f in findings if f.file.endswith("twomatch.py")}
+    exec_line = (
+        (src / "twomatch.py").read_text(encoding="utf-8").splitlines().index(
+            '    "mentions db.execute( in prose"; db.execute(q)'
+        )
+        + 1
+    )
+    assert exec_line in flagged, (
+        "the executable db.execute( AFTER an in-string mention on the same line "
+        f"MUST be flagged; flagged={flagged!r}"
+    )
+
+
+@pytest.mark.fulfills("VAL-ISO-014")
 def test_escaped_backslash_hash_variant_does_not_hide_bypass() -> None:
     r"""Same defect, ``#`` comment marker variant: bypass is detected.
 
@@ -486,4 +653,128 @@ def test_run_flags_real_ts_bypass(tmp_path: Path) -> None:
     ), (
         "a live TS db.execute( call must be flagged even with a trailing "
         f"'//' comment; findings={findings!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Guard-vacuity LOW (bug-hunt): the ``#`` line-comment heuristic must apply
+# ONLY to languages where ``#`` is a comment (Python/shell/SQL), NOT to
+# TS/JS, where ``#`` is a private-field sigil / shebang. A TS production
+# line containing a ``#`` private field to the LEFT of a banned primitive
+# call on the same physical line must be FLAGGED, not suppressed as
+# documentation. ``atomic_primitives.run`` invokes the matcher on
+# .ts/.tsx/.js/.jsx/.mjs/.cjs sources, so before the fix the ``#`` arm fired
+# on TS source and the keystone-#8 guard went vacuous for that line.
+# ---------------------------------------------------------------------------
+
+
+def test_ts_private_field_before_bypass_is_flagged() -> None:
+    """A TS ``#`` private field left of a banned call must NOT be suppressed.
+
+    ``class C { #n = 1; m(){ db.execute(q); } }`` is real TS production
+    code: ``#n`` is a private-field declaration, NOT a comment, and the
+    ``db.execute(`` after it is a LIVE call. With ``hash_comment=False``
+    (TS/JS) the matcher must NOT treat the ``#`` as a comment -> the bypass
+    is DETECTED.
+
+    RED on current code: the ``#`` arm fires unconditionally and classifies
+    the line as documentation, suppressing the violation.
+    GREEN after the fix: TS is told ``#`` is not a comment.
+    """
+    line = "class C { #n = 1; m(){ db.execute(q); } }"
+    match_start = line.index("db.execute(")
+    is_doc = atomic_primitives._match_is_documentation(
+        line, match_start, hash_comment=False
+    )
+    assert is_doc is False, (
+        "a TS '#' private field left of a live db.execute( call must NOT be "
+        f"classified as documentation; line={line!r}"
+    )
+
+
+def test_ts_leading_private_field_before_bypass_is_flagged() -> None:
+    """A line whose first non-whitespace char is a TS ``#`` is not a comment.
+
+    Heuristic 1 (full-line comment) must not fire on TS source merely
+    because the line begins with ``#``. ``#field = db.execute(q);`` -- the
+    leading ``#`` is a private-field sigil; the ``db.execute(`` is live.
+    """
+    line = "  #field = db.execute(q);"
+    match_start = line.index("db.execute(")
+    is_doc = atomic_primitives._match_is_documentation(
+        line, match_start, hash_comment=False
+    )
+    assert is_doc is False, (
+        "a leading TS '#' private-field sigil must NOT make the line a "
+        f"full-line comment; line={line!r}"
+    )
+
+
+def test_python_hash_comment_still_documentation_with_default() -> None:
+    """The default keeps ``#``-as-comment (Python/shell/SQL) semantics.
+
+    Back-compat floor: callers that do not pass ``hash_comment`` (e.g. the
+    control-plane-write SQL/Python caller) retain the historical ``#``
+    comment behavior. ``# db.execute(q)`` is documentation.
+    """
+    line = "    # do not call db.execute here"
+    match_start = line.index("db.execute")
+    assert atomic_primitives._match_is_documentation(line, match_start) is True
+
+
+def test_python_trailing_hash_comment_still_documentation_with_default() -> None:
+    """A trailing ``#`` comment stays documentation under the default.
+
+    ``x = 1  # db.execute(q)`` -- with the default ``hash_comment=True`` the
+    ``#`` heuristic still fires for Python/shell/SQL sources.
+    """
+    line = "x = 1  # db.execute(q) is banned"
+    match_start = line.index("db.execute(")
+    assert atomic_primitives._match_is_documentation(line, match_start) is True
+
+
+def test_run_flags_ts_private_field_bypass(tmp_path: Path) -> None:
+    """End-to-end: atomic_primitives.run flags a TS private-field bypass.
+
+    Proves the language signal is threaded from the scan loop: a .ts file
+    with a ``#`` private field left of a live ``db.execute(`` on one
+    physical line is reported as a finding (not suppressed). This is the
+    real guard-vacuity the fix closes.
+    """
+    src = tmp_path / "packages" / "demo" / "field.ts"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(
+        "class C {\n"
+        "  #n = 1; m(db: any, q: string){ db.execute(q); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    _name, findings = atomic_primitives.run(tmp_path)
+    assert any(
+        f.file.endswith("field.ts") and f.line == 2 for f in findings
+    ), (
+        "atomic_primitives.run must flag the TS '#'-private-field bypass on "
+        f"line 2; findings={findings!r}"
+    )
+
+
+def test_run_preserves_python_hash_comment_suppression(tmp_path: Path) -> None:
+    """End-to-end: a real ``#`` comment in a .py file is still suppressed.
+
+    The ``#``-comment behavior must be preserved for Python through the scan
+    loop. A .py file whose only banned-literal mention is inside a ``#``
+    comment produces no finding.
+    """
+    src = tmp_path / "packages" / "demo" / "noted.py"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(
+        "def go(db, q):\n"
+        "    # db.execute(q) is banned here\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    _name, findings = atomic_primitives.run(tmp_path)
+    assert not any(f.file.endswith("noted.py") for f in findings), (
+        "a real '#' comment in a .py file must remain suppressed; "
+        f"findings={findings!r}"
     )

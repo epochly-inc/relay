@@ -605,6 +605,7 @@ def verify_sigstore(
     expected_oidc_issuer: str,
     expected_identity: str,
     artifact_bytes: bytes | None = None,
+    offline: bool = False,
 ) -> dict[str, Any]:
     """Cryptographically verify a Sigstore bundle (M09 / VAL-V2M09-006).
 
@@ -732,11 +733,16 @@ def verify_sigstore(
     # The explicit string ``staging`` selects the Sigstore staging
     # endpoint, useful for CI without burning production-log entries.
     trust_root_label = expected_trust_root or DEFAULT_TRUST_ROOT
+    # offline=True builds the Verifier from the TUF cache populated at
+    # sigstore-python install time -- NO network. Under --offline this is
+    # load-bearing: Verifier.production() (offline=False) refreshes the trust
+    # root over the network, which would break the offline default-deny
+    # promise ("offline mode is a structural promise, not a fallback").
     try:
         verifier = (
-            Verifier.staging()
+            Verifier.staging(offline=offline)
             if trust_root_label == "staging"
-            else Verifier.production()
+            else Verifier.production(offline=offline)
         )
     except Exception as exc:
         # Could not bootstrap trust root (e.g. TUF / network failure).

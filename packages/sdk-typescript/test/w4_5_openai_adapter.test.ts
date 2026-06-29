@@ -214,6 +214,47 @@ describe("VAL-W4-039: tool-call streaming chunks aggregate into one tool_call sp
     );
     expect(collected.length).toBe(4);
   });
+
+  it("keeps per-choice index-0 tool calls distinct when n>1 (no cross-choice merge)", async () => {
+    // OpenAI scopes tool_call `index` PER CHOICE; with n>1 two choices can each
+    // emit index 0. Keying on the bare index merges them into one corrupted
+    // span. The aggregator must fold choice.index into the key (Py<->TS parity).
+    const recorder = new SpanRecorder();
+    async function* fakeStream(): AsyncGenerator<unknown> {
+      yield {
+        model: "gpt-4o",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                { index: 0, id: "call_a", function: { name: "search", arguments: '{"q":"a"}' } },
+              ],
+            },
+          },
+          {
+            index: 1,
+            delta: {
+              tool_calls: [
+                { index: 0, id: "call_b", function: { name: "lookup", arguments: '{"id":7}' } },
+              ],
+            },
+          },
+        ],
+      };
+      yield { model: "gpt-4o", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] };
+    }
+    const stub = buildOpenAiStub({ chatStream: fakeStream() });
+    const wrapped = wrapOpenAi(stub, { recorder, sdkVersion: "openai@5.0.0" });
+    const stream = wrapped.chat.completions.create({ model: "gpt-4o", stream: true }) as AsyncIterable<unknown>;
+    for await (const _chunk of stream) {
+      void _chunk;
+    }
+    const toolCalls = recorder.spansByKind("tool_call");
+    // TWO distinct spans -- NOT one merged "searchlookup".
+    expect(toolCalls).toHaveLength(2);
+    expect(toolCalls.map((s) => s.attributes["tool_name"]).sort()).toEqual(["lookup", "search"]);
+  });
 });
 
 describe("VAL-W4-038: adapter routes tool args through the redaction engine (boundary scrub)", () => {

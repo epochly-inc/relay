@@ -42,7 +42,11 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
     encode_dss_signature,
 )
 
-from .canonical import jcs_canonicalize
+from .canonical import (
+    JCSEncodeError,
+    jcs_canonicalize,
+    screen_noncanonicalizable,
+)
 from .errors import (
     RELAY_VERIFY_ALG_MISMATCH,
     RELAY_VERIFY_UNSUPPORTED_ALG,
@@ -165,6 +169,37 @@ def canonical_json_bytes(obj: Any) -> bytes:
         removed -- external test fixtures may reference it.
     """
     return jcs_canonicalize(obj)
+
+
+# -----------------------------------------------------------------------------
+# ASCII-safe operand formatting for attacker-controllable message bytes
+# -----------------------------------------------------------------------------
+
+
+def _py_ascii(value: Any) -> str:
+    """ASCII-safe repr for attacker-controllable signature-reason operands.
+
+    Equivalent to the builtin ``ascii()``: like ``repr()`` but every non-ASCII
+    code point is escaped (``\\xNN`` for cp<=0xff, ``\\uNNNN`` for cp<=0xffff,
+    ``\\U`` + 8 hex for astral). Plain ``repr()`` (``!r``) keeps PRINTABLE
+    non-ASCII verbatim while escaping non-printable non-ASCII (C1 controls,
+    U+00A0, format/separator chars like U+200B/U+2028/U+FEFF) -- a "printable"
+    distinction that depends on the Unicode database and cannot be mirrored
+    byte-for-byte by the TypeScript verifier
+    (packages/verifier-typescript/src/verifier.ts ``pyReprStr``). The ``alg``
+    and ``kid`` operands interpolated into signature-failure reasons here are
+    attacker-controllable (they come straight off the wire bundle / JWS
+    header), so a divergence on an interior non-printable non-ASCII -- or a
+    printable non-ASCII like U+4E2D that ``repr`` keeps verbatim but ``ascii``
+    escapes -- would make the two verifiers emit non-identical
+    ``SignatureCheck.reason`` bytes for the same wire input (a P0 Py<->TS
+    parity break). Routing every operand through ``ascii()`` removes the
+    distinction: both runtimes escape ALL non-ASCII by the same pure
+    code-point-range rule. For ASCII operands the output is byte-identical to
+    ``repr()``/``!r``, so existing ASCII parity tests are unaffected. This
+    mirrors :func:`relay_verifier.bundle_validator._py_ascii`.
+    """
+    return ascii(value)
 
 
 # -----------------------------------------------------------------------------
@@ -365,7 +400,36 @@ def verify_bundle(
         return result
 
     payload = _payload_for_signing(bundle)
-    canonical_bytes = canonical_json_bytes(payload)
+    # Value-boundary screen (keystone invariant #11/#16): a payload carrying a
+    # value the JCS encoder cannot canonicalise to byte-identical bytes across
+    # runtimes -- a supplementary-plane (non-BMP) object KEY or an
+    # out-of-safe-range integer (abs > 2**53 - 1) -- is refused fail-closed and
+    # IDENTICALLY on both runtimes. Preserve the documented "does NOT raise"
+    # contract: record structurally and return all-default (structure_ok stays
+    # False), exactly like the no-signatures early-return above. This protects
+    # DIRECT callers of verify_bundle; validate_bundle pre-screens the same
+    # hazards (via the shared screen_noncanonicalizable) before reaching here.
+    _hazard = screen_noncanonicalizable(payload)
+    if _hazard is not None:
+        _, _hazard_message = _hazard
+        result.errors.append(_hazard_message)
+        return result
+    try:
+        canonical_bytes = canonical_json_bytes(payload)
+    except JCSEncodeError as exc:
+        # The JCS encoder fails-closed on a payload it cannot canonicalise
+        # to runtime-identical bytes -- specifically a supplementary-plane
+        # (non-BMP, >= U+10000) object KEY, which Python sorts by code point
+        # while the TypeScript verifier sorts by UTF-16 code unit, so the two
+        # runtimes would otherwise produce DIFFERENT canonical bytes (keystone
+        # invariant #11). Preserve this function's documented "does NOT raise"
+        # contract: record the failure structurally and return the all-default
+        # result (structure_ok stays False), exactly like the no-signatures
+        # early-return above. The higher-level validate_bundle pre-screens for
+        # this and emits a structured 'non_canonicalizable_bundle' error before
+        # reaching here; this guard protects DIRECT callers of verify_bundle.
+        result.errors.append(f"bundle payload is not canonicalisable: {exc}")
+        return result
     payload_digest = hashlib.sha256(canonical_bytes).hexdigest()
     result.bundle_digest_sha256 = payload_digest
     result.structure_ok = True
@@ -391,7 +455,17 @@ def verify_bundle(
             )
             continue
         kid = sig.get("kid")
-        alg = sig.get("alg")
+        # Coerce a non-string alg to "<unknown>" BEFORE it reaches the alg
+        # column or the unsupported-alg reason. The sibling paths
+        # (verify_jws_compact, verify_jws_detached, verify_multi_signatures)
+        # and the TS twin (verifyBundleSignature) all apply this exact
+        # isinstance(str)-else-"<unknown>" coercion; leaving alg raw here made
+        # a malformed bundle's reason/alg bytes diverge Py<->TS (Python rendered
+        # _py_ascii(123) -> "123" while TS rendered '<unknown>'). A genuine
+        # string alg (incl. "") passes through to _py_ascii unchanged so the
+        # existing non-ASCII alg parity (parity-015) is preserved.
+        alg_raw = sig.get("alg")
+        alg = alg_raw if isinstance(alg_raw, str) else "<unknown>"
         signing_input_b64u = sig.get("signing_input_b64u")
         signature_b64u = sig.get("signature_b64u")
         if not isinstance(kid, str) or not kid:
@@ -400,7 +474,7 @@ def verify_bundle(
             result.signature_checks.append(
                 SignatureCheck(
                     kid=f"<sig[{idx}]>",
-                    alg=str(alg) if alg else "<unknown>",
+                    alg=alg,
                     ok=False,
                     reason="signature missing 'kid'",
                 )
@@ -411,9 +485,9 @@ def verify_bundle(
             result.signature_checks.append(
                 SignatureCheck(
                     kid=kid,
-                    alg=str(alg) if alg else "<unknown>",
+                    alg=alg,
                     ok=False,
-                    reason=f"unsupported alg: {alg!r}",
+                    reason=f"unsupported alg: {_py_ascii(alg)}",
                     code=RELAY_VERIFY_UNSUPPORTED_ALG,
                 )
             )
@@ -436,9 +510,9 @@ def verify_bundle(
                         alg=alg,
                         ok=False,
                         reason=(
-                            f"alg-mismatch: alg={alg!r} requires "
-                            f"kty={expected_kty!r} but JWK has "
-                            f"kty={actual_kty!r}"
+                            f"alg-mismatch: alg={_py_ascii(alg)} requires "
+                            f"kty={_py_ascii(expected_kty)} but JWK has "
+                            f"kty={_py_ascii(actual_kty)}"
                         ),
                         code=RELAY_VERIFY_ALG_MISMATCH,
                     )
@@ -508,7 +582,7 @@ def verify_bundle(
                     kid=kid,
                     alg=alg,
                     ok=False,
-                    reason=f"no JWK in trust anchor matches kid {kid!r}",
+                    reason=f"no JWK in trust anchor matches kid {_py_ascii(kid)}",
                 )
             )
             continue
@@ -768,7 +842,7 @@ def verify_jws_compact(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"unsupported alg: {alg!r}",
+            reason=f"unsupported alg: {_py_ascii(alg)}",
             code=RELAY_VERIFY_UNSUPPORTED_ALG,
         )
 
@@ -779,7 +853,7 @@ def verify_jws_compact(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"no JWK in trust anchor matches kid {kid!r}",
+            reason=f"no JWK in trust anchor matches kid {_py_ascii(kid)}",
         )
 
     # Alg-substitution detection: alg's required kty MUST match the JWK.
@@ -791,8 +865,9 @@ def verify_jws_compact(
             alg=alg,
             ok=False,
             reason=(
-                f"alg-mismatch: alg={alg!r} requires kty={expected_kty!r} "
-                f"but JWK has kty={actual_kty!r}"
+                f"alg-mismatch: alg={_py_ascii(alg)} requires "
+                f"kty={_py_ascii(expected_kty)} "
+                f"but JWK has kty={_py_ascii(actual_kty)}"
             ),
             code=RELAY_VERIFY_ALG_MISMATCH,
         )
@@ -883,7 +958,7 @@ def verify_jws_detached(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"unsupported alg: {alg!r}",
+            reason=f"unsupported alg: {_py_ascii(alg)}",
             code=RELAY_VERIFY_UNSUPPORTED_ALG,
         )
 
@@ -893,7 +968,7 @@ def verify_jws_detached(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"no JWK in trust anchor matches kid {kid!r}",
+            reason=f"no JWK in trust anchor matches kid {_py_ascii(kid)}",
         )
 
     expected_kty = _kty_for_alg(alg)
@@ -904,8 +979,9 @@ def verify_jws_detached(
             alg=alg,
             ok=False,
             reason=(
-                f"alg-mismatch: alg={alg!r} requires kty={expected_kty!r} "
-                f"but JWK has kty={actual_kty!r}"
+                f"alg-mismatch: alg={_py_ascii(alg)} requires "
+                f"kty={_py_ascii(expected_kty)} "
+                f"but JWK has kty={_py_ascii(actual_kty)}"
             ),
             code=RELAY_VERIFY_ALG_MISMATCH,
         )
@@ -977,6 +1053,25 @@ def verify_detached_claim_signature(
     omits the digest hint, an `InvalidSignature` rejection at the
     verify step. Both paths produce ``ok=False``.
     """
+    # Value-boundary screen (keystone invariant #11/#16): a claim carrying a
+    # non-BMP object KEY or an out-of-safe-range integer cannot be
+    # canonicalised to byte-identical bytes across runtimes, so its recomputed
+    # digest (and thus this verdict) would diverge Py<->TS. Fail closed
+    # IDENTICALLY before canonicalising, returning ok=False with the shared
+    # byte-identical reason + RELAY-CANON-* code (kid/alg are not yet known --
+    # the protected header is decoded below -- so they are '<unknown>', matching
+    # the header-decode-failure path).
+    _hazard = screen_noncanonicalizable(claim)
+    if _hazard is not None:
+        _hazard_code, _hazard_message = _hazard
+        return SignatureCheck(
+            kid="<unknown>",
+            alg="<unknown>",
+            ok=False,
+            reason=_hazard_message,
+            code=_hazard_code,
+        )
+
     canonical_payload = canonical_json_bytes(claim)
     recomputed_digest = hashlib.sha256(canonical_payload).hexdigest()
 
@@ -1000,8 +1095,8 @@ def verify_detached_claim_signature(
             ok=False,
             reason=(
                 "detached payload digest mismatch: header declared "
-                f"sha256={declared_digest!r} but recomputed "
-                f"sha256={recomputed_digest!r} from claim canonical bytes"
+                f"sha256={_py_ascii(declared_digest)} but recomputed "
+                f"sha256={_py_ascii(recomputed_digest)} from claim canonical bytes"
             ),
             code=RELAY_EVID_014,
         )
@@ -1078,6 +1173,39 @@ def verify_multi_signatures(
     ``ok=False`` -- because Relay's default verification posture
     refuses any unverified signature on the bundle.
     """
+    # Value-boundary screen (keystone invariant #11/#16): if the payload
+    # carries a non-BMP object KEY or an out-of-safe-range integer, its
+    # canonical signing-input bytes diverge across runtimes, so a signature
+    # valid on one runtime could be invalid on the other (a verify split).
+    # Fail closed IDENTICALLY before canonicalising: no signature over a
+    # non-canonicalisable payload can be trusted. Each input signature is
+    # marked ok=False with the shared byte-identical reason + RELAY-CANON-*
+    # code so signatures_checked keeps its per-signature length; aggregate is
+    # all_invalid and ok is False (MultiSignatureResult defaults).
+    _hazard = screen_noncanonicalizable(payload)
+    if _hazard is not None:
+        _hazard_code, _hazard_message = _hazard
+        screened = MultiSignatureResult()
+        for sig in signatures if isinstance(signatures, list) else []:
+            if isinstance(sig, dict):
+                kid_raw = sig.get("kid")
+                alg_raw = sig.get("alg")
+                kid = kid_raw if isinstance(kid_raw, str) else "<unknown>"
+                alg = alg_raw if isinstance(alg_raw, str) else "<unknown>"
+            else:
+                kid = "<unknown>"
+                alg = "<unknown>"
+            screened.signatures_checked.append(
+                SignatureCheck(
+                    kid=kid,
+                    alg=alg,
+                    ok=False,
+                    reason=_hazard_message,
+                    code=_hazard_code,
+                )
+            )
+        return screened
+
     canonical_bytes = canonical_json_bytes(payload)
     result = MultiSignatureResult()
     if not isinstance(signatures, list) or not signatures:
@@ -1159,7 +1287,7 @@ def _verify_one_signature_over_bytes(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"unsupported alg: {alg!r}",
+            reason=f"unsupported alg: {_py_ascii(alg)}",
             code=RELAY_VERIFY_UNSUPPORTED_ALG,
         )
     candidate_jwk = _select_jwk(jwks, kid)
@@ -1168,7 +1296,7 @@ def _verify_one_signature_over_bytes(
             kid=kid,
             alg=alg,
             ok=False,
-            reason=f"no JWK in trust anchor matches kid {kid!r}",
+            reason=f"no JWK in trust anchor matches kid {_py_ascii(kid)}",
         )
     expected_kty = _kty_for_alg(alg)
     actual_kty = candidate_jwk.get("kty")
@@ -1178,8 +1306,9 @@ def _verify_one_signature_over_bytes(
             alg=alg,
             ok=False,
             reason=(
-                f"alg-mismatch: alg={alg!r} requires kty={expected_kty!r} "
-                f"but JWK has kty={actual_kty!r}"
+                f"alg-mismatch: alg={_py_ascii(alg)} requires "
+                f"kty={_py_ascii(expected_kty)} "
+                f"but JWK has kty={_py_ascii(actual_kty)}"
             ),
             code=RELAY_VERIFY_ALG_MISMATCH,
         )

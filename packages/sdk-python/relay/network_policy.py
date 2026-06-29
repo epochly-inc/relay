@@ -64,6 +64,125 @@ _RFC1918_NETWORKS: Final[tuple[ipaddress.IPv4Network, ...]] = (
     ipaddress.IPv4Network("192.168.0.0/16"),
 )
 
+# Special-purpose / non-global ranges a CIDR allowlist entry must not OVERLAP.
+# A broad CIDR supernet (e.g. 8.0.0.0/6, 0.0.0.0/0) can contain these even when
+# its network address looks public, so the CIDR branch of _classify denies any
+# entry overlapping one of them. Mirrored byte-for-byte in the TS SDK
+# (run.ts _DENIED_SUPERNETS) for Py<->TS verdict parity.
+_DENIED_SUPERNETS: Final[
+    tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]
+] = tuple(
+    ipaddress.ip_network(c)
+    for c in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "255.255.255.255/32",
+        "::1/128",
+        "::/128",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+        "2001:db8::/32",
+        # IETF special-registry PRIVATE blocks (no global carve-out exceptions)
+        # that the single-host IPv6 path denies via ip.is_private: 3fff::/20 (RFC
+        # 9637 documentation) and 64:ff9b:1::/48 (NAT64 local-use). Without these
+        # the OVERLAP check admitted a BROAD CIDR whose network address is public
+        # but whose range CONTAINS the private block -- e.g. 3fff:ffff::1/16 (the
+        # /16 spans 3fff::/20) -- an SSRF gap and an inconsistency with the
+        # single-host deny. 2001::/23 is handled SEPARATELY (it HAS global
+        # carve-out exceptions; see _classify) so an all-global exception CIDR is
+        # not over-blocked. Mirrored byte-for-byte in run.ts.
+        "3fff::/20",
+        "64:ff9b:1::/48",
+        # IPv4-in-IPv6 TRANSITION prefixes: a broad CIDR over the IPv4-mapped
+        # (::ffff:0:0/96), 6to4 (2002::/16), NAT64 (64:ff9b::/96), or the
+        # deprecated IPv4-compatible (::/96) space can embed denied IPv4 ranges
+        # with a public-looking IPv6 network address -- e.g. ::800:0/102 has the
+        # public-looking network ::8.0.0.0 yet spans ::a00:0 == 10.0.0.0. A
+        # single transition address still unwraps + classifies via the
+        # direct-classify step (incl. _classify's IPv4-compatible ::/96 unwrap);
+        # these entries deny the BROAD transition-form CIDRs the overlap check
+        # covers. ::/96 subsumes the ::1/128 and ::/128 specials above.
+        "::ffff:0:0/96",
+        "2002::/16",
+        "64:ff9b::/96",
+        "::/96",
+    )
+)
+
+# The 2001::/23 IETF protocol-assignments PRIVATE block and its global carve-out
+# EXCEPTIONS (CPython _private_networks_exceptions: the sub-blocks that are
+# is_private == False / is_global == True even though they sit inside 2001::/23).
+# A CIDR allowlist entry is denied for OVERLAPPING the PRIVATE portion of
+# 2001::/23, but an entry FULLY CONTAINED in the GLOBAL portion (any one
+# exception OR a CIDR spanning ADJACENT exceptions, e.g. 2001:20::/27 == the
+# union of 2001:20::/28 + 2001:30::/28) is NOT over-blocked -- it is global
+# address space the single-host path also allows. To get that exactly right we
+# precompute the PRIVATE REMAINDER of 2001::/23 (the supernet minus the union of
+# all exceptions) as a sorted list of [first, last] integer intervals and deny a
+# CIDR only when it overlaps one of those private intervals. Mirrored byte-for-
+# byte in run.ts (_IPV6_2001_23 / _PRIVATE_IPV6_EXCEPTIONS /
+# _IPV6_2001_23_PRIVATE_REMAINDER -- same interval-subtraction algorithm).
+_IPV6_2001_23_NETWORK: Final[ipaddress.IPv6Network] = ipaddress.IPv6Network(
+    "2001::/23"
+)
+_IPV6_2001_23_EXCEPTIONS: Final[tuple[ipaddress.IPv6Network, ...]] = tuple(
+    ipaddress.IPv6Network(c)
+    for c in (
+        "2001:1::1/128",
+        "2001:1::2/128",
+        "2001:3::/32",
+        "2001:4:112::/48",
+        "2001:20::/28",
+        "2001:30::/28",
+    )
+)
+
+
+def _private_remainder(
+    supernet: ipaddress.IPv6Network,
+    exceptions: tuple[ipaddress.IPv6Network, ...],
+) -> tuple[tuple[int, int], ...]:
+    """The half-open-free [first, last] integer intervals of ``supernet`` that are
+    NOT covered by any exception (the PRIVATE remainder).
+
+    Sweeps the exceptions in address order, accumulating gaps; ADJACENT or
+    overlapping exceptions merge via ``max(cursor, e_last + 1)`` so a CIDR
+    spanning two touching exception blocks leaves no spurious private sliver.
+    Deterministic and side-effect free -- the TS mirror runs the identical
+    algorithm so both SDKs deny exactly the same CIDRs."""
+    first = int(supernet.network_address)
+    last = int(supernet.broadcast_address)
+    excs = sorted(
+        (int(e.network_address), int(e.broadcast_address)) for e in exceptions
+    )
+    remainder: list[tuple[int, int]] = []
+    cursor = first
+    for e_first, e_last in excs:
+        if e_first > cursor:
+            remainder.append((cursor, e_first - 1))
+        cursor = max(cursor, e_last + 1)
+    if cursor <= last:
+        remainder.append((cursor, last))
+    return tuple(remainder)
+
+
+_IPV6_2001_23_PRIVATE_REMAINDER: Final[tuple[tuple[int, int], ...]] = (
+    _private_remainder(_IPV6_2001_23_NETWORK, _IPV6_2001_23_EXCEPTIONS)
+)
+
 # Link-local IPv4 range.
 _LINK_LOCAL_V4: Final[ipaddress.IPv4Network] = ipaddress.IPv4Network(
     "169.254.0.0/16"
@@ -129,6 +248,42 @@ class EgressDenied(Exception):
         )
 
 
+def _lenient_url_hostname(entry: str) -> str:
+    """Lenient URL host extraction that never raises -- byte-identical to the
+    TS SDK's ``_urlparseHostname`` (packages/sdk-typescript/src/run.ts).
+
+    Used only as the fallback when CPython's strict ``urlparse`` raises
+    ``ValueError`` on a bracketed-IPv4 / empty-bracket / malformed-bracket
+    authority. Mirrors urlparse's algorithm MINUS the bracket-content
+    validation: strip ASCII tab/CR/LF (CPython urlsplit hardening), take the
+    netloc as the authority after ``scheme://`` up to the first ``/``/``?``/
+    ``#``, take the host as the part after the LAST ``@`` (userinfo split),
+    strip a bracketed form (inner only) or a trailing ``:port``, and lowercase.
+    Strips brackets without validating their contents, exactly like the TS
+    port, so both SDKs classify the same inner string.
+    """
+    cleaned = entry.replace("\t", "").replace("\r", "").replace("\n", "")
+    scheme_idx = cleaned.find("://")
+    rest = cleaned[scheme_idx + 3:]
+    end = len(rest)
+    for sep in ("/", "?", "#"):
+        i = rest.find(sep)
+        if i >= 0 and i < end:
+            end = i
+    netloc = rest[:end]
+    at = netloc.rfind("@")
+    hostinfo = netloc[at + 1:] if at >= 0 else netloc
+    open_br = hostinfo.find("[")
+    if open_br >= 0:
+        bracketed = hostinfo[open_br + 1:]
+        close_br = bracketed.find("]")
+        hostname = bracketed[:close_br] if close_br >= 0 else bracketed
+    else:
+        colon = hostinfo.find(":")
+        hostname = hostinfo[:colon] if colon >= 0 else hostinfo
+    return hostname.lower()
+
+
 def _extract_host(entry: str) -> str:
     """Return the host portion of ``entry`` (URL or bare host).
 
@@ -149,9 +304,22 @@ def _extract_host(entry: str) -> str:
         pure host literal).
     """
     if "://" in entry:
-        parsed = urlparse(entry)
-        host = parsed.hostname or ""
-        return host
+        try:
+            parsed = urlparse(entry)
+            host = parsed.hostname or ""
+            return host
+        except ValueError:
+            # CPython 3.12+ urlparse (._check_bracketed_host) RAISES on a
+            # bracketed-IPv4 (``https://[10.0.0.1]/``), an empty/non-IP bracket
+            # (``https://[]/``), or a malformed/stray bracket
+            # (``http://foo[bar/``). The TS SDK's hand-rolled _urlparseHostname
+            # never validates bracket contents -- it strips the brackets and
+            # classifies the inner string -- so an unguarded urlparse here both
+            # CRASHES the SSRF screen (the contract is silent-allow or
+            # EgressDenied, never a raw ValueError) AND diverges from the TS
+            # verdict. Fall back to the SAME lenient, never-throwing bracket
+            # extraction the TS port uses so both SDKs agree byte-for-byte.
+            return _lenient_url_hostname(entry)
     # Bare host -- may carry an optional port and IPv6 bracket form.
     host = entry
     # RFC 3986 bracketed IPv6 authority form: ``[ipv6]`` or
@@ -243,10 +411,61 @@ def _classify(host: str) -> tuple[str, str] | None:
     """
     if not host:
         return None
+    # Normalize BEFORE any IP/metadata classification: a destination wrapped in
+    # whitespace ("10.0.0.1 ", "\t169.254.169.254\n") or carrying a trailing
+    # FQDN-root dot ("169.254.169.254." / "169.254.169.254..") is dialed by the
+    # resolver as the bare address, but ipaddress.ip_address / inet_aton reject
+    # the decorated form -- so without this the literal would MISS the metadata /
+    # RFC1918 / loopback checks and fall through the hostname denylist as a
+    # NON-match (ALLOWED): an SSRF default-deny bypass. Strip surrounding
+    # whitespace and trailing dots up front (no resolvable host has either, so
+    # this never over-blocks a public destination). This also normalizes the
+    # URL-derived host from _extract_host through the same chokepoint.
+    host = host.strip().rstrip(".")
+    if not host:
+        return None
     # Cloud-metadata literal match takes precedence over link-local so
     # 169.254.169.254 attributes correctly.
     if host in CLOUD_METADATA_IPS:
         return ("cloud_metadata", host)
+    # CIDR-block entry (e.g. "10.0.0.0/8", "fc00::/7"): the replay sandbox
+    # accepts CIDR allowlist entries, so a private/reserved RANGE must be denied
+    # like a single internal address -- otherwise allowlisting "10.0.0.0/8"
+    # authorizes the whole private block (SSRF default-deny bypass).
+    if "/" in host:
+        # (1) Classify the network/address portion directly: a specific subnet
+        # whose network address is internal (10.0.0.0/8, fc00::/7) is denied,
+        # and this is the common case.
+        direct = _classify(host.split("/", 1)[0])
+        if direct is not None:
+            return direct
+        # (2) A BROAD CIDR can be a SUPERNET that CONTAINS internal ranges even
+        # with a public-looking network address (8.0.0.0/6 contains 10.0.0.0/8;
+        # 64.0.0.0/2 contains 127.0.0.0/8; 0.0.0.0/0 contains everything).
+        # is_global does NOT catch these (it checks subnet-OF, not contains), so
+        # deny any CIDR that OVERLAPS a special-purpose range. The supernet list
+        # is mirrored byte-for-byte in the TS SDK for Py<->TS verdict parity.
+        try:
+            net = ipaddress.ip_network(host, strict=False)
+        except ValueError:
+            return None
+        for denied in _DENIED_SUPERNETS:
+            if isinstance(net, type(denied)) and net.overlaps(denied):
+                return ("rfc1918", str(denied))
+        # 2001::/23 with EXCEPTION-awareness (it has global carve-outs, unlike
+        # the flat supernets above): deny a CIDR ONLY when it overlaps the PRIVATE
+        # remainder of 2001::/23 (the supernet minus the union of all global
+        # exceptions). A CIDR fully inside the global portion -- one exception
+        # (2001:20::/28) OR a span of adjacent exceptions (2001:20::/27) -- hits
+        # no private interval and is ALLOWED; a CIDR straddling private +
+        # exception space (2001:3::1/31) hits a private interval and is denied.
+        if isinstance(net, ipaddress.IPv6Network):
+            n_first = int(net.network_address)
+            n_last = int(net.broadcast_address)
+            for r_first, r_last in _IPV6_2001_23_PRIVATE_REMAINDER:
+                if n_first <= r_last and r_first <= n_last:
+                    return ("rfc1918", "2001::/23")
+        return None
     # IPv4 / IPv6 range checks.
     try:
         ip = ipaddress.ip_address(host)

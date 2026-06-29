@@ -36,6 +36,7 @@ Spec anchors:
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -43,6 +44,7 @@ from uuid import UUID
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     PrivateAttr,
@@ -80,11 +82,94 @@ ULID_PATTERN = r"^[0-9A-HJKMNP-TV-Z]{26}$"
 Ulid = Annotated[str, Field(pattern=ULID_PATTERN)]
 """Canonical Crockford-base32 ULID, exactly 26 uppercase chars."""
 
-# RFC 3339 offset-marker regex: matches the trailing 'Z' or '+/-HH:MM' on a
-# string. Used by EventLogEntry.occurred_at (VAL-W1-017) to reject naive
-# wire-format inputs before Pydantic's datetime coercion silently drops the
-# distinction.
-_RFC3339_OFFSET_RE = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
+# RFC 3339 offset-marker regex: matches the trailing 'Z'/'z' or '+/-HH:MM' on a
+# string. Used by EventLogEntry.occurred_at / capture_clock (VAL-W1-017) to
+# reject naive wire-format inputs before Pydantic's datetime coercion silently
+# drops the distinction. The 'Z' is case-insensitive ([Zz]) to match the shared
+# RFC3339_DATETIME_PATTERN (which accepts [Zz]); an uppercase-only 'Z' here made
+# Python reject a lowercase '...z' that the TS checkRfc3339WithOffset accepts ->
+# an opposite-verdict Py<->TS divergence on occurred_at/capture_clock.
+_RFC3339_OFFSET_RE = re.compile(r"([Zz]|[+-]\d{2}:\d{2})$")
+
+# Minimum length of a canonical RFC 3339 date-time (YYYY-MM-DDTHH:MM:SSZ == 20).
+_RFC3339_MIN_LEN = 20
+
+# Strict RFC 3339 date-time grammar (MED #8). The TS ``isRfc3339Datetime`` mirror
+# (packages/schemas/typescript/src/envelopes.ts) MUST define the SAME language so
+# Python and TypeScript readers agree accept/reject for identical wire bytes (a
+# P0 keystone). Earlier the two sides deferred grammar to two DIFFERENT permissive
+# parsers (Pydantic-RFC3339 vs ``Date.parse``) whose acceptance sets diverged in
+# BOTH directions: ``Date.parse`` accepts RFC-2822-ish forms
+# ('Mon May 12 2025 00:00:00', 'Wed, 12 May 2025 00:00:00 GMT') and an
+# out-of-range hour ('...T24:00:00Z') that Pydantic rejects, while Pydantic
+# accepted a colon-less offset ('+0200') strict RFC 3339 forbids. This regex pins
+# ONE grammar on both sides and rejects every such permissive extra.
+#
+# Grammar (RFC 3339 section 5.6 date-time):
+#   full-date  = YYYY '-' (01..12) '-' (01..31)
+#   separator  = 'T' | 't' | ' '   (RFC 3339 allows lower-case 'T' and a space)
+#   partial-time = (00..23) ':' (00..59) ':' (00..60)  (60 = leap second)
+#   time-secfrac = optional '.' DIGIT+
+#   time-offset  = 'Z' | 'z' | ('+'|'-') (00..23) ':' (00..59)  (colon REQUIRED)
+#
+# Anchored with ``\A`` / ``\Z`` (NOT ``^`` / ``$``) because Python's ``$`` matches
+# before a trailing newline whereas a non-multiline JS ``$`` does not; ``\A``/``\Z``
+# match the JS ``^``/``$`` exactly so a value such as "...Z\n" is rejected on BOTH
+# sides byte-for-byte. The two regex source strings define the identical language.
+RFC3339_DATETIME_PATTERN = (
+    r"\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])"
+    r"[Tt ]([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?"
+    r"([Zz]|[+-]([01]\d|2[0-3]):[0-5]\d)"
+)
+_RFC3339_DATETIME_RE = re.compile(r"\A" + RFC3339_DATETIME_PATTERN + r"\Z")
+
+
+def _require_rfc3339_string(value: Any) -> Any:
+    """Enforce the strict shared RFC 3339 grammar for Py<->TS verdict parity.
+
+    The TS ``isRfc3339Datetime`` (packages/schemas/typescript/src/envelopes.ts)
+    requires ``typeof value === "string"`` matching the SAME
+    ``RFC3339_DATETIME_PATTERN`` regex; an integer Unix epoch (or float/bool) is
+    REJECTED. Pydantic's default datetime coercion instead silently accepts an
+    int/float epoch (re-hunt #7), and deferring the remaining grammar to
+    Pydantic's RFC3339 parser still diverged from the TS ``Date.parse`` in both
+    directions (MED #8). This before-validator enforces the string contract AND
+    the strict RFC 3339 grammar on WIRE input so both readers give the same
+    accept/reject verdict for the same bytes, while letting an actual
+    ``datetime`` object (in-process model construction, which has no wire-string
+    equivalent in TS) pass through untouched.
+    """
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        if len(value) < _RFC3339_MIN_LEN:
+            raise ValueError(
+                "must be an RFC 3339 date-time string (length >= 20); "
+                f"observed a {len(value)}-char string"
+            )
+        if _RFC3339_DATETIME_RE.match(value) is None:
+            raise ValueError(
+                "must be a strict RFC 3339 date-time string "
+                "(YYYY-MM-DDThh:mm:ss[.fff](Z|+/-hh:mm)); permissive "
+                "Date.parse forms (RFC 2822, hour 24, colon-less offset) are "
+                f"rejected for Py<->TS verdict parity per VAL-W1-017 "
+                f"(observed={value!r})"
+            )
+        return value
+    # int/float epoch, bool, or any other non-string wire value: reject to
+    # match the TS reader (which requires a string).
+    raise ValueError(
+        "must be an RFC 3339 date-time string, not a "
+        f"{type(value).__name__} (an integer/float Unix epoch is rejected for "
+        "Py<->TS parse parity per VAL-W1-017)"
+    )
+
+
+# Strict RFC 3339 date-time field type: enforces the TS wire contract (string,
+# length >= 20, RFC-3339-parseable) so Python and TypeScript readers agree on
+# accept/reject for the same wire bytes. Use in place of a bare ``datetime`` on
+# every canonical envelope field. Nullable fields use ``Rfc3339Datetime | None``.
+Rfc3339Datetime = Annotated[datetime, BeforeValidator(_require_rfc3339_string)]
 
 
 # -----------------------------------------------------------------------------
@@ -159,24 +244,140 @@ class RelayUnknownEnumValueError(ValueError):
 # byte-identical UTF-8 output for the same input value.
 
 
-def canonical_bytes(value: Any) -> bytes:
-    """Emit RFC-8785-compatible canonical JSON bytes for a Python value.
+# Largest IEEE-754 double that is an exact integer (JS Number.MAX_SAFE_INTEGER).
+_JS_MAX_SAFE_INTEGER = 2**53 - 1
 
-    Recurses into nested dicts (sort keys lexicographically) and lists
-    (preserve order). Decimals MUST be passed in as strings (the caller is
-    responsible for encoding ``Decimal`` -> string before invoking this
+
+def _es6_number_to_string_positive(n: float) -> str:
+    """ECMA-262 7.1.12.1 Number::toString for a strictly POSITIVE finite double.
+
+    Mirrors JS ``String(n)`` byte-for-byte (ported from
+    ``relay_verifier.canonical`` -- the schemas package cannot depend on the
+    verifier, so the proven algorithm is duplicated). Python's ``repr(float)``
+    and ``json.dumps`` choose different exponent thresholds / zero-padding /
+    trailing ``.0`` than ECMA-262, so a bare float serialized via ``json.dumps``
+    diverged from the TS ``canonicalJsonStringify`` which uses ``String(value)``
+    (re-hunt schemas-03). Caller handles NaN/Inf/zero/negative dispatch.
+    """
+    s = repr(n)
+    if "e" in s:
+        mantissa, exp_str = s.split("e")
+        exp = int(exp_str)
+    else:
+        mantissa, exp = s, 0
+    if "." in mantissa:
+        int_part, frac_part = mantissa.split(".")
+    else:
+        int_part, frac_part = mantissa, ""
+    raw_digits = int_part + frac_part
+    stripped_lead = raw_digits.lstrip("0")
+    leading_zero_count = len(raw_digits) - len(stripped_lead)
+    if not stripped_lead:
+        return "0"
+    stripped = stripped_lead.rstrip("0")
+    n_dec = len(int_part) - leading_zero_count + exp
+    k = len(stripped)
+    if k <= n_dec <= 21:
+        return stripped + ("0" * (n_dec - k))
+    if 0 < n_dec <= 21:
+        return stripped[:n_dec] + "." + stripped[n_dec:]
+    if -6 < n_dec <= 0:
+        return "0." + ("0" * (-n_dec)) + stripped
+    sign = "+" if n_dec - 1 >= 0 else "-"
+    abs_exp = str(abs(n_dec - 1))
+    if k == 1:
+        return stripped + "e" + sign + abs_exp
+    return stripped[0] + "." + stripped[1:] + "e" + sign + abs_exp
+
+
+def _canonical_encode(value: Any) -> str:
+    """Recursive RFC-8785 encoder matching the TS ``canonicalJsonStringify``."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        # A JSON integer beyond JS's safe-integer range cannot be represented
+        # exactly as a double, so TS ``String(parsedNumber)`` would emit a
+        # ROUNDED value while Python ``str(int)`` is exact -- irreconcilable.
+        # Reject on BOTH sides (the TS guard throws) so the canonical form fails
+        # CLOSED rather than diverging (re-hunt schemas-03). Such values must be
+        # string-encoded by the caller (see the docstring contract).
+        if not (-_JS_MAX_SAFE_INTEGER <= value <= _JS_MAX_SAFE_INTEGER):
+            raise ValueError(
+                f"integer {value} is outside the JS safe-integer range "
+                f"[-(2**53-1), 2**53-1]; canonical payloads MUST string-encode "
+                "such values for Py<->TS byte parity"
+            )
+        return str(value)
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise ValueError(
+                f"canonical JSON cannot encode non-finite number: {value!r}"
+            )
+        # JS has a single number type, so a JSON exponential like ``1e16`` parses
+        # to an INTEGER-valued number that ``Number.isInteger`` accepts but
+        # ``Number.isSafeInteger`` rejects -> the TS guard throws. Python parses
+        # the same literal to a FLOAT, which would otherwise slip through here and
+        # be ECMA-262-formatted (accepted) -> a Py-accepts/TS-rejects divergence.
+        # Reject an integer-valued float outside the safe-integer range so BOTH
+        # runtimes fail closed on it (re-hunt schemas-03).
+        if value.is_integer() and abs(value) > _JS_MAX_SAFE_INTEGER:
+            raise ValueError(
+                f"float {value!r} has an integer value outside the JS "
+                "safe-integer range [-(2**53-1), 2**53-1]; canonical payloads "
+                "MUST string-encode such values for Py<->TS byte parity"
+            )
+        if value == 0.0:
+            return "0"  # ECMA-262: both 0.0 and -0.0 -> "0"
+        if value < 0:
+            return "-" + _es6_number_to_string_positive(-value)
+        return _es6_number_to_string_positive(value)
+    if isinstance(value, str):
+        # Reuse json.dumps' string escaping: byte-identical to the prior
+        # implementation AND to TS JSON.stringify for the Relay value subset.
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_canonical_encode(v) for v in value) + "]"
+    if isinstance(value, dict):
+        # RFC 8785 section 3.2.3: object keys ordered by their UTF-16 code-unit
+        # sequence (NOT Unicode code point). For BMP keys the orderings coincide;
+        # they diverge only for SMP (>= U+10000) keys, where Python's default
+        # str (code-point) sort disagreed with the TS Object.keys().sort()
+        # (UTF-16 code-unit) -- a non-BMP-key byte divergence (re-hunt
+        # schemas-04). ``encode("utf-16-be")`` orders by code unit.
+        items = sorted(
+            ((str(k), v) for k, v in value.items()),
+            key=lambda kv: kv[0].encode("utf-16-be"),
+        )
+        return (
+            "{"
+            + ",".join(
+                json.dumps(k, ensure_ascii=False) + ":" + _canonical_encode(v)
+                for k, v in items
+            )
+            + "}"
+        )
+    raise TypeError(
+        f"canonical JSON: unsupported type {type(value).__name__}"
+    )
+
+
+def canonical_bytes(value: Any) -> bytes:
+    """Emit RFC-8785 canonical JSON bytes for a Python value.
+
+    Recurses into nested dicts (keys ordered by UTF-16 code unit, RFC 8785
+    3.2.3) and lists (preserve order). Numbers are encoded per ECMA-262
+    Number::toString so floats match the TS ``canonicalJsonStringify``
+    (``String(value)``) byte-for-byte; non-finite floats and integers outside
+    the JS safe-integer range are REJECTED fail-closed. Decimals MUST be passed
+    in as strings (the caller encodes ``Decimal`` -> string before invoking this
     function so precision is bit-exact across Py and TS).
 
-    Mirrors ``canonicalJsonStringify`` in envelopes.ts byte-for-byte for
-    the value subset used by Relay envelopes.
+    Mirrors ``canonicalJsonStringify`` in envelopes.ts byte-for-byte for the
+    value subset used by Relay envelopes.
     """
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
+    return _canonical_encode(value).encode("utf-8")
 
 
 # -----------------------------------------------------------------------------
@@ -227,7 +428,7 @@ class RunResult(_RelayEnvelope):
     evidence_bundle_id: UUID | None = None
     manifest_commit_hash: Sha256Hash
     actor_identity_hash: Sha256Hash
-    decided_at: datetime
+    decided_at: Rfc3339Datetime
     decision_epoch: NonNegativeEpoch = 0
     signature: str
     signature_key_id: str
@@ -272,7 +473,7 @@ class GateDecision(_RelayEnvelope):
     evidence_bundle_id: UUID
     cascade_on_block: bool = True
     decided_by: Literal["gate_engine"]
-    decided_at: datetime
+    decided_at: Rfc3339Datetime
     manifest_commit_hash: Sha256Hash
     actor_identity_hash: Sha256Hash
     signature: str
@@ -322,7 +523,7 @@ class GateDecisionDraft(_RelayEnvelope):
     worker_id: UUID
     manifest_commit_hash: Sha256Hash
     actor_identity_hash: Sha256Hash
-    submitted_at: datetime
+    submitted_at: Rfc3339Datetime
     resolved_gate_decision_id: UUID | None = None
     draft_kind: Literal["submitted", "dry_run_unsigned"] = "submitted"
     resolution_state: Literal[
@@ -333,7 +534,7 @@ class GateDecisionDraft(_RelayEnvelope):
         "cancelled",
         "duplicate_submission",
     ] = "pending"
-    cancelled_at: datetime | None = None
+    cancelled_at: Rfc3339Datetime | None = None
     cancellation_reason: str | None = None
 
     @model_validator(mode="after")
@@ -378,7 +579,7 @@ class GateRound(_RelayEnvelope):
     scope_type: str
     scope_id: UUID
     round: PositiveRound
-    initiated_at: datetime
+    initiated_at: Rfc3339Datetime
     initiated_by: Literal["control_plane", "cron", "user", "remediation"]
     initiation_reason: str | None = None
     gate_decision_id: UUID | None = None
@@ -402,8 +603,8 @@ class Actor(_RelayEnvelope):
 
     identity_hash: Sha256Hash
     kind: Literal["human", "bot", "worker", "reviewer"]
-    created_at: datetime
-    revoked_at: datetime | None = None
+    created_at: Rfc3339Datetime
+    revoked_at: Rfc3339Datetime | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -432,8 +633,8 @@ class ManifestVersion(_RelayEnvelope):
     signed_by: str | None = None
     signature: str | None = None
     signature_key_id: str | None = None
-    effective_at: datetime
-    effective_until: datetime | None = None
+    effective_at: Rfc3339Datetime
+    effective_until: Rfc3339Datetime | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -457,8 +658,8 @@ class _ScopeStateBase(_RelayEnvelope):
     scope_id: UUID
     project_id: UUID
     epoch: NonNegativeEpoch
-    created_at: datetime
-    updated_at: datetime
+    created_at: Rfc3339Datetime
+    updated_at: Rfc3339Datetime
 
 
 class RunScopeState(_ScopeStateBase):
@@ -619,8 +820,8 @@ class IdempotencyRecord(_RelayEnvelope):
     request_digest: Sha256Hash
     response_status: NonNegativeEpoch
     response_ref: str | None = None
-    first_seen_at: datetime
-    expires_at: datetime
+    first_seen_at: Rfc3339Datetime
+    expires_at: Rfc3339Datetime
 
 
 # -----------------------------------------------------------------------------
@@ -668,7 +869,7 @@ class EventLogEntry(_RelayEnvelope):
     actor_id: UUID | None = None
     manifest_commit_hash: Sha256Hash | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
-    occurred_at: datetime
+    occurred_at: Rfc3339Datetime
     ingest_sequence: NonNegativeEpoch
 
     # Private sidecar storing the original wire-format string for occurred_at
@@ -780,7 +981,12 @@ def serialize_event_log_entry_canonical(entry: EventLogEntry) -> bytes:
         "occurred_at": occurred_at_str,
         "ingest_sequence": entry.ingest_sequence,
     }
-    return json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    # Route through canonical_bytes (RFC 8785): ensure_ascii=False raw UTF-8 +
+    # allow_nan=False + ECMA-262 numbers + UTF-16 key sort. The prior bare
+    # json.dumps here omitted ensure_ascii/allow_nan, so a non-ASCII payload
+    # diverged from TS and a non-finite payload float emitted invalid-JSON
+    # NaN/Infinity instead of raising (re-hunt schemas-04/-05).
+    return canonical_bytes(canonical)
 
 
 # -----------------------------------------------------------------------------
@@ -837,7 +1043,7 @@ class EvidenceBundle(_RelayEnvelope):
     manifest_commit_hash: Sha256Hash | None = None
     object_ref: str
     supersedes_bundle_id: UUID | None = None
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 # ---------------------------------------------------------------------------
@@ -1010,13 +1216,13 @@ class EvidenceClaim(_RelayEnvelope):
         "cron",
     ]
     actor_identity_hash: Sha256Hash
-    occurred_at: datetime
+    occurred_at: Rfc3339Datetime
     manifest_commit_hash: Sha256Hash
     signer_key_id: str
     signature: NonEmptyStr
     supersedes_claim_id: UUID | None = None
     namespaces: dict[str, Any] | None = None
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
     # ---------------------------------------------------------------------
     # Back-compat construction shim (VAL-V3M1-015).
@@ -1131,9 +1337,9 @@ class ReplayCase(_RelayEnvelope):
     expected_assertion_ids: list[NonEmptyStr] = Field(default_factory=list)
     human_reviewed: bool = False
     reviewer_email: str | None = None
-    reviewed_at: datetime | None = None
+    reviewed_at: Rfc3339Datetime | None = None
     status: Literal["proposed", "approved", "retired"] = "proposed"
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 class ReplayFixture(_RelayEnvelope):
@@ -1164,7 +1370,7 @@ class ReplayFixture(_RelayEnvelope):
     provider: str | None = None
     model: str | None = None
     model_signature: str | None = None
-    capture_clock: datetime
+    capture_clock: Rfc3339Datetime
     refresh_policy: Literal[
         "invalidate_on_signature_change",
         "hold_forever",
@@ -1178,7 +1384,7 @@ class ReplayFixture(_RelayEnvelope):
         "approval_required",
     ]
     allowed_in_replay: bool = False
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
     _capture_clock_raw: str | None = PrivateAttr(default=None)
 
@@ -1296,7 +1502,10 @@ def serialize_replay_fixture_canonical(fixture: ReplayFixture) -> bytes:
         "allowed_in_replay": fixture.allowed_in_replay,
         "created_at": fixture.created_at.isoformat(),
     }
-    return json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    # Route through canonical_bytes for RFC-8785 Py<->TS byte parity (raw UTF-8,
+    # allow_nan=False, ECMA-262 numbers, UTF-16 key sort) -- see
+    # serialize_event_log_entry_canonical (re-hunt schemas-04/-05).
+    return canonical_bytes(canonical)
 
 
 # -----------------------------------------------------------------------------
@@ -1392,7 +1601,7 @@ class RedactionPolicy(_RelayEnvelope):
     dpa_ref: str | None = None
     approver_user_id: UUID | None = None
     matchers: list[_RedactionPolicyMatcherUnion] = Field(default_factory=list)
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
     @model_validator(mode="after")
     def _check_raw_capture_requires_dpa_and_approver(self) -> RedactionPolicy:
@@ -1494,8 +1703,8 @@ class GatePolicy(_RelayEnvelope):
     baseline_selector: dict[str, Any] | None = None
     flaky_quarantine_policy: dict[str, Any] | None = None
     blocking_severity: Literal["p0_only", "p0_p1", "any_failure"] = "p0_only"
-    effective_at: datetime
-    effective_until: datetime | None = None
+    effective_at: Rfc3339Datetime
+    effective_until: Rfc3339Datetime | None = None
 
 
 class ContractResult(_RelayEnvelope):
@@ -1518,7 +1727,7 @@ class ContractResult(_RelayEnvelope):
     raw_signature_hash: str | None = None
     repair_attempt: int = 0
     evaluation_engine_version: str
-    evaluated_at: datetime
+    evaluated_at: Rfc3339Datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1553,8 +1762,8 @@ class AssertionDefinition(_RelayEnvelope):
         "retired",
     ] = "draft"
     current_version: int = 1
-    created_at: datetime
-    updated_at: datetime
+    created_at: Rfc3339Datetime
+    updated_at: Rfc3339Datetime
 
 
 class ReplayResult(_RelayEnvelope):
@@ -1580,7 +1789,7 @@ class ReplayResult(_RelayEnvelope):
     side_effect_attempts: int = 0
     side_effect_approved: int = 0
     evidence_bundle_id: UUID | None = None
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 class Manifest(_RelayEnvelope):
@@ -1597,7 +1806,7 @@ class Manifest(_RelayEnvelope):
     manifest_id: UUID
     project_id: UUID
     name: str
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 class Incident(_RelayEnvelope):
@@ -1617,12 +1826,12 @@ class Incident(_RelayEnvelope):
     severity: Literal["sev1", "sev2", "sev3", "sev4"]
     state: Literal["open", "mitigated", "closed", "suppressed"] = "open"
     affected_run_ids: list[UUID] = Field(default_factory=list)
-    first_seen_at: datetime
-    last_seen_at: datetime
+    first_seen_at: Rfc3339Datetime
+    last_seen_at: Rfc3339Datetime
     owner_email: str | None = None
     postmortem_ref: str | None = None
     promoted_to_regression: bool = False
-    created_at: datetime | None = None
+    created_at: Rfc3339Datetime | None = None
 
 
 class RootCauseHypothesis(_RelayEnvelope):
@@ -1647,7 +1856,7 @@ class RootCauseHypothesis(_RelayEnvelope):
         Literal["accept", "reject", "modify", "pending"] | None
     ) = None
     promoted_to_replay_case_id: UUID | None = None
-    created_at: datetime
+    created_at: Rfc3339Datetime
 
 
 class Span(_RelayEnvelope):
@@ -1676,8 +1885,8 @@ class Span(_RelayEnvelope):
     ]
     name: str
     status: str
-    started_at: datetime
-    ended_at: datetime | None = None
+    started_at: Rfc3339Datetime
+    ended_at: Rfc3339Datetime | None = None
     error_class: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -1793,11 +2002,11 @@ class EvidenceLegalHold(_RelayEnvelope):
     reason: str
     legal_matter_ref: str | None = None
     imposed_by_user_id: UUID
-    counsel_signoff_at: datetime | None = None
+    counsel_signoff_at: Rfc3339Datetime | None = None
     counsel_signoff_by: str | None = None
     state: Literal["active", "released"] = "active"
-    imposed_at: datetime
-    released_at: datetime | None = None
+    imposed_at: Rfc3339Datetime
+    released_at: Rfc3339Datetime | None = None
     released_by_user_id: UUID | None = None
 
 
@@ -1824,7 +2033,7 @@ class EvidenceBundleRegistry(_RelayEnvelope):
     subject_redacted_after_signing: bool = False
     redaction_event_ref: str | None = None
     legal_hold_id: UUID | None = None
-    last_state_change_at: datetime
+    last_state_change_at: Rfc3339Datetime
 
 
 # ---------------------------------------------------------------------------
@@ -1888,7 +2097,7 @@ class TransparencyLogEntry(_RelayEnvelope):
     evidence_bundle_id: UUID
     bundle_digest: str
     signer_key_id: str
-    appended_at: datetime
+    appended_at: Rfc3339Datetime
     tree_root_after: str
     inclusion_proof_ref: str | None = None
 
@@ -1942,7 +2151,7 @@ class HumanOversightEvent(_RelayEnvelope):
     decision: str | None = None
     rationale: str | None = None
     evidence_refs: list[Any] = Field(default_factory=list)
-    occurred_at: datetime
+    occurred_at: Rfc3339Datetime
 
 
 class DataQualityCheck(_RelayEnvelope):
@@ -1977,7 +2186,7 @@ class DataQualityCheck(_RelayEnvelope):
     threshold_value: float | None = None
     evaluator: str
     evidence_refs: list[Any] = Field(default_factory=list)
-    performed_at: datetime
+    performed_at: Rfc3339Datetime
 
 
 class DataProvenanceRecord(_RelayEnvelope):
@@ -2004,7 +2213,7 @@ class DataProvenanceRecord(_RelayEnvelope):
         "user_generated",
     ]
     license_ref: str | None = None
-    acquired_at: datetime | None = None
+    acquired_at: Rfc3339Datetime | None = None
     acquired_by_user_id: UUID | None = None
     notes: str | None = None
     evidence_refs: list[Any] = Field(default_factory=list)

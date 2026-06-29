@@ -16,8 +16,8 @@ nothing that could leak non-determinism. Registration is via
 :func:`relay_contracts.register_udf` with ``pure=True``.
 
 Cross-runtime contract: every UDF MUST produce byte-identical
-JCS-canonical output bytes for the same input across cel-python
-(this module) and cel-js (`packages/contracts-typescript/src/udfs/`).
+JCS-canonical output bytes for the same input across Python
+(this module) and TypeScript (`packages/contracts-typescript/src/udfs/`).
 The shared parity corpus lives at
 ``relay/tests/conformance/cel/relay_udfs_parity.json``.
 

@@ -38,7 +38,11 @@ import aiosqlite
 import httpx
 import pytest
 from relay_sidecar.health import HealthState, _bearer_digest_of
-from relay_sidecar.runtime import build_runtime_app, request_force_stop
+from relay_sidecar.runtime import (
+    build_runtime_app,
+    request_force_stop,
+    run_uvicorn,
+)
 
 
 def _make_health() -> HealthState:
@@ -252,3 +256,44 @@ async def test_force_stop_during_state_transition_no_orphan_row(
         assert state_value == "pending", (
             f"scope_state.state should be the canonical initial value; got {state_value!r}"
         )
+
+
+@pytest.mark.plumbing
+def test_run_uvicorn_wires_server_handle_into_app_state(tmp_path, monkeypatch) -> None:
+    """run_uvicorn MUST assign app.state.uvicorn_server = server BEFORE serving.
+
+    The SIGUSR1 force-stop and idle-shutdown paths read
+    ``getattr(app.state, "uvicorn_server", None)`` to set ``.should_exit`` /
+    ``.force_exit`` on the running server. Pre-fix run_uvicorn built the Server
+    but never wired it onto app.state, so those paths got ``None`` and could
+    never terminate the production daemon (re-hunt #4).
+
+    Hermetic: the captured ``Server.run()`` is a no-op, so no port is bound and
+    no event loop / lifespan runs -- the test asserts only the wiring.
+    """
+    import uvicorn
+
+    captured: dict[str, object] = {}
+    real_server_cls = uvicorn.Server
+
+    class _CapturingServer(real_server_cls):  # type: ignore[misc, valid-type]
+        def run(self, *args: object, **kwargs: object) -> None:
+            # Capture the constructed server WITHOUT serving.
+            captured["server"] = self
+
+    monkeypatch.setattr(uvicorn, "Server", _CapturingServer)
+
+    run_uvicorn(
+        health=_make_health(),
+        host="127.0.0.1",
+        port=0,
+        relay_home_override=tmp_path,
+    )
+
+    server = captured.get("server")
+    assert server is not None, "run_uvicorn never constructed a uvicorn.Server"
+    app = server.config.app
+    assert getattr(app.state, "uvicorn_server", None) is server, (
+        "run_uvicorn did not wire app.state.uvicorn_server -> the force-stop / "
+        "idle-shutdown paths would read None and never terminate the daemon"
+    )

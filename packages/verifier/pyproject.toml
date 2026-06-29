@@ -46,10 +46,13 @@ authors = [
   { name = "Epochly, Inc.", email = "engineering@epochly.com" },
 ]
 dependencies = [
-  # Generated RelayErrorCode constants and canonical schema id strings
-  # live here. Workspace dependency; uv resolves from the workspace
-  # tree, never from a published index (CLAUDE.md import-boundary rule).
-  "epochly-relay-schemas",
+  # The offline verifier has NO first-party runtime dependency: it vendors
+  # its own RelayErrorCode constants (e.g. bundle_paths.RELAY_EVID_024,
+  # tsa.RELAY_EVID_031 / RELAY_EVID_038) and the one schema-id string it
+  # writes (local_signer -> relay.evidence_bundle.v1) so an air-gapped
+  # auditor install stands alone on third-party crypto libs only (README
+  # "strict offline-first semantics"; spec AO.4; keystone invariant #11).
+  # relay_schemas is a TEST-only extra (see [project.optional-dependencies]).
   # Ed25519 + ECDSA-P256 JWS verification (RFC 7518 + RFC 8037). Pinned
   # major-version range; the CLI's evidence verifier
   # (packages/cli/src/relay_cli/evidence_verifier.py) uses the same
@@ -63,6 +66,14 @@ dependencies = [
 test = [
   "pytest>=8.0",
   "pytest-timeout>=2.3",
+  "hypothesis>=6.100",  # property suites (test_merkle_property.py)
+  # TEST-ONLY: the VAL-V3M1-016 deprecation guard
+  # (test_v3m1_no_deprecation_on_subject_access.py) imports
+  # relay_schemas.envelopes (the process-level flat-subject deprecation
+  # tracker) to assert production callers never trip it. Production code
+  # never imports relay_schemas (the offline verifier vendors its own
+  # constants), so it is a test dependency, not a runtime one.
+  "epochly-relay-schemas",
 ]
 
 [tool.hatch.build.targets.wheel]

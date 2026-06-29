@@ -22,7 +22,9 @@ import {
   DEFAULT_APPLIES_TO_FIELDS,
   hmacSha256Hex,
   loadRedactionPolicy,
+  MAX_REDACTION_LEAF_LENGTH,
   redactCapturePayload,
+  REDACTION_TRUNCATION_MARKER,
   RedactionEngine,
   type SaltProvider,
 } from "../src/redaction.js";
@@ -560,6 +562,56 @@ describe("VAL-REDACT-006: policy regex ReDoS guard (load-time rejection + leaf c
     expect(a).toBe(b);
   });
 
+  // F8 (keystone #16): the leaf clamp counts CODE POINTS, not UTF-16 code units.
+  // A supplementary-plane char (e.g. U+1F600) is 2 UTF-16 code units but 1 code
+  // point. The Python SDK clamps by code points (len()/[:N]); pre-fix the TS SDK
+  // clamped by `value.length` (UTF-16 units) and sliced by UTF-16, so an SMP-heavy
+  // leaf within the code-point cap but OVER the code-unit cap was clamped (+
+  // truncation marker) on TS while Python left it untouched -- a Py<->TS redacted-
+  // byte divergence, and a UTF-16 slice could split a surrogate pair.
+  it("F8: clamps by CODE POINTS -- an SMP leaf within the code-point cap is NOT clamped", () => {
+    const policy = loadRedactionPolicy(redosPolicy("zzz"));
+    const engine = new RedactionEngine({ policy, saltProvider });
+    // cap/2 + 1 emoji: code points = cap/2+1 (<= cap, so NO clamp, matching
+    // Python) but UTF-16 length = cap+2 (> cap, which pre-fix WOULD have clamped).
+    const n = MAX_REDACTION_LEAF_LENGTH / 2 + 1;
+    const leaf = "\u{1F600}".repeat(n);
+    expect(leaf.length).toBeGreaterThan(MAX_REDACTION_LEAF_LENGTH); // UTF-16 units
+    expect(Array.from(leaf).length).toBeLessThanOrEqual(MAX_REDACTION_LEAF_LENGTH); // code points
+    const out = (
+      engine.redact({ model_call: { input: leaf } }) as {
+        model_call: { input: string };
+      }
+    ).model_call.input;
+    // NOT clamped: no truncation marker, and the output preserves every code
+    // point (no surrogate-pair split). The "zzz" matcher finds nothing, so the
+    // benign emoji leaf passes through verbatim.
+    expect(out).not.toContain(REDACTION_TRUNCATION_MARKER);
+    expect(Array.from(out).length).toBe(n);
+    expect(out).toBe(leaf);
+  });
+
+  // F8 companion: BEYOND the code-point cap, the clamp fires at exactly `cap`
+  // CODE POINTS (not code units) and never emits a lone surrogate.
+  it("F8: an SMP leaf OVER the code-point cap clamps at the code-point boundary", () => {
+    const policy = loadRedactionPolicy(redosPolicy("zzz"));
+    const engine = new RedactionEngine({ policy, saltProvider });
+    const leaf = "\u{1F600}".repeat(MAX_REDACTION_LEAF_LENGTH + 5);
+    const out = (
+      engine.redact({ model_call: { input: leaf } }) as {
+        model_call: { input: string };
+      }
+    ).model_call.input;
+    expect(out).toContain(REDACTION_TRUNCATION_MARKER);
+    const body = out.slice(0, out.length - REDACTION_TRUNCATION_MARKER.length);
+    // Clamped to exactly `cap` code points (each emoji intact -> 2*cap UTF-16
+    // units), proving a code-point boundary and no split surrogate.
+    expect(Array.from(body).length).toBe(MAX_REDACTION_LEAF_LENGTH);
+    expect(body.length).toBe(MAX_REDACTION_LEAF_LENGTH * 2);
+    // No lone surrogate at the cut edge (a split pair would leave one).
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(body)).toBe(false);
+  });
+
   // Gate-2 (HIGH / correctness): the ReDoS guard mis-read regex GROUP-PREFIX
   // tokens (the `?` / flags / `:` / `=` / `!` / `<` that follow `(` in a
   // non-capturing group, inline-flag group, or lookaround) as a QUANTIFIER in
@@ -618,6 +670,105 @@ describe("VAL-REDACT-006: policy regex ReDoS guard (load-time rejection + leaf c
       const out = redacted.model_call.input;
       expect(out).toContain("<redacted>");
       expect(out).not.toContain("ABCDEFGHIJKLMNOPQRSTUV");
+    });
+
+    // REDACT cluster Bug B (P2 / security): the guard caught a quantifier over a
+    // group whose BODY contained a quantifier ((a+)+) but MISSED a top-level
+    // alternation of OVERLAPPING branches under an UNBOUNDED quantifier
+    // ((a|a)*, (a|a)+, (a|a){2,}). No inner quantifier, so the original
+    // heuristic accepted them, yet (a|a)*b backtracks super-linearly (each `a`
+    // can be consumed by EITHER branch -> 2^n partitions). The 1 MiB clamp does
+    // NOT bound that. The fix rejects an OVERLAPPING alternation (branches share
+    // a possible first character) under an unbounded quantifier, while still
+    // ACCEPTING a DISJOINT alternation ((?:sk-|key_)+, first chars s vs k).
+    // Python<->TS must reject / accept the IDENTICAL set; the live-Node parity
+    // surface is in packages/sdk-python/tests/test_redaction_parity.py.
+    describe("Bug B: overlapping alternation under an unbounded quantifier", () => {
+      for (const pattern of [
+        "(a|a)*b",
+        "(a|a)+b",
+        "(a|a){2,}b",
+        "(?:a|a)*x",
+        "(\\w|a)+b",
+        "(.|a)+b",
+        "(ab|a)*c",
+      ]) {
+        it(`rejects overlapping alternation ${JSON.stringify(pattern)} with RELAY-SDK-017`, () => {
+          let caught: unknown;
+          try {
+            loadRedactionPolicy(redosPolicy(pattern));
+          } catch (err) {
+            caught = err;
+          }
+          expect(caught).toBeInstanceOf(RelayRedactionPolicyError);
+          const e = caught as RelayRedactionPolicyError;
+          expect(e.code).toBe(REDOS_CODE);
+          expect((e.details as { reason?: string }).reason).toBe(REDOS_REASON);
+        });
+      }
+
+      // A DISJOINT alternation under an unbounded quantifier is LINEAR and MUST
+      // load (no two branches share a possible first character). Rejecting it
+      // would disable redaction for the legitimate credential matcher.
+      for (const pattern of ["(?:sk-|key_)+[A-Za-z0-9]{20,}", "(?:abc|def)+x"]) {
+        it(`accepts disjoint alternation ${JSON.stringify(pattern)} at LOAD time`, () => {
+          expect(() => loadRedactionPolicy(redosPolicy(pattern))).not.toThrow();
+        });
+      }
+
+      // An overlapping alternation under a BOUNDED quantifier (? or {n,m}) or
+      // with NO quantifier is not catastrophic and MUST load.
+      for (const pattern of ["(a|a)?b", "(a|a){2,4}b", "(a|a)b"]) {
+        it(`accepts bounded/unquantified alternation ${JSON.stringify(pattern)} at LOAD time`, () => {
+          expect(() => loadRedactionPolicy(redosPolicy(pattern))).not.toThrow();
+        });
+      }
+    });
+
+    // Nested-wrapper bypass (roborev 7feb671 HIGH): the overlap is hidden one
+    // level down -- the OUTER group has no top-level `|` and the INNER overlap
+    // group is not itself quantified -- yet ((a|a))* is just as exponential as
+    // (a|a)*. The overlap signal is propagated up the group stack and trips when
+    // any ENCLOSING group is unbounded-quantified. Mirrors the Python guard.
+    describe("Bug B nested-wrapper: wrapped overlapping alternation under an outer unbounded quantifier", () => {
+      for (const pattern of [
+        "((a|a))*b",
+        "(?:(?:a|a))*b",
+        "((a|a))+y",
+        "((a|a)){2,}z",
+        "(((a|a)))+x",
+        "((\\w|a))*b",
+        "((a|a)?)*w",
+        "(?:(a|a))+q",
+      ]) {
+        it(`rejects wrapped overlapping alternation ${JSON.stringify(pattern)} with RELAY-SDK-017`, () => {
+          let caught: unknown;
+          try {
+            loadRedactionPolicy(redosPolicy(pattern));
+          } catch (err) {
+            caught = err;
+          }
+          expect(caught).toBeInstanceOf(RelayRedactionPolicyError);
+          const e = caught as RelayRedactionPolicyError;
+          expect(e.code).toBe(REDOS_CODE);
+          expect((e.details as { reason?: string }).reason).toBe(REDOS_REASON);
+        });
+      }
+
+      // The propagation must NOT over-reject: a wrapped DISJOINT alternation is
+      // linear, and a wrapped overlap under only a BOUNDED outer quantifier (or
+      // none) cannot blow up. All MUST load.
+      for (const pattern of [
+        "((?:sk-|key_))*[A-Za-z0-9]{20,}",
+        "((foo|bar))+y",
+        "((a|a))?b",
+        "((a|a)){2,4}c",
+        "((a|a))b",
+      ]) {
+        it(`accepts wrapped-safe alternation ${JSON.stringify(pattern)} at LOAD time`, () => {
+          expect(() => loadRedactionPolicy(redosPolicy(pattern))).not.toThrow();
+        });
+      }
     });
   });
 });

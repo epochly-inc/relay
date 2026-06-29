@@ -3,7 +3,7 @@
 // Constructed at module-import time via the pure-only `registerUdf`
 // entry point so the purity flag (CLAUDE.md banned pattern #16) is
 // enforced structurally. Workers passing this readonly array to
-// `new RelayCelEvaluator({ udfs: RELAY_UDFS })` get a fully-wired
+// `makeCelEvaluator({ udfs: RELAY_UDFS })` get a fully-wired
 // evaluator with no risk of accidentally registering an impure
 // callable.
 //

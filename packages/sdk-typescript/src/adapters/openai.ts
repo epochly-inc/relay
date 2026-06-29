@@ -192,7 +192,17 @@ function scrubSecretShapeInner(
     if (Array.isArray(value)) {
       return value.map((v) => scrubSecretShapeInner(v, depth + 1, seen));
     }
-    const out: Record<string, unknown> = {};
+    // Null-prototype target so an OWN "__proto__" key round-trips as a real
+    // own enumerable property instead of mutating the prototype (which would
+    // silently DROP the field). A tool can emit args JSON with a "__proto__"
+    // key; after JSON.parse it is an own key, and Python's _scrub keeps it as
+    // a normal dict key. Matching that preserves Py<->TS canonical-wire byte
+    // parity (sdk-ts-01). canonicalStringify / JSON.stringify enumerate own
+    // enumerable keys, so a null-prototype object serialises identically.
+    const out: Record<string, unknown> = Object.create(null) as Record<
+      string,
+      unknown
+    >;
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       if (isSecretKey(k)) {
         out[k] = "[REDACTED]";
@@ -518,7 +528,12 @@ interface StreamAggregateState {
   cumOutputTokens: number;
   chunkCount: number;
   // Accumulator for streamed tool_calls keyed by call index/id.
-  toolCallsByIndex: Map<string | number, { name: string; arguments: string }>;
+  // Keyed by a COMPOSITE `${choiceIndex} ${toolCallIndexOrId}` string:
+  // OpenAI scopes a streamed tool_call's `index` PER CHOICE, so with n>1 two
+  // choices can each emit index 0 -- keying on the tool-call index/id alone
+  // would merge distinct calls into one corrupted span (Py<->TS parity with
+  // openai_adapter.py's (choice_index, idx) key).
+  toolCallsByIndex: Map<string, { name: string; arguments: string }>;
 }
 
 function makeStreamState(parent: Span, recorder: SpanRecorder, startMs: number): StreamAggregateState {
@@ -552,20 +567,24 @@ function ingestChunk(state: StreamAggregateState, chunk: unknown): void {
     for (const choice of choices) {
       const fr = getProp(choice, "finish_reason");
       if (typeof fr === "string" && fr !== "") state.finishReason = fr;
+      // The tool_call `index` is scoped to THIS choice; fold the choice index
+      // into the aggregation key so per-choice index-0 calls stay distinct.
+      const choiceIndex = asInt(getProp(choice, "index"), 0);
       const delta = getProp(choice, "delta");
       const tcDeltas = getProp(delta, "tool_calls");
       if (Array.isArray(tcDeltas)) {
         for (const td of tcDeltas) {
-          // VAL-W4-039: aggregate per-call by index/id, do NOT emit per-chunk.
+          // VAL-W4-039: aggregate per-call by (choice, index/id), do NOT emit per-chunk.
           const idx = (getProp(td, "index") as string | number | undefined) ?? asString(getProp(td, "id"), "");
           if (idx === "" || idx === undefined) continue;
+          const key = `${choiceIndex} ${idx}`;
           const fn = getProp(td, "function");
           const nameDelta = asString(getProp(fn, "name"), "");
           const argsDelta = asString(getProp(fn, "arguments"), "");
-          const existing = state.toolCallsByIndex.get(idx) ?? { name: "", arguments: "" };
+          const existing = state.toolCallsByIndex.get(key) ?? { name: "", arguments: "" };
           if (nameDelta !== "") existing.name += nameDelta;
           if (argsDelta !== "") existing.arguments += argsDelta;
-          state.toolCallsByIndex.set(idx, existing);
+          state.toolCallsByIndex.set(key, existing);
         }
       }
     }

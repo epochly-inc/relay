@@ -127,7 +127,7 @@ class _LifecycleHTTPClient:
       * ``POST /v1/ingest/runs``           (lifecycle metadata; VAL-W3-009)
       * ``POST /v1/gates/{gate_id}/drafts`` (gate draft; VAL-W3-013)
       * ``GET  /v1/runs/{run_id}/result``   (canonical RunResult; VAL-W3-014)
-      * ``POST /v1/evidence``              (evidence submit; VAL-W3-015)
+      * ``POST /v1/evidence-bundles``      (evidence submit; VAL-W3-015)
     """
 
     def __init__(
@@ -338,8 +338,12 @@ class _LifecycleHTTPClient:
         return self._decode_body(resp)
 
     def post_evidence(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        # Contract route is POST /v1/evidence-bundles (sidecar
+        # runtime.py:4815, openapi.yaml:873). The TS SDK targets the same
+        # path (run.ts:410). The earlier /v1/evidence path was unrouted on
+        # the real sidecar and 404'd (finding #9).
         resp = self._http.post(
-            f"{self._base_url}/v1/evidence",
+            f"{self._base_url}/v1/evidence-bundles",
             content=json.dumps(envelope).encode("utf-8"),
             headers=self._auth_headers(),
         )
@@ -475,6 +479,7 @@ class Run:
         self,
         *,
         run_id: str,
+        case_id: str | None = None,
         egress_allowlist: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a replay case bound to the canonical RunResult.
@@ -485,6 +490,26 @@ class Run:
         :class:`RelayReplayPrecondition`. The SDK does NOT derive a
         replay case from raw SDK lifecycle.
 
+        The sidecar's run endpoint
+        ``POST /v1/replay-cases/{case_id}/run`` (runtime.py:2798/2830,
+        openapi.yaml:552) returns 404 unless ``case_id`` is already a
+        known replay case. So when no ``case_id`` is supplied the SDK
+        performs the real two-step sidecar contract:
+
+          1. ``POST /v1/replay-cases`` (runtime.py:2618, openapi.yaml:462)
+             to CREATE the case from the source run. The sidecar's create
+             handler requires ``from_run_id`` (runtime.py:2645) and
+             returns ``replay_case_id`` / ``case_id`` on 201.
+          2. ``POST /v1/replay-cases/{returned_case_id}/run`` to EXECUTE
+             the case the sidecar just created.
+
+        Generating a client-side ULID and POSTing straight to the run
+        endpoint (the previous behaviour) 404s end-to-end because that id
+        was never created. When an explicit ``case_id`` IS supplied the
+        SDK runs THAT case directly and does NOT create a new one. The
+        earlier ``/v1/runs/{run_id}/replays`` path was unrouted on the
+        real sidecar (finding #10).
+
         Audit-r3 BUG-B3: when ``egress_allowlist`` is supplied, every
         entry is validated against the SSRF guard at the SDK boundary
         BEFORE the request is sent. A rejected entry raises
@@ -494,15 +519,38 @@ class Run:
         # Pre-flight: confirm the canonical RunResult exists.
         client.get_run_result(run_id)
         # Build the envelope through the SDK-side validator so the SSRF
-        # guard runs on the allowlist before the HTTP POST is issued.
+        # guard runs on the allowlist before any HTTP POST is issued.
+        # This also enforces the three-anchor handoff up front.
         envelope = lifecycle.build_replay_case_envelope(
             run_id=run_id,
             manifest_commit_hash=self.manifest_commit_hash,
             actor_identity_hash=self.actor_identity_hash,
             egress_allowlist=egress_allowlist,
         )
+        if case_id:
+            # Explicit case_id: run that case directly. The caller owns
+            # the case lifecycle; the SDK does NOT create a new one.
+            case_ref = case_id
+        else:
+            # No case_id: CREATE the case against the sidecar contract,
+            # then run the id the sidecar returned. The create handler
+            # requires ``from_run_id`` (runtime.py:2645).
+            create_body = {**envelope, "from_run_id": run_id}
+            create_resp = client._http.post(  # noqa: SLF001 - internal pass-through
+                f"{client.base_url}/v1/replay-cases",
+                content=json.dumps(create_body).encode("utf-8"),
+                headers=client._auth_headers(),  # noqa: SLF001
+            )
+            client._raise_for_error_envelope(create_resp)  # noqa: SLF001
+            created = client._decode_body(create_resp)  # noqa: SLF001
+            case_ref = created.get("replay_case_id") or created.get("case_id")
+            if not case_ref:
+                raise RelayError(
+                    "sidecar replay-case create response omitted case id",
+                    details={"response": created},
+                )
         resp = client._http.post(  # noqa: SLF001 - internal pass-through
-            f"{client.base_url}/v1/runs/{run_id}/replays",
+            f"{client.base_url}/v1/replay-cases/{case_ref}/run",
             content=json.dumps(envelope).encode("utf-8"),
             headers=client._auth_headers(),  # noqa: SLF001
         )

@@ -22,12 +22,10 @@ import { RelayUdfPurityError } from "./errors.js";
 
 export interface RegisterUdfOptions {
   /**
-   * Name the CEL expression invokes (e.g., `relay_coverage`). Note
-   * cel-js parses dotted identifiers like `relay.coverage(...)` as a
-   * member-access expression, not a function call -- the W6.3 work
-   * lands the dotted-form support; this registry holds the names by
-   * exact string. Cross-language parity for w6.3 will pin the canonical
-   * form.
+   * Name the CEL expression invokes (e.g., `relay.coverage`). The wasm CEL
+   * engine hosts the 3 native relay.* UDFs by their dotted names; this
+   * registry holds the names by exact string. Cross-language parity is pinned
+   * by the Relay-CEL conformance corpus.
    */
   name: string;
   /** Pure callable. */
@@ -54,7 +52,7 @@ export interface PureUdf {
 }
 
 /**
- * Register a UDF for the Relay cel-js evaluator.
+ * Register a UDF for the Relay CEL evaluator.
  *
  * `pure` MUST be the literal boolean `true`. Passing `pure: false`
  * raises `RelayUdfPurityError` immediately -- the UDF is never

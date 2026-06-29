@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import Iterator
 from typing import Any
 
+from ..redaction import _canonical_json_stringify
 from ._spans import Span, SpanRecorder
 
 # Sentinel: when system_fingerprint is None, we still emit a deterministic
@@ -106,6 +108,24 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def _as_int(value: Any, fallback: int = 0) -> int:
+    """Coerce a value to int, mirroring the TS adapter's ``asInt``.
+
+    Only finite ``int``/``float`` values are accepted (floats are truncated
+    toward zero); everything else (``None``, strings, bools-treated-as-int are
+    excluded by the explicit type test) yields ``fallback``. Keeping the
+    semantics byte-identical to TS ``asInt`` is required for Py<->TS token-count
+    parity in the streaming usage aggregation.
+    """
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return math.trunc(value)
+    return fallback
+
+
 def _redact_tool_arguments(raw: str) -> tuple[Any, str]:
     """Redact a tool-call argument blob and compute its args_hash.
 
@@ -125,7 +145,15 @@ def _redact_tool_arguments(raw: str) -> tuple[Any, str]:
     except (ValueError, TypeError):
         parsed = raw
     redacted = _scrub(parsed)
-    canon = json.dumps(redacted, sort_keys=True, default=str).encode("utf-8")
+    # Serialise through the shared JCS canonicalizer (RFC 8785) so the bytes
+    # are byte-identical to the TypeScript adapter's ``canonicalStringify``
+    # (compact separators, ensure_ascii=False). The prior
+    # ``json.dumps(..., sort_keys=True, default=str)`` used default separators
+    # (", " / ": ") and ensure_ascii=True (backslash-u escapes), producing a
+    # DIFFERENT args_hash than TS for the same logical payload and silently
+    # coercing unsupported types via default=str (sdk-python-run-005). JCS
+    # keeps Py/TS args_hash in lockstep and fails closed on unsupported types.
+    canon = _canonical_json_stringify(redacted).encode("utf-8")
     return redacted, hashlib.sha256(canon).hexdigest()
 
 
@@ -519,9 +547,79 @@ class _StreamWrapper:
         self._last_model = parent.attributes.get("model", "")
         self._last_fingerprint: str | None = None
         self._aggregated_finish: str | None = None
+        self._chunk_count = 0
+        # Token usage is delivered on the terminal usage-only chunk when the
+        # caller sets ``stream_options={"include_usage": True}`` (that chunk
+        # carries empty ``choices`` and a populated ``usage``). Mirrors the
+        # TypeScript adapter (ingestChunk), which ACCUMULATES
+        # usage.prompt_tokens / usage.completion_tokens across every
+        # usage-bearing chunk and writes the token / cost attributes on
+        # finalize. The cumulative counters start at zero and only advance when
+        # a chunk carries usage -- we never fabricate counts we did not see.
+        self._cum_input = 0
+        self._cum_output = 0
+        self._saw_usage = False
+        # Streamed tool calls arrive as choices[].delta.tool_calls[] fragments:
+        # the first fragment for an index carries id/name, later fragments
+        # append argument-string pieces. Aggregate per call (mirroring the TS
+        # toolCallsByIndex Map) and emit ONE tool_call span per call on
+        # finalize, never one per chunk (VAL-W4-039).
+        #
+        # The aggregation key is the COMPOSITE (choice.index, tool_call index
+        # or id). OpenAI scopes the tool_call ``index`` PER CHOICE, so with
+        # ``n>1`` two distinct choices can each emit tool-call index 0; keying
+        # on the tool-call index alone would merge those two unrelated calls
+        # into one corrupted span. Including the parent choice index keeps
+        # per-choice index-0 calls distinct.
+        self._tool_calls_by_index: dict[Any, dict[str, str]] = {}
 
     def __iter__(self) -> _StreamWrapper:
         return self
+
+    def _accumulate_tool_call_deltas(self, choice_index: Any, delta: Any) -> None:
+        """Stitch this chunk's ``delta.tool_calls`` fragments into the per-call
+        accumulator, mirroring the TS ingestChunk delta.tool_calls loop.
+
+        Each tool-call fragment is keyed by the COMPOSITE
+        ``(choice_index, index_or_id)``. The tool-call ``index`` (an int that
+        stays stable across the fragments of one call) is scoped PER CHOICE,
+        so two choices (``n>1``) can each emit index 0 for unrelated calls;
+        folding the parent ``choice.index`` into the key keeps them distinct.
+        When the tool-call ``index`` is absent we fall back to the call ``id``
+        string (matching the TS ``getProp(td,"index") ?? asString(getProp(td,
+        "id"),"")``). A fragment with neither a usable index nor id is skipped.
+        ``name`` is set on the first fragment that carries it; ``arguments``
+        fragments are appended.
+        """
+        if delta is None:
+            return
+        tool_call_deltas = _get(delta, "tool_calls")
+        if not isinstance(tool_call_deltas, list):
+            return
+        for td in tool_call_deltas:
+            idx = _get(td, "index")
+            if idx is None:
+                idx = _get(td, "id")
+                if not isinstance(idx, str):
+                    idx = ""
+            # Skip fragments we cannot key (TS: idx === "" || idx === undefined).
+            if idx is None or idx == "":
+                continue
+            # Composite key: per-choice tool-call indices are NOT globally
+            # unique, so qualify the tool-call index/id with its parent choice
+            # index. Single-choice (n=1) responses still key uniquely.
+            key = (choice_index, idx)
+            existing = self._tool_calls_by_index.get(key)
+            if existing is None:
+                existing = {"name": "", "arguments": ""}
+                self._tool_calls_by_index[key] = existing
+            fn = _get(td, "function")
+            name_delta = _get(fn, "name")
+            if isinstance(name_delta, str) and name_delta:
+                existing["name"] += name_delta
+            args_delta = _get(fn, "arguments")
+            if isinstance(args_delta, str) and args_delta:
+                existing["arguments"] += args_delta
 
     def __next__(self) -> Any:
         try:
@@ -534,8 +632,53 @@ class _StreamWrapper:
             )
             self._parent.attributes["duration_ms"] = duration_ms
             self._parent.attributes["finish_reason"] = self._aggregated_finish
+            # chunk_count mirrors the TS finalizeStream
+            # (state.parent.attributes['chunk_count'] = state.chunkCount) and
+            # the sibling Anthropic adapter -- the model_call parent records how
+            # many stream chunks aggregated into it.
+            self._parent.attributes["chunk_count"] = self._chunk_count
+            # Write token usage + cost from the accumulated usage, mirroring the
+            # TS finalizeStream. Absent any usage chunk (include_usage not set),
+            # the seed zeros are left untouched -- we never fabricate counts we
+            # did not receive. total_tokens is FORCED to input + output (the
+            # sum), NOT the provider-reported usage.total_tokens, so the Python
+            # stream path is byte-identical to the TS adapter (which computes
+            # state.cumInputTokens + state.cumOutputTokens and ignores the
+            # provider total) -- Py<->TS parity keystone.
+            if self._saw_usage:
+                self._parent.attributes["input_tokens"] = self._cum_input
+                self._parent.attributes["output_tokens"] = self._cum_output
+                self._parent.attributes["total_tokens"] = (
+                    self._cum_input + self._cum_output
+                )
+                self._parent.attributes["total_cost_usd"] = _estimate_cost_usd(
+                    self._last_model, self._cum_input, self._cum_output
+                )
+            # Emit ONE tool_call span per aggregated streamed tool call
+            # (VAL-W4-039), mirroring the TS finalizeStream. The args string was
+            # streamed in fragments; redact + hash the concatenation through the
+            # SAME helper the non-stream path uses (_redact_tool_arguments) so
+            # the args_hash stays byte-identical across stream / non-stream and
+            # Py / TS.
+            for agg in self._tool_calls_by_index.values():
+                args_red, args_hash = _redact_tool_arguments(agg.get("arguments", ""))
+                self._recorder.new_span(
+                    "tool_call",
+                    tool_name=str(agg.get("name", "")),
+                    parent_span_id=self._parent.span_id,
+                    args_redacted=args_red,
+                    args_hash=args_hash,
+                    result_hash="",
+                    status="pending",
+                    duration_ms=0.0,
+                    retry_count=0,
+                    side_effect_marker=False,
+                    normalized_error_class=None,
+                )
             raise
 
+        # One more chunk aggregated into this model_call (TS state.chunkCount).
+        self._chunk_count += 1
         # Capture chunk metadata for the model_call parent + emit chunk span.
         model = _get(chunk, "model")
         if isinstance(model, str) and model:
@@ -549,6 +692,28 @@ class _StreamWrapper:
             fr = _get(choices[0], "finish_reason")
             if isinstance(fr, str) and fr:
                 self._aggregated_finish = fr
+        # Aggregate streamed tool_call fragments per (choice index, call index)
+        # across every choice (mirrors the TS ingestChunk delta.tool_calls
+        # loop). The first fragment for a call carries the id/name; later
+        # fragments append argument-string pieces. The parent choice index is
+        # folded into the aggregation key because OpenAI scopes the tool-call
+        # index PER CHOICE -- with n>1 two choices can both emit index 0 for
+        # unrelated calls. We emit nothing here -- finalize emits one span per
+        # aggregated call.
+        for choice in choices:
+            choice_index = _get(choice, "index")
+            delta = _get(choice, "delta")
+            self._accumulate_tool_call_deltas(choice_index, delta)
+        # Accumulate token usage across every usage-bearing chunk, mirroring the
+        # TS ingestChunk (cumInputTokens += prompt_tokens; cumOutputTokens +=
+        # completion_tokens). OpenAI under stream_options.include_usage delivers
+        # usage on the terminal usage-only chunk, but summing is robust to a
+        # provider that splits usage across chunks and matches TS exactly.
+        usage = _get(chunk, "usage")
+        if usage is not None:
+            self._saw_usage = True
+            self._cum_input += _as_int(_get(usage, "prompt_tokens"))
+            self._cum_output += _as_int(_get(usage, "completion_tokens"))
 
         self._recorder.new_span(
             "stream_chunk",

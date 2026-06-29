@@ -107,3 +107,49 @@ def test_constraint_name_appears_in_error(tmp_path: Path) -> None:
         assert "event_log_entries_payload_raw_check" in str(e), str(e)
     else:
         pytest.fail("expected IntegrityError but the insert succeeded")
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-036")
+def test_raw_capture_gate_does_not_recurse_on_deeply_nested_body() -> None:
+    """Round-7 re-hunt: the raw_capture default-deny gate runs BEFORE the
+    nesting-depth cap, so a deeply-nested ingest body must NOT raise
+    RecursionError (an unhandled-500 DoS). _iter_string_leaves is iterative.
+    """
+    import json
+
+    from relay_sidecar.validation.raw_capture import (
+        _iter_string_leaves,
+        evaluate_raw_capture_on_request,
+    )
+
+    # 6000-deep nested list (~12 KB) exceeds CPython's 1000-frame recursion
+    # limit; a recursive walk would raise RecursionError.
+    nested = json.loads("[" * 6000 + '"deep-secret"' + "]" * 6000)
+
+    # Leaf walk must complete without recursion error.
+    leaves = list(_iter_string_leaves(nested))
+    assert leaves[-1][1] == "deep-secret"
+
+    # End-to-end default-deny gate (no applied policy -> raw_capture False)
+    # must REJECT the raw-eligible field, not crash.
+    rejection = evaluate_raw_capture_on_request(
+        body={"model_call": {"input": nested}}
+    )
+    assert rejection is not None
+    assert rejection.code == "RELAY-INGEST-RAWCAPTURE-DENIED"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W2-036")
+def test_iter_string_leaves_preserves_depth_first_left_to_right_order() -> None:
+    """The iterative walk yields leaves in the SAME order as the prior
+    recursive version (the path the rejection envelope reports)."""
+    from relay_sidecar.validation.raw_capture import _iter_string_leaves
+
+    value = {"a": [{"b": "x"}, "y"], "c": "z"}
+    assert list(_iter_string_leaves(value)) == [
+        (("a", "0", "b"), "x"),
+        (("a", "1"), "y"),
+        (("c",), "z"),
+    ]

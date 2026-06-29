@@ -3,8 +3,8 @@
 Used by the Relay CEL evaluator to canonicalise structured evaluation
 results before hashing or cross-runtime comparison (VAL-W6-005). Output
 bytes MUST be byte-equal to those produced by the cyberphone/json-
-canonicalization Java reference and to the cel-js mirror that ships in
-W6.2.
+canonicalization Java reference and to the TypeScript JCS serializer
+(canonical.ts, the cross-host byte-parity mirror).
 
 Why not the stdlib JSON sorter (key-sorted ``json.dumps`` with compact
 separators)? Because key ordering alone is insufficient. RFC 8785 also pins:
@@ -35,8 +35,8 @@ from .errors import RelayCelNumericOutOfBoundsError
 # Python str sorts by codepoint; JS strings sort by UTF-16 code unit.
 # For Basic Multilingual Plane keys (< U+10000) these match. For
 # supplementary-plane keys (>= U+10000) the orderings diverge, which
-# silently produces DIFFERENT JCS bytes between cel-python and cel-js
-# for the same input -- breaking cross-runtime signature verification
+# silently produces DIFFERENT JCS bytes between the Python and TS
+# encoders for the same input -- breaking cross-runtime signature verification
 # (CLAUDE.md keystone invariant #11: trust anchor / cross-runtime byte
 # equality). Until both encoders implement the full UTF-16-code-unit
 # sort, we fail-closed on supplementary-plane KEYS. Values may still

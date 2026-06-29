@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   Actor,
+  canonicalBytes,
   ErrorEnvelope,
   EventLogEntry,
   EvidenceBundle,
@@ -32,8 +33,10 @@ import {
   ReplayCase,
   ReplayFixture,
   RunResult,
+  ScopeStateEvalRun,
   ScopeStateEvidenceBundle,
   ScopeStateGateRound,
+  ScopeStateRelease,
   ScopeStateReplayCase,
   ScopeStateRun,
   isActor,
@@ -779,6 +782,28 @@ function baseScopeStateEvidenceBundle(
   };
 }
 
+function baseScopeStateEvalRun(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...baseScopeStateRun(),
+    scope_kind: "eval_run",
+    state: "pending",
+    ...overrides,
+  };
+}
+
+function baseScopeStateRelease(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...baseScopeStateRun(),
+    scope_kind: "release",
+    state: "open",
+    ...overrides,
+  };
+}
+
 function baseIdempotencyRecord(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
@@ -969,6 +994,66 @@ describe("VAL-W1-011 scope_state discriminated union on scope_kind", () => {
       baseScopeStateEvidenceBundle(),
     ) as ScopeStateEvidenceBundle;
     expect(e.scope_kind).toBe("evidence_bundle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-V2M01-036: scope_state union spans all SIX scope_kinds. Python accepts
+// scope_kind=eval_run and scope_kind=release (envelopes.py EvalRunScopeState /
+// ReleaseScopeState, union spanning spec W lines 5072-5085); the hand-authored
+// TS guard must accept the same documents. Py<->TS verdict parity.
+// ---------------------------------------------------------------------------
+
+describe("VAL-V2M01-036 scope_state union covers eval_run and release", () => {
+  it.each([
+    "pending",
+    "running",
+    "scored",
+    "terminal",
+  ] as const)("scope_kind=eval_run accepts state=%s", (state) => {
+    expect(isScopeState(baseScopeStateEvalRun({ state }))).toBe(true);
+  });
+
+  it.each([
+    "open",
+    "gated",
+    "released",
+    "rolled_back",
+    "terminal",
+  ] as const)("scope_kind=release accepts state=%s", (state) => {
+    expect(isScopeState(baseScopeStateRelease({ state }))).toBe(true);
+  });
+
+  it("rejects scope_kind=eval_run with a release state (cross-tag)", () => {
+    expect(isScopeState(baseScopeStateEvalRun({ state: "open" }))).toBe(false);
+  });
+
+  it("rejects scope_kind=release with an eval_run state (cross-tag)", () => {
+    expect(isScopeState(baseScopeStateRelease({ state: "running" }))).toBe(
+      false,
+    );
+  });
+
+  it("rejects scope_kind=eval_run with a run state (cross-tag)", () => {
+    expect(
+      isScopeState(baseScopeStateEvalRun({ state: "captured" })),
+    ).toBe(false);
+  });
+
+  it("parseScopeState narrows eval_run and release variants", () => {
+    const ev = parseScopeState(
+      baseScopeStateEvalRun(),
+    ) as ScopeStateEvalRun;
+    expect(ev.scope_kind).toBe("eval_run");
+    const evState: ScopeStateEvalRun["state"] = ev.state;
+    expect(evState).toBe("pending");
+
+    const rel = parseScopeState(
+      baseScopeStateRelease(),
+    ) as ScopeStateRelease;
+    expect(rel.scope_kind).toBe("release");
+    const relState: ScopeStateRelease["state"] = rel.state;
+    expect(relState).toBe("open");
   });
 });
 
@@ -1354,7 +1439,46 @@ function baseEvidenceBundle(
   };
 }
 
+// Canonical nested-subject EvidenceClaim per the V3M1-F05 wire shape
+// (spec K lines 4388-4438). Python EvidenceClaim.model_validate requires the
+// nested subject + actor_kind / actor_identity_hash / occurred_at fields; the
+// TS guard must accept the same document. Py<->TS verdict parity.
 function baseEvidenceClaim(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: "relay.evidence_claim.v1",
+    evidence_claim_id: newUuid(),
+    evidence_bundle_id: newUuid(),
+    claim_type: "run_result",
+    subject: {
+      kind: "run",
+      id: newUuid(),
+      manifest_commit_hash: VALID_MANIFEST_HASH,
+    },
+    evidence_refs: [],
+    claim_predicate: null,
+    claim_digest: VALID_CLAIM_DIGEST,
+    redaction_transform_version: "relay.redaction.v1#transform-001",
+    actor_kind: "control_plane",
+    actor_identity_hash: VALID_ACTOR_HASH,
+    occurred_at: "2026-05-12T00:00:00+00:00",
+    manifest_commit_hash: VALID_MANIFEST_HASH,
+    signer_key_id: "key-claim-001",
+    signature: VALID_SIGNATURE,
+    supersedes_claim_id: null,
+    namespaces: null,
+    created_at: "2026-05-12T00:00:00+00:00",
+    ...overrides,
+  };
+}
+
+// Legacy FLAT-subject EvidenceClaim construction form. Mirrors Python's
+// back-compat shim (envelopes.py _absorb_flat_subject) which absorbs
+// subject_kind / subject_id into a nested subject before extra-field
+// rejection. Carries the V3M1-F05 fields (required by both runtimes) but
+// supplies the subject via the flat keys instead of the nested object.
+function baseEvidenceClaimFlat(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
@@ -1364,12 +1488,18 @@ function baseEvidenceClaim(
     claim_type: "run_result",
     subject_kind: "run",
     subject_id: newUuid(),
+    evidence_refs: [],
+    claim_predicate: null,
     claim_digest: VALID_CLAIM_DIGEST,
     redaction_transform_version: "relay.redaction.v1#transform-001",
+    actor_kind: "control_plane",
+    actor_identity_hash: VALID_ACTOR_HASH,
+    occurred_at: "2026-05-12T00:00:00+00:00",
     manifest_commit_hash: VALID_MANIFEST_HASH,
     signer_key_id: "key-claim-001",
     signature: VALID_SIGNATURE,
     supersedes_claim_id: null,
+    namespaces: null,
     created_at: "2026-05-12T00:00:00+00:00",
     ...overrides,
   };
@@ -1535,6 +1665,41 @@ describe("VAL-W1-020 evidence_claims.claim_type closed enum of eight kinds", () 
   });
 });
 
+// EvidenceRef extra-field rejection (roborev a2adc74): Python EvidenceRef is
+// extra="forbid"; the TS parser must reject unknown keys too, not silently drop
+// them. Exercised through parseEvidenceClaim, which parses each evidence_ref.
+describe("EvidenceRef extra=forbid parity", () => {
+  it("accepts a well-formed evidence_ref", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          evidence_refs: [
+            { kind: "artifact", ref: "artifact:abc", digest: null, value: null },
+          ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects an evidence_ref carrying an unexpected key", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          evidence_refs: [
+            {
+              kind: "artifact",
+              ref: "artifact:abc",
+              digest: null,
+              value: null,
+              unexpected_key: 1,
+            },
+          ],
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // VAL-W1-021: evidence_claims.claim_digest + signature + supersedes_claim_id
 // ---------------------------------------------------------------------------
@@ -1598,6 +1763,186 @@ describe("VAL-W1-021 evidence_claims field constraints", () => {
         baseEvidenceClaim({ supersedes_claim_id: "not-a-uuid" }),
       ),
     ).toThrow(/supersedes_claim_id/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL-V3M1-015: EvidenceClaim canonical NESTED subject shape. Python
+// EvidenceClaim.model_validate (envelopes.py) requires subject:{kind,id,
+// manifest_commit_hash} + the V3M1-F05 fields (evidence_refs, claim_predicate,
+// actor_kind, actor_identity_hash, occurred_at, namespaces) and absorbs a flat
+// subject_kind/subject_id legacy claim via _absorb_flat_subject. The
+// hand-authored TS guard must accept the same documents. Py<->TS verdict
+// parity.
+// ---------------------------------------------------------------------------
+
+describe("VAL-V3M1-015 evidence_claims nested subject + V3M1-F05 fields", () => {
+  it("accepts the canonical nested-subject claim", () => {
+    expect(isEvidenceClaim(baseEvidenceClaim())).toBe(true);
+  });
+
+  it("exposes nested subject.kind / subject.id / subject.manifest_commit_hash", () => {
+    const subjectId = newUuid();
+    const claim = parseEvidenceClaim(
+      baseEvidenceClaim({
+        subject: {
+          kind: "eval_run",
+          id: subjectId,
+          manifest_commit_hash: VALID_MANIFEST_HASH,
+        },
+      }),
+    );
+    expect(claim.subject.kind).toBe("eval_run");
+    expect(claim.subject.id).toBe(subjectId);
+    expect(claim.subject.manifest_commit_hash).toBe(VALID_MANIFEST_HASH);
+  });
+
+  it.each([
+    "run",
+    "replay",
+    "eval_run",
+    "release",
+    "domain_pack",
+    "ai_system",
+  ] as const)("accepts subject.kind=%s", (kind) => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          subject: {
+            kind,
+            id: newUuid(),
+            manifest_commit_hash: VALID_MANIFEST_HASH,
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects an unknown subject.kind", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          subject: {
+            kind: "bogus_kind",
+            id: newUuid(),
+            manifest_commit_hash: VALID_MANIFEST_HASH,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a non-UUID subject.id", () => {
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          subject: {
+            kind: "run",
+            id: "not-a-uuid",
+            manifest_commit_hash: VALID_MANIFEST_HASH,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a missing subject object entirely", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.subject;
+    expect(isEvidenceClaim(payload)).toBe(false);
+  });
+
+  it("requires actor_kind (V3M1-F05) and rejects when absent", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.actor_kind;
+    expect(isEvidenceClaim(payload)).toBe(false);
+  });
+
+  it("rejects an unknown actor_kind enum value", () => {
+    expect(
+      isEvidenceClaim(baseEvidenceClaim({ actor_kind: "orchestrator" })),
+    ).toBe(false);
+  });
+
+  it("requires actor_identity_hash (canonical sha256 form)", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.actor_identity_hash;
+    expect(isEvidenceClaim(payload)).toBe(false);
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({ actor_identity_hash: "sha256:" + "a".repeat(64) }),
+      ),
+    ).toBe(false);
+  });
+
+  it("requires occurred_at as an RFC 3339 datetime", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.occurred_at;
+    expect(isEvidenceClaim(payload)).toBe(false);
+  });
+
+  it("defaults evidence_refs to [] when omitted", () => {
+    const payload = baseEvidenceClaim();
+    delete payload.evidence_refs;
+    const claim = parseEvidenceClaim(payload);
+    expect(claim.evidence_refs).toEqual([]);
+  });
+
+  it("accepts a populated evidence_refs list", () => {
+    const claim = parseEvidenceClaim(
+      baseEvidenceClaim({
+        evidence_refs: [
+          { kind: "artifact", ref: "r2://x", digest: VALID_CLAIM_DIGEST },
+          { kind: "exit_code", ref: "exit", value: 0 },
+        ],
+      }),
+    );
+    expect(claim.evidence_refs).toHaveLength(2);
+  });
+
+  it("accepts a null claim_predicate and a nested op/args predicate", () => {
+    expect(isEvidenceClaim(baseEvidenceClaim({ claim_predicate: null }))).toBe(
+      true,
+    );
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          claim_predicate: {
+            op: "and",
+            args: [{ op: "run_result_status_is", value: "accepted" }],
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a null namespaces and an x-relay extension envelope", () => {
+    expect(isEvidenceClaim(baseEvidenceClaim({ namespaces: null }))).toBe(true);
+    expect(
+      isEvidenceClaim(
+        baseEvidenceClaim({
+          namespaces: { "x-relay": { schema_version: "v1" } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("absorbs a flat subject_kind/subject_id legacy claim (back-compat shim)", () => {
+    const flatId = newUuid();
+    const claim = parseEvidenceClaim(
+      baseEvidenceClaimFlat({ subject_kind: "run", subject_id: flatId }),
+    );
+    // Flat keys are absorbed into the nested subject; manifest_commit_hash is
+    // mirrored from the top-level field (Python _absorb_flat_subject parity).
+    expect(claim.subject.kind).toBe("run");
+    expect(claim.subject.id).toBe(flatId);
+    expect(claim.subject.manifest_commit_hash).toBe(VALID_MANIFEST_HASH);
+  });
+
+  it("rejects a legacy flat claim whose subject_id is not a UUID", () => {
+    expect(
+      isEvidenceClaim(baseEvidenceClaimFlat({ subject_id: "not-a-uuid" })),
+    ).toBe(false);
   });
 });
 
@@ -1861,6 +2206,147 @@ describe("VAL-W1-024 replay_fixtures.capture_clock RFC 3339 + offset required", 
 });
 
 // ---------------------------------------------------------------------------
+// MED #8 follow-on: the offset-required datetime fields (occurred_at,
+// capture_clock) MUST enforce the SAME strict RFC 3339 grammar as the plain
+// fields, NOT a Date.parse-permissive trailing-offset check. Earlier
+// checkRfc3339WithOffset only verified an offset tail (Z|+/-HH:MM) plus
+// Date.parse, so it accepted Date.parse-permissive forms that Python's
+// anchored strict regex (Rfc3339Datetime) rejects -- a Py<->TS verdict
+// divergence (a P0 keystone). It also must reject a trailing newline so a
+// value such as "...Z\n" is rejected on BOTH sides byte-for-byte.
+//
+// Each rejected literal below is also a `def`-mirrored Python test in
+// packages/schemas/python/tests/test_envelopes.py so the two readers give
+// the SAME accept/reject verdict for identical wire bytes.
+// ---------------------------------------------------------------------------
+
+// Forms with an RFC-3339-ish offset tail that the permissive Date.parse path
+// accepted but the strict shared regex (and Python) reject.
+const STRICT_OFFSET_REJECTS = [
+  // No offset tail at all and a non-RFC-3339 (RFC-2822 / Date.parse) shape.
+  "Mon May 12 2025 00:00:00",
+  // RFC-2822-ish WITH a colon offset tail: passes a naive offset-tail check
+  // and Date.parse, but is not strict RFC 3339.
+  "Mon, 12 May 2025 00:00:00 +02:00",
+  // Hour 24 with a 'Z' tail: Date.parse coerces it to a finite instant, but
+  // strict RFC 3339 caps the hour at 23.
+  "2026-05-12T24:00:00Z",
+  // Missing the seconds component but with a 'Z' tail.
+  "2026-05-12T00:00Z",
+  // Colon-less offset: Date.parse-permissive, strict RFC 3339 forbids it.
+  "2026-05-12T00:00:00+0200",
+  // Trailing newline after a canonical timestamp: MUST be rejected on both
+  // sides (Python anchors with \Z; TS must use a true end-of-input check).
+  "2026-05-12T00:00:00Z\n",
+  "2026-05-12T00:00:00+02:00\n",
+];
+
+const STRICT_OFFSET_ACCEPTS = [
+  "2026-05-12T00:00:00Z",
+  "2026-05-12T10:00:00+05:30",
+  "2026-05-12T00:00:00-08:00",
+  "2026-05-12T00:00:00.123456+00:00",
+];
+
+describe("MED#8 occurred_at enforces the strict RFC 3339 grammar (Py<->TS parity)", () => {
+  for (const bad of STRICT_OFFSET_REJECTS) {
+    it(`rejects ${JSON.stringify(bad)}`, () => {
+      expect(
+        isEventLogEntry(baseEventLogEntry({ occurred_at: bad })),
+      ).toBe(false);
+      expect(() =>
+        parseEventLogEntry(baseEventLogEntry({ occurred_at: bad })),
+      ).toThrow(/occurred_at/);
+    });
+  }
+
+  for (const good of STRICT_OFFSET_ACCEPTS) {
+    it(`accepts the canonical RFC 3339 + offset form ${JSON.stringify(good)}`, () => {
+      expect(
+        isEventLogEntry(baseEventLogEntry({ occurred_at: good })),
+      ).toBe(true);
+    });
+  }
+});
+
+describe("MED#8 capture_clock enforces the strict RFC 3339 grammar (Py<->TS parity)", () => {
+  for (const bad of STRICT_OFFSET_REJECTS) {
+    it(`rejects ${JSON.stringify(bad)}`, () => {
+      expect(
+        isReplayFixture(baseReplayFixture({ capture_clock: bad })),
+      ).toBe(false);
+      expect(() =>
+        parseReplayFixture(baseReplayFixture({ capture_clock: bad })),
+      ).toThrow(/capture_clock/);
+    });
+  }
+
+  for (const good of STRICT_OFFSET_ACCEPTS) {
+    it(`accepts the canonical RFC 3339 + offset form ${JSON.stringify(good)}`, () => {
+      expect(
+        isReplayFixture(baseReplayFixture({ capture_clock: good })),
+      ).toBe(true);
+    });
+  }
+});
+
+// Round-5 re-hunt (P0 parity): calendar-invalid but grammar-valid dates. The
+// day-of-month regex class accepts 01..31 for EVERY month and 29 for EVERY
+// year, so it matches impossible dates. Python's Pydantic datetime parse
+// REJECTS them (proleptic Gregorian); JS Date.parse ROLLS THEM OVER to a finite
+// instant and would ACCEPT them. The TS reader MUST apply the same calendar
+// validation so both agree on identical wire bytes. Each literal is mirrored in
+// the Python _RFC3339_PARITY_CORPUS so the two readers stay in lockstep.
+const CALENDAR_INVALID_REJECTS = [
+  "2025-02-30T00:00:00Z", // February never has 30 days
+  "2025-02-29T00:00:00Z", // 2025 is NOT a leap year
+  "2025-04-31T00:00:00Z", // April has 30 days
+  "2025-06-31T00:00:00Z", // June has 30 days
+  "2025-09-31T00:00:00Z", // September has 30 days
+  "2025-11-31T00:00:00Z", // November has 30 days
+  "0000-01-01T00:00:00Z", // year 0000: Python datetime MINYEAR is 1
+];
+
+const CALENDAR_VALID_ACCEPTS = [
+  "2024-02-29T00:00:00Z", // 2024 IS a leap year -> valid
+  "0001-01-01T00:00:00Z", // year 0001 is the MINYEAR boundary -> valid
+  "2025-01-31T00:00:00Z", // 31-day month
+  "2025-04-30T00:00:00Z", // 30-day month
+];
+
+describe("Round-5 calendar-invalid dates rejected on the plain field (Py<->TS parity)", () => {
+  for (const bad of CALENDAR_INVALID_REJECTS) {
+    it(`rejects decided_at ${JSON.stringify(bad)}`, () => {
+      expect(isRunResult(baseRunResult({ decided_at: bad }))).toBe(false);
+      expect(() => parseRunResult(baseRunResult({ decided_at: bad }))).toThrow(
+        /decided_at/,
+      );
+    });
+  }
+  for (const good of CALENDAR_VALID_ACCEPTS) {
+    it(`accepts the real calendar date ${JSON.stringify(good)}`, () => {
+      expect(isRunResult(baseRunResult({ decided_at: good }))).toBe(true);
+    });
+  }
+});
+
+describe("Round-5 calendar-invalid dates rejected on the offset-required field", () => {
+  // Offset-required fields share isRfc3339Datetime, so the same calendar gate
+  // applies (occurred_at uses +HH:MM forms here -- still calendar-impossible).
+  for (const bad of [
+    "2025-02-30T00:00:00+00:00",
+    "2025-04-31T00:00:00-08:00",
+    "0000-01-01T00:00:00Z",
+  ]) {
+    it(`rejects occurred_at ${JSON.stringify(bad)}`, () => {
+      expect(isEventLogEntry(baseEventLogEntry({ occurred_at: bad }))).toBe(
+        false,
+      );
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // VAL-W1-025: replay_fixtures.refresh_policy closed enum + default
 // ---------------------------------------------------------------------------
 
@@ -2026,6 +2512,8 @@ const _typeRefs: ReadonlyArray<
   | ScopeStateReplayCase
   | ScopeStateGateRound
   | ScopeStateEvidenceBundle
+  | ScopeStateEvalRun
+  | ScopeStateRelease
   | IdempotencyRecord
   | EventLogEntry
   | EvidenceBundle
@@ -2409,5 +2897,57 @@ describe("W1.4 RELAY_ERROR_CODE_PATTERN exported", () => {
     expect(re.test("RELAY-GATE-021")).toBe(true);
     expect(re.test("relay-ing-031")).toBe(false);
     expect(re.test("RELAY-ING-31")).toBe(false);
+  });
+});
+
+// canonicalBytes RFC-8785 behaviors (roborev 2132ab7): non-optional vitest
+// coverage so the new TS canonicalization (ECMA-262 number ToString, UTF-16 key
+// sort, unsafe-integer + non-finite rejection, raw-UTF-8 strings) is exercised
+// even when the Python<->TS node parity test is skipped. The byte values mirror
+// the Python relay_schemas.envelopes.canonical_bytes assertions.
+describe("canonicalBytes RFC-8785 Py<->TS parity behaviors", () => {
+  const dec = new TextDecoder();
+  const enc = (v: unknown): string => dec.decode(canonicalBytes(v));
+
+  it("ECMA-262 number ToString: whole float -> integer, -0 -> 0, small float exponential", () => {
+    expect(enc({ whole: 1.0 })).toBe('{"whole":1}');
+    expect(enc({ z: -0.0 })).toBe('{"z":0}');
+    expect(enc({ e: 1e-7 })).toBe('{"e":1e-7}');
+    expect(enc({ a: 12.5, b: 0.1, c: 0.001 })).toBe('{"a":12.5,"b":0.1,"c":0.001}');
+  });
+
+  it("object keys sort by UTF-16 code unit: SMP key sorts before U+FFFF", () => {
+    // UTF-16 code units: "a"=0x0061 < U+1F600 (high surrogate 0xD83D) < U+FFFF.
+    // (U+1F600 < U+FFFF is the OPPOSITE of Unicode code-point ordering.) Both
+    // Python canonical_bytes and TS canonicalBytes emit this exact order.
+    expect(enc({ "￿": 2, "\u{1F600}": 1, a: 3 })).toBe(
+      '{"a":3,"\u{1F600}":1,"￿":2}',
+    );
+  });
+
+  it("non-ASCII strings emit raw UTF-8 (no \\uXXXX escaping)", () => {
+    expect(enc({ m: "café" })).toBe('{"m":"café"}');
+  });
+
+  it("rejects integers outside the JS safe-integer range (fail-closed parity)", () => {
+    expect(() => canonicalBytes({ x: 2 ** 53 })).toThrow();
+    expect(() => canonicalBytes({ x: -(2 ** 53) })).toThrow();
+    expect(() => canonicalBytes({ x: 1e16 })).toThrow(); // integer-valued, > 2^53
+    expect(() => canonicalBytes({ x: 1e18 })).toThrow();
+  });
+
+  it("rejects non-finite numbers", () => {
+    expect(() => canonicalBytes({ x: NaN })).toThrow();
+    expect(() => canonicalBytes({ x: Infinity })).toThrow();
+    expect(() => canonicalBytes({ x: -Infinity })).toThrow();
+  });
+
+  it("safe integers + nested structures round-trip identically", () => {
+    expect(enc({ ints: [0, -1, 42, 9007199254740991, -9007199254740991] })).toBe(
+      '{"ints":[0,-1,42,9007199254740991,-9007199254740991]}',
+    );
+    expect(enc({ nested: { z: [1, 2, { b: null, a: true }], y: "x" } })).toBe(
+      '{"nested":{"y":"x","z":[1,2,{"a":true,"b":null}]}}',
+    );
   });
 });

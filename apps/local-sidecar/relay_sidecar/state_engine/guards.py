@@ -247,18 +247,25 @@ async def _guard_valid_manifest_commit_hash(
         project_id = None
 
     try:
+        # ORDER BY rowid: evaluate matching manifest versions in deterministic
+        # registration (insertion) order. The PASS/FAIL result is order-invariant
+        # (the guard returns True iff ANY matching row is active within grace), but
+        # an explicit order makes control-plane evaluation reproducible/auditable
+        # rather than dependent on the SQLite query planner's unspecified scan
+        # order. (The sidecar runs exclusively on SQLite via aiosqlite, and
+        # manifest_versions is a rowid table.)
         if project_id is not None:
             async with conn.execute(
                 "SELECT effective_until, grace_window_seconds "
                 "FROM manifest_versions "
-                "WHERE project_id = ? AND commit_hash = ?",
+                "WHERE project_id = ? AND commit_hash = ? ORDER BY rowid",
                 (project_id, manifest_commit_hash),
             ) as cur:
                 rows = await cur.fetchall()
         else:
             async with conn.execute(
                 "SELECT effective_until, grace_window_seconds "
-                "FROM manifest_versions WHERE commit_hash = ?",
+                "FROM manifest_versions WHERE commit_hash = ? ORDER BY rowid",
                 (manifest_commit_hash,),
             ) as cur:
                 rows = await cur.fetchall()

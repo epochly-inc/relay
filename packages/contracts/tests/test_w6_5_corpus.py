@@ -49,12 +49,17 @@ from typing import Any
 import pytest
 from relay_contracts import (
     RELAY_UDFS,
-    RelayCelEvaluator,
+    WasmCelEvaluator,
     jcs_canonicalize,
     relay_coverage,
     relay_schema_match,
     relay_tool_arg,
 )
+from relay_contracts.errors import (
+    SUBTYPE_ENGINE_COMPILE,
+    RelayCelEngineError,
+)
+from relay_contracts.evaluator import MAX_TIMEOUT_MS
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CORPUS_PATH = REPO_ROOT / "tests" / "conformance" / "cel" / "relay_cel_corpus.json"
@@ -238,6 +243,13 @@ def test_corpus_eval_error_idiom_categories_present() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W6-050")
+# Re-runs the corpus generator in a subprocess (evaluating every case through
+# the wasm) and byte-compares -- ~20s locally, but 2-3x slower on the shared CI
+# runners under the full plumbing tier, which trips the global --timeout=60.
+# Override with a generous per-test timeout (the marker takes precedence over
+# the CLI value); the test stays in the plumbing TIER (its runtime fits well
+# within the 1380s tier budget), only its per-test hang-guard is relaxed.
+@pytest.mark.timeout(300)
 def test_corpus_is_not_stale_vs_generator() -> None:
     """A re-run of the generator MUST produce byte-identical output.
     A divergence means a contributor edited the corpus by hand or a
@@ -264,54 +276,47 @@ def test_corpus_is_not_stale_vs_generator() -> None:
 
 def _to_python(value: Any) -> Any:
     """Mirror of scripts/generate-relay-cel-corpus.py:_to_python --
-    convert celpy result types to JSON-roundtrippable Python."""
-
-    import celpy.celtypes as celtypes
+    collapse evaluator result types to JSON-roundtrippable Python. The wasm
+    codec already decodes to native classes; the int branch also covers the
+    CelUint marker subclass."""
 
     if value is None:
         return None
-    if isinstance(value, celtypes.BoolType):
-        return bool(value)
-    if isinstance(value, celtypes.IntType):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
         return int(value)
-    if isinstance(value, celtypes.DoubleType):
+    if isinstance(value, float):
         return float(value)
-    if isinstance(value, celtypes.StringType):
+    if isinstance(value, str):
         return str(value)
-    if isinstance(value, celtypes.ListType | list | tuple):
+    if isinstance(value, list | tuple):
         return [_to_python(v) for v in value]
-    if isinstance(value, celtypes.MapType | dict):
+    if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
             kk = str(k) if not isinstance(k, str) else k
             out[kk] = _to_python(v)
         return out
-    if isinstance(value, bool | int | float | str):
-        return value
-    raise TypeError(f"unsupported celpy result type: {type(value).__name__}")
+    raise TypeError(f"unsupported evaluator result type: {type(value).__name__}")
 
 
-def _convert_bindings(bindings: dict[str, Any]) -> dict[str, Any]:
-    import celpy.celtypes as celtypes
-
-    def conv(v: Any) -> Any:
-        if v is None:
-            return None
-        if isinstance(v, bool):
-            return celtypes.BoolType(v)
-        if isinstance(v, int):
-            return celtypes.IntType(v)
-        if isinstance(v, float):
-            return celtypes.DoubleType(v)
-        if isinstance(v, str):
-            return celtypes.StringType(v)
-        if isinstance(v, list | tuple):
-            return celtypes.ListType([conv(x) for x in v])
-        if isinstance(v, dict):
-            return celtypes.MapType({celtypes.StringType(k): conv(vv) for k, vv in v.items()})
-        return v
-
-    return {k: conv(v) for k, v in bindings.items()}
+# ---------------------------------------------------------------------------
+# M6 WS-I: the user-adjudicated legacy-lexer carve-out, mirrored from
+# scripts/generate-relay-cel-corpus.py. EXACTLY TWO frozen eval_value cases
+# record the REMOVED legacy engine's lenient (spec-INCORRECT) lexing of a
+# backslash + non-ASCII digit string literal; the wasm correctly raises
+# RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE for them (a lexical error per the
+# CEL spec). The per-case runner asserts the DOCUMENTED wasm behavior for
+# those two ids -- strongly guarded (the pinned expression must match) so a
+# corpus edit or a wasm regression cannot hide behind the carve-out.
+# ---------------------------------------------------------------------------
+_ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS: dict[str, str] = {
+    # '"' + one literal backslash + the non-ASCII digit + '"', built with
+    # backslash-u escapes so this source stays pure ASCII (U+FF10 / U+0660).
+    "regex_backslash_fullwidth_digit_accepted": '"\\\uff10"',
+    "regex_backslash_arabic_digit_accepted": '"\\\u0660"',
+}
 
 
 # Build the parametrize lists at import time so each case is its own
@@ -331,13 +336,27 @@ _UDF_VALUE_CASES = [c for c in _CASES if c.get("kind") == "udf_value"]
     ids=[c["id"] for c in _EVAL_VALUE_CASES],
 )
 def test_eval_value_python_byte_match(case: dict[str, Any]) -> None:
-    ev = RelayCelEvaluator(udfs=RELAY_UDFS)
-    raw = ev.evaluate(case["expression"], _convert_bindings(case.get("bindings", {})))
+    ev = WasmCelEvaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
+    if case["id"] in _ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS:
+        # M6 WS-I adjudicated carve-out (see the module constant): the FROZEN
+        # golden records the removed legacy engine's lenient lexing; the wasm
+        # correctly raises the documented compile error. Assert the pinned
+        # expression AND the documented structured error -- the case is still
+        # exercised, with the spec-correct expectation.
+        assert case["expression"] == _ADJUDICATED_LEGACY_LENIENT_EXPRESSIONS[case["id"]], (
+            f"adjudicated case {case['id']!r} expression drifted from the pinned form"
+        )
+        with pytest.raises(RelayCelEngineError) as ctx:
+            ev.evaluate(case["expression"], case.get("bindings", {}))
+        assert ctx.value.code == "RELAY-CEL-009"
+        assert ctx.value.subtype == SUBTYPE_ENGINE_COMPILE
+        return
+    raw = ev.evaluate(case["expression"], case.get("bindings", {}))
     py_value = _to_python(raw)
     actual = base64.b64encode(jcs_canonicalize(py_value)).decode("ascii")
     expected = case["py_jcs_b64"]
     assert actual == expected, (
-        f"VAL-W6-051: cel-python bytes diverged from corpus golden for case {case['id']!r}\n"
+        f"VAL-W6-051: Python-host bytes diverged from corpus golden for case {case['id']!r}\n"
         f"  expression: {case['expression']!r}\n"
         f"  bindings: {case.get('bindings')!r}\n"
         f"  expected (b64): {expected!r}\n"
@@ -353,14 +372,14 @@ def test_eval_value_python_byte_match(case: dict[str, Any]) -> None:
     ids=[c["id"] for c in _EVAL_ERROR_CASES],
 )
 def test_eval_error_python_raises(case: dict[str, Any]) -> None:
-    ev = RelayCelEvaluator(udfs=RELAY_UDFS)
+    ev = WasmCelEvaluator(udfs=RELAY_UDFS, timeout_ms=MAX_TIMEOUT_MS)
     raised = False
     try:
-        ev.evaluate(case["expression"], _convert_bindings(case.get("bindings", {})))
+        ev.evaluate(case["expression"], case.get("bindings", {}))
     except Exception:
         raised = True
     assert raised, (
-        f"VAL-W6-051: cel-python did NOT raise for eval_error case {case['id']!r}"
+        f"VAL-W6-051: the Python host did NOT raise for eval_error case {case['id']!r}"
         f" (expression={case['expression']!r}, bindings={case.get('bindings')!r})"
     )
 

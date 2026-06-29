@@ -215,6 +215,7 @@ async def screen_payload(
     event_kind: str | None,
     operator_override_claim: dict[str, Any] | None = None,
     actors_connection: aiosqlite.Connection | None = None,
+    authenticated_actor_identity_hash: str | None = None,
 ) -> BypassScanResult:
     """Validate a payload against the bypass-marker token list.
 
@@ -226,12 +227,22 @@ async def screen_payload(
             short-circuits to ``ok=True`` after verifying the override.
         operator_override_claim: When event_kind = 'operator_override',
             this dict MUST carry an ``actor_identity_hash`` field whose
-            value resolves via the actors registry to a non-revoked human
-            org_admin. Missing field, non-resolving hash, or wrong kind
-            yields ``ok=False`` even if the payload would otherwise pass.
+            value (a) equals ``authenticated_actor_identity_hash`` AND
+            (b) resolves via the actors registry to a non-revoked human
+            org_admin. Missing field, mismatch against the authenticated
+            actor, non-resolving hash, or wrong kind yields ``ok=False``
+            even if the payload would otherwise pass.
         actors_connection: aiosqlite connection used to resolve the
             operator_override_claim. Required when event_kind is
             'operator_override'.
+        authenticated_actor_identity_hash: The sha256-<hex> identity_hash of
+            the AUTHENTICATED actor that issued this write. The override
+            claim is honored ONLY when the claim's ``actor_identity_hash``
+            equals this value. Admin identity_hashes are NOT secret (they
+            appear in audit columns), so honoring a claim whose hash was
+            merely observed -- rather than authenticated -- would let any
+            non-admin caller defeat the anti-bypass keystone guard. When
+            ``None`` in the override path, the override fails closed.
 
     Returns:
         ``BypassScanResult(ok=True)`` when permitted; on rejection,
@@ -256,6 +267,20 @@ async def screen_payload(
             )
         actor_hash = operator_override_claim.get("actor_identity_hash")
         if not isinstance(actor_hash, str) or not actor_hash:
+            return BypassScanResult(
+                ok=False,
+                detected_tokens=raw.detected_tokens,
+                reason_kind=BYPASS_MARKER_DETECTED_CLASS,
+            )
+        # Bind the override claim to the AUTHENTICATED actor. An operator
+        # override is valid only when the authenticated actor is ITSELF the
+        # non-revoked org_admin -- never a borrowed hash. Fail closed when
+        # the authenticated hash is absent or does not match the claim.
+        if (
+            not isinstance(authenticated_actor_identity_hash, str)
+            or not authenticated_actor_identity_hash
+            or authenticated_actor_identity_hash != actor_hash
+        ):
             return BypassScanResult(
                 ok=False,
                 detected_tokens=raw.detected_tokens,

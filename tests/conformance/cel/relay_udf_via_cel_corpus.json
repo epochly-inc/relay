@@ -1,0 +1,418 @@
+{
+  "cases": [
+    {
+      "bindings": {
+        "trace": {
+          "steps": [
+            {
+              "name": "alpha"
+            },
+            {
+              "name": "beta"
+            }
+          ]
+        }
+      },
+      "cel_js_parseable": true,
+      "direct_args": [
+        {
+          "steps": [
+            {
+              "name": "alpha"
+            },
+            {
+              "name": "beta"
+            }
+          ]
+        },
+        "alpha"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": true
+      },
+      "input_expression": "relay.coverage(trace, \"alpha\")",
+      "label": "covcel_first_match_binding",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOnRydWV9",
+      "udf": "relay.coverage"
+    },
+    {
+      "bindings": {
+        "trace": {
+          "steps": [
+            {
+              "name": "alpha"
+            },
+            {
+              "name": "beta"
+            }
+          ]
+        }
+      },
+      "cel_js_parseable": true,
+      "direct_args": [
+        {
+          "steps": [
+            {
+              "name": "alpha"
+            },
+            {
+              "name": "beta"
+            }
+          ]
+        },
+        "missing"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": false
+      },
+      "input_expression": "relay.coverage(trace, \"missing\")",
+      "label": "covcel_no_match_binding",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOmZhbHNlfQ==",
+      "udf": "relay.coverage"
+    },
+    {
+      "bindings": {
+        "trace": {
+          "steps": []
+        }
+      },
+      "cel_js_parseable": true,
+      "direct_args": [
+        {
+          "steps": []
+        },
+        "alpha"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": false
+      },
+      "input_expression": "relay.coverage(trace, \"alpha\")",
+      "label": "covcel_empty_steps_binding",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOmZhbHNlfQ==",
+      "udf": "relay.coverage"
+    },
+    {
+      "bindings": {},
+      "cel_js_parseable": true,
+      "direct_args": [
+        {
+          "steps": [
+            {
+              "name": "x"
+            }
+          ]
+        },
+        "x"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": true
+      },
+      "input_expression": "relay.coverage({\"steps\": [{\"name\": \"x\"}]}, \"x\")",
+      "label": "covcel_inline_single_key_steps",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOnRydWV9",
+      "udf": "relay.coverage"
+    },
+    {
+      "bindings": {},
+      "cel_js_parseable": false,
+      "direct_args": [
+        {
+          "steps": [
+            {
+              "name": "alpha",
+              "type": "tool"
+            }
+          ]
+        },
+        "alpha"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": true
+      },
+      "input_expression": "relay.coverage({\"steps\": [{\"type\": \"tool\", \"name\": \"alpha\"}]}, \"alpha\")",
+      "label": "covcel_boundary_type_step_inline",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOnRydWV9",
+      "udf": "relay.coverage"
+    },
+    {
+      "bindings": {
+        "call": {
+          "args": {
+            "k": "v"
+          }
+        }
+      },
+      "cel_js_parseable": true,
+      "direct_args": [
+        {
+          "args": {
+            "k": "v"
+          }
+        },
+        "k"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "string",
+        "v": "v"
+      },
+      "input_expression": "relay.tool_arg(call, \"k\")",
+      "label": "argcel_string_value_binding",
+      "py_jcs_b64": "eyJ0Ijoic3RyaW5nIiwidiI6InYifQ==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "bindings": {
+        "call": {
+          "args": {
+            "n": 42
+          }
+        }
+      },
+      "cel_js_parseable": true,
+      "direct_args": [
+        {
+          "args": {
+            "n": 42
+          }
+        },
+        "n"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "int",
+        "v": "42"
+      },
+      "input_expression": "relay.tool_arg(call, \"n\")",
+      "label": "argcel_int_value_binding",
+      "py_jcs_b64": "eyJ0IjoiaW50IiwidiI6IjQyIn0=",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "bindings": {
+        "call": {
+          "args": {
+            "n": 42
+          }
+        }
+      },
+      "cel_js_parseable": true,
+      "direct_args": [
+        {
+          "args": {
+            "n": 42
+          }
+        },
+        "absent"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "null"
+      },
+      "input_expression": "relay.tool_arg(call, \"absent\")",
+      "label": "argcel_missing_key_null_binding",
+      "py_jcs_b64": "eyJ0IjoibnVsbCJ9",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "bindings": {},
+      "cel_js_parseable": true,
+      "direct_args": [
+        {
+          "args": {
+            "k": "v"
+          }
+        },
+        "k"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "string",
+        "v": "v"
+      },
+      "input_expression": "relay.tool_arg({\"args\": {\"k\": \"v\"}}, \"k\")",
+      "label": "argcel_inline_single_key_args",
+      "py_jcs_b64": "eyJ0Ijoic3RyaW5nIiwidiI6InYifQ==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "bindings": {},
+      "cel_js_parseable": false,
+      "direct_args": [
+        {
+          "args": {
+            "k": "v"
+          },
+          "type": "tool_call"
+        },
+        "k"
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "string",
+        "v": "v"
+      },
+      "input_expression": "relay.tool_arg({\"type\": \"tool_call\", \"args\": {\"k\": \"v\"}}, \"k\")",
+      "label": "argcel_boundary_type_call_inline",
+      "py_jcs_b64": "eyJ0Ijoic3RyaW5nIiwidiI6InYifQ==",
+      "udf": "relay.tool_arg"
+    },
+    {
+      "bindings": {
+        "payload": "hello",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "cel_js_parseable": true,
+      "direct_args": [
+        "hello",
+        {
+          "type": "string"
+        }
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": true
+      },
+      "input_expression": "relay.schema_match(payload, schema)",
+      "label": "smcel_string_ok_binding",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOnRydWV9",
+      "udf": "relay.schema_match"
+    },
+    {
+      "bindings": {
+        "payload": 123,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "cel_js_parseable": true,
+      "direct_args": [
+        123,
+        {
+          "type": "string"
+        }
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": false
+      },
+      "input_expression": "relay.schema_match(payload, schema)",
+      "label": "smcel_string_mismatch_binding",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOmZhbHNlfQ==",
+      "udf": "relay.schema_match"
+    },
+    {
+      "bindings": {},
+      "cel_js_parseable": true,
+      "direct_args": [
+        42,
+        {
+          "type": "integer"
+        }
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": true
+      },
+      "input_expression": "relay.schema_match(42, {\"type\": \"integer\"})",
+      "label": "smcel_inline_single_key_type",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOnRydWV9",
+      "udf": "relay.schema_match"
+    },
+    {
+      "bindings": {},
+      "cel_js_parseable": false,
+      "direct_args": [
+        {
+          "a": 1
+        },
+        {
+          "required": [
+            "a"
+          ],
+          "type": "object"
+        }
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": true
+      },
+      "input_expression": "relay.schema_match({\"a\": 1}, {\"type\": \"object\", \"required\": [\"a\"]})",
+      "label": "smcel_boundary_object_required_inline",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOnRydWV9",
+      "udf": "relay.schema_match"
+    },
+    {
+      "bindings": {},
+      "cel_js_parseable": false,
+      "direct_args": [
+        [
+          1,
+          2
+        ],
+        {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      ],
+      "engines": [
+        "wasm"
+      ],
+      "golden_typed": {
+        "t": "bool",
+        "v": true
+      },
+      "input_expression": "relay.schema_match([1, 2], {\"type\": \"array\", \"items\": {\"type\": \"integer\"}})",
+      "label": "smcel_boundary_array_items_inline",
+      "py_jcs_b64": "eyJ0IjoiYm9vbCIsInYiOnRydWV9",
+      "udf": "relay.schema_match"
+    }
+  ],
+  "schema_version": 1
+}

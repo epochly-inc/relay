@@ -74,6 +74,7 @@ from typing import Any, Final
 from .cassette_server import CassetteServer, IncomingRequest
 from .cert_authority import GeneratedCA, generate_ca, remove_ca
 from .errors import (
+    RELAY_REPLAY_CASSETTE_CORRUPT,
     RelayProxyDownError,
     RelayProxyError,
     RelayProxyMissingCassetteError,
@@ -103,6 +104,16 @@ _VALID_DRIVERS: Final[frozenset[str]] = frozenset(
 # Env vars exported into the agent subprocess (VAL-W7-006/007/012).
 ENV_HTTPS_PROXY: Final[str] = "HTTPS_PROXY"
 ENV_HTTP_PROXY: Final[str] = "HTTP_PROXY"
+# Lowercase variants are equally honored by requests/urllib/libcurl, so they
+# must be forced to the replay proxy too -- otherwise an inherited lowercase
+# proxy var would route the agent elsewhere (VAL-W7-083 layered default-deny).
+ENV_HTTPS_PROXY_LOWER: Final[str] = "https_proxy"
+ENV_HTTP_PROXY_LOWER: Final[str] = "http_proxy"
+# NO_PROXY (both cases) carves hosts OUT of proxying; an inherited bypass list
+# (or "*") would let the agent reach hosts without traversing the proxy, so it
+# is neutralized rather than forwarded.
+ENV_NO_PROXY: Final[str] = "NO_PROXY"
+ENV_NO_PROXY_LOWER: Final[str] = "no_proxy"
 ENV_SSL_CERT_FILE: Final[str] = "SSL_CERT_FILE"
 ENV_REPLAY_SESSION: Final[str] = "RELAY_REPLAY_SESSION"
 ENV_REPLAY_PROXY_URL: Final[str] = "RELAY_REPLAY_PROXY_URL"
@@ -219,13 +230,54 @@ class _InProcDriver(_ProxyDriver):
             ) -> None:  # noqa: A002,A003 - parameter name matches the base override
                 LOG.debug("inproc proxy: " + format, *args)
 
+            def _send_corrupt_block(self) -> None:
+                # Fail-closed 502 for a malformed / non-object request body.
+                block = json.dumps(
+                    {
+                        "code": RELAY_REPLAY_CASSETTE_CORRUPT,
+                        "message": (
+                            "replay proxy: malformed or non-object request "
+                            "body; refusing cassette lookup"
+                        ),
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(block)))
+                self.end_headers()
+                self.wfile.write(block)
+
             def _serve_from_cassette(self) -> None:
-                length = int(self.headers.get("Content-Length", "0") or "0")
+                # Fail CLOSED on a PRESENT-but-malformed Content-Length (roborev
+                # d4b5c6f): _parse_content_length maps a malformed value (e.g.
+                # "abc") to 0, so without this guard a malformed-CL request would
+                # read 0 bytes -> body {} -> hit an empty-object cassette entry.
+                # An ABSENT header is legitimate (empty body); a present value
+                # must be a pristine run of ASCII decimal digits.
+                cl_raw = self.headers.get("Content-Length")
+                if cl_raw is not None and not (cl_raw.isascii() and cl_raw.isdigit()):
+                    self._send_corrupt_block()
+                    return
+                length = _parse_content_length(cl_raw)
                 raw = self.rfile.read(length) if length > 0 else b""
-                try:
-                    body = json.loads(raw.decode("utf-8")) if raw else {}
-                except (json.JSONDecodeError, UnicodeDecodeError):
+                # Fail CLOSED on a non-empty malformed / non-object body
+                # (roborev e93594b): coercing it to {} would let a malformed or
+                # different request HIT an empty-object cassette entry. A
+                # genuinely EMPTY body still maps to {} (legitimate). Mirrors
+                # cassette_server.decide_replay_response (the mitmproxy driver).
+                if not raw:
                     body = {}
+                else:
+                    try:
+                        parsed = json.loads(raw.decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        self._send_corrupt_block()
+                        return
+                    if not isinstance(parsed, dict):
+                        self._send_corrupt_block()
+                        return
+                    body = parsed
                 # Provider / model derivation: prefer explicit headers
                 # set by the SDK adapter shim (X-Relay-Provider,
                 # X-Relay-Model) so a single proxy can disambiguate
@@ -316,6 +368,35 @@ class _InProcDriver(_ProxyDriver):
         self._stop_event.set()
 
 
+def _parse_content_length(raw: str | None) -> int:
+    """Parse an HTTP ``Content-Length`` header value defensively.
+
+    The header value is attacker-controllable. A robust server never lets a
+    malformed value crash the request handler. Per RFC 7230 sec 3.3.2 a valid
+    ``Content-Length`` is a run of one or more ASCII decimal digits with no
+    sign, no exponent, no radix prefix, and no embedded whitespace. Anything
+    else (a missing header, a non-decimal token like ``"abc"`` / ``"1e9"`` /
+    ``"0x10"``, a whitespace-padded value like ``" 12 "``, a negative value, or
+    a non-ASCII digit) is treated as a zero-length body so the handler still
+    returns a controlled response instead of raising an uncaught ``ValueError``
+    (or passing a negative length to ``rfile.read`` and reading the wrong
+    number of bytes).
+    """
+    if raw is None:
+        return 0
+    # Strict: only a pristine run of ASCII decimal digits is a valid length.
+    # ``str.isascii`` rules out unicode digit code points that ``str.isdigit``
+    # accepts but ``int`` may reject; we do NOT strip whitespace because an
+    # embedded/padded value is malformed, not merely formatted.
+    if not raw.isascii() or not raw.isdigit():
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:  # pragma: no cover - isascii()+isdigit() guarantee int()
+        return 0
+    return value if value >= 0 else 0
+
+
 def _provider_from_path(path: str) -> str | None:
     """Best-effort provider extraction from an HTTPS proxy path component.
 
@@ -346,6 +427,55 @@ def _model_from_body(body: dict[str, Any]) -> str | None:
     return None
 
 
+def _build_mitmdump_argv(
+    *, binary: str, port: int, session_dir: Path, addon_path: Path
+) -> list[str]:
+    """Build the ``mitmdump`` argv with default-deny egress hardening.
+
+    Two options keep an intercepted request from EVER reaching the live
+    upstream provider at the CONNECTION layer (keystone invariant #9),
+    independent of the addon's request() hook:
+
+      * ``upstream_cert=false`` -- with mitmproxy's default ``true`` the
+        proxy opens a TLS connection to the real upstream during the
+        handshake to copy its certificate (a real outbound connection
+        BEFORE the request hook runs). Disabling it makes mitmproxy serve a
+        generic generated cert and never contact the upstream for cert
+        details.
+      * ``connection_strategy=lazy`` -- the default ``eager`` opens the
+        upstream connection as soon as the client connects, again before the
+        request hook. ``lazy`` defers the upstream connection until it is
+        actually needed; because the addon's request() hook always sets
+        ``flow.response`` (cassette hit or fail-closed block), it is never
+        needed, so no upstream connection is ever made.
+
+    Both options are valid for the pinned mitmproxy (``>=10,<13``; verified
+    against the installed 12.1.2: ``upstream_cert`` is a core bool option and
+    ``connection_strategy`` is a proxyserver-addon str option with choices
+    ``eager``/``lazy``, and both accept the ``--set key=value`` string form).
+    """
+    return [
+        binary,
+        "--listen-host",
+        "127.0.0.1",
+        "--listen-port",
+        str(port),
+        "--set",
+        f"confdir={session_dir!s}",
+        "--set",
+        f"relay_session_dir={session_dir!s}",
+        # Default-deny egress hardening (keystone #9): never touch the live
+        # upstream, not even during TLS setup / eager connect.
+        "--set",
+        "upstream_cert=false",
+        "--set",
+        "connection_strategy=lazy",
+        "-s",
+        str(addon_path),
+        "--quiet",
+    ]
+
+
 class _MitmProxyDriver(_ProxyDriver):
     """Spawn the ``mitmdump`` binary as a subprocess.
 
@@ -374,20 +504,12 @@ class _MitmProxyDriver(_ProxyDriver):
         addon_path = server.session_dir / "_addon.py"
         addon_path.write_bytes(_MITMPROXY_ADDON_SOURCE.encode("utf-8"))
         self._addon_path = addon_path
-        cmd = [
-            binary,
-            "--listen-host",
-            "127.0.0.1",
-            "--listen-port",
-            str(port),
-            "--set",
-            f"confdir={server.session_dir!s}",
-            "--set",
-            f"relay_session_dir={server.session_dir!s}",
-            "-s",
-            str(addon_path),
-            "--quiet",
-        ]
+        cmd = _build_mitmdump_argv(
+            binary=binary,
+            port=port,
+            session_dir=server.session_dir,
+            addon_path=addon_path,
+        )
         try:
             proc = subprocess.Popen(  # noqa: S603 - args is a list, not shell=True
                 cmd,
@@ -435,13 +557,16 @@ class _MitmProxyDriver(_ProxyDriver):
 # a module and calls the ``request`` hook on every flow.
 _MITMPROXY_ADDON_SOURCE: Final[str] = '''"""Auto-generated mitmproxy addon (W7.1)."""
 import json
+import logging
 from pathlib import Path
 
 from mitmproxy import ctx, http
-from relay_replay_proxy.cassette_server import CassetteServer, IncomingRequest
+from relay_replay_proxy.cassette_server import CassetteServer, decide_replay_response
+from relay_replay_proxy.errors import RELAY_REPLAY_CASSETTE_CORRUPT
 
 
 _server: CassetteServer | None = None
+_log = logging.getLogger("relay_replay_proxy.addon")
 
 
 def load(loader):
@@ -457,27 +582,50 @@ def configure(updates):
 
 
 def request(flow: http.HTTPFlow) -> None:
-    if _server is None:
-        return
-    raw = flow.request.raw_content or b""
+    # Fail CLOSED. A real MITM proxy forwards the flow to the LIVE upstream
+    # provider if this hook returns (or raises) without setting
+    # flow.response, so EVERY path below must set flow.response. The body is
+    # wrapped so that no exception -- a None/unconfigured server, a corrupt
+    # or tampered cassette (CassetteFormatError from lookup), or an
+    # unexpected error reading the flow -- can escape the hook and let the
+    # request reach the live provider. This enforces keystone invariant #9
+    # (cassette-first replay, default-deny egress) and #11 (integrity checks
+    # fail closed) at the proxy request hook. decide_replay_response is
+    # total: it returns a blocking decision on every non-hit path and never
+    # signals "forward to live".
     try:
-        body = json.loads(raw.decode("utf-8")) if raw else {}
-    except Exception:
-        body = {}
-    provider = flow.request.headers.get("X-Relay-Provider", "")
-    model = flow.request.headers.get("X-Relay-Model", "")
-    req = IncomingRequest(provider=provider or "unknown", model=model or "unknown", body=body)
-    response = _server.lookup(req)
-    if response is None:
+        raw = flow.request.raw_content or b""
+        provider = flow.request.headers.get("X-Relay-Provider", "")
+        model = flow.request.headers.get("X-Relay-Model", "")
+        decision = decide_replay_response(
+            _server,
+            raw_body=raw,
+            provider_header=provider,
+            model_header=model,
+        )
         flow.response = http.Response.make(
-            404,
-            json.dumps({"code": "RELAY-CASSETTE-MISS"}).encode("utf-8"),
+            decision.status, decision.body_bytes, decision.headers
+        )
+    except Exception as exc:
+        # Last-resort guard: decide_replay_response is already total, but if
+        # anything at all (e.g. reading flow.request) raises, we STILL refuse
+        # to forward to the live upstream and block with a 502.
+        try:
+            _log.error("relay replay addon blocked request: %r", exc)
+        except Exception:
+            pass
+        flow.response = http.Response.make(
+            502,
+            json.dumps(
+                {
+                    "code": RELAY_REPLAY_CASSETTE_CORRUPT,
+                    "message": "replay proxy internal error; refusing live upstream",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
             {"Content-Type": "application/json"},
         )
-        return
-    flow.response = http.Response.make(
-        response.status, response.body_bytes, response.headers
-    )
 '''
 
 
@@ -736,6 +884,13 @@ class HarnessSession:
         # VAL-W7-006 / VAL-W7-007 / VAL-W7-012: required vars set together.
         base[ENV_HTTPS_PROXY] = self._handle.proxy_url
         base[ENV_HTTP_PROXY] = self._handle.proxy_url
+        # Force the lowercase variants too (requests/urllib/libcurl honor them)
+        # and neutralize any inherited NO_PROXY/no_proxy bypass list so the
+        # agent cannot reach a host without traversing the proxy (VAL-W7-083).
+        base[ENV_HTTPS_PROXY_LOWER] = self._handle.proxy_url
+        base[ENV_HTTP_PROXY_LOWER] = self._handle.proxy_url
+        base.pop(ENV_NO_PROXY, None)
+        base.pop(ENV_NO_PROXY_LOWER, None)
         base[ENV_SSL_CERT_FILE] = str(self._handle.ca.cert_path)
         base[ENV_REPLAY_SESSION] = self._handle.session_id
         base[ENV_REPLAY_PROXY_URL] = self._handle.proxy_url
@@ -746,10 +901,16 @@ class HarnessSession:
             if k in {
                 ENV_HTTPS_PROXY,
                 ENV_HTTP_PROXY,
+                ENV_HTTPS_PROXY_LOWER,
+                ENV_HTTP_PROXY_LOWER,
+                ENV_NO_PROXY,
+                ENV_NO_PROXY_LOWER,
                 ENV_SSL_CERT_FILE,
                 ENV_REPLAY_SESSION,
                 ENV_REPLAY_PROXY_URL,
             }:
+                # A caller-supplied NO_PROXY/no_proxy or lowercase proxy var
+                # would re-open the bypass the injection just closed -- drop it.
                 continue
             base[k] = v
         return base

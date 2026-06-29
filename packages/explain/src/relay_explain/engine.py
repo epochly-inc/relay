@@ -241,8 +241,16 @@ class ExplainEngine:
         self, payload: dict[str, Any]
     ) -> tuple[dict[str, Any], _EventLogEntry | None]:
         raw = payload.get("hypothesis_class")
-        if isinstance(raw, str) and raw in HYPOTHESIS_CLASSES:
+        if not isinstance(raw, str):
+            # A MISSING or NON-STRING hypothesis_class is a SCHEMA error, not an
+            # out-of-enum taxonomy-clamp case. Leave it unchanged so the
+            # downstream validate() rejects it (this method runs BEFORE
+            # validate). Clamping it to "unknown" silently persisted a bogus row
+            # and bypassed validation entirely (re-hunt evals-explain-1).
             return payload, None
+        if raw in HYPOTHESIS_CLASSES:
+            return payload, None
+        # Present but out-of-enum STRING: clamp to "unknown" + flag for review.
         original = raw
         payload["hypothesis_class"] = "unknown"
         return (

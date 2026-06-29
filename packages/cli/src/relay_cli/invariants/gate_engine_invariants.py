@@ -112,9 +112,31 @@ def _trigger_body_enforces(text: str, trigger_name: str) -> bool:
     # SQLite trigger bodies are ``BEGIN ... END;`` so the first ``END;``
     # after the header terminates this trigger. (No nested BEGIN/END in
     # the gate-decisions guard triggers.)
+    #
+    # FAIL CLOSED on a malformed/truncated trigger. A regressed trigger may
+    # have lost its own terminating ``END;`` (e.g. body collapsed to
+    # ``SELECT 1;`` with the ``END;`` also dropped). In that case the first
+    # ``END;`` after the header belongs to the NEXT trigger, so the extracted
+    # block would borrow that neighbor's ``RAISE(ABORT)`` and falsely report
+    # this neutered trigger as enforcing (VAL-ISO-036). We therefore treat the
+    # trigger as non-enforcing (-> a finding) unless it has its OWN ``END;``
+    # BEFORE the next ``CREATE TRIGGER`` / ``DROP TRIGGER`` header -- a
+    # precondition for SQLite to create the trigger at all. This keeps the
+    # original fail-closed posture for a missing terminator AND blocks the
+    # neighbor-borrow: a trigger with a ``RAISE(ABORT)`` but no own ``END;``
+    # (which SQLite cannot create) is still reported, not passed.
+    search_from = start + len(header)
     end = text.find("END;", start)
     if end == -1:
-        # Malformed / truncated block -- treat as non-enforcing.
+        # No terminator anywhere after the header -- malformed; fail closed.
+        return False
+    next_create = text.find("CREATE TRIGGER", search_from)
+    next_drop = text.find("DROP TRIGGER", search_from)
+    next_headers = [offset for offset in (next_create, next_drop) if offset != -1]
+    if next_headers and min(next_headers) < end:
+        # This trigger's own ``END;`` is past the next trigger declaration --
+        # it lost its terminator; the first ``END;`` belongs to a neighbor.
+        # Fail closed rather than borrow the neighbor's enforcement primitive.
         return False
     block = text[start:end]
     return _ENFORCEMENT_RE.search(block) is not None

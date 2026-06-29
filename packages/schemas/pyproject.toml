@@ -25,6 +25,16 @@ authors = [
 ]
 dependencies = [
   "pydantic>=2.7,<3",
+  # relay_schemas.error_code_registry and relay_schemas.manifest hard-import
+  # `yaml` at module scope (loading the canonical error-code + manifest YAML),
+  # and both are runtime surfaces (manifest is imported by
+  # relay_contracts.dsl_parser and relay_cli.commands.manifest). PyYAML is also
+  # listed under the test/codegen extras; it is a genuine RUNTIME dependency.
+  "pyyaml>=6.0",
+  # relay_schemas.manifest hard-imports jsonschema.Draft202012Validator to
+  # validate manifests against their JSON Schema. Pinned to match the floor used
+  # by epochly-relay-acef and epochly-relay-gate-engine.
+  "jsonschema>=4.21",
 ]
 
 [project.optional-dependencies]

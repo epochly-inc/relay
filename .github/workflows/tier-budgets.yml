@@ -2,14 +2,16 @@
 #
 # Three jobs, one per pytest tier marker (spec AM.6):
 #
-#   plumbing : -m plumbing --timeout=60   budget <= 900 s (15 min)
+#   plumbing : -m plumbing --timeout=60   budget <= 1380 s (23 min)
 #   smoke    : -m smoke    --timeout=480  budget <= 480 s (8 min)
 #   eval     : -m eval     --timeout=720  budget <= 720 s (12 min)
 #
-# The plumbing wall budget was raised from 60s to 900s (history in
-# scripts/tier_budget_gate.py) once the OSS v0.1 plumbing tier grew well
-# beyond the spec's narrower scope; --timeout=60 stays as the PER-TEST
-# timeout, not the tier budget.
+# The plumbing wall budget was raised 60s -> 900s -> 1380s (history in
+# scripts/tier_budget_gate.py) as the OSS plumbing tier grew well beyond
+# the spec's narrower scope; the 1380s bump tracks the ~5382-test suite
+# after the cel-wasm single-engine cutover. --timeout=60 stays as the
+# PER-TEST timeout, not the tier budget. The plumbing job timeout-minutes
+# is 30 so the budget gate step runs after the ~23 min suite.
 #
 # Each job:
 #   1. Records wall-clock start time.
@@ -59,6 +61,15 @@ on:
 permissions:
   contents: read
 
+# The cel-wasm plumbing tests load the CEL engine from $CEL_WASM; these jobs do
+# not build the Rust crate, so point it at the committed, pinned-sha wasm under
+# packages/contracts (byte-identical to the crate build per the cel-wasm
+# reproducible-build + pinned-sha gates). The wasm-build time is NOT counted in
+# the tier budget (the budget times only the `pytest` step); the cel-wasm tests'
+# own runtime IS included, consistent with the 1380s plumbing budget.
+env:
+  CEL_WASM: ${{ github.workspace }}/packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.wasm
+
 jobs:
   # ---------------------------------------------------------------------------
   # Tier 1: plumbing.
@@ -66,7 +77,7 @@ jobs:
   plumbing:
     name: "tier-1 plumbing budget"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: "checkout"
         uses: actions/checkout@v4
@@ -109,7 +120,7 @@ jobs:
           cat artifacts/plumbing-report.json
           echo
 
-      - name: "enforce plumbing 900s budget"
+      - name: "enforce plumbing 1380s budget"
         run: |
           python scripts/tier_budget_gate.py --tier plumbing --report artifacts/plumbing-report.json
 

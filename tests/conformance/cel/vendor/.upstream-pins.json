@@ -1,8 +1,6 @@
 {
-  "_doc": "Recorded upstream package pins as of the last cel-spec vendor refresh. The drift checker (scripts/check-cel-spec-drift.py) compares these to the live pins in packages/contracts/pyproject.toml and packages/contracts-typescript/package.json. Bumping either package WITHOUT updating both this file and tests/conformance/cel/vendor/cel_spec_vectors.json triggers VAL-W6-055 drift failure.",
+  "_doc": "Recorded upstream cel-spec vendor revision as of the last refresh. The drift checker (scripts/check-cel-spec-drift.py) maps every vendored cel_spec_vectors.json vector to a corpus case in tests/conformance/cel/relay_cel_corpus.json and asserts the mapping holds. The legacy upstream-package-pin comparison (cel-python / cel-js lower bounds) was REMOVED in M6: both CEL libraries were deleted in the single-engine WASM cutover, so there is no upstream CEL package version to pin here anymore -- the sole CEL engine is the pinned relay_cel_wasm artifact. Bumping the vendored cel-spec revision (vendored_cel_spec_revision) still requires refreshing cel_spec_vectors.json and bumping last_refreshed_at.",
   "_schema_version": 1,
-  "celpy": "cel-python>=0.5.0,<0.6",
-  "cel-js": "0.8.2",
   "vendored_cel_spec_revision": "v0.20.0",
-  "last_refreshed_at": "2026-05-14"
+  "last_refreshed_at": "2026-06-12"
 }

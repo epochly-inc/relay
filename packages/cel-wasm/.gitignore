@@ -1,0 +1,20 @@
+# Rust build artifacts (the wasm is a build output; WS3 makes it a signed,
+# reproducibly-built evidence artifact -- not committed source). The vendored
+# fork is built as a path dependency (artifacts land in crate/target/), but
+# guard vendor/cel/target/ too in case it is built standalone.
+crate/target/
+vendor/cel/target/
+
+# Go oracle binary (built from oracle/main.go)
+conformance/oracle/celoracle
+
+# Conformance harness generated artifacts (re-derived by build.sh)
+conformance/harness/oracle_records.jsonl
+conformance/harness/results.jsonl
+conformance/harness/summary.json
+conformance/harness/py_dump.txt
+conformance/harness/js_dump.txt
+
+# Python
+__pycache__/
+*.py[cod]

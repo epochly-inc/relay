@@ -1237,6 +1237,30 @@ def test_event_log_entry_occurred_at_accepts_utc_z_form() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W1-017")
+def test_event_log_entry_occurred_at_accepts_lowercase_z() -> None:
+    """occurred_at accepts a lowercase 'z' offset (Py<->TS parity): the shared
+    RFC3339_DATETIME_PATTERN allows [Zz], and the TS checkRfc3339WithOffset
+    accepts it, so the Python occurred_at offset pre-check must too (an
+    uppercase-only 'Z' made Python reject a value TS accepts -- opposite verdict).
+    """
+    payload = _base_event_log_entry(occurred_at="2026-05-12t00:00:00z")
+    e = EventLogEntry.model_validate(payload)
+    assert e.occurred_at.tzinfo is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
+def test_replay_fixture_capture_clock_accepts_lowercase_z() -> None:
+    """ReplayFixture.capture_clock shares the same offset pre-check as
+    occurred_at, so it too must accept a lowercase 'z' (Py<->TS parity)."""
+    rf = ReplayFixture.model_validate(
+        _base_replay_fixture(capture_clock="2026-05-12t00:00:00z")
+    )
+    assert rf.capture_clock.tzinfo is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
 def test_event_log_entry_occurred_at_accepts_positive_offset() -> None:
     payload = _base_event_log_entry(occurred_at="2026-05-12T10:00:00+05:30")
     e = EventLogEntry.model_validate(payload)
@@ -2038,6 +2062,74 @@ def test_replay_fixture_capture_clock_rejects_naive_datetime_object() -> None:
     assert "capture_clock" in str(excinfo.value)
 
 
+# -----------------------------------------------------------------------------
+# MED #8 follow-on: the offset-required datetime fields (occurred_at,
+# capture_clock) MUST enforce the SAME strict RFC 3339 grammar as the plain
+# fields and give the SAME accept/reject verdict as the TS reader for identical
+# wire bytes (Py<->TS verdict parity, a P0 keystone). The TS twin
+# (checkRfc3339WithOffset, packages/schemas/typescript/src/envelopes.ts)
+# previously only required a trailing offset tail plus a Date.parse-permissive
+# finiteness check, so it accepted RFC-2822-ish strings carrying an offset tail,
+# hour 24, missing seconds, colon-less offsets, and a trailing newline that the
+# Python anchored ``Rfc3339Datetime`` regex (\A..\Z) rejects. These constants
+# are the byte-for-byte mirror of STRICT_OFFSET_REJECTS / STRICT_OFFSET_ACCEPTS
+# in packages/schemas/typescript/test/envelopes.test.ts.
+# -----------------------------------------------------------------------------
+
+_STRICT_OFFSET_REJECTS = [
+    "Mon May 12 2025 00:00:00",
+    "Mon, 12 May 2025 00:00:00 +02:00",
+    "2026-05-12T24:00:00Z",
+    "2026-05-12T00:00Z",
+    "2026-05-12T00:00:00+0200",
+    "2026-05-12T00:00:00Z\n",
+    "2026-05-12T00:00:00+02:00\n",
+]
+
+_STRICT_OFFSET_ACCEPTS = [
+    "2026-05-12T00:00:00Z",
+    "2026-05-12T10:00:00+05:30",
+    "2026-05-12T00:00:00-08:00",
+    "2026-05-12T00:00:00.123456+00:00",
+]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
+@pytest.mark.parametrize("bad", _STRICT_OFFSET_REJECTS)
+def test_event_log_entry_occurred_at_rejects_date_parse_permissive(bad: str) -> None:
+    payload = _base_event_log_entry(occurred_at=bad)
+    with pytest.raises(ValidationError) as excinfo:
+        EventLogEntry.model_validate(payload)
+    assert "occurred_at" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
+@pytest.mark.parametrize("good", _STRICT_OFFSET_ACCEPTS)
+def test_event_log_entry_occurred_at_accepts_canonical_offset(good: str) -> None:
+    e = EventLogEntry.model_validate(_base_event_log_entry(occurred_at=good))
+    assert e.occurred_at.tzinfo is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+@pytest.mark.parametrize("bad", _STRICT_OFFSET_REJECTS)
+def test_replay_fixture_capture_clock_rejects_date_parse_permissive(bad: str) -> None:
+    payload = _base_replay_fixture(capture_clock=bad)
+    with pytest.raises(ValidationError) as excinfo:
+        ReplayFixture.model_validate(payload)
+    assert "capture_clock" in str(excinfo.value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-024")
+@pytest.mark.parametrize("good", _STRICT_OFFSET_ACCEPTS)
+def test_replay_fixture_capture_clock_accepts_canonical_offset(good: str) -> None:
+    rf = ReplayFixture.model_validate(_base_replay_fixture(capture_clock=good))
+    assert rf.capture_clock.tzinfo is not None
+
+
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W1-024")
 def test_replay_fixture_capture_clock_round_trip_preserves_offset() -> None:
@@ -2768,3 +2860,194 @@ def test_error_envelope_rejects_unknown_field() -> None:
         ErrorEnvelope.model_validate(payload)
     msg = str(excinfo.value).lower()
     assert "unknown_field" in str(excinfo.value) or "extra" in msg
+
+
+# ---------------------------------------------------------------------------
+# VAL-W1-017 (re-hunt #7): datetime fields are strict like the TS reader.
+# The TS checkRfc3339 requires typeof === "string" (length >= 20) -- an integer
+# Unix epoch (or float/bool) is REJECTED. Pydantic's default coercion accepted
+# an int epoch, so the same wire bytes got opposite Py/TS verdicts.
+# ---------------------------------------------------------------------------
+
+
+def test_run_result_rejects_integer_epoch_decided_at() -> None:
+    """An integer Unix epoch in a datetime field is rejected (Py<->TS parity)."""
+    with pytest.raises(ValidationError):
+        RunResult.model_validate(_base_run_result(decided_at=1747008000))
+
+
+def test_run_result_rejects_float_epoch_and_bool_decided_at() -> None:
+    with pytest.raises(ValidationError):
+        RunResult.model_validate(_base_run_result(decided_at=1747008000.0))
+    with pytest.raises(ValidationError):
+        RunResult.model_validate(_base_run_result(decided_at=True))
+
+
+def test_run_result_rejects_too_short_datetime_string() -> None:
+    """The TS reader requires length >= 20; a bare date string is rejected."""
+    with pytest.raises(ValidationError):
+        RunResult.model_validate(_base_run_result(decided_at="2026-05-12"))
+
+
+def test_run_result_accepts_canonical_rfc3339_string() -> None:
+    """Every currently-valid RFC 3339 wire value still parses (no regression)."""
+    rr = RunResult.model_validate(
+        _base_run_result(decided_at="2026-05-12T00:00:00Z")
+    )
+    assert rr.decided_at.year == 2026
+    rr_offset = RunResult.model_validate(
+        _base_run_result(decided_at="2026-05-12T00:00:00+02:00")
+    )
+    assert rr_offset.decided_at.utcoffset() is not None
+
+
+# ---------------------------------------------------------------------------
+# MED #8 (re-hunt): Rfc3339Datetime Py<->TS VERDICT parity (P0 keystone).
+#
+# Finding #7 made Python reject int/float epochs and too-short strings, but it
+# still deferred the remaining RFC 3339 grammar to Pydantic's parser while the
+# TS isRfc3339Datetime deferred to Date.parse. Those two acceptance sets DIVERGE
+# in both directions: Date.parse accepts RFC-2822-ish forms
+# ('Mon May 12 2025 00:00:00', 'Wed, 12 May 2025 00:00:00 GMT') and an
+# out-of-range hour ('...T24:00:00Z') that Pydantic rejects; Pydantic accepts a
+# colon-less offset ('+0200') that strict RFC 3339 forbids. Same wire bytes ->
+# opposite verdicts.
+#
+# Fix: BOTH sides enforce ONE shared strict RFC 3339 grammar via an identical
+# regex (required 'T'/'t'/space separator, HH:MM:SS, optional fraction, and a
+# 'Z'/'z' or +/-HH:MM offset with a required colon). This corpus pins the SAME
+# accept/reject verdict in Python and TypeScript for the same wire bytes.
+# ---------------------------------------------------------------------------
+
+# (wire_value, expected_accept) -- the contract the two readers MUST agree on.
+_RFC3339_PARITY_CORPUS: list[tuple[object, bool]] = [
+    # Canonical RFC 3339 values every producer emits -- accept on BOTH sides.
+    ("2026-05-12T00:00:00Z", True),
+    ("2026-05-12T00:00:00+02:00", True),
+    ("2026-05-12T00:00:00-08:00", True),
+    ("2026-05-12T10:00:00+05:30", True),
+    ("2026-05-12T00:00:00.123456Z", True),
+    ("2026-05-12t00:00:00z", True),
+    ("2026-05-12 00:00:00+00:00", True),
+    # Permissive Date.parse extras that strict RFC 3339 forbids -- reject BOTH.
+    ("Mon May 12 2025 00:00:00", False),
+    ("Wed, 12 May 2025 00:00:00 GMT", False),
+    ("2026-05-12T24:00:00Z", False),  # hour 24 out of range
+    ("2026-05-12T00:00:00+0200", False),  # offset missing the ':' separator
+    ("2026-05-12T00:00:00", False),  # naive: no offset
+    # Non-string / too-short forms -- reject BOTH (finding #7 carried forward).
+    (1747008000, False),  # integer Unix epoch
+    (1747008000.5, False),  # float Unix epoch
+    ("2026-05-12", False),  # too short
+    # Calendar-invalid but grammar-valid dates (round-5 re-hunt): the
+    # day-of-month regex class accepts 01..31 for EVERY month and 29 for EVERY
+    # year. Python's Pydantic datetime parse REJECTS impossible calendar dates
+    # (proleptic Gregorian); JS Date.parse ROLLS THEM OVER to a finite instant
+    # (Feb 30 -> Mar 2) and would ACCEPT them, so the TS reader must apply the
+    # same calendar validation. Reject on BOTH; a real leap day stays accepted.
+    ("2025-02-30T00:00:00Z", False),  # February never has 30 days
+    ("2025-02-29T00:00:00Z", False),  # 2025 is NOT a leap year
+    ("2024-02-29T00:00:00Z", True),  # 2024 IS a leap year -> valid, accept BOTH
+    ("2025-04-31T00:00:00Z", False),  # April has 30 days
+    ("2025-06-31T00:00:00Z", False),  # June has 30 days
+    ("2025-09-31T00:00:00Z", False),  # September has 30 days
+    ("2025-11-31T00:00:00Z", False),  # November has 30 days
+    ("0000-01-01T00:00:00Z", False),  # year 0000: Python datetime MINYEAR is 1
+    ("0001-01-01T00:00:00Z", True),  # year 0001 is the MINYEAR boundary -> valid
+]
+
+
+def _python_rfc3339_accepts(value: object) -> bool:
+    """True iff the Python reader accepts ``value`` in a datetime field."""
+    try:
+        RunResult.model_validate(_base_run_result(decided_at=value))
+        return True
+    except ValidationError:
+        return False
+
+
+def _typescript_rfc3339_verdicts(values: list[object]) -> list[bool]:
+    """Run the TS parseRunResult against each candidate ``decided_at`` value.
+
+    Returns a list of accept/reject booleans, one per input, computed by the
+    compiled TS dist via a Node subprocess (mirrors the harness in
+    test_canonical_bytes_parity.py). Skips when Node or the dist are absent.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    repo_root = Path(__file__).resolve().parents[4]
+    ts_dist = repo_root / "packages" / "schemas" / "typescript" / "dist" / "envelopes.js"
+    if node is None or not ts_dist.exists():
+        pytest.skip(
+            "node binary or TS dist (packages/schemas/typescript/dist) absent"
+        )
+
+    base = {
+        "schema_version": "relay.run_result.v1",
+        "run_result_id": _new_uuid(),
+        "run_id": _new_uuid(),
+        "project_id": _new_uuid(),
+        "written_by": "control_plane",
+        "status": "accepted",
+        "evidence_bundle_id": _new_uuid(),
+        "manifest_commit_hash": VALID_MANIFEST_HASH,
+        "actor_identity_hash": VALID_ACTOR_HASH,
+        "decided_at": None,
+        "decision_epoch": 0,
+        "signature": VALID_SIGNATURE,
+        "signature_key_id": VALID_KEY_ID,
+        "error_priority_rule": "first_p0_then_highest_severity_then_earliest_span",
+    }
+    script = (
+        f"import {{ parseRunResult }} from {json.dumps(str(ts_dist))};\n"
+        "let buf='';process.stdin.on('data',c=>buf+=c);"
+        "process.stdin.on('end',()=>{const job=JSON.parse(buf);"
+        "const out=job.values.map(v=>{const p={...job.base,decided_at:v};"
+        "try{parseRunResult(p);return true;}catch(e){return false;}});"
+        "process.stdout.write(JSON.stringify(out));});"
+    )
+    proc = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        input=json.dumps({"base": base, "values": values}, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"node failed: rc={proc.returncode} {proc.stderr!r}")
+    verdicts = json.loads(proc.stdout.strip())
+    assert isinstance(verdicts, list) and len(verdicts) == len(values)
+    return [bool(v) for v in verdicts]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
+@pytest.mark.parametrize("value,expected_accept", _RFC3339_PARITY_CORPUS)
+def test_rfc3339_python_verdict_matches_contract(
+    value: object, expected_accept: bool
+) -> None:
+    """Python reader gives the contract-specified accept/reject for each value."""
+    assert _python_rfc3339_accepts(value) is expected_accept, repr(value)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W1-017")
+def test_rfc3339_python_typescript_verdict_parity() -> None:
+    """Python and TypeScript give the SAME accept/reject verdict for the SAME
+    wire bytes (P0 keystone). Authoritative when Node + TS dist are present."""
+    values = [v for v, _ in _RFC3339_PARITY_CORPUS]
+    expected = [exp for _, exp in _RFC3339_PARITY_CORPUS]
+    py_verdicts = [_python_rfc3339_accepts(v) for v in values]
+    ts_verdicts = _typescript_rfc3339_verdicts(values)
+    divergences = [
+        (values[i], py_verdicts[i], ts_verdicts[i], expected[i])
+        for i in range(len(values))
+        if py_verdicts[i] != ts_verdicts[i] or py_verdicts[i] != expected[i]
+    ]
+    assert not divergences, (
+        "Py<->TS RFC 3339 verdict divergence (value, py, ts, expected):\n"
+        + "\n".join(repr(d) for d in divergences)
+    )

@@ -20,6 +20,11 @@ name = "epochly-relay-replay-proxy"
 version = "0.0.0"
 description = "Relay localhost mitmproxy harness for rly replay run (W7.1)."
 readme = "README.md"
+# >=3.12: the workspace baseline. The harness denies egress at the proxy layer
+# (cassette-miss rejection), not via the SDK's ipaddress-based SSRF classifier,
+# so it has no CVE-2024-4032-dependent code. Its only first-party runtime dep is
+# `epochly-relay-sidecar` (>=3.12, loopback-only); the SDK is not on the runtime
+# path, and the CLI is a test-only extra. (The SDK/CLI keep >=3.12.4.)
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [
@@ -31,11 +36,15 @@ dependencies = [
   "cryptography>=42,<46",
   # Atomic file primitive (CA cert + key writes go through this so a
   # process kill mid-write does not leave a half-written PEM that the
-  # proxy might silently accept).
+  # proxy might silently accept). Also exposes `relay_sidecar.cassette`,
+  # the parser/digest the driver + mitmproxy addon use (moved here when the
+  # cli<->replay-proxy import cycle was broken). Genuine runtime dependency.
   "epochly-relay-sidecar",
-  # Cassette parser + canonical request digest. Used by the in-process
-  # driver and the mitmproxy addon to look up recorded responses.
-  "epochly-relay-cli",
+  # cassette_format.py imports `relay_contracts.canonical.jcs_canonicalize`
+  # (RFC 8785 JCS) at module scope to canonicalize the request/response digest
+  # inputs; relay_replay_proxy/__init__ re-exports cassette_format, so this is
+  # a hard import-time dependency (a standalone install fails without it).
+  "epochly-relay-contracts",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +63,13 @@ test = [
   # itself.
   "requests>=2.31",
   "aiohttp>=3.9",
+  # PRODUCTION does not import relay_cli (the cassette parser moved to
+  # relay_sidecar). The W7.5 contract tests, however, import the CLI's
+  # exit-code / replay-side-effect constants (relay_cli.exit_codes,
+  # relay_cli.commands.replay) to assert cross-package contract parity, so
+  # the CLI is declared here as a test-only dependency rather than in the
+  # runtime [project.dependencies] surface.
+  "epochly-relay-cli",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -68,3 +84,4 @@ include = [
 [tool.uv.sources]
 epochly-relay-sidecar = { workspace = true }
 epochly-relay-cli = { workspace = true }
+epochly-relay-contracts = { workspace = true }

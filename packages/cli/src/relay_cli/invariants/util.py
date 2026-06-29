@@ -43,6 +43,10 @@ from verify_self.finding_codes import (
     FINDING_CODES,
     RELAY_VERIFY_SELF_BANNED_COPY,
     RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP,
+    RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED,
+    RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH,
+    RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG,
+    RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE,
     RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING,
     RELAY_VERIFY_SELF_KILL_BY_NAME,
     RELAY_VERIFY_SELF_MOCK_IN_SOURCE,
@@ -133,6 +137,14 @@ _BASE_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = (
     "packages/verifier/tests",
     "packages/acef/tests",
     "packages/acef/upstream",
+    # cel-wasm conformance harness: the wasm driver, conformance
+    # comparator, and byte-parity dumps (per packages/cel-wasm/README.md).
+    # These are dev/test infrastructure that write conformance-result
+    # scratch output (RESULTS, SUMMARY, py_dump.txt), NOT control-plane
+    # business-logic persistence governed by spec section H. The
+    # atomic-primitives invariant governs business logic, not test
+    # harnesses -- the same reason packages/acef/upstream is excluded.
+    "packages/cel-wasm/conformance/harness",
     "apps/local-sidecar/tests",
     "apps/replay-proxy/tests",
     # Generated codegen
@@ -146,6 +158,15 @@ _BASE_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = (
     "packages/cli/node_modules",
     "packages/sdk-typescript/node_modules",
     "packages/schemas/typescript/node_modules",
+)
+
+# Directory NAMES that are excluded wherever they appear in the tree, not just
+# as a top-level prefix. ``_walk_root`` prunes any path containing one of these
+# as a segment so a nested ``packages/<pkg>/.venv`` (uv-created), a nested
+# ``node_modules``, an installed ``site-packages``, or ``__pycache__`` never
+# leaks third-party source into the invariant scans regardless of depth.
+_EXCLUDED_DIR_SEGMENTS: Final[frozenset[str]] = frozenset(
+    {"__pycache__", ".venv", "node_modules", "site-packages"}
 )
 
 # Subtree prefixes excluded ONLY from the "self-mention" checks
@@ -262,6 +283,34 @@ _SUGGESTED_FIX_BY_CODE: Final[dict[str, str]] = {
         "packages/verifier/src/relay_verifier/tsa.py after wiring RFC 3161 "
         "TimeStampResp ASN.1 verification (M09 / VAL-V2M09-016..019)."
     ),
+    RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG: (
+        "A Relay UDF (relay.coverage/relay.tool_arg/relay.schema_match) "
+        "probed through CEL returned the wrong verdict. The packaged "
+        "relay_cel_wasm.wasm is corrupt or stale -- re-vendor the artifact "
+        "from 'bash packages/cel-wasm/conformance/build.sh repro' and re-run "
+        "the conformance gate (ex-proto 100% + byte-parity)."
+    ),
+    RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED: (
+        "The wasm CEL engine EVALUATED a fenced dyn() instead of surfacing "
+        "RELAY-CEL-002 / RELAY-CEL-PROFILE-DYN-DISABLED. The Relay profile "
+        "fence is missing or broken in the packaged wasm -- re-build the "
+        "artifact via 'bash packages/cel-wasm/conformance/build.sh repro' and "
+        "verify the profile-fence conformance cases pass."
+    ),
+    RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH: (
+        "The loaded relay_cel_wasm.wasm sha256 does not match the pinned "
+        "WASM_PINNED_SHA256 in relay_contracts.wasm_artifact. The shipped "
+        "artifact is tampered or stale -- re-vendor the reproducible build "
+        "('bash packages/cel-wasm/conformance/build.sh repro') so the on-disk "
+        "wasm hashes to the pinned record."
+    ),
+    RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE: (
+        "The packaged CEL wasm engine (relay_cel_wasm.wasm) is absent or "
+        "unloadable. Install a relay_contracts wheel that ships the wasm "
+        "package data, or run 'bash packages/cel-wasm/conformance/build.sh "
+        "build' in a from-source checkout so WasmCelEvaluator can load the "
+        "single CEL engine."
+    ),
 }
 
 
@@ -342,8 +391,15 @@ def _walk_root(
     for path in candidates:
         if path.suffix not in exts:
             continue
-        # Drop __pycache__ early.
-        if "__pycache__" in path.parts:
+        # Drop virtualenv / vendored-dependency / installed-package / bytecode
+        # subtrees at ANY depth. The prefix-based _is_excluded list only catches
+        # these at the repo root (e.g. top-level ".venv"); a nested
+        # ``packages/<pkg>/.venv`` created by ``uv run`` in a package dir, a
+        # nested ``node_modules``, or an installed ``site-packages`` would
+        # otherwise leak third-party source into every check (false-positive
+        # atomic-primitives / no-todo-fixme on pip's own code), breaking the
+        # keystone gate. A path-segment match excludes them wherever they sit.
+        if _EXCLUDED_DIR_SEGMENTS.intersection(path.parts):
             continue
         yield path
 

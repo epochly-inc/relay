@@ -1,0 +1,17 @@
+# Pinned toolchain for the reproducible cel-wasm build (ADR WS3).
+#
+# The wasm that produces audit-grade Relay evidence must be byte-reproducible
+# across machines. rustc codegen changes between releases, so the compiler
+# version is a build input that has to be fixed -- the conformance/build.sh
+# --remap-path-prefix recipe makes the EMBEDDED PATHS machine-independent, but
+# only a pinned toolchain makes the CODEGEN machine-independent. CI and release
+# builds resolve to exactly this version (rustup reads this file when cargo runs
+# in crate/); `targets` makes rustup install the wasm target automatically.
+#
+# Bumping this is a deliberate change: it produces a new reproducible hash, so it
+# must land with a refreshed build.sh repro baseline and (once signing exists) a
+# re-signed artifact + transparency-log entry. Not a routine dependency bump.
+[toolchain]
+channel = "1.93.1"
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

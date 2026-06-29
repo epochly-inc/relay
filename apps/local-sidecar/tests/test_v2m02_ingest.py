@@ -404,7 +404,7 @@ async def test_ingest_contract_results_batch_accepts(
                 "contract_id": "contract-a",
                 "contract_version": "1",
                 "outcome": "pass",
-                "evaluation_engine_version": "cel-python@1.0.0",
+                "evaluation_engine_version": "cel-wasm@1.0.0",
                 "evaluated_at": "2026-05-17T00:00:00.000Z",
             },
             {
@@ -414,7 +414,7 @@ async def test_ingest_contract_results_batch_accepts(
                 "contract_version": "1",
                 "outcome": "fail",
                 "severity": "p1",
-                "evaluation_engine_version": "cel-python@1.0.0",
+                "evaluation_engine_version": "cel-wasm@1.0.0",
                 "evaluated_at": "2026-05-17T00:00:00.000Z",
             },
         ],

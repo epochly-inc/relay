@@ -7,8 +7,11 @@
 //   F1  PKIStatus gate skipped on non-number status. tsa.ts only rejected
 //       when `typeof statusVal === "number"`; a non-granted status decoded
 //       as a string (large INTEGER) or absent (undefined, malformed
-//       TSTInfo) slipped the gate. Python (rfc3161_client verify.py:210-212)
-//       raises VerificationError on ANY status != GRANTED/GRANTED_WITH_MODS.
+//       TSTInfo) slipped the gate. Python (rfc3161_client verify.py:209)
+//       raises VerificationError on ANY status != GRANTED(0) -- INCLUDING
+//       grantedWithMods(1), which the TS gate must reject too for verdict
+//       parity (the upstream digitorus/timestamp lib does not validate
+//       GRANTED_WITH_MOD).
 //
 //   F2  leaf->root chain check omitted the cert validity window at the TSA
 //       genTime. _verifyLeafChainsToTrustRoots verified signature chaining
@@ -229,9 +232,11 @@ describe("F1 PKIStatus gate fails closed on non-granted status", () => {
   // decodes as a string under @peculiar/asn1-schema, and a malformed TSTInfo
   // yields undefined. Python rejects all of these (rfc3161_client verify.py
   // PKIStatus(...) raises on out-of-range; decode raises on malformed).
-  test("granted(0) and grantedWithMods(1) are accepted", () => {
+  test("only granted(0) is accepted; grantedWithMods(1) is rejected (Py parity)", () => {
     expect(_isAcceptablePkiStatus(0)).toBe(true);
-    expect(_isAcceptablePkiStatus(1)).toBe(true);
+    // rfc3161_client verify.py:209 rejects EVERY status != GRANTED(0), so
+    // grantedWithMods(1) must NOT pass the TS gate (verdict parity).
+    expect(_isAcceptablePkiStatus(1)).toBe(false);
   });
 
   test("non-granted numeric status is rejected", () => {
@@ -292,6 +297,58 @@ print(json.dumps({"token": token, "bundle_digest_hex": digest_hex,
     });
     expect(r.outcome).toBe("invalid");
     expect(r.reason).not.toBe("");
+  });
+
+  test("grantedWithMods(1) status TSR is rejected end-to-end (Py<->TS parity)", () => {
+    // rfc3161_client verify.py:209 rejects EVERY PKIStatus != GRANTED(0),
+    // INCLUDING grantedWithMods(1) (the upstream digitorus/timestamp lib does
+    // not validate GRANTED_WITH_MOD). An otherwise-valid grantedWithMods TSR
+    // is therefore 'invalid' on Python; the TS gate MUST reject it too or the
+    // offline verifier would PASS a bundle the Python verifier FAILS (keystone
+    // invariant #11 verdict split). This is the exact regression closed here.
+    const fx = runPython(
+      PY_CHAIN_HELPERS + PY_TSR_STATUS_BUILDER + PY_VERIFY +
+      `
+decided_at = "2026-05-15T12:34:56Z"
+gen_time = decided_at
+digest_hex = "0" * 64
+from cryptography.hazmat.primitives import serialization
+# Cert window RELATIVE to gen_time (not wall-clock) so the chain is valid AT
+# the timestamp time forever -- the ONLY rejection cause is the PKIStatus gate,
+# never a wall-clock cert expiry that could mask a future regression.
+g = _dt.datetime.fromisoformat(gen_time[:-1] + "+00:00")
+nb = g - _dt.timedelta(days=30); na = g + _dt.timedelta(days=30)
+leaf_sk, leaf_cert, root_cert = make_chain(nb, na)
+tsr = build_tsr_with_status(leaf_sk=leaf_sk, leaf_cert=leaf_cert,
+    bundle_digest_hex=digest_hex, gen_time_iso_z=gen_time, status_name="granted_with_mods")
+token = {
+  "version": 1, "policy_oid": "1.3.6.1.4.1.601.10.3.1",
+  "message_imprint": {"hash_algorithm": "sha256", "hashed_message_hex": digest_hex},
+  "serial_number": "424242", "gen_time": gen_time, "tsa_signature_alg": "ES256",
+  "tsr_der_b64u": b64u(tsr),
+}
+root_pem = root_cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+py_outcome, py_reason = py_verify(token, digest_hex, decided_at, root_pem)
+print(json.dumps({"token": token, "bundle_digest_hex": digest_hex,
+  "decided_at": decided_at, "tsa_root_pem": root_pem,
+  "py_outcome": py_outcome, "py_reason": py_reason}))
+`,
+    );
+    // Python source of truth: rejects grantedWithMods.
+    expect(fx.py_outcome).toBe("invalid");
+
+    const r = validateTsaToken({
+      token: fx.token,
+      bundleDigestHex: fx.bundle_digest_hex,
+      decidedAt: fx.decided_at,
+      chainCerts: null,
+      extraTrustedRootsPem: Buffer.from(fx.tsa_root_pem, "utf-8"),
+    });
+    expect(r.outcome).toBe("invalid");
+    // Assert the rejection is specifically the PKIStatus gate (tsr_status_1),
+    // NOT an incidental cert-window/chain failure -- so this test fails loudly
+    // if TS ever re-accepts grantedWithMods(1) and proceeds to chain checks.
+    expect(r.reason).toContain("tsr_status_1");
   });
 });
 

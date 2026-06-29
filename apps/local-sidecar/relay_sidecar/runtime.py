@@ -86,7 +86,7 @@ from fastapi import FastAPI, Request
 # evaluator rather than duplicating the 50 ms wall-clock budget logic
 # in the sidecar (no-duplicate-implementation guard in
 # test_audit_v3_redos_publish::test_v3m5_archive_bomb_cap_regression_lock).
-from relay.redaction_budget import (
+from relay_schemas.redaction_budget import (
     REDACTION_REGEX_BUDGET_MS,
     RelayBudgetExceededError,
     evaluate_matcher_budget,
@@ -96,7 +96,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
 from .db import DEFAULT_READER_COUNT, SidecarDatabase
-from .errors import RelaySQLiteBusyExhausted
+from .errors import (
+    RELAY_SIDECAR_DB_CORRUPT_CODE,
+    RelayDiskFullError,
+    RelaySQLiteBusyExhausted,
+)
 from .health import HealthState, _register_health_routes
 from .lockfile import relay_home, resolve_lockfile_path
 from .manifest_enforcement import (
@@ -140,6 +144,118 @@ def _sha256_canonical(body: bytes) -> str:
     hyphen form. The legacy ``sha256:<hex>`` (colon) form is rejected.
     """
     return "sha256-" + hashlib.sha256(body).hexdigest()
+
+
+# In-memory idempotency-cache bounds (DoS hardening for the same attack
+# class as ``_prune_nonce_store``/``MAX_ISSUED_NONCES`` in health.py and the
+# rate-limit-bucket stale sweep in ``_rate_limit_state`` below). The HTTP
+# ``Idempotency-Key`` is attacker-controlled with effectively unlimited
+# cardinality (26-char Crockford ULID grammar); without bounds an
+# authenticated client can stream distinct keys to grow
+# ``runtime.idempotency_store`` without limit, each entry retaining the full
+# response_body -> authenticated memory-exhaustion DoS. The DB-backed
+# ``idempotency_records`` table already carries a 24h TTL (spec B.2); the
+# in-memory map mirrors the SAME TTL so the two stay consistent (a key still
+# replays its cached response within the window) plus a hard size cap.
+IDEMPOTENCY_RECORD_TTL_S: float = 24 * 60 * 60  # 24h, matches the DB TTL.
+MAX_IDEMPOTENCY_RECORDS: int = 4096  # mirrors MAX_ISSUED_NONCES style.
+
+# Key under which each in-memory idempotency record carries its insertion
+# stamp (``runtime._now_epoch_s()`` value). Read only by the prune helper;
+# ``_response_for_existing`` ignores it, so adding it is response-neutral.
+_IDEMPOTENCY_STORED_AT_KEY: str = "_stored_at_epoch_s"
+
+
+def _prune_idempotency_store(
+    store: dict[str, dict[str, dict[str, Any]]],
+    *,
+    now: float,
+    ttl_s: float = IDEMPOTENCY_RECORD_TTL_S,
+    max_entries: int = MAX_IDEMPOTENCY_RECORDS,
+) -> None:
+    """Bound the in-memory idempotency cache in place (DoS hardening).
+
+    Structurally mirrors ``health._prune_nonce_store``: two reclamation
+    passes, both mutating ``store`` directly. ``store`` is the nested
+    ``surface -> {key -> record}`` map; a record carries its insertion stamp
+    under ``_IDEMPOTENCY_STORED_AT_KEY``.
+
+      1. TTL sweep: drop every record whose age ``now - stored_at`` exceeds
+         ``ttl_s``. The DB-backed row for the same key has the SAME 24h TTL
+         and is itself expired, so retaining the in-memory copy is pure leak
+         (a replay past the TTL re-executes rather than returning stale
+         cache). A record missing the stamp (e.g. a record hydrated from the
+         DB before stamping) is treated as just-inserted (age 0) so it is
+         never dropped by the sweep.
+      2. Size cap: if more than ``max_entries`` records survive the TTL
+         sweep, evict the OLDEST (smallest ``stored_at``) records until the
+         cap holds. This bounds memory even for a client that streams many
+         distinct keys inside the TTL window. Records missing a stamp sort
+         as newest (treated as age 0) so a just-inserted record survives.
+
+    Empty per-surface dicts are removed so the outer map does not retain
+    empty surface shells.
+    """
+
+    def _stored_at(record: dict[str, Any]) -> float:
+        raw = record.get(_IDEMPOTENCY_STORED_AT_KEY)
+        if isinstance(raw, int | float):
+            return float(raw)
+        # Missing/garbage stamp: treat as just-inserted so it is neither
+        # swept by the TTL pass nor preferentially evicted by the cap.
+        return now
+
+    # (1) TTL sweep.
+    for surface in list(store.keys()):
+        per_surface = store[surface]
+        expired_keys = [
+            key
+            for key, record in per_surface.items()
+            if (now - _stored_at(record)) > ttl_s
+        ]
+        for key in expired_keys:
+            del per_surface[key]
+        if not per_surface:
+            del store[surface]
+
+    # (2) Size cap: evict oldest-first across all surfaces until at/under cap.
+    flat = [
+        (surface, key, _stored_at(record))
+        for surface, per_surface in store.items()
+        for key, record in per_surface.items()
+    ]
+    overflow = len(flat) - max_entries
+    if overflow > 0:
+        flat.sort(key=lambda triple: triple[2])  # oldest first
+        for surface, key, _stamp in flat[:overflow]:
+            bucket = store.get(surface)
+            if bucket is not None:
+                bucket.pop(key, None)
+                if not bucket:
+                    del store[surface]
+
+
+def _hydrated_stored_at(expires_at: Any, now: float) -> float:
+    """Insertion stamp for a DB-hydrated idempotency record.
+
+    A row hydrated from ``idempotency_records`` must expire in the in-memory
+    cache exactly WHEN its DB row does -- not 24h after hydration -- so the
+    in-memory TTL stays consistent with the authoritative DB ``expires_at``.
+    Since ``expires_at == stored_at + TTL``, the in-memory stamp is
+    ``expires_at - TTL``. Falls back to ``now`` (a fresh stamp) on a missing or
+    unparseable ``expires_at`` -- a safe degradation that, at worst, slightly
+    delays eviction without serving a past-TTL row (the DB query already
+    filtered expired rows).
+    """
+    if isinstance(expires_at, str) and expires_at:
+        try:
+            return (
+                datetime.fromisoformat(expires_at).timestamp()
+                - IDEMPOTENCY_RECORD_TTL_S
+            )
+        except ValueError:
+            return now
+    return now
 
 
 # Fields appended to an evidence-bundle record AFTER its canonical digest
@@ -3801,17 +3917,45 @@ def build_runtime_app(
             DB-backed table). Returns None on a genuine miss."""
             # In-memory map: surface -> {key: {digest, status, body}}.
             store = runtime.idempotency_store.setdefault(surface, {})
+            now_s = float(_now_epoch_s())
             rec = store.get(key)
+            if rec is not None:
+                # Enforce the in-memory TTL on SERVE: an entry past its 24h TTL
+                # must be a miss (re-execute) rather than replay a stale
+                # response. _prune_idempotency_store only runs after stores, so
+                # a hit between prunes could otherwise return an expired record.
+                stamp = rec.get(_IDEMPOTENCY_STORED_AT_KEY)
+                if (
+                    isinstance(stamp, int | float)
+                    and (now_s - float(stamp)) > IDEMPOTENCY_RECORD_TTL_S
+                ):
+                    del store[key]
+                    rec = None
             if rec is None:
                 # BUG-A2 fix: cache miss falls back to the DB-backed table
-                # using the SAME canonical_key derivation as the writer.
+                # using the SAME canonical_key derivation as the writer. The DB
+                # query already excludes expired rows.
                 db_rec = await _lookup_idempotency_db(
                     surface=surface, user_key=key
                 )
                 if db_rec is not None:
-                    # Hydrate the in-memory map so subsequent replays in
-                    # this process avoid the DB round-trip.
+                    # Stamp the hydrated copy with the DB row's real insertion
+                    # time (expires_at - TTL) so it expires in-memory exactly
+                    # when the DB row does, not 24h later.
+                    expires_at = db_rec.pop("expires_at", None)
+                    db_rec[_IDEMPOTENCY_STORED_AT_KEY] = _hydrated_stored_at(
+                        expires_at, now_s
+                    )
                     store[key] = db_rec
+                    # Bound the map after hydration too (the store path is not
+                    # the only way a record enters the in-memory cache).
+                    _prune_idempotency_store(
+                        runtime.idempotency_store, now=now_s
+                    )
+                    # Return the freshly-fetched record even if the size cap
+                    # evicted it from the in-memory map: it is a valid (DB
+                    # source-of-truth) response, so replay it rather than
+                    # re-execute.
                     rec = db_rec
             return rec
 
@@ -3901,11 +4045,20 @@ def build_runtime_app(
         canonical_key = _canonical_idempotency_key(
             surface=surface, user_key=user_key
         )
+        # The idempotency_records table carries a 24h ``expires_at`` (spec B.2);
+        # serving a record past its TTL would replay a stale response instead of
+        # re-executing. The key is UNIQUE so this returns 0 or 1 row -- fetch it
+        # then enforce the TTL by PARSING the timestamp. A lexicographic string
+        # compare is UNSAFE across mixed fractional/whole-second RFC3339 forms
+        # (e.g. "...00Z" sorts AFTER "...00.5Z"), so an expired row could
+        # otherwise compare as live and be replayed.
+        now_dt = datetime.now(tz=UTC)
         try:
             reader = db.acquire_reader()
             async with reader.execute(
-                "SELECT request_digest, response_status, response_body "
-                "FROM idempotency_records WHERE idempotency_key = ?",
+                "SELECT request_digest, response_status, response_body, "
+                "expires_at FROM idempotency_records "
+                "WHERE idempotency_key = ?",
                 (canonical_key,),
             ) as cur:
                 row = await cur.fetchone()
@@ -3913,7 +4066,15 @@ def build_runtime_app(
             return None
         if row is None:
             return None
-        request_digest, response_status, response_body_text = row
+        request_digest, response_status, response_body_text, expires_at = row
+        # TTL check (parsed, not lexicographic). An expired OR unparseable
+        # expires_at is a miss -- re-execute rather than replay a stale/invalid
+        # row (matches the corrupted-body handling below).
+        try:
+            if datetime.fromisoformat(expires_at) <= now_dt:
+                return None
+        except (TypeError, ValueError):
+            return None
         try:
             response_body: Any = (
                 json.loads(response_body_text)
@@ -3928,6 +4089,10 @@ def build_runtime_app(
             "request_digest": request_digest,
             "response_status": int(response_status),
             "response_body": response_body,
+            # Transient: consumed by _lookup_existing to stamp the hydrated
+            # in-memory copy so it expires WHEN the DB row does (popped before
+            # the record is cached).
+            "expires_at": expires_at,
         }
 
     async def _store_idempotency(
@@ -3975,7 +4140,20 @@ def build_runtime_app(
             "request_digest": digest,
             "response_status": response_status,
             "response_body": response_body,
+            # DoS hardening: stamp insertion time so the in-memory cache can
+            # be TTL-swept and size-capped by _prune_idempotency_store (the
+            # DB row carries the SAME 24h TTL). Read only by the prune
+            # helper; _response_for_existing ignores it.
+            _IDEMPOTENCY_STORED_AT_KEY: _now_epoch_s(),
         }
+        # Bound the in-memory cache after every store, mirroring the
+        # nonce-store prune (_prune_nonce_store) and the rate-limit bucket
+        # sweep (_rate_limit_state). The just-inserted record above is the
+        # newest entry, so the size-cap eviction (oldest-first) never drops
+        # it and a legitimate immediate replay always finds its result.
+        _prune_idempotency_store(
+            runtime.idempotency_store, now=float(_now_epoch_s())
+        )
         # VAL-IDEMP-002: finalize the in-flight reservation installed by
         # _check_idempotency. The in-memory record is written ABOVE first,
         # so any loser woken by the event immediately finds the stored
@@ -5170,12 +5348,152 @@ def build_runtime_app(
         ).encode("utf-8")
         commit_hash = _sha256_canonical(canonical)
         manifest_id = body.get("manifest_id") or f"mfst-{uuid.uuid4().hex}"
-        # Audit fix (2026-05-17 P0): parent Manifest envelope pins
-        # ``relay.manifest_parent.v1`` (envelopes.yaml:847) to avoid
-        # colliding with ManifestVersion's ``relay.manifest.v1``
-        # literal (envelopes.yaml:236). Prior implementation used the
-        # same literal for both, violating the Pydantic-discriminator
-        # contract.
+
+        # Parse the declared command_hashes from the body up front (pure
+        # parse, no side effects). They are registered in-memory below, AFTER
+        # the durable write succeeds. The list is filtered to the sha256-
+        # wire form so the later register_commands call cannot raise on it.
+        commands = body.get("commands") or []
+        declared_hashes: list[str] = []
+        if isinstance(commands, list):
+            for cmd in commands:
+                if isinstance(cmd, dict):
+                    ch = cmd.get("command_hash")
+                    if isinstance(ch, str) and ch.startswith("sha256-"):
+                        declared_hashes.append(ch)
+
+        # F5 (manifest persistence): persist the ManifestVersion anchor row to
+        # ``manifest_versions`` FIRST, as the durable gate, so the DB-backed
+        # three-anchor handoff lookup (handoff._manifest_is_active_or_in_grace)
+        # can find it (keystone invariant #4). The prior implementation
+        # registered the manifest in memory and then wrapped this write in
+        # ``contextlib.suppress(Exception)``: a failed write returned HTTP 201
+        # with the commit_hash while the DB row was absent -- an in-memory/DB
+        # split-brain (GET worked via the in-memory views, but the handoff
+        # lookup found nothing). We now make durable persistence the gate: on
+        # failure we surface a structured 5xx and register NOTHING in memory,
+        # so there is no split-brain in either direction.
+        manifest_version_id = f"mv-{uuid.uuid4().hex}"
+        db = runtime.database
+        write_result = None
+        if db is not None:
+            try:
+                write_result = await db.transactional_db_write_raw(
+                    table="manifest_versions",
+                    row={
+                        "manifest_version_id": manifest_version_id,
+                        "manifest_id": manifest_id,
+                        "project_id": (
+                            body.get("project_id", "") or "default"
+                        ),
+                        "commit_hash": commit_hash,
+                        "schema_version": "relay.manifest.v1",
+                        "effective_at": _now_iso_z(),
+                    },
+                    natural_key=commit_hash,
+                    natural_key_column="commit_hash",
+                )
+            except RelaySQLiteBusyExhausted as exc:
+                # SQLITE_BUSY budget exhausted -> registered RELAY-SQLITE-001
+                # (503). We build the CANONICAL ErrorEnvelope here rather than
+                # re-raising to the global RelaySQLiteBusyExhausted handler:
+                # that handler returns ``exc.to_envelope()``, which is NOT a
+                # canonical ErrorEnvelope (it omits schema_version/
+                # blocked_surface/retry_advice/request_id/trace_id and carries
+                # the forbidden ``error_class`` field, which the closed
+                # ErrorEnvelope schema rejects). Nothing is registered in
+                # memory yet, so there is no split-brain.
+                return JSONResponse(
+                    status_code=exc.http_status,
+                    content=_build_error_envelope(
+                        code=exc.code,
+                        http_status=exc.http_status,
+                        message=exc.message,
+                        blocked_surface=_MANIFEST_CREATE_SURFACE,
+                        retry_advice="after_retry_after",
+                        details={
+                            "manifest_id": manifest_id,
+                            "commit_hash": commit_hash,
+                            "attempts": exc.attempts,
+                        },
+                    ),
+                    # retry_advice=after_retry_after MUST be backed by a real
+                    # Retry-After header (roborev e19ec7c). SQLite-busy is a
+                    # transient write-contention condition; advise a 1 s backoff.
+                    headers={**_rate_limit_headers_for(request), "Retry-After": "1"},
+                )
+            except RelayDiskFullError as exc:
+                # ENOSPC mid-write -> registered RELAY-SIDECAR-011 (507).
+                return JSONResponse(
+                    status_code=exc.http_status,
+                    content=_build_error_envelope(
+                        code=exc.code,
+                        http_status=exc.http_status,
+                        message=exc.message,
+                        blocked_surface=_MANIFEST_CREATE_SURFACE,
+                        retry_advice="after_retry_after",
+                        details={
+                            "manifest_id": manifest_id,
+                            "commit_hash": commit_hash,
+                        },
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Any other persistence failure (schema drift, IntegrityError,
+                # OperationalError, etc.). Do NOT swallow -- a silent 201 with
+                # a missing manifest_versions row is exactly the F5 split-brain.
+                # Surface a structured 5xx (registered RELAY-SIDECAR-010 local
+                # sidecar-database error code; the concrete failure class is
+                # recorded in details) and register NOTHING in memory.
+                return JSONResponse(
+                    status_code=500,
+                    content=_build_error_envelope(
+                        code=RELAY_SIDECAR_DB_CORRUPT_CODE,
+                        http_status=500,
+                        message=(
+                            "manifest_versions persistence failed; manifest "
+                            "registration was not made durable"
+                        ),
+                        blocked_surface=_MANIFEST_CREATE_SURFACE,
+                        retry_advice="after_retry_after",
+                        details={
+                            "manifest_id": manifest_id,
+                            "commit_hash": commit_hash,
+                            "error_class": type(exc).__name__,
+                        },
+                    ),
+                    headers=_rate_limit_headers_for(request),
+                )
+
+        # F5 follow-on (orphan manifest_id): the raw writer dedups on
+        # ``commit_hash`` (its natural_key_column), but the manifest_versions
+        # uniqueness constraint is UNIQUE(manifest_id, commit_hash) (migration
+        # 0006) and an auto-generated manifest_id is NOT part of the dedupe key.
+        # On an idempotent re-post -- the same body re-submitted WITHOUT a
+        # manifest_id generates a fresh random manifest_id each time -- the
+        # writer finds the existing commit_hash row and inserts NOTHING for our
+        # freshly-generated manifest_id; returning that id would orphan it (no
+        # durable manifest_versions row). Adopt the EXISTING row's manifest_id
+        # so the returned/registered id ALWAYS resolves to a persisted row.
+        # (When the body DOES carry a manifest_id it is part of commit_hash, so
+        # the existing row's manifest_id equals ours and this is a no-op.)
+        if db is not None and write_result is not None and write_result.idempotent:
+            reader = db.acquire_reader()
+            async with reader.execute(
+                "SELECT manifest_id FROM manifest_versions "
+                "WHERE commit_hash = ? LIMIT 1",
+                (commit_hash,),
+            ) as cur:
+                existing_row = await cur.fetchone()
+            if existing_row is not None:
+                manifest_id = str(existing_row[0])
+
+        # Durable row committed (or no DB attached, e.g. pure-asgi unit tests)
+        # -> now register the derived in-memory views. Audit fix (2026-05-17
+        # P0): parent Manifest envelope pins ``relay.manifest_parent.v1``
+        # (envelopes.yaml:847) to avoid colliding with ManifestVersion's
+        # ``relay.manifest.v1`` literal (envelopes.yaml:236).
         runtime.manifests[manifest_id] = {
             "schema_version": "relay.manifest_parent.v1",
             "manifest_id": manifest_id,
@@ -5193,64 +5511,31 @@ def build_runtime_app(
             "written_by": "control_plane",
             "effective_at": _now_iso_z(),
         }
-        # Audit fix (2026-05-17 P0): seed the ManifestRegistry with
-        # declared command_hashes (if the body carries them) so the
-        # newly-created manifest can serve as the manifest_commit_hash
-        # anchor for subsequent ingest. Prior implementation never
-        # seeded the registry, breaking the keystone invariant #3
-        # (manifest as source of truth for declared commands).
-        commands = body.get("commands") or []
-        if isinstance(commands, list):
-            declared_hashes: list[str] = []
-            for cmd in commands:
-                if isinstance(cmd, dict):
-                    ch = cmd.get("command_hash")
-                    if isinstance(ch, str) and ch.startswith("sha256-"):
-                        declared_hashes.append(ch)
-            if declared_hashes:
-                try:
-                    runtime.manifest_registry.register_commands(
-                        manifest_commit_hash=commit_hash,
-                        command_hashes=declared_hashes,
-                    )
-                except (TypeError, ValueError):
-                    return JSONResponse(
-                        status_code=422,
-                        content=_build_error_envelope(
-                            code="RELAY-ING-001",
-                            http_status=422,
-                            message=(
-                                "manifest body 'commands[].command_hash' "
-                                "entries must be sha256-<hex> wire form"
-                            ),
-                            blocked_surface=_MANIFEST_CREATE_SURFACE,
+        # Audit fix (2026-05-17 P0): seed the ManifestRegistry with declared
+        # command_hashes so the newly-created manifest can serve as the
+        # manifest_commit_hash anchor for subsequent ingest (keystone
+        # invariant #3). ``declared_hashes`` is pre-filtered to the sha256-
+        # wire form, so register_commands cannot raise on it; the guard
+        # stays defensive against future drift.
+        if declared_hashes:
+            try:
+                runtime.manifest_registry.register_commands(
+                    manifest_commit_hash=commit_hash,
+                    command_hashes=declared_hashes,
+                )
+            except (TypeError, ValueError):
+                return JSONResponse(
+                    status_code=422,
+                    content=_build_error_envelope(
+                        code="RELAY-ING-001",
+                        http_status=422,
+                        message=(
+                            "manifest body 'commands[].command_hash' "
+                            "entries must be sha256-<hex> wire form"
                         ),
-                        headers=_rate_limit_headers_for(request),
-                    )
-        # Audit fix (2026-05-17 P0): persist the manifest_versions row
-        # via the writer queue so the three-anchor handoff lookup
-        # (handoff._manifest_is_active_or_in_grace) can find it. Prior
-        # implementation only wrote to the in-memory dict, so the
-        # newly-created manifest could never satisfy the keystone
-        # invariant #4 (three-anchor handoff) on subsequent ingest.
-        manifest_version_id = f"mv-{uuid.uuid4().hex}"
-        db = runtime.database
-        if db is not None:
-            with contextlib.suppress(Exception):
-                await db.transactional_db_write_raw(
-                    table="manifest_versions",
-                    row={
-                        "manifest_version_id": manifest_version_id,
-                        "manifest_id": manifest_id,
-                        "project_id": (
-                            body.get("project_id", "") or "default"
-                        ),
-                        "commit_hash": commit_hash,
-                        "schema_version": "relay.manifest.v1",
-                        "effective_at": _now_iso_z(),
-                    },
-                    natural_key=commit_hash,
-                    natural_key_column="commit_hash",
+                        blocked_surface=_MANIFEST_CREATE_SURFACE,
+                    ),
+                    headers=_rate_limit_headers_for(request),
                 )
         resp_body = {
             "manifest_id": manifest_id,
@@ -5373,7 +5658,7 @@ def build_runtime_app(
         # 50 ms per-input budget on either sentinel rejects publish
         # with HTTP 400 RELAY-REDACT-014. The budget evaluator is
         # imported from the sdk-python module
-        # (relay.redaction_budget.evaluate_matcher_budget); no
+        # (relay_schemas.redaction_budget.evaluate_matcher_budget); no
         # duplicate budget logic lives in the sidecar (single source of
         # truth for the 50 ms budget constant). The 1 KiB sentinel is
         # evaluated first so an obvious adversarial pattern is rejected
@@ -5859,11 +6144,19 @@ def run_uvicorn(
         loop="asyncio",
     )
     server = uvicorn.Server(config)
+    # Wire the live Server handle onto app.state BEFORE serving so the SIGUSR1
+    # force-stop and idle-shutdown paths (which read
+    # getattr(app.state, "uvicorn_server", None) to set .should_exit /
+    # .force_exit) can actually terminate this daemon. Without this the handle
+    # is None and those paths are inert (re-hunt #4).
+    app.state.uvicorn_server = server
     server.run()
 
 
 __all__ = [
     "DRAIN_RETRY_AFTER_S",
+    "IDEMPOTENCY_RECORD_TTL_S",
+    "MAX_IDEMPOTENCY_RECORDS",
     "DrainMiddleware",
     "RuntimeState",
     "SIDECAR_DB_FILENAME",

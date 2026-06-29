@@ -1,0 +1,302 @@
+# Relay v0.1 OSS -- cel-wasm single-engine conformance + reproducible-build gate.
+#
+# Purpose: gate the cel-wasm CEL engine (packages/cel-wasm) on two invariants
+# that the single-engine-WASM re-architecture depends on (ADR
+# planning/adr/cel-wasm-single-engine-rearchitecture.md, keystone invariant #16):
+#
+#   1. CONFORMANCE  -- the engine matches google/cel-spec on every runtime-
+#      evaluable, non-proto case: ex-proto conformance == 100.0%. Measured
+#      against the cel-go v0.28.1 oracle (conformance/oracle) over the pinned
+#      cel-spec corpus.
+#   2. BYTE-PARITY  -- the SAME .wasm produces byte-identical typed-canonical
+#      output under Python (wasmtime) and Node. This is byte-parity BY
+#      CONSTRUCTION (one engine, two hosts); a divergence is a P0.
+#   3. REPRODUCIBLE -- two clean builds via the deterministic recipe
+#      (conformance/build.sh: pinned toolchain + --remap-path-prefix) produce a
+#      byte-identical wasm with no machine-specific paths embedded. A signed,
+#      transparency-logged wasm is an evidence dependency, so a non-deterministic
+#      build is a P0 (the signature could not be reproduced offline).
+#
+# Until the WS4/WS5 cutover embeds this engine into packages/contracts (replacing
+# cel-python + @bufbuild/cel), this gate runs standalone on packages/cel-wasm
+# changes. It is the cel-wasm sibling of conformance-release-block.yml.
+#
+# Pinned inputs (bump deliberately -- a toolchain/corpus bump changes the
+# reproducible hash and the conformance baseline):
+#   - rustc          : crate/rust-toolchain.toml (1.93.1)
+#   - cel-go oracle  : conformance/oracle/go.mod (cel-go v0.28.1)
+#   - cel-spec corpus: google/cel-spec @ f91dffca5a862d017d923dc277528e0b88fefac7
+
+name: "cel-wasm-conformance"
+
+on:
+  pull_request:
+    branches:
+      - main
+    # VAL-CWC-P6REMOVE-011: NO `paths:` filter on the PR trigger. After the
+    # single-engine WASM cutover the wasm build is the SOLE CEL backend, so
+    # the conformance + reproducible-build + cel-wasm-aggregate gate must be
+    # release-blocking on EVERY pull request to main -- a change anywhere
+    # (contracts, contracts-typescript, schemas, or otherwise) cannot merge
+    # without the wasm gate running. A path-scoped required check is skipped
+    # (reported missing/pending) on PRs that miss the globs, which would let
+    # a consumer change merge ungated; running unconditionally closes that
+    # gap. The push trigger below stays path-scoped (push to main is not the
+    # merge gate).
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/cel-wasm/**"
+      - ".github/workflows/cel-wasm-conformance.yml"
+      # The m3-discipline-gate job ascii-lints + baseline-checks files under
+      # these trees, so a change to ONLY one of them must still trigger the
+      # gate (FINDING-3b: the gate previously triggered only on cel-wasm/**).
+      - "scripts/**"
+      - "tests/conformance/cel/**"
+      - "packages/contracts/**"
+      - "packages/contracts-typescript/**"
+      - "packages/schemas/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  CEL_SPEC_REF: "f91dffca5a862d017d923dc277528e0b88fefac7"
+
+jobs:
+  conformance-gate:
+    # build + oracle + run + ex-proto 100% floor + cross-host byte-parity.
+    name: "cel-wasm: conformance + byte-parity"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: "checkout relay"
+        uses: actions/checkout@v4
+
+      - name: "checkout cel-spec corpus (pinned)"
+        uses: actions/checkout@v4
+        with:
+          repository: "google/cel-spec"
+          ref: "${{ env.CEL_SPEC_REF }}"
+          path: "cel-spec"
+
+      - name: "install rust (pinned via crate/rust-toolchain.toml) + wasm32"
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal --target wasm32-unknown-unknown
+          rustc --version
+
+      - name: "setup go 1.25 (cel-go oracle)"
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: "setup node 22 (byte-parity host)"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: "setup python 3.12 + wasmtime (byte-parity host + harness)"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "create harness venv with wasmtime"
+        run: |
+          python3 -m venv .venv
+          ./.venv/bin/pip install --upgrade pip
+          ./.venv/bin/pip install wasmtime
+
+      - name: "run cel-wasm conformance gate (ex-proto 100% + byte-parity)"
+        env:
+          CEL_SPEC_CORPUS: "${{ github.workspace }}/cel-spec/tests/simple/testdata"
+        run: make -C packages/cel-wasm gate
+
+  reproducible-build:
+    # cmp-rebuild: two clean builds via the deterministic recipe must produce an
+    # identical sha256 with no machine-specific paths embedded. Lighter than the
+    # conformance job (rust only -- no Go/Node/Python/corpus needed).
+    name: "cel-wasm: reproducible build"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: "checkout relay"
+        uses: actions/checkout@v4
+
+      - name: "install rust (pinned) + wasm32"
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal --target wasm32-unknown-unknown
+          rustc --version
+
+      - name: "cmp-rebuild (two clean builds -> identical wasm)"
+        run: make -C packages/cel-wasm repro
+
+  m3-discipline-gate:
+    # M3 P3CORPUS discipline gate: ASCII-only source + manifest command
+    # declarations + no-baseline-regression for WS-E and WS-G deliverables.
+    #
+    # This job runs on the same path triggers as the conformance jobs so a
+    # new M3 file with non-ASCII bytes or a missing manifest command is caught
+    # at PR time. It does NOT alter the existing cel-spec corpus suites.
+    name: "cel-wasm: M3 discipline (ASCII + manifest + baseline)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: "checkout relay"
+        uses: actions/checkout@v4
+
+      - name: "setup python 3.12"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "setup node 22 (cross-host parity host)"
+        # The WS-J fuel-exhaustion cross-host parity step below invokes `node`
+        # as a subprocess (the Python pytest drives the Node harness to capture
+        # the Node-host envelope bytes). Pin node 22 to match the conformance-gate
+        # job rather than relying on the runner's default node.
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: "install uv"
+        run: pip install uv
+
+      - name: "install Python workspace dependencies"
+        run: uv sync --all-packages
+
+      - name: "install rust (pinned via crate/rust-toolchain.toml) + wasm32"
+        # The WS-E corpus guard tests below instantiate RelayCel(), which loads
+        # the wasm from the gitignored crate/target/.../release artifact (or
+        # $CEL_WASM). A clean runner has no built artifact, so the wasm-loading
+        # plumbing tests would fail without this build. Mirror the
+        # conformance-gate job's pinned toolchain (crate/rust-toolchain.toml).
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal --target wasm32-unknown-unknown
+          rustc --version
+
+      - name: "build cel-wasm (deterministic recipe) for wasm-loading tests"
+        # Produces packages/cel-wasm/crate/target/wasm32-unknown-unknown/release/
+        # relay_cel_wasm.wasm via the reproducible build.sh recipe. Exported as
+        # CEL_WASM for the subsequent steps so the loader resolves the freshly
+        # built artifact (FINDING-3a).
+        run: make -C packages/cel-wasm build
+
+      - name: "ascii-lint: M3 source deliverables (LC_ALL=C grep)"
+        # Checks that the WS-E and WS-G text files contain no non-ASCII bytes.
+        # Binary .wasm files are excluded. Grep exit 1 (no matches) = PASS.
+        run: |
+          result=0
+          for f in \
+            scripts/generate-relay-udf-via-cel-corpus.py \
+            tests/conformance/cel/test_udf_via_cel_byte_match_runner.py \
+            tests/conformance/cel/test_udf_via_cel_corpus.py \
+            packages/cel-wasm/conformance/harness/udf_via_cel_cross_host.mjs \
+            packages/cel-wasm/conformance/harness/fuel_exhaustion_cross_host.mjs \
+            tests/conformance/cel/test_fuel_exhaustion_cross_host_envelope_parity.py \
+            packages/contracts/src/relay_contracts/wasm_artifact.py \
+            packages/contracts/src/relay_contracts/wasm_backed_evaluator.py \
+            "packages/contracts/src/relay_contracts/_wasm/relay_cel_wasm.py" \
+            packages/contracts/tests/test_wasm_loader_package_data.py \
+            packages/contracts/tests/test_wasm_package_data.py \
+            packages/contracts-typescript/src/wasm-artifact.ts \
+            packages/contracts-typescript/test/udf_via_cel_cross_host.test.ts \
+            packages/contracts-typescript/test/wasm_package_data.test.ts
+          do
+            if [ -f "$f" ]; then
+              if LC_ALL=C grep -Pn '[^\x00-\x7F]' "$f"; then
+                echo "[ascii-lint] FAIL: non-ASCII bytes in $f"
+                result=1
+              fi
+            fi
+          done
+          if [ "$result" -eq 0 ]; then
+            echo "[ascii-lint] PASS: all M3 source deliverables are ASCII-only"
+          fi
+          exit $result
+
+      - name: "manifest discipline: M3 commands declared + deny policy"
+        # VAL-CWC-P3CORPUS-013: the four M3 command IDs must be present in
+        # .ops/manifest.yaml with egress_default: deny.
+        # Skips gracefully when .ops/manifest.yaml is absent (public-relay-only
+        # checkout without the workspace parent).
+        run: |
+          if [ ! -f ".ops/manifest.yaml" ]; then
+            echo "[manifest-discipline] SKIP: .ops/manifest.yaml absent (public-only checkout)"
+            exit 0
+          fi
+          uv run pytest \
+            packages/schemas/python/tests/test_v2m03_manifest.py::test_m3_manifest_commands_declared_with_deny_policy \
+            packages/schemas/python/tests/test_v2m03_manifest.py::test_m3_source_files_ascii_only \
+            -m plumbing -p no:cacheprovider -q
+
+      - name: "tier-1 plumbing: WS-E corpus guard tests (no baseline regression)"
+        # Runs the UDF-via-CEL corpus guard tests (tier-1 plumbing only) to
+        # confirm no baseline regression from M3. The known-failing test_w17_4_*
+        # tests are NOT plumbing-tier and are excluded by -m plumbing.
+        # CEL_WASM points the loader at the artifact built above (FINDING-3a) so
+        # the RelayCel()-instantiating plumbing tests have a loadable wasm on a
+        # clean runner.
+        env:
+          CEL_WASM: "${{ github.workspace }}/packages/cel-wasm/crate/target/wasm32-unknown-unknown/release/relay_cel_wasm.wasm"
+        run: |
+          uv run pytest \
+            tests/conformance/cel/test_udf_via_cel_corpus.py \
+            tests/conformance/cel/test_udf_via_cel_byte_match_runner.py \
+            -m plumbing -p no:cacheprovider -q
+
+      - name: "tier-1 plumbing: WS-G package-data tests (pinned sha guard)"
+        # VAL-CWC-P3CORPUS-012: verifies the vendored wasm sha256 matches the
+        # pinned constant WASM_PINNED_SHA256 in wasm_artifact.py.
+        run: |
+          uv run pytest \
+            packages/contracts/tests/test_wasm_package_data.py \
+            packages/contracts/tests/test_wasm_loader_package_data.py \
+            -m plumbing -p no:cacheprovider -q
+
+      - name: "tier-1 plumbing: WS-J fuel-exhaustion cross-host envelope parity"
+        # VAL-CWC-P7EDGE-004: the fuel-exhaustion RELAY-CEL-003 /
+        # RELAY-CEL-TIMEOUT-001 error envelope is BYTE-IDENTICAL when produced by
+        # the Python (wasmtime) host and the Node host loading the SAME .wasm. The
+        # pytest drives the FIXED fuel-exhausting expr+budget through the Python
+        # wasmtime host AND the sibling Node harness
+        # (conformance/harness/fuel_exhaustion_cross_host.mjs, which drives the
+        # wasm request JSON directly so it does not depend on the loader's
+        # optional fuel surface) and asserts the raw wire bytes match. CEL_WASM
+        # points both hosts at the artifact built above so they load the SAME
+        # bytes on a clean runner.
+        env:
+          CEL_WASM: "${{ github.workspace }}/packages/cel-wasm/crate/target/wasm32-unknown-unknown/release/relay_cel_wasm.wasm"
+        run: |
+          uv run pytest \
+            tests/conformance/cel/test_fuel_exhaustion_cross_host_envelope_parity.py \
+            -m plumbing -p no:cacheprovider -q
+
+  cel-wasm-aggregate:
+    # Single required-check job for branch protection (mirrors the
+    # conformance-release-block aggregate pattern -- GitHub's required-check
+    # surface does not gate on matrix/job-name expansion natively).
+    name: "cel-wasm-aggregate"
+    runs-on: ubuntu-latest
+    needs:
+      - conformance-gate
+      - reproducible-build
+      - m3-discipline-gate
+    if: always()
+    steps:
+      - name: "aggregate"
+        run: |
+          if [ "${{ needs.conformance-gate.result }}" != "success" ]; then
+            echo "cel-wasm: conformance + byte-parity gate failed (got ${{ needs.conformance-gate.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.reproducible-build.result }}" != "success" ]; then
+            echo "cel-wasm: reproducible-build gate failed (got ${{ needs.reproducible-build.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.m3-discipline-gate.result }}" != "success" ]; then
+            echo "cel-wasm: M3 discipline gate failed (got ${{ needs.m3-discipline-gate.result }})"
+            exit 1
+          fi
+          echo "cel-wasm: conformance + byte-parity + reproducible build + M3 discipline all passed"

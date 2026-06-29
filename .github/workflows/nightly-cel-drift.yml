@@ -1,12 +1,25 @@
-# Relay v0.1 OSS -- Nightly cel-spec drift workflow (VAL-W17-014).
+# Relay v0.1 OSS -- Nightly cel-spec drift workflow (VAL-W17-014,
+# VAL-CWC-P6REMOVE-012).
 #
-# Purpose: detect when the LATEST published versions of cel-python
-# (PyPI) and cel-js (npm) diverge from Relay's pinned conformance
-# expectations. Per-PR gates use the pinned versions in
-# tests/conformance/cel-spec/.upstream-pins.json; this workflow runs
-# nightly against `pip install --upgrade cel-python` and
-# `npm install cel-js@latest` so a silent upstream null-semantics
-# change cannot slip past us.
+# Purpose (post-M6 single-engine WASM cutover): the ONLY CEL engine is the
+# pinned wasm artifact (relay_cel_wasm, shipped as relay_contracts package
+# data) loaded under wasmtime (Python host) and Node (TS host). The legacy
+# Python and TypeScript CEL libraries were both REMOVED in M6, so there is
+# no upgradable upstream CEL package left to canary -- an "install the
+# latest upstream CEL package" step would monitor a dependency that no
+# longer exists (dead CI). This workflow is therefore RETARGETED to the
+# wasm engine's PINNED inputs:
+#
+#   1. The wasm artifact identity (sha256 of the shipped relay_cel_wasm
+#      package data) MUST equal the checked-in pin (WASM_PINNED_SHA256),
+#      and the wasmtime host runtime version is recorded as provenance.
+#   2. The cel-spec conformance corpus still runs on that wasm path as a
+#      nightly canary -- the corpus / environment can drift even though the
+#      engine is pinned.
+#   3. The upstream cel-spec commit pin (tests/conformance/cel-spec/
+#      PINNED_COMMIT.txt) MUST still resolve on the google/cel-spec remote;
+#      a deleted upstream tag is a meaningful drift signal for the corpus
+#      that the pinned wasm is measured against.
 #
 # On drift the workflow:
 #   1. Fails with a structured drift report saved as a workflow
@@ -16,8 +29,9 @@
 #      C-MIN-007 alerting-path reconciliation and contract VAL-W17-014).
 #
 # Spec citations:
-#   - contract VAL-W17-014
-#   - eng plan CQ1 "cel-python upgrades and changes null semantics"
+#   - contract VAL-W17-014 (nightly drift detection)
+#   - contract VAL-CWC-P6REMOVE-012 (wasm-only retarget; no removed-dep canary)
+#   - eng plan CQ1 (upstream CEL semantic / corpus drift detection)
 #   - CLAUDE.md keystone invariant 1 (manifest is source of truth)
 #
 # Manual trigger via workflow_dispatch is supported so an operator can
@@ -42,7 +56,7 @@ permissions: {}
 
 jobs:
   drift-detect:
-    name: "drift-detect: pinned-vs-latest cel-python + cel-js"
+    name: "drift-detect: pinned wasm engine + cel-spec corpus canary"
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -76,102 +90,82 @@ jobs:
           # epochly-relay-schemas, which is NOT published to PyPI. A plain
           # `pip install -e packages/contracts` therefore fails resolving
           # that dependency. uv sync installs the whole workspace
-          # (resolving siblings via the workspace) plus the PINNED
-          # cel-python from uv.lock -- exactly the baseline this drift
-          # check needs.
+          # (resolving siblings via the workspace) from uv.lock, including
+          # wasmtime + the packaged pinned wasm engine -- exactly the
+          # baseline this drift check needs. The TS host (Node) loads the
+          # same packaged wasm, so npm install pulls the workspace deps for
+          # the vitest corpus mirror below.
           uv sync --all-packages --all-extras
           npm ci --workspace=packages/contracts-typescript --include-workspace-root
 
-      - name: "Record pinned-version corpus result"
+      - name: "Record pinned wasm engine provenance + run corpus canary"
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p .drift
-          # Run the conformance suite under the PINNED versions and
-          # capture per-vector results. A non-zero exit on the pinned
-          # run is itself a bug (the pinned run should always pass);
-          # we surface it as drift.
+          # Run the cel-spec conformance suite on the PINNED wasm engine
+          # and capture per-vector results. A non-zero exit on the pinned
+          # run is itself a bug (the pinned run should always pass); we
+          # surface it as drift.
           uv run pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
             -q --tb=line --junitxml=.drift/pinned-pytest.xml || true
-          # Capture the pinned celpy + cel-js versions for diff context.
-          uv run python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/pinned-celpy.txt
-          # Capture the installed cel-js version via `npm ls`. Reading
-          # cel-js/package.json directly (require / require.resolve) hits
-          # ERR_PACKAGE_PATH_NOT_EXPORTED because cel-js's "exports" map
-          # blocks deep package.json access; and a hardcoded
-          # ./node_modules path breaks under npm workspace hoisting. npm
-          # ls reports the resolved installed version regardless. Capture
-          # WITHOUT aborting on a non-zero npm-ls exit (npm ls can exit
-          # non-zero when the installed version no longer satisfies the
-          # package.json pin while still printing a valid tree -- exactly
-          # the case the latest-upgrade pass below needs to test). Then
-          # FAIL FAST on an empty parsed version.
-          NPM_LS_OUT=$(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null || true)
-          CELJS_VER=$(echo "${NPM_LS_OUT}" | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')
-          if [ -z "${CELJS_VER}" ]; then
-            echo "RELAY-W17-3-CELJS-VERSION-LOOKUP-FAILED: npm ls returned no cel-js version" >&2
-            exit 1
-          fi
-          echo "cel-js ${CELJS_VER}" > .drift/pinned-celjs.txt
+          # Capture the single CEL-engine provenance: the PINNED wasm
+          # artifact (sha256 of the shipped relay_cel_wasm package data,
+          # plus the checked-in pin it must equal) and the wasmtime host
+          # runtime version. The legacy Python and TypeScript CEL libraries
+          # were REMOVED in M6, so there is no upstream-CEL-package version
+          # to record -- the wasm pin IS the engine identity.
+          uv run python -c "
+          import hashlib
+          import importlib.metadata as m
+          from relay_contracts.wasm_artifact import (
+              WASM_PINNED_SHA256,
+              resolve_packaged_wasm_path,
+          )
+          path = resolve_packaged_wasm_path()
+          actual = (
+              hashlib.sha256(path.read_bytes()).hexdigest()
+              if path is not None
+              else '<missing>'
+          )
+          print('relay_cel_wasm sha256', actual)
+          print('relay_cel_wasm pinned', WASM_PINNED_SHA256)
+          print('wasmtime', m.version('wasmtime'))
+          if actual != WASM_PINNED_SHA256:
+              raise SystemExit(
+                  'RELAY-W17-3-WASM-PIN-MISMATCH: packaged wasm does not '
+                  'hash to WASM_PINNED_SHA256'
+              )
+          " > .drift/wasm-engine.txt
+          cat .drift/wasm-engine.txt
 
-      - name: "Upgrade to LATEST cel-python and cel-js"
-        shell: bash
-        run: |
-          set -euo pipefail
-          # VAL-W17-014: install the LATEST published versions, NOT
-          # the pinned ones. The drift signal is "does the latest still
-          # match what the pinned passed?"
-          uv pip install --upgrade cel-python
-          # --no-save: install the LATEST cel-js into node_modules for the
-          # conformance run WITHOUT rewriting packages/contracts-typescript/
-          # package.json. A plain `npm install cel-js@latest` rewrites the
-          # pin "0.8.2" -> "^0.8.2", which the committed-state drift checker
-          # (invoked by test_drift_checker_exits_zero in the conformance
-          # pytest below) then flags as a spurious pin move. The drift run
-          # must test latest, not mutate the committed pin.
-          npm install cel-js@latest --no-save \
-            --workspace=packages/contracts-typescript --include-workspace-root
-          # --no-sync: a bare `uv run` re-syncs the env to uv.lock first,
-          # which would REVERT the `uv pip install --upgrade cel-python`
-          # above and silently test the pinned version instead of latest
-          # (defeating the drift signal). --no-sync runs against the
-          # already-upgraded env.
-          uv run --no-sync python -c "import importlib.metadata as m; print('cel-python', m.version('cel-python'))" > .drift/latest-celpy.txt
-          # Same as the pinned-version capture above: tolerate a non-zero
-          # npm-ls exit (after `npm install cel-js@latest --no-save`, the
-          # installed latest may not satisfy package.json's pinned spec,
-          # which makes npm ls exit non-zero while still printing the
-          # resolved tree -- exactly the case we want to TEST here).
-          NPM_LS_LATEST=$(cd packages/contracts-typescript && npm ls cel-js --depth=0 2>/dev/null || true)
-          CELJS_LATEST=$(echo "${NPM_LS_LATEST}" | grep -oE 'cel-js@[^ ]+' | head -1 | sed 's/cel-js@//')
-          if [ -z "${CELJS_LATEST}" ]; then
-            echo "RELAY-W17-3-CELJS-VERSION-LOOKUP-FAILED: npm ls returned no cel-js version after upgrade" >&2
-            exit 1
-          fi
-          echo "cel-js ${CELJS_LATEST}" > .drift/latest-celjs.txt
-
-      - name: "Run conformance under LATEST"
-        id: latest-run
+      - name: "Run cel-spec corpus on the wasm engine (Python + TS hosts)"
+        id: corpus-run
         shell: bash
         run: |
           set -euo pipefail
           set +e
-          # --no-sync: preserve the upgraded cel-python (see upgrade step).
-          uv run --no-sync pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
-            -q --tb=line --junitxml=.drift/latest-pytest.xml \
+          # Both hosts evaluate via the SAME pinned wasm. The Python run is
+          # the corpus canary on the wasmtime host; the vitest run is the
+          # corpus canary on the Node host. Byte-parity between them is by
+          # construction (one engine), so a divergence here is a real
+          # corpus/environment drift signal -- not an upstream-package bump
+          # (there is no upstream CEL package left to bump).
+          uv run pytest tests/conformance/cel-spec/test_w17_3_celspec_corpus.py \
+            -q --tb=line --junitxml=.drift/wasm-pytest.xml \
             -o "junit_logging=system-out" \
-            > .drift/latest-pytest.stdout 2>&1
+            > .drift/wasm-pytest.stdout 2>&1
           PY_EXIT=$?
           (cd packages/contracts-typescript && npx vitest run test/w17_3_celspec_corpus.test.ts \
-            --reporter=verbose --reporter=junit --outputFile=../../.drift/latest-vitest.xml \
-            > ../../.drift/latest-vitest.stdout 2>&1)
+            --reporter=verbose --reporter=junit --outputFile=../../.drift/wasm-vitest.xml \
+            > ../../.drift/wasm-vitest.stdout 2>&1)
           TS_EXIT=$?
           set -e
           echo "py_exit=${PY_EXIT}" >> "${GITHUB_OUTPUT}"
           echo "ts_exit=${TS_EXIT}" >> "${GITHUB_OUTPUT}"
-          echo "DRIFT-DETECTED: py_exit=${PY_EXIT} ts_exit=${TS_EXIT}"
+          echo "CORPUS-RUN: py_exit=${PY_EXIT} ts_exit=${TS_EXIT}"
 
-      - name: "Print conformance-under-latest logs"
+      - name: "Print corpus-canary logs"
         # The artifact upload is unreliable in this org (retention), so
         # surface the captured conformance output inline. This is the
         # primary diagnosis surface when py_exit/ts_exit are non-zero:
@@ -179,12 +173,9 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "===== pinned-celpy ====="; cat .drift/pinned-celpy.txt 2>/dev/null || true
-          echo "===== pinned-celjs ====="; cat .drift/pinned-celjs.txt 2>/dev/null || true
-          echo "===== latest-celpy ====="; cat .drift/latest-celpy.txt 2>/dev/null || true
-          echo "===== latest-celjs ====="; cat .drift/latest-celjs.txt 2>/dev/null || true
-          echo "===== latest-pytest.stdout ====="; cat .drift/latest-pytest.stdout 2>/dev/null || true
-          echo "===== latest-vitest.stdout (tail 80) ====="; tail -80 .drift/latest-vitest.stdout 2>/dev/null || true
+          echo "===== wasm-engine (pinned, sole CEL engine) ====="; cat .drift/wasm-engine.txt 2>/dev/null || true
+          echo "===== wasm-pytest.stdout ====="; cat .drift/wasm-pytest.stdout 2>/dev/null || true
+          echo "===== wasm-vitest.stdout (tail 80) ====="; tail -80 .drift/wasm-vitest.stdout 2>/dev/null || true
 
       - name: "Build drift report"
         if: always()
@@ -197,16 +188,9 @@ jobs:
             "_schema_version": 1,
             "report_kind": "celspec-drift",
             "generated_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
-            "pinned": {
-              "celpy": pathlib.Path(".drift/pinned-celpy.txt").read_text().strip() if pathlib.Path(".drift/pinned-celpy.txt").exists() else "<missing>",
-              "celjs": pathlib.Path(".drift/pinned-celjs.txt").read_text().strip() if pathlib.Path(".drift/pinned-celjs.txt").exists() else "<missing>",
-            },
-            "latest": {
-              "celpy": pathlib.Path(".drift/latest-celpy.txt").read_text().strip() if pathlib.Path(".drift/latest-celpy.txt").exists() else "<missing>",
-              "celjs": pathlib.Path(".drift/latest-celjs.txt").read_text().strip() if pathlib.Path(".drift/latest-celjs.txt").exists() else "<missing>",
-            },
-            "pytest_latest_stdout_tail": pathlib.Path(".drift/latest-pytest.stdout").read_text()[-4000:] if pathlib.Path(".drift/latest-pytest.stdout").exists() else "<missing>",
-            "vitest_latest_stdout_tail": pathlib.Path(".drift/latest-vitest.stdout").read_text()[-4000:] if pathlib.Path(".drift/latest-vitest.stdout").exists() else "<missing>",
+            "wasm_engine": pathlib.Path(".drift/wasm-engine.txt").read_text().strip() if pathlib.Path(".drift/wasm-engine.txt").exists() else "<missing>",
+            "pytest_wasm_stdout_tail": pathlib.Path(".drift/wasm-pytest.stdout").read_text()[-4000:] if pathlib.Path(".drift/wasm-pytest.stdout").exists() else "<missing>",
+            "vitest_wasm_stdout_tail": pathlib.Path(".drift/wasm-vitest.stdout").read_text()[-4000:] if pathlib.Path(".drift/wasm-vitest.stdout").exists() else "<missing>",
             "alert_label": "area:conformance-drift",
             "workflow_run_url": __import__("os").environ.get("GITHUB_SERVER_URL", "") + "/" + __import__("os").environ.get("GITHUB_REPOSITORY", "") + "/actions/runs/" + __import__("os").environ.get("GITHUB_RUN_ID", ""),
           }
@@ -229,7 +213,9 @@ jobs:
           # VAL-W17-010 nightly enforcement: the SHA recorded in
           # PINNED_COMMIT.txt MUST still resolve on
           # https://github.com/google/cel-spec. If google deletes the
-          # tag/branch, this fails with RELAY-CELSPEC-PIN-MISSING.
+          # tag/branch, this fails with RELAY-CELSPEC-PIN-MISSING. The
+          # pinned wasm engine is measured against this corpus, so a vanished
+          # upstream pin is a meaningful wasm-corpus drift signal.
           PIN=$(grep -v '^#' tests/conformance/cel-spec/PINNED_COMMIT.txt | grep -E '^[0-9a-f]{40}$' | head -1)
           echo "Resolving pin ${PIN} against google/cel-spec..."
           if ! git ls-remote https://github.com/google/cel-spec | grep -q "${PIN}"; then
@@ -241,7 +227,7 @@ jobs:
           echo "Pin ${PIN} resolves on upstream"
 
       - name: "Open GitHub issue on drift (area:conformance-drift)"
-        if: failure() || steps.latest-run.outputs.py_exit != '0' || steps.latest-run.outputs.ts_exit != '0' || steps.upstream-pin-check.outputs.pin_missing == 'true'
+        if: failure() || steps.corpus-run.outputs.py_exit != '0' || steps.corpus-run.outputs.ts_exit != '0' || steps.upstream-pin-check.outputs.pin_missing == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -249,15 +235,15 @@ jobs:
             let body;
             try {
               const report = fs.readFileSync('.drift/drift-report.json', 'utf-8');
-              body = "Nightly cel-spec conformance drift detected.\n\n" +
+              body = "Nightly cel-spec conformance drift detected (wasm-engine canary).\n\n" +
                 "## Drift report\n\n```json\n" + report + "\n```\n\n" +
                 "## Workflow run\n\n" +
                 "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n" +
                 "## Required action\n\n" +
-                "1. Inspect the latest-pytest.stdout and latest-vitest.stdout artifacts.\n" +
-                "2. Decide: was an upstream null-semantics or type-coercion change introduced?\n" +
-                "3. If yes: update tests/conformance/cel-spec/.upstream-pins.json (pinned versions) and refresh celspec_vectors.json + MANIFEST.sha256.\n" +
-                "4. If no: file an upstream issue against cel-python or cel-js.\n";
+                "1. Inspect the wasm-pytest.stdout and wasm-vitest.stdout artifacts.\n" +
+                "2. Decide: did the cel-spec corpus / environment drift, or did the upstream pin vanish?\n" +
+                "3. If the corpus drifted: re-run scripts/build-celspec-corpus.py and refresh celspec_vectors.json + relay-profile-filter.yaml + dropped-candidates.json + MANIFEST.sha256.\n" +
+                "4. If the upstream pin vanished: re-pin tests/conformance/cel-spec/PINNED_COMMIT.txt + .upstream-pins.json to a surviving commit and regenerate.\n";
             } catch (e) {
               body = "Drift report missing; see workflow run for stderr. Workflow URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}";
             }
@@ -306,11 +292,11 @@ jobs:
             }
 
       - name: "Fail workflow on drift"
-        if: steps.latest-run.outputs.py_exit != '0' || steps.latest-run.outputs.ts_exit != '0' || steps.upstream-pin-check.outputs.pin_missing == 'true'
+        if: steps.corpus-run.outputs.py_exit != '0' || steps.corpus-run.outputs.ts_exit != '0' || steps.upstream-pin-check.outputs.pin_missing == 'true'
         shell: bash
         run: |
           echo "RELAY-W17-3-DRIFT: workflow failing because drift was detected."
-          echo "py_exit=${{ steps.latest-run.outputs.py_exit }}"
-          echo "ts_exit=${{ steps.latest-run.outputs.ts_exit }}"
+          echo "py_exit=${{ steps.corpus-run.outputs.py_exit }}"
+          echo "ts_exit=${{ steps.corpus-run.outputs.ts_exit }}"
           echo "pin_missing=${{ steps.upstream-pin-check.outputs.pin_missing }}"
           exit 1

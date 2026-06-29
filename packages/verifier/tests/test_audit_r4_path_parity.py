@@ -86,6 +86,23 @@ def test_check_artifact_path_rejects_trailing_whitespace() -> None:
 
 
 @pytest.mark.plumbing
+def test_check_artifact_path_strip_set_matches_str_strip() -> None:
+    r"""The whitespace screen is str.strip(), which includes the C0/C1
+    separators \x1c-\x1f and \x85 (NEL) that JS String.trim() does NOT strip,
+    and EXCLUDES ﻿ (ZWNBSP) that trim() DOES. The TS port
+    (packages/verifier-typescript/src/bundle_paths.ts) mirrors this exact set
+    so the Py<->TS verdict is identical (round-... re-hunt HIGH)."""
+    for ws in ("\x1c", "\x1d", "\x1e", "\x1f", "\x85", "\xa0", " ", "　"):
+        assert check_artifact_path(f"{ws}foo.txt") is not None, repr(ws)
+        assert check_artifact_path(f"foo.txt{ws}") is not None, repr(ws)
+    # U+FEFF is NOT Python whitespace -> a leading BOM is accepted (not
+    # NFC-changing / absolute / traversal). The TS port must agree.
+    assert check_artifact_path("﻿foo.txt") is None
+    # A newline INSIDE the name (not leading/trailing) is not stripped -> OK.
+    assert check_artifact_path("a\nb.txt") is None
+
+
+@pytest.mark.plumbing
 def test_check_artifact_path_rejects_over_1024_utf8_bytes() -> None:
     """A path > 1024 UTF-8 bytes is rejected (TS parity)."""
     long_path = "a" * (MAX_ARTIFACT_PATH_BYTES + 1)

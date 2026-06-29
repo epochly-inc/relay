@@ -422,6 +422,10 @@ _SCOPE_STATE_FIXTURES: tuple[tuple[str, str], ...] = (
     ("union_scope_state_replay_case.json", "replay_case"),
     ("union_scope_state_gate_round.json", "gate_round"),
     ("union_scope_state_evidence_bundle.json", "evidence_bundle"),
+    # VAL-V2M01-036: union spans all six scope_kinds. eval_run and release
+    # close the Py<->TS parity gap (the TS guard previously omitted them).
+    ("union_scope_state_eval_run.json", "eval_run"),
+    ("union_scope_state_release.json", "release"),
 )
 
 
@@ -452,12 +456,12 @@ def test_scope_state_union_variant_byte_equal_python(
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W1-043")
 def test_scope_state_variants_have_distinct_digests() -> None:
-    """The four ScopeState variants MUST produce distinct canonical digests."""
+    """The six ScopeState variants MUST produce distinct canonical digests."""
     digests = {
         kind: _load_fixture_sha256(fixture)
         for fixture, kind in _SCOPE_STATE_FIXTURES
     }
-    assert len(set(digests.values())) == 4, (
+    assert len(set(digests.values())) == 6, (
         "VAL-W1-043: each ScopeState variant must produce a distinct digest; "
         f"observed={digests!r}"
     )
@@ -577,8 +581,10 @@ _CORPUS_FIXTURES: tuple[str, ...] = (
     "timestamp_z.json",
     "union_redaction_matcher_json_pointer.json",
     "union_redaction_matcher_regex.json",
+    "union_scope_state_eval_run.json",
     "union_scope_state_evidence_bundle.json",
     "union_scope_state_gate_round.json",
+    "union_scope_state_release.json",
     "union_scope_state_replay_case.json",
     "union_scope_state_run.json",
     "unknown_enum_value.json",
@@ -614,8 +620,8 @@ def test_every_corpus_fixture_has_sha256_sidecar() -> None:
     """
     fixtures = sorted(CORPUS_DIR.glob("*.json"))
     sidecars = sorted(CORPUS_DIR.glob("*.sha256"))
-    assert len(fixtures) == 13, (
-        f"VAL-W1-045: expected 13 corpus fixtures, found {len(fixtures)}: "
+    assert len(fixtures) == 15, (
+        f"VAL-W1-045: expected 15 corpus fixtures, found {len(fixtures)}: "
         f"{[f.name for f in fixtures]}"
     )
     assert len(sidecars) == len(fixtures), (

@@ -65,7 +65,7 @@ def _write_cassette(
     entries: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Write a minimal valid cassette under ``session_dir``."""
-    from relay_cli.cassette import (
+    from relay_sidecar.cassette import (
         CASSETTE_ENTRY_SCHEMA_VERSION,
         CASSETTE_HEADER_SCHEMA_VERSION,
         CassetteEntry,

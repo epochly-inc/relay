@@ -111,6 +111,47 @@ RELAY_VERIFY_SELF_TSA_NOT_IMPLEMENTED: Final[str] = (
 )
 
 # -----------------------------------------------------------------------------
+# CEL-engine invariant findings (M5 P5FLIP / WS-H cel_engine check;
+# VAL-CWC-P5FLIP-002..005)
+# -----------------------------------------------------------------------------
+#
+# The ``cel_engine`` check is a RUNTIME probe of the single packaged CEL wasm
+# engine (loaded via ``WasmCelEvaluator`` through the package-data resolver).
+# Each distinct failure cause gets its own code so remediation is targeted:
+#
+#   * a Relay UDF (relay.coverage / relay.tool_arg / relay.schema_match) probed
+#     through CEL returns the WRONG verdict (VAL-CWC-P5FLIP-002);
+#   * a fenced ``dyn()`` is NOT fenced -- the engine EVALUATED it instead of
+#     surfacing RELAY-CEL-002 / RELAY-CEL-PROFILE-DYN-DISABLED
+#     (VAL-CWC-P5FLIP-003);
+#   * the loaded-wasm sha256 does NOT match the pinned manifest sha
+#     (``WASM_PINNED_SHA256``) -- a tampered / stale artifact
+#     (VAL-CWC-P5FLIP-004);
+#   * the packaged ``.wasm`` is ABSENT or UNLOADABLE -- the check fails CLOSED
+#     with a structured finding rather than raising (VAL-CWC-P5FLIP-005).
+
+#: A Relay UDF probed through CEL returned the wrong verdict.
+RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG: Final[str] = (
+    "RELAY-VERIFY-SELF-CEL-ENGINE-UDF-WRONG"
+)
+
+#: A fenced ``dyn()`` was NOT fenced by the wasm engine (it evaluated instead of
+#: surfacing the Relay-profile fence).
+RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED: Final[str] = (
+    "RELAY-VERIFY-SELF-CEL-ENGINE-DYN-NOT-FENCED"
+)
+
+#: The loaded-wasm sha256 does not match the pinned manifest sha.
+RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH: Final[str] = (
+    "RELAY-VERIFY-SELF-CEL-ENGINE-SHA-MISMATCH"
+)
+
+#: The packaged CEL wasm artifact is absent or unloadable (fail-closed).
+RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE: Final[str] = (
+    "RELAY-VERIFY-SELF-CEL-ENGINE-WASM-UNLOADABLE"
+)
+
+# -----------------------------------------------------------------------------
 # Closed enum
 # -----------------------------------------------------------------------------
 
@@ -130,6 +171,10 @@ FINDING_CODES: Final[frozenset[str]] = frozenset(
         RELAY_VERIFY_SELF_SIGSTORE_NOT_IMPLEMENTED,
         RELAY_VERIFY_SELF_REKOR_NOT_IMPLEMENTED,
         RELAY_VERIFY_SELF_TSA_NOT_IMPLEMENTED,
+        RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG,
+        RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED,
+        RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH,
+        RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE,
     }
 )
 
@@ -138,6 +183,10 @@ __all__ = [
     "FINDING_CODES",
     "RELAY_VERIFY_SELF_BANNED_COPY",
     "RELAY_VERIFY_SELF_CANONICAL_WRITE_OUTSIDE_CP",
+    "RELAY_VERIFY_SELF_CEL_ENGINE_DYN_NOT_FENCED",
+    "RELAY_VERIFY_SELF_CEL_ENGINE_SHA_MISMATCH",
+    "RELAY_VERIFY_SELF_CEL_ENGINE_UDF_WRONG",
+    "RELAY_VERIFY_SELF_CEL_ENGINE_WASM_UNLOADABLE",
     "RELAY_VERIFY_SELF_GATE_INVARIANT_MISSING",
     "RELAY_VERIFY_SELF_KILL_BY_NAME",
     "RELAY_VERIFY_SELF_MOCK_IN_SOURCE",

@@ -84,14 +84,18 @@ def check_pass_at_n(
         Only the last ``n`` records are considered.
       - ``n``: window size; defaults to :data:`DEFAULT_N` (8).
 
-    Output: :class:`PassAtNResult`. ``accepted=False`` when
-    ``pass_count == 0`` or ``pass_count == n``; the failing edge is
-    captured in ``failing_edge``. ``accepted=True`` otherwise.
+    Output: :class:`PassAtNResult`. ``accepted=False`` only when the
+    FULL window of ``n`` runs landed on a single edge -- i.e.
+    ``observed == n`` and (``pass_count == n`` or ``pass_count == 0``);
+    the failing edge is captured in ``failing_edge``. ``accepted=True``
+    otherwise. A window shorter than ``n`` ("insufficient history") is
+    accepted regardless of outcome polarity: a shallow all-pass window
+    and a shallow all-fail window receive the same decision.
 
     The function never raises on empty input; an empty ``recent_runs``
-    produces ``pass_count == 0`` and ``failing_edge='all_fail'``
-    (vacuously degenerate; publish path may treat this as "insufficient
-    history" upstream).
+    is treated as insufficient history (``observed == 0 < n``) and is
+    accepted, symmetric with any other sub-``n`` window. The publish
+    path may still treat empty history as "insufficient" upstream.
     """
     if n <= 0:
         raise ValueError(f"n must be > 0, got {n}")
@@ -120,7 +124,13 @@ def check_pass_at_n(
             failing_edge="all_pass",
             run_set=run_set,
         )
-    if pass_count == 0:
+    # Symmetric with the all-pass edge above: an all-fail window is only
+    # degenerate when the FULL window of ``n`` runs landed on the fail
+    # side. A shallow window (``observed < n``) is "insufficient history"
+    # regardless of polarity, so it must not be rejected here -- otherwise
+    # a sub-``n`` all-fail set would be rejected while an equally shallow
+    # all-pass set is accepted.
+    if observed == n and pass_count == 0:
         return PassAtNResult(
             accepted=False,
             n=n,

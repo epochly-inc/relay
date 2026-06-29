@@ -51,7 +51,11 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from .bundle_paths import check_artifact_path
-from .canonical import bundle_digest, jcs_canonicalize
+from .canonical import (
+    bundle_digest,
+    jcs_canonicalize,
+    screen_noncanonicalizable,
+)
 from .key_lifecycle import (
     RELAY_EVID_041,
     RELAY_EVID_042,
@@ -208,6 +212,42 @@ _ALLOWED_NAMESPACE_KEYS: Final[frozenset[str]] = frozenset({"x-relay"})
 # source-grep guard).
 
 
+def _py_ascii(value: Any) -> str:
+    """ASCII-safe repr for attacker-controllable message operands (HIGH #4).
+
+    Equivalent to the builtin ``ascii()``: like ``repr()`` but every non-ASCII
+    code point is escaped (``\\xNN`` for cp<=0xff, ``\\uNNNN`` for cp<=0xffff,
+    ``\\U`` + 8 hex for astral). Plain ``repr()`` keeps PRINTABLE non-ASCII
+    verbatim while escaping non-printable non-ASCII (C1 controls, U+00A0,
+    format/separator chars like U+200B/U+2028/U+FEFF) -- a "printable"
+    distinction that depends on the Unicode database and cannot be mirrored
+    byte-for-byte by the TypeScript verifier (packages/verifier-typescript
+    bundle_validator.ts ``pyReprStr``). Message operands here -- namespace
+    keys, artifact ids, digests, field names -- are attacker-controllable, so
+    a divergence on an interior non-printable non-ASCII code point would make
+    the two verifiers emit non-identical ``message`` bytes for the same wire
+    input (a P0 Py<->TS parity break). Routing every operand through
+    ``ascii()`` removes the distinction: both runtimes escape ALL non-ASCII by
+    the same pure code-point-range rule. For ASCII operands the output is
+    byte-identical to ``repr()``/``!r``, so existing ASCII parity tests are
+    unaffected. Lists (e.g. ``unknown_keys``) render element-wise identically
+    to ``ascii([...])`` because ``ascii()`` recurses into the container.
+    """
+    return ascii(value)
+
+
+# The validate_bundle structured-error reason token shared by BOTH
+# canonicalisability hazards (non-BMP object key, out-of-safe-range integer).
+# The discriminating wire CODE and the byte-identical MESSAGE come from the
+# shared screen relay_verifier.canonical.screen_noncanonicalizable, which every
+# public verifier entrypoint uses so all fail closed identically across Python
+# and TypeScript (keystone invariant #11/#16). Detection helpers, the
+# safe-integer bound, the RELAY-CANON-* subcodes, and the rejection messages
+# now live in relay_verifier.canonical (single source of truth for both this
+# validator and the verifier.py signature entrypoints).
+_NON_CANONICALIZABLE_BUNDLE_REASON: Final[str] = "non_canonicalizable_bundle"
+
+
 @dataclass
 class ValidateBundleOptions:
     """Caller-supplied options that gate per-policy behaviors.
@@ -342,10 +382,12 @@ def classify_trust_anchor(trust_anchor_value: Any) -> str:
       * :data:`TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL` -- value equals the
         ``local_dev`` sentinel.
       * :data:`TRUST_ANCHOR_CLASS_RELAY_INC` -- value is a URL whose
-        host is ``relay.epochly.com`` AND whose path ends with
-        ``/.well-known/jwks.json``. The exact-path check defends against
-        a producer that points at an attacker-controlled path on the
-        Relay-Inc host (e.g. ``https://relay.epochly.com/evil``).
+        host is ``relay.epochly.com`` AND whose path is EXACTLY
+        ``/.well-known/jwks.json``. The exact-path check (equality, not
+        a suffix test) defends against a producer that points at an
+        attacker-controlled path on the Relay-Inc host (e.g.
+        ``https://relay.epochly.com/evil`` or
+        ``https://relay.epochly.com/attacker/path/.well-known/jwks.json``).
       * :data:`TRUST_ANCHOR_CLASS_BYO` -- any other non-empty string.
       * ``""`` -- value is missing, non-string, or empty. The caller
         emits :data:`RELAY_EVID_MISSING_TRUST_ANCHOR` separately.
@@ -362,9 +404,7 @@ def classify_trust_anchor(trust_anchor_value: Any) -> str:
     except ValueError:
         return TRUST_ANCHOR_CLASS_BYO
     host = (parsed.hostname or "").strip().lower()
-    if host == "relay.epochly.com" and parsed.path.endswith(
-        "/.well-known/jwks.json"
-    ):
+    if host == "relay.epochly.com" and parsed.path == "/.well-known/jwks.json":
         return TRUST_ANCHOR_CLASS_RELAY_INC
     return TRUST_ANCHOR_CLASS_BYO
 
@@ -552,17 +592,54 @@ def validate_bundle(
             code=RELAY_EVID_MISSING_TRUST_ANCHOR,
         )
 
+    # Record the wire signature count early so EVERY return path -- including
+    # the non-canonicalisable-bundle early return below -- carries it.
+    raw_sigs = bundle.get("signatures")
+    signatures_count = (
+        len(raw_sigs) if isinstance(raw_sigs, list) else 0
+    )
+    output["signatures_present"] = signatures_count
+
+    # --- Non-canonicalisable-bundle screen (keystone invariant #11/#16) ------
+    # A bundle carrying a value the JCS encoder cannot canonicalise to
+    # byte-identical bytes across runtimes -- a supplementary-plane (non-BMP,
+    # >= U+10000) object KEY, or an out-of-safe-range integer (abs > 2**53 - 1)
+    # -- would verify on one runtime and be rejected as tampered on the other.
+    # This screen runs BEFORE the over-cap signature check because a bundle
+    # whose canonical bytes are not even well-defined is the most fundamental
+    # failure (every downstream check is meaningless), and running first keeps
+    # the over-cap branch's diagnostic bundle_digest canonicalisation on
+    # canonicalisable payloads only (so its contextlib.suppress never silently
+    # swallows the screen's JCSEncodeError). It runs on the bundle MINUS the
+    # top-level 'signatures' field because every canonicalisation site
+    # (verify_bundle, _claim_digests_in_order, _compute_binding_digest)
+    # operates on that payload or a subset; a hazard confined to a signature
+    # entry is not a canonicalisation hazard. The detection + byte-identical
+    # (code, message) come from the shared
+    # relay_verifier.canonical.screen_noncanonicalizable so this validator and
+    # the verifier.py signature entrypoints fail closed IDENTICALLY across
+    # Python and TypeScript.
+    _payload_to_canon = {k: v for k, v in bundle.items() if k != "signatures"}
+    _hazard = screen_noncanonicalizable(_payload_to_canon)
+    if _hazard is not None:
+        _hazard_code, _hazard_message = _hazard
+        _append_error(
+            output,
+            reason=_NON_CANONICALIZABLE_BUNDLE_REASON,
+            message=_hazard_message,
+            code=_hazard_code,
+        )
+        claims = bundle.get("claims")
+        output["claims_count"] = len(claims) if isinstance(claims, list) else 0
+        output["overall"] = _compute_overall(output)
+        return output
+
     # --- Signature-count cap (VAL-V2M08-041) ---------------------------------
     # Per spec L.5 line 4481 bundles can carry up to 4 cross-signing
     # signatures. An over-cap bundle is rejected BEFORE per-signature
     # verification work runs (defends against DoS and against producers
     # abusing the cross-signing slot for non-signature data). The
     # signatures_checked[] array stays empty for the over-cap bundle.
-    raw_sigs = bundle.get("signatures")
-    signatures_count = (
-        len(raw_sigs) if isinstance(raw_sigs, list) else 0
-    )
-    output["signatures_present"] = signatures_count
     if signatures_count > MAX_BUNDLE_SIGNATURES:
         _append_error(
             output,
@@ -663,7 +740,7 @@ def validate_bundle(
                         reason="path_violation",
                         message=(
                             f"claim[{ci}].evidence_refs[{ri}] artifact_id "
-                            f"{artifact_id!r} rejected by path screen "
+                            f"{_py_ascii(artifact_id)} rejected by path screen "
                             f"({path_violation['path_violation']})"
                         ),
                         code=path_violation["code"],
@@ -682,7 +759,7 @@ def validate_bundle(
                         reason="artifact_unavailable",
                         message=(
                             f"claim[{ci}].evidence_refs[{ri}] artifact "
-                            f"{artifact_id!r} could not be resolved"
+                            f"{_py_ascii(artifact_id)} could not be resolved"
                         ),
                         code=RELAY_EVID_014,
                     )
@@ -695,8 +772,8 @@ def validate_bundle(
                         reason="artifact_digest_mismatch",
                         message=(
                             f"claim[{ci}].evidence_refs[{ri}] artifact "
-                            f"{artifact_id!r} digest mismatch: declared="
-                            f"{declared_digest!r} recomputed={recomputed!r}"
+                            f"{_py_ascii(artifact_id)} digest mismatch: declared="
+                            f"{_py_ascii(declared_digest)} recomputed={_py_ascii(recomputed)}"
                         ),
                         code=RELAY_EVID_014,
                     )
@@ -760,8 +837,8 @@ def validate_bundle(
                             message=(
                                 f"claim[{ci}].namespaces contains key(s) "
                                 f"outside the closed set "
-                                f"{sorted(_ALLOWED_NAMESPACE_KEYS)!r}: "
-                                f"{unknown_keys!r}"
+                                f"{_py_ascii(sorted(_ALLOWED_NAMESPACE_KEYS))}: "
+                                f"{_py_ascii(unknown_keys)}"
                             ),
                             code=RELAY_EVID_NAMESPACE_UNKNOWN,
                         )
@@ -789,7 +866,7 @@ def validate_bundle(
                             reason="evidence_ref_artifact_missing_from_manifest",
                             message=(
                                 f"claim[{ci}].evidence_refs[{ri}] digest "
-                                f"{ref_digest!r} is not present in the "
+                                f"{_py_ascii(ref_digest)} is not present in the "
                                 f"bundle's manifest (spec K line 4428); "
                                 f"manifest contains "
                                 f"{len(manifest_digests)} digest(s)"
@@ -809,8 +886,8 @@ def validate_bundle(
                 output,
                 reason="merkle_root_mismatch",
                 message=(
-                    f"declared merkle_root_hex {declared_merkle!r} does not "
-                    f"match recomputed root {recomputed_merkle!r}"
+                    f"declared merkle_root_hex {_py_ascii(declared_merkle)} does not "
+                    f"match recomputed root {_py_ascii(recomputed_merkle)}"
                 ),
                 code=RELAY_EVID_040,
             )
@@ -891,7 +968,7 @@ def validate_bundle(
                 "anchor (spec section AB); the validator refuses to fall "
                 "back to 'generated_at' or any sibling timestamp because "
                 "the TSA gen_time skew check binds to decided_at "
-                f"specifically. bundle fields present: {present_fields!r}"
+                f"specifically. bundle fields present: {_py_ascii(present_fields)}"
             ),
             code=RELAY_EVID_DECIDED_AT_MISSING,
         )
@@ -1003,7 +1080,7 @@ def validate_bundle(
                     output,
                     reason="signer_key_revoked_after_sign_time",
                     message=(
-                        f"key {primary_kid!r} was revoked at "
+                        f"key {_py_ascii(primary_kid)} was revoked at "
                         f"{life_result.signer_key_revoked_at}; bundle signed "
                         f"before revocation -- auditor decides acceptance"
                     ),

@@ -362,8 +362,15 @@ function ingestEvent(state: StreamState, event: unknown): void {
       // Anthropic's message_delta usage.output_tokens is the AUTHORITATIVE
       // CUMULATIVE final output count, not a per-event increment. Assign it
       // (do not add) so the running total is not double-counted with the
-      // message_start seed (VAL-ISO-020). Absent usage leaves the seed intact.
-      state.cumOutputTokens = asInt(getProp(usage, "output_tokens"));
+      // message_start seed (VAL-ISO-020). Only assign when output_tokens is
+      // actually a present number -- a usage block PRESENT but lacking
+      // output_tokens must NOT clobber the seed to 0 (asInt(undefined)===0).
+      // Mirrors the Python adapter's isinstance(int) guard (Py<->TS parity;
+      // round-7 re-hunt). Fully-absent usage already leaves the seed intact.
+      const outRaw = getProp(usage, "output_tokens");
+      if (typeof outRaw === "number" && Number.isFinite(outRaw)) {
+        state.cumOutputTokens = Math.trunc(outRaw);
+      }
     }
     const delta = getProp(event, "delta");
     const stopReason = asString(getProp(delta, "stop_reason"), "");

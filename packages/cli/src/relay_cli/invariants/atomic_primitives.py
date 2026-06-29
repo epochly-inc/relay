@@ -20,6 +20,7 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path, PurePosixPath
 from typing import Final
@@ -85,22 +86,105 @@ def _is_in_primitive_dir(rel_posix: str) -> bool:
     return _PRIMITIVE_DIR_TOKEN in PurePosixPath(rel_posix).parts
 
 
+# A documentation-string span: (start_line, start_col, end_line, end_col),
+# 1-based lines + 0-based columns, half-open on the end column (ast convention).
+DocStringSpan = tuple[int, int, int, int]
+
+
+def documentation_string_spans(
+    text: str, *, is_python: bool
+) -> tuple[DocStringSpan, ...]:
+    """Return the (line, col) SPANS covered by a STANDALONE string-expression
+    statement (a docstring or a bare string-literal "comment") in Python source.
+
+    A pattern match whose position falls INSIDE one of these spans is
+    documentation/prose, not an executable callsite -- e.g. a module docstring
+    that documents a grep guard across several lines.
+
+    CRITICAL: this targets ONLY bare string-expression STATEMENTS
+    (``ast.Expr`` whose value is a string constant). A string passed to
+    ``execute(...)`` is a Call ARGUMENT, and a string assigned to a variable is
+    an assignment value -- NEITHER is an ``ast.Expr`` statement, so a
+    triple-quoted canonical-table SQL write passed to ``execute(...)`` is NOT
+    suppressed and stays flagged (roborev a2adc74).
+
+    Returning COLUMN-precise spans (not whole line numbers) is load-bearing:
+    Python permits several simple statements on one physical line, so
+    ``"comment"; db.execute(q)`` puts a banned call on the SAME line as a bare
+    string statement. A whole-line suppression would mask that executable call;
+    a span check only suppresses a match inside the string's own columns
+    (roborev 9b94c47).
+
+    Non-Python sources (and any source ``ast.parse`` cannot handle) return an
+    empty tuple -- the per-line comment/backtick heuristics still apply there.
+    """
+    if not is_python:
+        return ()
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        # Unparseable / partial source: fall back to the per-line heuristics.
+        return ()
+    spans: list[DocStringSpan] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            const = node.value
+            start_line = const.lineno
+            start_col = const.col_offset
+            end_line = getattr(const, "end_lineno", start_line) or start_line
+            end_col = getattr(const, "end_col_offset", None)
+            if end_col is None:
+                # No end column available: fall back to the whole tail of the
+                # last line so the string is fully covered (conservative).
+                end_col = 1 << 30
+            spans.append((start_line, start_col, end_line, end_col))
+    return tuple(spans)
+
+
+def position_in_documentation_string(
+    line_no: int, col: int, spans: tuple[DocStringSpan, ...]
+) -> bool:
+    """True iff the (1-based ``line_no``, 0-based ``col``) position lies inside
+    one of the documentation-string ``spans`` (half-open on the end column)."""
+    for start_line, start_col, end_line, end_col in spans:
+        after_start = line_no > start_line or (
+            line_no == start_line and col >= start_col
+        )
+        before_end = line_no < end_line or (
+            line_no == end_line and col < end_col
+        )
+        if after_start and before_end:
+            return True
+    return False
+
+
 def _match_is_documentation(
-    line: str, match_start: int, *, sql: bool = False, slash_comment: bool = True
+    line: str,
+    match_start: int,
+    *,
+    sql: bool = False,
+    slash_comment: bool = True,
+    hash_comment: bool = True,
+    in_docstring: bool = False,
 ) -> bool:
     """Return True iff the match position appears inside a documentation context.
 
     Heuristics (each conservative; only fires when the match lives in
     explicit documentation syntax):
 
-      1. The leftmost non-whitespace character on the line is ``#`` or
-         ``//`` (when ``slash_comment=True``) (or ``--`` when ``sql=True``)
-         -> entire line is a comment -> documentation.
-      2. A standalone ``#`` (Python/shell comment), ``//`` (TS/JS comment,
-         only when ``slash_comment=True``), or SQL ``--`` (when
-         ``sql=True``) appears in the line BEFORE the match position, NOT
-         inside a string literal -> the match is inside a trailing
-         comment.
+      1. The leftmost non-whitespace character on the line is ``#`` (when
+         ``hash_comment=True``) or ``//`` (when ``slash_comment=True``) (or
+         ``--`` when ``sql=True``) -> entire line is a comment ->
+         documentation.
+      2. A standalone ``#`` (Python/shell comment, only when
+         ``hash_comment=True``), ``//`` (TS/JS comment, only when
+         ``slash_comment=True``), or SQL ``--`` (when ``sql=True``) appears
+         in the line BEFORE the match position, NOT inside a string literal
+         -> the match is inside a trailing comment.
       3. The match span is wholly enclosed by a backtick pair on the
          line -> the match is a backtick-quoted reference.
       4. (``sql=True`` only) The match is enclosed in a quoted string
@@ -146,10 +230,36 @@ def _match_is_documentation(
     ``slash_comment=False`` (SQL uses ``--``, not ``//``). The default
     ``slash_comment=True`` preserves the historical TS/JS behavior for any
     caller that does not specify a language.
+
+    ``hash_comment`` selects whether ``#`` is a line-comment marker for the
+    scanned language. It MUST be ``True`` only for languages where ``#``
+    actually begins a comment -- Python (``.py``/``.pyi``), shell, and SQL.
+    For TS/JS (``.ts``/``.tsx``/``.js``/``.jsx``/``.mjs``/``.cjs``) it MUST
+    be ``False``: in those languages ``#`` is a PRIVATE-FIELD sigil (e.g.
+    ``class C { #n = 1 }``) or a shebang, NOT a comment. Treating ``#`` as a
+    comment on TS/JS source makes a real bypass invisible -- a production
+    line such as ``class C { #n = 1; m(){ db.execute(q); } }`` would be
+    falsely classified as documentation and the keystone-#8 violation
+    SKIPPED, going vacuous for that line. The default ``hash_comment=True``
+    preserves the historical Python/shell/SQL behavior for any caller that
+    does not specify a language (including the control-plane-write SQL/Python
+    caller).
     """
+    # Heuristic 0: the line lies INSIDE a multi-line string literal (module /
+    # function docstring or block string). A pattern match there is PROSE, not
+    # executable code -- e.g. a module docstring that documents a grep guard with
+    # a multi-line ``...`` RST span mentioning a canonical-row write pattern. This
+    # is computed once per file with a real tokenizer (see
+    # documentation_string_spans) and is the correct replacement for the
+    # removed backtick-token-counting heuristic, which both produced false
+    # negatives (a "``" inside an executable string literal) and could not see
+    # cross-line spans (re-hunt cli-inv-1 follow-up: the heuristic-4 removal
+    # regressed the legitimate multi-line-docstring exclusion).
+    if in_docstring:
+        return True
     # Heuristic 1: full-line comment.
     stripped = line.lstrip()
-    if stripped.startswith("#"):
+    if hash_comment and stripped.startswith("#"):
         return True
     if slash_comment and stripped.startswith("//"):
         return True
@@ -172,7 +282,7 @@ def _match_is_documentation(
             if backslashes % 2 == 1:
                 continue
             quote_count += 1
-        elif ch == "#" and quote_count % 2 == 0 or (
+        elif (hash_comment and ch == "#" and quote_count % 2 == 0) or (
             slash_comment
             and ch == "/"
             and quote_count % 2 == 0
@@ -198,15 +308,18 @@ def _match_is_documentation(
     for m in _BACKTICK_RE.finditer(line):
         if m.start() < match_start < m.end():
             return True
-    # Heuristic 4: unclosed double-backtick to the left of the match
-    # (RST inline-code spanning a multi-line docstring continuation
-    # line). The ``...`` opener may live on this line with no closer
-    # before line-end; the closer typically appears on the next physical
-    # line. If we see ``...``  with content but the match position is
-    # AFTER the opener and BEFORE any matching closer on this line, the
-    # match is inside the inline-code span and is documentation.
-    left = line[:match_start]
-    return "``" in left and left.count("``") % 2 == 1
+    # NOTE: a prior "Heuristic 4" treated an ODD count of ``"``"`` tokens to the
+    # LEFT of the match as an unclosed RST inline-code span -> documentation. But
+    # a ``"``"`` inside an ordinary string literal (e.g. ``marker = "``"; ...``)
+    # is not RST, so a banned db.execute( / cur.execute( on the same physical
+    # line was masked vacuously (re-hunt cli-inv-1). A whole-tree scan found no
+    # source line that relied on it -- legitimate RST inline code is already
+    # suppressed by heuristic 3's closed-backtick-pair check above. Genuine
+    # multi-line RST docstring continuation, if ever needed, must be handled with
+    # real cross-line triple-quote/comment-region tracking in run(), never by
+    # counting backtick tokens on a single executable line. The function
+    # therefore falls through to a definite NOT-documentation verdict.
+    return False
 
 
 def run(repo_root: Path) -> tuple[str, list[Finding]]:
@@ -236,25 +349,51 @@ def run(repo_root: Path) -> tuple[str, list[Finding]]:
         # classified as documentation and the keystone-#8 violation would
         # be skipped, making this guard vacuous for that line.
         slash_is_comment = path.suffix not in (".py", ".pyi")
+        # ``#`` is a line comment ONLY in Python (and shell/SQL); in the
+        # TS/JS family (``.ts``/``.tsx``/``.js``/``.jsx``/``.mjs``/``.cjs``)
+        # ``#`` is a private-field sigil / shebang, NOT a comment. We must
+        # NOT treat it as a comment for those sources -- otherwise a
+        # production line like ``class C { #n = 1; m(){ db.execute(q); } }``
+        # would be falsely classified as documentation and the keystone-#8
+        # violation would be skipped, making this guard vacuous for that line.
+        hash_is_comment = path.suffix in (".py", ".pyi")
+        # Positions inside a standalone documentation-string statement
+        # (docstring / bare string "comment") are prose, not executable
+        # callsites -- computed once per file via AST so a banned token mentioned
+        # in a docstring is not flagged, while a string passed to execute(...) or
+        # a banned call after ``"x"; ...`` on the same line still IS flagged.
+        doc_spans = documentation_string_spans(
+            text, is_python=path.suffix in (".py", ".pyi")
+        )
         for line_no_minus_one, line in enumerate(text.split("\n")):
-            m = _PRIMITIVE_BYPASS_RE.search(line)
-            if m is None:
-                continue
-            if _match_is_documentation(
-                line, m.start(), slash_comment=slash_is_comment
-            ):
-                continue
-            findings.append(
-                Finding(
-                    file=rel,
-                    line=line_no_minus_one + 1,
-                    code=RELAY_VERIFY_SELF_PRIMITIVE_BYPASS,
-                    suggested_fix=suggested_fix_for(
-                        RELAY_VERIFY_SELF_PRIMITIVE_BYPASS
+            # Scan EVERY match on the line, not just the first: a documentation
+            # match (inside a doc string) earlier on the line must not hide a
+            # later EXECUTABLE match (``"db.execute("; db.execute(q)``) -- a
+            # single search() left that same-line violation unflagged
+            # (roborev cbd01f8). Record the first NON-documentation match.
+            for m in _PRIMITIVE_BYPASS_RE.finditer(line):
+                if _match_is_documentation(
+                    line,
+                    m.start(),
+                    slash_comment=slash_is_comment,
+                    hash_comment=hash_is_comment,
+                    in_docstring=position_in_documentation_string(
+                        line_no_minus_one + 1, m.start(), doc_spans
                     ),
-                    pattern=m.group(0),
+                ):
+                    continue
+                findings.append(
+                    Finding(
+                        file=rel,
+                        line=line_no_minus_one + 1,
+                        code=RELAY_VERIFY_SELF_PRIMITIVE_BYPASS,
+                        suggested_fix=suggested_fix_for(
+                            RELAY_VERIFY_SELF_PRIMITIVE_BYPASS
+                        ),
+                        pattern=m.group(0),
+                    )
                 )
-            )
+                break
     findings.sort(key=lambda f: (f.file, f.line, f.code))
     return CHECK_NAME, findings
 

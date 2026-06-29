@@ -24,7 +24,13 @@ name = "epochly-relay-cli"
 version = "0.1.20"
 description = "Relay CLI (rly): Apache 2.0 control surface for the Relay agent reliability OS."
 readme = "README.md"
-requires-python = ">=3.12"
+# >=3.12.4 (not >=3.12): the CLI hard-depends on `epochly-relay` (the SDK), which
+# pins >=3.12.4 because its egress SSRF guard's is_private classification is only
+# correct on the CVE-2024-4032-patched CPython. A pip/uv install of the CLI on
+# 3.12.0-3.12.3 would already fail to resolve that transitive dep; declaring the
+# floor here makes the metadata honest instead of advertising a lower floor than
+# the dependency graph supports.
+requires-python = ">=3.12.4"
 license = { text = "Apache-2.0" }
 authors = [
   { name = "Epochly, Inc.", email = "engineering@epochly.com" },
@@ -85,6 +91,12 @@ dependencies = [
   # uv workspace resolution rather than importing the dormant vendored acef
   # tree.
   "epochly-relay-acef",
+  # The `rly contract` command (relay_cli.commands.contract) imports
+  # relay_contracts.dsl_parser at module scope to parse/validate contract DSL.
+  "epochly-relay-contracts",
+  # The `rly verify-install` command (relay_cli.commands.verify_install) imports
+  # relay_verifier.constants.DEFAULT_JWKS_URL at module scope.
+  "epochly-relay-verifier",
 ]
 
 [project.optional-dependencies]
@@ -100,11 +112,18 @@ test = [
 rly = "relay_cli.main:run"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/relay_cli"]
+# Ship BOTH top-level packages: relay_cli AND verify_self. relay_cli.main +
+# every relay_cli.invariants.* module imports `verify_self.finding_codes` at
+# module scope, so omitting verify_self breaks a standalone `pip install
+# epochly-relay-cli` at CLI import time.
+packages = ["src/relay_cli", "src/verify_self"]
 
 [tool.hatch.build.targets.sdist]
 include = [
   "src/relay_cli",
+  # Ship verify_self in the sdist too (it is a wheel package above): a
+  # source-build install must include it or relay_cli.main breaks at import.
+  "src/verify_self",
   "README.md",
 ]
 
@@ -113,3 +132,5 @@ epochly-relay = { workspace = true }
 epochly-relay-schemas = { workspace = true }
 epochly-relay-sidecar = { workspace = true }
 epochly-relay-acef = { workspace = true }
+epochly-relay-contracts = { workspace = true }
+epochly-relay-verifier = { workspace = true }

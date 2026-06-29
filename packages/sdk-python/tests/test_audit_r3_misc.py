@@ -13,17 +13,19 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import math
 import threading
 from pathlib import Path
 
 import pytest
 from relay.redaction import _to_string
-from relay.redaction_budget import (
+from relay.salt_registry import SaltRegistry
+from relay_schemas.redaction_budget import (
     RelayBudgetExceededError,
     evaluate_matcher_budget,
 )
-from relay.salt_registry import SaltRegistry
 
 # ---------------------------------------------------------------------------
 # BUG-E2  _to_string float parity (Python <-> ECMA-262)
@@ -65,6 +67,74 @@ def test_to_string_bool_routed_to_literal_form() -> None:
     """``bool`` MUST keep the JSON-literal form, not the int form."""
     assert _to_string(True) == "true"
     assert _to_string(False) == "false"
+
+
+@contextlib.contextmanager
+def _relay_contracts_absent():
+    """Force ``import relay_contracts`` to raise ImportError, simulating a
+    real ``pip install epochly-relay`` end-user install whose dependency
+    closure does NOT include ``epochly-relay-contracts`` (only the gate /
+    evals / contracts packages depend on it). The workspace dev venv HAS
+    ``relay_contracts`` importable, which is exactly why the parity corpus
+    test never exercised this fallback path."""
+    real_import = builtins.__import__
+
+    def _blocked(name, *args, **kwargs):
+        if name == "relay_contracts" or name.startswith("relay_contracts."):
+            raise ImportError("relay_contracts not in install closure (simulated)")
+        return real_import(name, *args, **kwargs)
+
+    builtins.__import__ = _blocked
+    try:
+        yield
+    finally:
+        builtins.__import__ = real_import
+
+
+# JS ``String(value)`` reference (verified against node `String()`): the float
+# leaf fed to HMAC-SHA-256 for an ``action: "hash"`` redaction matcher MUST be
+# byte-identical across the Python and TS SDKs. Values requiring exponential
+# notation (>= 1e21) or a leading-zero fraction (<= 1e-5) are where Python's
+# ``str()``/``repr()`` fallback DIVERGED from ECMA-262 ToString.
+_ECMA262_FLOAT_TABLE = [
+    (1e21, "1e+21"),
+    (1.1e21, "1.1e+21"),
+    (1e-6, "0.000001"),
+    (1.23e-7, "1.23e-7"),
+    (1e-7, "1e-7"),
+    (1234567890123456800.0, "1234567890123456800"),
+    (5e-324, "5e-324"),
+    (1.7976931348623157e308, "1.7976931348623157e+308"),
+]
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("value,expected", _ECMA262_FLOAT_TABLE)
+def test_to_string_float_parity_holds_without_relay_contracts(
+    value: float, expected: str
+) -> None:
+    """Round-4 re-hunt HIGH: ``_to_string`` MUST yield ECMA-262 ToString
+    (byte-equal to JS ``String(value)``) for the HMAC-hash redaction path
+    EVEN when ``relay_contracts`` is absent (the real end-user install).
+
+    Before the fix the ImportError fallback returned Python ``repr``:
+    ``1e21`` -> ``"1000000000000000000000"`` (vs JS ``"1e+21"``), ``1e-6`` ->
+    ``"1e-06"`` (vs ``"0.000001"``), yielding a DIFFERENT HMAC-SHA-256 digest
+    on Python vs TypeScript for the same float leaf (Py<->TS byte-parity
+    break, keystone invariant #11). The module's self-contained
+    ``_encode_jcs_number`` removes the optional dependency entirely.
+    """
+    with _relay_contracts_absent():
+        assert _to_string(value) == expected
+
+
+@pytest.mark.plumbing
+def test_to_string_non_finite_floats_match_ecma262_without_relay_contracts() -> None:
+    """The NaN/Inf names hold on the relay_contracts-absent path too."""
+    with _relay_contracts_absent():
+        assert _to_string(float("nan")) == "NaN"
+        assert _to_string(float("inf")) == "Infinity"
+        assert _to_string(float("-inf")) == "-Infinity"
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +181,7 @@ def test_evaluate_matcher_budget_admission_gate_refuses_when_saturated(
     """When the stuck-thread counter exceeds the cap, the gate MUST
     raise RelayBudgetExceededError instead of spawning another probe.
     """
-    import relay.redaction_budget as rb
+    import relay_schemas.redaction_budget as rb
 
     monkeypatch.setattr(rb, "_STUCK_REGEX_THREADS", rb._STUCK_REGEX_THREAD_CAP)
     with pytest.raises(RelayBudgetExceededError) as excinfo:
@@ -130,7 +200,7 @@ def test_evaluate_matcher_budget_happy_path_does_not_leak_counter() -> None:
     """A regex that completes in budget MUST leave the stuck counter
     unchanged.
     """
-    import relay.redaction_budget as rb
+    import relay_schemas.redaction_budget as rb
 
     before = rb._STUCK_REGEX_THREADS
     result = evaluate_matcher_budget(

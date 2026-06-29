@@ -338,3 +338,60 @@ def test_trust_anchor_in_output(tmp_path: Path) -> None:
     assert out["trust_anchor"] in {DEFAULT_TRUST_ROOT, "local_dev"} or isinstance(
         out["trust_anchor"], str
     )
+
+
+# ---------------------------------------------------------------------------
+# VAL-W12-033: --offline is a NO-network structural promise (re-hunt #6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W12-033")
+def test_verify_sigstore_offline_builds_verifier_offline(monkeypatch: Any) -> None:
+    """verify_sigstore MUST build the Sigstore Verifier with offline=True (TUF
+    cache, no egress) when its ``offline`` arg is set, and offline=False
+    otherwise. Pre-fix the offline flag was never threaded into verify_sigstore
+    / _verify_one_surface, so Verifier.production() refreshed the trust root
+    over the network even under --offline -- breaking the offline default-deny.
+
+    No real bundle and no network: the sigstore seams are monkeypatched and the
+    test asserts only the offline-flag propagation into Verifier construction.
+    """
+    import sigstore.models as ss_models
+    import sigstore.verify as ss_verify
+
+    captured: list[bool] = []
+
+    def _fake_production(*, offline: bool = False) -> Any:
+        captured.append(offline)
+
+        class _V:
+            def verify_artifact(self, *a: object, **k: object) -> None:
+                return None
+
+        return _V()
+
+    # Bundle.from_json must succeed without a real bundle -> opaque sentinel.
+    monkeypatch.setattr(
+        ss_models.Bundle, "from_json", staticmethod(lambda _text: object())
+    )
+    monkeypatch.setattr(
+        ss_verify.Verifier, "production", staticmethod(_fake_production)
+    )
+
+    common = {
+        "expected_trust_root": "relay.epochly.com",
+        "expected_oidc_issuer": DEFAULT_OIDC_ISSUER,
+        "expected_identity": DEFAULT_IDENTITY,
+        "artifact_bytes": b"artifact",
+    }
+    out = verify_sigstore(b"{}", offline=True, **common)
+    assert out["verified"] is True
+    assert captured == [True], (
+        "offline mode must build the Verifier with offline=True (no network)"
+    )
+    captured.clear()
+    verify_sigstore(b"{}", offline=False, **common)
+    assert captured == [False], (
+        "online mode must build the Verifier with offline=False"
+    )

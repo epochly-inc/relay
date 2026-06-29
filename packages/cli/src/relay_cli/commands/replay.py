@@ -50,10 +50,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import typer
-from relay_sidecar.lockfile import relay_home
-from relay_sidecar.primitives import local_atomic_file_write
-
-from ..cassette import (
+from relay_sidecar.cassette import (
     CASSETTE_ENTRY_SCHEMA_VERSION,
     CASSETTE_HEADER_SCHEMA_VERSION,
     CassetteEntry,
@@ -64,6 +61,9 @@ from ..cassette import (
     parse_cassette,
     write_cassette_file,
 )
+from relay_sidecar.lockfile import relay_home
+from relay_sidecar.primitives import local_atomic_file_write
+
 from ..errors import build_envelope, emit_envelope
 from ..exit_codes import (
     EXIT_4XX_BLOCK,

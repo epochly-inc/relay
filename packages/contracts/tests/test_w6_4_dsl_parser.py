@@ -152,6 +152,97 @@ def test_missing_schema_version_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Coverage-gate fail-open (re-hunt cli-commands-1, P0): a PRESENT-but-null (or
+# empty / non-string) assertion_id passed _check_required_fields (key-presence
+# only), so the assertion parsed with assertion_id=None and then silently
+# bypassed ALL FOUR coverage invariants on `rly contract publish`
+# (check_orphans / check_duplicate_digests / check_missing_owner /
+# check_group_alias_owners all skip assertions whose id is None). The parser is
+# the single chokepoint: every non-gate_policy kind MUST carry a non-empty
+# string assertion_id. gate_policy legitimately has none.
+# ---------------------------------------------------------------------------
+
+
+def _doc_with_assertion_id(schema_version: str, assertion_id: object) -> dict:
+    """A minimal otherwise-valid doc for ``schema_version`` carrying the given
+    ``assertion_id`` (used to prove a null/empty/non-string id is rejected)."""
+    base: dict = {
+        "schema_version": schema_version,
+        "assertion_id": assertion_id,
+        "severity": "p0",
+        "owner_email": "owner@example.com",
+        "lifecycle_state": "active",
+    }
+    if schema_version == "relay.assertion.behavioral.v1":
+        base["kind"] = "behavioral"
+        base["expression"] = "true"
+    elif schema_version == "relay.assertion.schema.v1":
+        base["kind"] = "schema"
+        base["schema_json"] = {"type": "object"}
+    elif schema_version == "relay.assertion.tool_arg.v1":
+        base["kind"] = "tool_arg"
+        base["args_schema"] = {"type": "object"}
+    elif schema_version == "relay.assertion.eval.v1":
+        base["kind"] = "eval"
+        base["evaluator"] = "exact_match"
+    return base
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-041")
+@pytest.mark.parametrize(
+    "schema_version",
+    [
+        "relay.assertion.behavioral.v1",
+        "relay.assertion.schema.v1",
+        "relay.assertion.tool_arg.v1",
+        "relay.assertion.eval.v1",
+    ],
+)
+@pytest.mark.parametrize("bad_id", [None, "", "   "])
+def test_null_or_empty_assertion_id_rejected_for_all_assertion_kinds(
+    schema_version: str, bad_id: object
+) -> None:
+    """A null/empty/whitespace assertion_id on ANY non-gate assertion kind MUST
+    be rejected at parse time with RELAY-CONTRACT-001 -- it cannot reach the
+    coverage gate as an id=None orphan that bypasses every invariant."""
+    with pytest.raises(ContractParseError) as ctx:
+        parse_contract(_doc_with_assertion_id(schema_version, bad_id))
+    assert ctx.value.code == "RELAY-CONTRACT-001"
+    assert ctx.value.payload.get("json_path") == "$.assertion_id"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-041")
+def test_non_string_assertion_id_rejected() -> None:
+    """A non-string assertion_id (int/list/dict) MUST be rejected, not coerced."""
+    for bad_id in (12345, ["x"], {"k": "v"}):
+        with pytest.raises(ContractParseError) as ctx:
+            parse_contract(
+                _doc_with_assertion_id("relay.assertion.behavioral.v1", bad_id)
+            )
+        assert ctx.value.code == "RELAY-CONTRACT-001"
+        assert ctx.value.payload.get("json_path") == "$.assertion_id"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-041")
+def test_gate_policy_without_assertion_id_still_parses() -> None:
+    """gate_policy legitimately has NO assertion_id; the new check MUST NOT
+    reject it (regression guard for the chokepoint fix)."""
+    parsed = parse_contract(
+        {
+            "schema_version": "relay.gate_policy.v1",
+            "policy_version": "2026-06-14.gp",
+            "conditions": [{"all_of": []}],
+            "owner_email": "owner@example.com",
+            "lifecycle_state": "active",
+        }
+    )
+    assert parsed.assertion_id is None
+
+
+# ---------------------------------------------------------------------------
 # VAL-W6-042: publish-time CEL profile compilation
 # ---------------------------------------------------------------------------
 
@@ -223,6 +314,131 @@ def test_publish_accepts_structured_op_expression_without_cel() -> None:
     raw = _load_fixture(D1_PATH)
     parsed = parse_contract(raw)
     publish_contract(parsed)  # no exception
+
+
+# ---------------------------------------------------------------------------
+# VAL-W6-042: publish-time MALFORMED-SYNTAX rejection is STRUCTURED.
+#
+# Regression guard for the M5 keystone flip (bf4572c), carried through the
+# M6 WS-I removal: ``publish_contract`` routes malformed-syntax detection
+# through the wasm engine's AUTHORITATIVE compiler (``probe_compile``); a
+# compile-cause engine envelope is translated into the structured
+# ``ContractParseError`` / RELAY-CONTRACT-004 (cel_token RELAY-CEL-SYNTAX) --
+# never a raw parser exception leaking out of publish.
+# ---------------------------------------------------------------------------
+
+_MALFORMED_CEL_EXPRESSIONS = [
+    "1 + ",          # trailing binary operator, no RHS
+    "foo((",         # unbalanced open parens
+    "((1 + 2)",      # missing close paren
+    "a &&",          # trailing logical-and, no RHS
+]
+
+
+def _malformed_behavioral_doc(expression: str) -> dict:
+    return {
+        "schema_version": "relay.assertion.behavioral.v1",
+        "assertion_id": "VAL-BAD-SYNTAX",
+        "kind": "behavioral",
+        "severity": "p0",
+        "expression": expression,
+        "owner_email": "a@b.example",
+        "lifecycle_state": "active",
+    }
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-042")
+@pytest.mark.parametrize("expression", _MALFORMED_CEL_EXPRESSIONS)
+def test_publish_rejects_malformed_cel_under_wasm_default(
+    monkeypatch: pytest.MonkeyPatch, expression: str
+) -> None:
+    """Malformed-syntax CEL MUST raise a structured ContractParseError
+    (RELAY-CONTRACT-004) at publish under the WASM DEFAULT (env unset).
+
+    RED before the fix: the reparse at pipeline.py leaks a raw
+    celpy CELParseError instead of the structured contract error.
+    """
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
+    parsed = parse_contract(_malformed_behavioral_doc(expression))
+    with pytest.raises(ContractParseError) as ctx:
+        publish_contract(parsed)
+    assert ctx.value.code == "RELAY-CONTRACT-004"
+    assert ctx.value.payload["assertion_id"] == "VAL-BAD-SYNTAX"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-042")
+@pytest.mark.parametrize("expression", _MALFORMED_CEL_EXPRESSIONS)
+def test_publish_rejects_malformed_cel_structured_payload(
+    monkeypatch: pytest.MonkeyPatch, expression: str
+) -> None:
+    """M6 WS-I port of the legacy-engine invariance arm: the SAME structured
+    rejection the M5 flip locked in is pinned in FULL on the single engine --
+    error class, code, assertion_id, AND the syntax-rejection payload tokens
+    (cel_token RELAY-CEL-SYNTAX / reason cel-parse-error) the publish path
+    emits when the wasm engine's authoritative compiler (probe_compile)
+    reports the compile-cause envelope."""
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
+    parsed = parse_contract(_malformed_behavioral_doc(expression))
+    with pytest.raises(ContractParseError) as ctx:
+        publish_contract(parsed)
+    assert type(ctx.value) is ContractParseError
+    assert ctx.value.code == "RELAY-CONTRACT-004"
+    assert ctx.value.payload["assertion_id"] == "VAL-BAD-SYNTAX"
+    assert ctx.value.payload["cel_token"] == "RELAY-CEL-SYNTAX"
+    assert ctx.value.payload["reason"] == "cel-parse-error"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W6-042")
+def test_publish_regression_behaviors_preserved_under_wasm_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under the wasm default, the existing publish behaviors are preserved:
+    a VALID contract publishes; an unregistered-UDF call and a profile
+    violation (dyn) each still raise RELAY-CONTRACT-004."""
+    monkeypatch.delenv("RELAY_CEL_ENGINE", raising=False)
+
+    # Valid: no exception.
+    valid = parse_contract({
+        "schema_version": "relay.assertion.behavioral.v1",
+        "assertion_id": "VAL-OK-CEL",
+        "kind": "behavioral",
+        "severity": "p0",
+        "expression": "1 + 1 == 2",
+        "owner_email": "a@b.example",
+        "lifecycle_state": "active",
+    })
+    publish_contract(valid)
+
+    # Unregistered UDF: RELAY-CONTRACT-004.
+    udf_doc = parse_contract({
+        "schema_version": "relay.assertion.behavioral.v1",
+        "assertion_id": "VAL-BAD-UDF",
+        "kind": "behavioral",
+        "severity": "p0",
+        "expression": "totally_made_up_udf(1, 2)",
+        "owner_email": "a@b.example",
+        "lifecycle_state": "active",
+    })
+    with pytest.raises(ContractParseError) as udf_ctx:
+        publish_contract(udf_doc)
+    assert udf_ctx.value.code == "RELAY-CONTRACT-004"
+
+    # Profile violation (dyn): RELAY-CONTRACT-004.
+    dyn_doc = parse_contract({
+        "schema_version": "relay.assertion.behavioral.v1",
+        "assertion_id": "VAL-BAD-DYN",
+        "kind": "behavioral",
+        "severity": "p0",
+        "expression": "dyn(1) == 1",
+        "owner_email": "a@b.example",
+        "lifecycle_state": "active",
+    })
+    with pytest.raises(ContractParseError) as dyn_ctx:
+        publish_contract(dyn_doc)
+    assert dyn_ctx.value.code == "RELAY-CONTRACT-004"
 
 
 # ---------------------------------------------------------------------------
@@ -424,42 +640,48 @@ def test_runtime_invokes_application_udf_and_records_in_envelope() -> None:
     """A CEL expression that calls a registered UDF MUST surface the UDF
     name in udfs_invoked and the JCS-canonical output bytes.
 
-    The Relay production UDFs ship with dotted identifiers
-    (relay.coverage / relay.tool_arg / relay.schema_match) which the
-    cel-python wrapper at this revision treats as field access on a
-    'relay' identifier rather than function-call resolution. w6.4 ships
-    the pipeline plumbing; the call-site rewrite to dotted form is
-    tracked separately. Here we exercise the binding contract with a
-    plain-identifier pure UDF registered alongside the parser pipeline.
+    M6 WS-I port: the legacy bare-name custom-UDF binding (a legacy-engine
+    capability; the wasm has no registration slot -- see
+    test_pipeline_udf_capture_multi_call for the structured rejection) is
+    ported onto the production dotted relay.* UDF, which the single wasm
+    engine resolves natively through CEL. The envelope binding contract under
+    test is unchanged: udfs_invoked carries the invoked name, and
+    udf_outputs_jcs carries the per-call typed-canonical list.
     """
-    from relay_contracts import register_udf
+    from relay_contracts import RELAY_UDFS
 
-    def my_check(trace: list, step: str) -> bool:
-        return any(item.get("step") == step for item in trace)
-
-    udf = register_udf("my_check", my_check, pure=True, arity=2)
     doc = {
         "schema_version": "relay.assertion.behavioral.v1",
         "assertion_id": "VAL-RT-UDF",
         "kind": "behavioral",
         "severity": "p0",
-        "expression": 'my_check(trace, "step1")',
+        "expression": 'relay.coverage(trace, "step1")',
         "owner_email": "a@b.example",
         "lifecycle_state": "active",
     }
     parsed = parse_contract(doc)
-    publish_contract(parsed, extra_udfs=[udf])
-    bindings = {"trace": [{"step": "step1"}, {"step": "step2"}]}
-    envelope = evaluate_assertion(parsed, bindings=bindings, extra_udfs=[udf])
-    assert "my_check" in envelope["udfs_invoked"]
+    publish_contract(parsed, extra_udfs=RELAY_UDFS)
+    bindings = {"trace": {"steps": [{"name": "step1"}, {"name": "step2"}]}}
+    envelope = evaluate_assertion(
+        parsed, bindings=bindings, extra_udfs=RELAY_UDFS
+    )
+    assert "relay.coverage" in envelope["udfs_invoked"]
     assert envelope["outcome"] == "pass"
     # JCS-canonical UDF outputs MUST be bytes-stringifiable.
     # Round-3 P1 fix #3: captures are list-valued so a multi-call CEL
     # expression preserves every invocation's return value (keystone
     # invariant 2). A single-call invocation is therefore a one-element
     # list, not a bare scalar.
+    #
+    # VAL-CWC-P1HOST-015: udf_outputs_jcs is the SINGLE typed-canonical
+    # contract, so each captured value is the ``{"t":...,"v":...}`` form.
+    # Decode to assert the logical value [True].
+    from relay_contracts.wasm_codec import typed_to_py
+
     udf_outputs = json.loads(envelope["udf_outputs_jcs"])
-    assert udf_outputs.get("my_check") == [True]
+    captured = udf_outputs.get("relay.coverage")
+    assert isinstance(captured, list), captured
+    assert [typed_to_py(entry) for entry in captured] == [True]
 
 
 @pytest.mark.plumbing

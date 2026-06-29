@@ -1,0 +1,906 @@
+"""WASM-backed Relay CEL evaluator -- the central host facade.
+
+``WasmCelEvaluator`` is the SINGLE Python CEL evaluator (M6 WS-I removed the
+legacy engine; the contracts engine factory selects this class behind
+``CelEvaluatorProtocol``). It routes the expression through the single wasm
+CEL engine (``RelayCel.eval(..., relay_profile=True)``; see
+``packages/cel-wasm/python/relay_cel_wasm.py``) and keeps the engine-agnostic
+host guards HOST-SIDE (locked decision #4):
+
+  - the whole-expression regex-backreference pre-screen (RELAY-CEL-007 /
+    RELAY-CEL-PROFILE-REGEX-BACKREF) runs at ``compile`` BEFORE the wasm call;
+  - the compile-time Relay-profile screen runs over the STATICALLY-referenced
+    bare callee set (``callee_parser.extract_bare_callees``), so a disabled
+    ``dyn(...)`` / ``timestamp(...)`` / ``duration(...)`` call -- including one
+    in a short-circuited branch -- is rejected at COMPILE/publish time
+    (RELAY-CEL-002 with the structured subtype), not deferred to evaluation;
+  - any caller-supplied extra UDF is rejected fail-closed BEFORE evaluation
+    (the wasm exposes only the 3 hardcoded ``relay.*`` UDFs and has no
+    registration slot): RELAY-CEL-004 / RELAY-CEL-UDF-UNREGISTERED;
+  - ``_check_finite`` runs host-side on the ``typed_to_py``-converted result so
+    a NaN / +-Inf or an out-of-safe-range integer / whole double is rejected
+    with RELAY-CEL-006 / RELAY-CEL-NUMERIC-OOB;
+  - the wall-clock timeout + orphan-thread cap use the engine-agnostic
+    :func:`relay_contracts.evaluator.run_with_timeout` host helper (the
+    process-wide orphan budget lives in that module).
+
+A wasm ``{"ok": false}`` engine envelope is translated by cause:
+
+  - the wasm's RELAY-CEL-002 PROFILE rejection carries a STRUCTURED ``subtype``;
+    it surfaces as :class:`RelayCelProfileError` with that subtype (no message
+    parsing);
+  - the wasm's OWN compile (001) / exec (004) / request (006) codes and the
+    loader's RELAY-CEL-PANIC trap marker map to the DISTINCT RELAY-CEL-009
+    :class:`RelayCelEngineError` with a per-cause subtype
+    (ENGINE-COMPILE/-EXEC/-REQUEST/-PANIC) via
+    :meth:`RelayCelEngineError.from_wasm_envelope`. A wasm exec (004) or request
+    (006) failure NEVER surfaces as the host UDF-impurity (004) /
+    numeric-out-of-bounds (006) classification, which would poison the gate's
+    signed per-condition ``error_code``.
+
+Publish-time malformed-syntax detection routes through the WASM ENGINE ITSELF
+(the authoritative compiler) via :meth:`WasmCelEvaluator.probe_compile`: a
+compile-cause engine envelope (the wasm's own 001) raises the structured
+RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE error, which ``pipeline.publish_contract``
+maps to ``ContractParseError`` / RELAY-CONTRACT-004 -- preserving the
+engine-invariant publish rejection the M5 flip locked in.
+
+Threading model (RelayCel's Store is NOT thread-safe -- it bundles one wasmtime
+``Store``): a per-thread ``RelayCel`` handle (:class:`threading.local`) over a
+SHARED ``Engine`` + ``Module`` (compiled once), so concurrent ``evaluate()``
+calls on different threads never share a Store. A host wall-clock timeout that
+orphans a worker thread QUARANTINES that thread's handle: the orphaned worker is
+still running inside its Store, so the next ``evaluate()`` on the SAME thread
+discards the (possibly mid-flight) handle and instantiates a fresh Store. This
+keeps a timed-out evaluation from corrupting the next one on the same thread.
+
+Engine selection (``RELAY_CEL_ENGINE``) is NOT read here -- the contracts engine
+factory owns it. This module never touches ``os.environ``.
+
+ASCII-only per CLAUDE.md "ASCII-Safe Source".
+"""
+
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import os
+import threading
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+from relay_schemas.error_codes import RelayErrorCode
+
+from .callee_parser import extract_bare_callees
+from .errors import (
+    SUBTYPE_TIMEOUT,
+    RelayCelEngineError,
+    RelayCelError,
+    RelayCelProfileError,
+    RelayCelResourceExhaustedError,
+    RelayCelTimeoutError,
+    RelayCelUnsupportedUdfError,
+)
+from .evaluator import (
+    DEFAULT_TIMEOUT_MS,
+    _check_finite,
+    _check_regex_backref,
+    check_profile_callees,
+    run_with_timeout,
+    validate_timeout_ms,
+)
+from .udf import PureUdf
+from .udfs import (
+    RELAY_COVERAGE_NAME,
+    RELAY_SCHEMA_MATCH_NAME,
+    RELAY_TOOL_ARG_NAME,
+)
+from .wasm_artifact import (
+    resolve_packaged_wasm_loader_path,
+    resolve_packaged_wasm_path,
+)
+from .wasm_codec import typed_to_py
+
+# The three relay.* UDFs the wasm hosts natively. A caller may pass these
+# (e.g. via RELAY_UDFS) without rejection; any OTHER UDF name has no
+# registration slot in the wasm and is rejected fail-closed.
+_NATIVE_UDF_NAMES: frozenset[str] = frozenset(
+    {RELAY_COVERAGE_NAME, RELAY_TOOL_ARG_NAME, RELAY_SCHEMA_MATCH_NAME}
+)
+
+# The wasm engine's structured RELAY-CEL-002 profile-rejection code. It carries
+# a structured ``subtype`` (DYN/TS/DUR/STRUCT-DISABLED) which the host maps
+# verbatim onto RelayCelProfileError -- NEVER by parsing the message string.
+_WASM_PROFILE_CODE: str = RelayErrorCode.RELAY_CEL_002
+
+# The wasm engine's structured RELAY-CEL-003 timeout code: the in-engine
+# fuel-budget counter exhausted the per-evaluation step budget (WS-J / the
+# Cloudflare-edge path). It carries the structured subtype RELAY-CEL-TIMEOUT-001
+# which the host maps onto RelayCelTimeoutError -- the SAME class + code +
+# subtype the host wall-clock kill throws, so the two timeout origins are
+# INDISTINGUISHABLE downstream (cross-host parity with TS decodeWasmEnvelope).
+_WASM_TIMEOUT_CODE: str = RelayErrorCode.RELAY_CEL_003
+
+# The wasm engine's OWN compile-failure code (the crate `codes` module emits
+# RELAY-CEL-001 for a parse/compile failure inside the engine). probe_compile
+# discriminates malformed syntax by THIS code; the host translation maps it to
+# RELAY-CEL-009 / RELAY-CEL-ENGINE-COMPILE via from_wasm_envelope.
+_WASM_COMPILE_CODE: str = RelayErrorCode.RELAY_CEL_001
+
+
+def _load_relay_cel_class() -> type:
+    """Resolve the ``RelayCel`` wasm-loader class.
+
+    Resolution order:
+
+      1. The installed top-level ``relay_cel_wasm`` module (if a developer or
+         downstream has put the loose loader on ``sys.path``).
+      2. The in-repo ``packages/cel-wasm/python/relay_cel_wasm.py`` source by
+         file path (the development tree, where the loader is a bare module).
+      3. The WS-G PACKAGE-DATA loader shipped inside the ``relay_contracts``
+         wheel at ``_wasm/relay_cel_wasm.py`` (resolved via
+         ``importlib.resources``). This is the FALLBACK that makes a wheel-only
+         install able to LOAD the wasm: the loose loader module is not a
+         published package, and the in-repo path is absent in a wheel-only tree,
+         so without this fallback ``import relay_cel_wasm`` and the in-repo file
+         load both fail and the wasm engine cannot be constructed.
+
+    All paths are import-path resolution only -- they do not copy or fork the
+    loader at runtime (CLAUDE.md import-boundary rule: consume, do not mutate).
+    The package-data copy is produced at BUILD time by force-include from the
+    single canonical loader source (zero drift by construction).
+
+    When NONE of the three resolve (no loose module, no in-repo source, no
+    package-data loader), a structured :class:`RelayCelEngineError`
+    (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) is raised -- never a bare
+    ``ImportError`` / ``ModuleNotFoundError`` / ``FileNotFoundError`` escaping
+    the host facade.
+    """
+    try:
+        module = importlib.import_module("relay_cel_wasm")
+    except ModuleNotFoundError:
+        try:
+            module = _load_relay_cel_from_repo()
+        except RelayCelError:
+            # In-repo source absent (wheel-only tree). Fall back to the WS-G
+            # package-data loader shipped inside the relay_contracts wheel.
+            module = _load_relay_cel_from_package_data()
+    return module.RelayCel
+
+
+def _load_relay_cel_from_package_data() -> Any:
+    """Load the wasm loader from the ``relay_contracts`` package-data copy.
+
+    Resolves ``_wasm/relay_cel_wasm.py`` via ``importlib.resources`` (anchored to
+    the IMPORTED package root, so it works from an installed wheel without the
+    in-repo ``packages/cel-wasm/python`` tree) and executes it via
+    ``spec_from_file_location`` -- the SAME file-location load the in-repo path
+    uses, just anchored at the vendored copy. Raises a structured
+    :class:`RelayCelEngineError` (never a bare ``ImportError`` /
+    ``FileNotFoundError``) when the loader package data is absent or
+    unloadable.
+    """
+    loader_path = resolve_packaged_wasm_loader_path()
+    if loader_path is None:
+        raise RelayCelEngineError(
+            "wasm CEL loader not resolvable: no installed relay_cel_wasm module, "
+            "no in-repo packages/cel-wasm/python/relay_cel_wasm.py source, and no "
+            "packaged relay_contracts loader (importlib.resources). Install a "
+            "relay_contracts wheel that ships the wasm loader package data, or "
+            "run from the repo tree.",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
+    spec = importlib.util.spec_from_file_location(
+        "relay_cel_wasm", str(loader_path)
+    )
+    if spec is None or spec.loader is None:
+        raise RelayCelEngineError(
+            f"packaged wasm CEL loader not importable at {str(loader_path)!r}",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_relay_cel_from_repo() -> Any:
+    """Load ``relay_cel_wasm`` from the in-repo loader path by file location.
+
+    ``packages/contracts/src/relay_contracts/wasm_backed_evaluator.py`` ->
+    repo root is four parents up; the loader lives at
+    ``packages/cel-wasm/python/relay_cel_wasm.py``.
+
+    In a WHEEL-ONLY install (the ``relay_contracts`` package lives in
+    site-packages, not the repo tree) this in-repo path does NOT exist. The file
+    existence is checked FIRST and a structured :class:`RelayCelEngineError` is
+    raised for an absent path -- WITHOUT this guard, ``spec_from_file_location``
+    still returns a non-None spec for a nonexistent file and the bare
+    ``FileNotFoundError`` only surfaces at ``exec_module``, escaping the
+    ``except RelayCelError`` fall-through to the package-data loader and breaking
+    the wheel-only path. Raising the structured error here lets
+    :func:`_load_relay_cel_class` fall through to
+    :func:`_load_relay_cel_from_package_data`.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.normpath(os.path.join(here, "..", "..", "..", ".."))
+    loader_path = os.path.join(
+        repo_root, "packages", "cel-wasm", "python", "relay_cel_wasm.py"
+    )
+    if not os.path.isfile(loader_path):
+        # Wheel-only tree (or any layout without the in-repo loader source): a
+        # structured engine error so the caller can fall back to package data.
+        raise RelayCelEngineError(
+            f"in-repo wasm CEL loader not found at {loader_path!r}",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
+    spec = importlib.util.spec_from_file_location("relay_cel_wasm", loader_path)
+    if spec is None or spec.loader is None:
+        raise RelayCelEngineError(
+            f"wasm CEL loader not resolvable at {loader_path!r}",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _crate_target_wasm_path() -> str | None:
+    """Resolve the in-repo ``crate/target/`` release wasm by file path.
+
+    This is the DEV-tree fallback used only when neither the package-data wasm
+    (WS-G) nor a ``CEL_WASM`` override resolves -- e.g. a from-source checkout
+    that has run ``build.sh build`` but not vendored the artifact. The path
+    mirrors the loader's ``_DEFAULT_WASM`` (this module ->
+    ``packages/contracts/src/relay_contracts`` -> repo root is four parents up;
+    the artifact lives at ``packages/cel-wasm/crate/target/.../release/...``).
+    Returns the path only if it exists as a regular file, else ``None``.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.normpath(os.path.join(here, "..", "..", "..", ".."))
+    candidate = os.path.join(
+        repo_root,
+        "packages",
+        "cel-wasm",
+        "crate",
+        "target",
+        "wasm32-unknown-unknown",
+        "release",
+        "relay_cel_wasm.wasm",
+    )
+    return candidate if os.path.isfile(candidate) else None
+
+
+def _resolve_wasm_path(override: str | None = None) -> str:
+    """Resolve a concrete wasm artifact path, gated on presence (WS-G).
+
+    Resolution order (NO environment read -- the ``CEL_WASM`` env override is the
+    loader's concern, applied in :meth:`_ensure_shared` when this resolver finds
+    no path; keeping env access out of ``packages/contracts/src`` preserves the
+    VAL-W8-005 / VAL-CWC-P4DUALRUN-008 determinism guard
+    ``test_relay_cel_engine_read_only_in_engine_module``):
+
+      1. ``override`` -- an explicit caller-supplied path (used by
+         :meth:`WasmCelEvaluator.evaluate_with_wasm_path` to point the resolver
+         at a specific -- possibly absent -- artifact for the presence-gate
+         test). An override that is not an existing file is a structured engine
+         error (NOT a bare ``FileNotFoundError``).
+      2. The shipped PACKAGE-DATA wasm via ``importlib.resources`` (the WS-G
+         primary path; works from an installed wheel without ``crate/target/``).
+      3. The in-repo ``crate/target/`` release wasm (dev-tree fallback).
+
+    When NONE of these resolve, raises a structured
+    :class:`RelayCelEngineError` (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) so a
+    missing artifact is a clear, catchable ``RelayCelError`` -- never a bare
+    ``FileNotFoundError`` / generic exception.
+    """
+    if override is not None:
+        if os.path.isfile(override):
+            return override
+        raise RelayCelEngineError(
+            f"wasm CEL artifact not resolvable at the supplied path "
+            f"{override!r} (file does not exist)",
+            subtype="RELAY-CEL-ENGINE-REQUEST",
+        )
+
+    packaged = resolve_packaged_wasm_path()
+    if packaged is not None:
+        return str(packaged)
+
+    crate = _crate_target_wasm_path()
+    if crate is not None:
+        return crate
+
+    raise RelayCelEngineError(
+        "wasm CEL artifact not resolvable: no packaged relay_contracts wasm "
+        "(importlib.resources) and no in-repo crate/target/ release build. Run "
+        "'bash packages/cel-wasm/conformance/build.sh build', set the CEL_WASM "
+        "env override, or install a relay_contracts wheel that ships the wasm "
+        "package data.",
+        subtype="RELAY-CEL-ENGINE-REQUEST",
+    )
+
+
+def _resolve_wasm_path_or_none(override: str | None = None) -> str | None:
+    """Like :func:`_resolve_wasm_path` but return ``None`` instead of raising.
+
+    Used by :meth:`_ensure_shared` so that when no package-data / crate-target
+    wasm resolves, the loader is invoked with no explicit path and applies its
+    OWN ``CEL_WASM`` env / default resolution (env access stays in the loader,
+    never in ``packages/contracts/src``). The override branch still raises a
+    structured error for an explicitly-supplied absent path.
+    """
+    if override is not None:
+        # An explicit absent override is a hard structured error (presence gate).
+        return _resolve_wasm_path(override)
+    packaged = resolve_packaged_wasm_path()
+    if packaged is not None:
+        return str(packaged)
+    crate = _crate_target_wasm_path()
+    if crate is not None:
+        return crate
+    return None
+
+
+class WasmCelEvaluator:
+    """Wasm-backed CEL evaluator -- the single Python CEL evaluator facade.
+
+    Construction is cheap relative to evaluation: the shared wasm ``Engine`` +
+    ``Module`` are compiled once on first construction of the underlying loader
+    handle (deferred to first use), and per-thread Stores are created lazily.
+    Extra-UDF rejection happens eagerly at construction (fail-closed before any
+    evaluation can run).
+    """
+
+    def __init__(
+        self,
+        *,
+        timeout_ms: int = DEFAULT_TIMEOUT_MS,
+        udfs: Iterable[PureUdf] = (),
+    ) -> None:
+        # Validate timeout_ms against the canonical bounds (positive int,
+        # <= MAX_TIMEOUT_MS; bool excluded) -- the shared host-guard helper so
+        # every construction path enforces IDENTICAL bounds.
+        self.timeout_ms = validate_timeout_ms(timeout_ms)
+
+        # Reject any caller-supplied extra UDF fail-closed BEFORE evaluation:
+        # the wasm has no registration slot for a custom callable, so an
+        # unsupported UDF is a structured RELAY-CEL-004 / UNREGISTERED error.
+        # The 3 native relay.* UDFs are accepted (they are baked into the wasm).
+        for udf in udfs:
+            if not isinstance(udf, PureUdf):
+                raise TypeError(
+                    "WasmCelEvaluator: udfs must be PureUdf instances "
+                    "(use register_udf to construct)."
+                )
+            if udf.name not in _NATIVE_UDF_NAMES:
+                raise RelayCelUnsupportedUdfError(
+                    f"WasmCelEvaluator: the wasm CEL engine exposes only the 3 "
+                    f"native relay.* UDFs and has no registration slot for "
+                    f"{udf.name!r}. Caller-supplied extra UDFs are rejected "
+                    f"fail-closed before evaluation."
+                )
+
+        # Lazily-built shared Engine+Module (compiled once on first handle), and
+        # a per-thread RelayCel handle over that shared module. The loader class
+        # is resolved at runtime (it is a bare in-repo module until WS-G ships it
+        # as package data), so it is typed Any.
+        self._relay_cel_cls: Any = None
+        self._shared_engine: Any = None
+        self._shared_module: Any = None
+        self._shared_lock = threading.Lock()
+        self._tlocal = threading.local()
+
+    # --- shared-engine / per-thread handle lifecycle -----------------
+
+    def _ensure_shared(self) -> None:
+        """Build the shared Engine + Module exactly once (thread-safe)."""
+        if self._shared_module is not None:
+            return
+        with self._shared_lock:
+            if self._shared_module is not None:
+                return
+            cls = _load_relay_cel_class()
+            # Resolve the wasm artifact path through the WS-G resolver: package
+            # data (importlib.resources) first, then the in-repo crate/target
+            # release build. When the resolver finds neither it returns None and
+            # the loader is invoked with no explicit path so it applies its OWN
+            # CEL_WASM env / default resolution -- env access stays in the loader,
+            # never in packages/contracts/src (determinism guard). Passing the
+            # package-data path explicitly means the shared Engine+Module compile
+            # from the vendored wasm even when the gitignored crate/target/ dev
+            # path is absent (e.g. a fresh wheel install).
+            wasm_path = _resolve_wasm_path_or_none()
+            # Construct one bootstrap handle to obtain a compiled Engine+Module;
+            # all per-thread handles reuse these (the Module compile is the
+            # expensive step and is shareable across threads). The bootstrap
+            # handle itself is discarded. Any load failure (a missing artifact
+            # the loader cannot resolve, or a corrupt module) is converted to the
+            # structured RELAY-CEL-009 engine error -- never a bare
+            # FileNotFoundError / wasmtime exception escaping the host facade.
+            try:
+                bootstrap = cls(wasm_path=wasm_path) if wasm_path else cls()
+            except RelayCelError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- map any load failure structurally
+                raise RelayCelEngineError(
+                    "wasm CEL engine failed to load its module: "
+                    f"{type(exc).__name__}: {exc}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                ) from exc
+            self._relay_cel_cls = cls
+            self._shared_engine = bootstrap._engine
+            self._shared_module = bootstrap._module
+
+    def _new_handle(self) -> Any:
+        """Instantiate a fresh per-thread RelayCel handle over the shared module.
+
+        Uses ``RelayCel.__new__`` + ``_reinit()`` so the per-thread handle reuses
+        the SHARED Engine+Module (only a new wasmtime Store + Instance is
+        created) while exposing the loader's full ``eval()`` method. This avoids
+        recompiling the Module per thread and keeps a single source of the
+        request/response glue (the loader).
+        """
+        self._ensure_shared()
+        assert self._relay_cel_cls is not None
+        handle = self._relay_cel_cls.__new__(self._relay_cel_cls)
+        handle._engine = self._shared_engine
+        handle._module = self._shared_module
+        handle._reinit()
+        return handle
+
+    def _thread_handle(self) -> Any:
+        """Return this thread's RelayCel handle, building it on first use.
+
+        Each thread gets its OWN handle (its own Store) because RelayCel's Store
+        is not thread-safe. The handle is cached on a :class:`threading.local`
+        so repeated evaluations on the same thread reuse the same compiled
+        Store.
+        """
+        handle = getattr(self._tlocal, "handle", None)
+        if handle is None:
+            handle = self._new_handle()
+            self._tlocal.handle = handle
+        return handle
+
+    def _quarantine_thread_handle(self) -> None:
+        """Discard this thread's handle so the next evaluate builds a fresh one.
+
+        Called after a host wall-clock timeout: the orphaned worker is still
+        running inside this thread's Store, so the Store may be mid-mutation.
+        Dropping the reference quarantines it -- the next ``_thread_handle()``
+        on this thread instantiates a clean Store. The orphaned worker keeps the
+        old Store alive until it finishes, then it is garbage-collected.
+        """
+        self._tlocal.handle = None
+
+    # --- compilation (host-side profile pre-screen) ------------------
+
+    def compile(self, expression: str) -> str:
+        """Validate ``expression`` against the host-side pre-screens.
+
+        Returns the expression unchanged on success (the wasm compiles + checks
+        the AST itself; there is no host-side program object to cache).
+
+        Two host-side STATIC pre-screens run here so publish-time rejection
+        happens before any evaluation:
+
+          1. the regex-backreference pre-screen (RELAY-CEL-007 / REGEX-BACKREF)
+             -- a backref in ANY string literal surfaces the structured host
+             error BEFORE the wasm call; and
+          2. the Relay-profile screen (RELAY-CEL-002 / PROFILE) over the
+             statically-referenced BARE callee set
+             (:func:`callee_parser.extract_bare_callees`): a ``dyn(...)`` /
+             ``timestamp(...)`` / ``duration(...)`` disabled-builtin call --
+             including one in a short-circuited branch -- is rejected at
+             COMPILE time with the structured subtype, not deferred to EVAL
+             (FINDING D preserved without an AST: the callee parser replaces
+             the legacy compile-time AST walk per ADR Revisions section 3).
+
+        MALFORMED syntax is deliberately NOT detected here: the wasm is the
+        authoritative compiler. ``compile`` stays cheap and static (it runs on
+        every ``evaluate`` call); the engine's own compile failure surfaces at
+        eval as RELAY-CEL-009 / ENGINE-COMPILE, and the publish path probes it
+        eagerly via :meth:`probe_compile`.
+        """
+        _check_regex_backref(expression)
+        # The profile callee check raises RelayCelProfileError (RELAY-CEL-002)
+        # on a disabled-builtin bare call, with first-in-source-order
+        # determinism (the parser yields callees in source order).
+        check_profile_callees(extract_bare_callees(expression))
+        return expression
+
+    def probe_compile(self, expression: str) -> None:
+        """Probe the wasm engine's AUTHORITATIVE compiler for this expression.
+
+        Used by ``pipeline.publish_contract`` for publish-time malformed-syntax
+        rejection (engine-invariant publish behavior; the M5 regression guard).
+        The frozen crate has no parse-only entry point, so the probe issues a
+        normal ``eval`` with NO bindings under the standard wall-clock guard
+        and discriminates the response envelope by cause:
+
+          - a COMPILE-cause envelope (the wasm's own RELAY-CEL-001) raises the
+            structured :class:`RelayCelEngineError` (RELAY-CEL-009 /
+            RELAY-CEL-ENGINE-COMPILE) -- malformed syntax, reject at publish;
+          - a PROFILE-cause envelope (RELAY-CEL-002 with a structured subtype)
+            raises :class:`RelayCelProfileError` -- defense in depth behind the
+            static callee screen in :meth:`compile`;
+          - EVERY other outcome is deferred to evaluation and the probe
+            returns ``None``: success, an exec/request-cause envelope (an
+            expression referencing unbound variables legitimately fails exec
+            under the empty probe bindings -- that is NOT a publish error), a
+            panic marker, a wall-clock timeout (the worker is quarantined
+            exactly like :meth:`evaluate`), or the orphan cap. Publish must
+            never reject a contract for a non-compile cause the probe's empty
+            bindings induced.
+        """
+        self.compile(expression)
+        handle = self._thread_handle()
+
+        def _run() -> dict[str, Any]:
+            return handle.eval(expression, None, relay_profile=True)
+
+        try:
+            envelope = run_with_timeout(_run, self.timeout_ms / 1000.0)
+        except RelayCelTimeoutError:
+            # The orphaned worker is still inside this thread's Store --
+            # quarantine it (same containment as evaluate); the timeout itself
+            # is not a compile verdict, so defer to eval.
+            self._quarantine_thread_handle()
+            return
+        except RelayCelResourceExhaustedError:
+            # Orphan cap: no verdict obtainable; defer to eval.
+            return
+
+        if not isinstance(envelope, dict) or envelope.get("ok") is True:
+            return
+        code = envelope.get("code", "")
+        message = envelope.get("error", "wasm engine error")
+        if code == _WASM_PROFILE_CODE:
+            subtype = envelope.get("subtype")
+            if isinstance(subtype, str) and subtype:
+                raise RelayCelProfileError(message, subtype=subtype)
+            # A profile envelope without its structured subtype is an engine
+            # anomaly; defer to eval, which surfaces it as ENGINE-REQUEST.
+            return
+        if code == _WASM_COMPILE_CODE:
+            raise RelayCelEngineError.from_wasm_envelope(code, message)
+        return
+
+    # --- evaluation --------------------------------------------------
+
+    def evaluate(
+        self,
+        expression: str,
+        bindings: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Evaluate ``expression`` through the wasm under the Relay profile.
+
+        Host guards run host-side: the regex-backref pre-screen at
+        :meth:`compile` (before the wasm call), and ``_check_finite`` on the
+        ``typed_to_py``-converted result. The wasm runs under the shared
+        wall-clock timeout + orphan-cap helper; a timeout quarantines this
+        thread's Store.
+        """
+        # Host pre-screen (regex backref) BEFORE the wasm call (fail-closed).
+        self.compile(expression)
+        typed_bindings = self._encode_bindings(bindings)
+        handle = self._thread_handle()
+
+        def _run() -> dict[str, Any]:
+            return handle.eval(
+                expression, typed_bindings or None, relay_profile=True
+            )
+
+        try:
+            envelope = run_with_timeout(_run, self.timeout_ms / 1000.0)
+        except RelayCelTimeoutError:
+            # A wall-clock timeout leaves the worker orphaned inside this
+            # thread's Store -- quarantine it so the next evaluate on this
+            # thread starts clean.
+            self._quarantine_thread_handle()
+            raise
+
+        return self._decode_envelope(envelope)
+
+    def evaluate_with_wasm_path(
+        self,
+        expression: str,
+        *,
+        wasm_path: str,
+        bindings: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Evaluate ``expression`` over the wasm at an EXPLICIT ``wasm_path``.
+
+        This is the artifact-presence gate (VAL-CWC-P3CORPUS-010). The supplied
+        path is resolved through :func:`_resolve_wasm_path` with the path as an
+        override: an ABSENT path raises a structured
+        :class:`RelayCelEngineError` (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST)
+        -- never a bare ``FileNotFoundError`` / generic exception -- so a missing
+        packaged wasm surfaces as a clear, catchable ``RelayCelError``.
+
+        On a present path the expression is evaluated over a ONE-SHOT handle
+        built from that path (independent of the cached shared Engine+Module,
+        which may have been compiled from a different artifact). The same
+        host-side guards run: the regex-backref pre-screen at :meth:`compile`,
+        the wall-clock timeout via the shared ``_run_with_timeout`` helper, and
+        ``_check_finite`` on the converted result.
+
+        Load / handle-construction failures fail closed IDENTICALLY to the
+        shared path (:meth:`_ensure_shared`): a corrupt-but-present artifact
+        (valid path, garbage bytes) raises a bare ``wasmtime.WasmtimeError`` /
+        loader error from ``Module.from_file`` at construction; that is wrapped
+        here into the SAME structured :class:`RelayCelEngineError`
+        (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) so the explicit-path API never
+        leaks a bare engine exception out of the host facade. Only the handle
+        construction is wrapped -- a genuine evaluation result or an already
+        structured ``RelayCelError`` flows through unchanged.
+        """
+        # The resolver raises the structured RELAY-CEL-009 engine error if the
+        # supplied path does not exist (the presence gate). This MUST run before
+        # any wasm load so an absent artifact never reaches wasmtime as a bare
+        # FileNotFoundError.
+        resolved = _resolve_wasm_path(override=wasm_path)
+
+        # Host pre-screen (regex backref) BEFORE the wasm call (fail-closed).
+        self.compile(expression)
+        typed_bindings = self._encode_bindings(bindings)
+
+        cls = _load_relay_cel_class()
+        # Construct the one-shot handle, mirroring _ensure_shared's wrap EXACTLY:
+        # an already-structured RelayCelError propagates verbatim, and any other
+        # load / module-instantiation failure (a corrupt-but-present artifact
+        # surfacing a bare wasmtime.WasmtimeError, or any loader error) is
+        # converted to the structured RELAY-CEL-009 engine error -- never a bare
+        # wasmtime exception escaping the host facade.
+        try:
+            handle = cls(wasm_path=resolved)
+        except RelayCelError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- map any load failure structurally
+            raise RelayCelEngineError(
+                "wasm CEL engine failed to load its module: "
+                f"{type(exc).__name__}: {exc}",
+                subtype="RELAY-CEL-ENGINE-REQUEST",
+            ) from exc
+
+        def _run() -> dict[str, Any]:
+            return handle.eval(
+                expression, typed_bindings or None, relay_profile=True
+            )
+
+        envelope = run_with_timeout(_run, self.timeout_ms / 1000.0)
+        return self._decode_envelope(envelope)
+
+    def evaluate_with_trace(
+        self,
+        expression: str,
+        bindings: Mapping[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, list[Any]]]:
+        """Evaluate ``expression`` and return ``(value, udf_trace)``.
+
+        Identical evaluation path to :meth:`evaluate` (same host guards, same
+        wall-clock timeout + Store quarantine, same ``{"ok": false}`` error
+        mapping), but ALSO surfaces the wasm ``udf_trace`` response field so the
+        M1 pipeline can reconstruct ``udf_outputs_jcs`` / ``udfs_invoked`` from
+        it on the wasm hot path WITHOUT any host-side AST walk
+        (VAL-CWC-P1HOST-014).
+
+        ``udf_trace`` is the per-UDF-name list of typed-canonical
+        ``{"t":...,"v":...}`` return values in CALL ORDER, exactly as the wasm
+        emitted them (``packages/cel-wasm/crate/src/lib.rs`` ``udf_trace_drain``).
+        It is the empty dict when no relay.* UDF executed (the wasm omits the
+        field; a short-circuited branch is never recorded). The presence of this
+        method is the capability the pipeline uses to DETECT the wasm path (it
+        never reads ``RELAY_CEL_ENGINE``).
+        """
+        self.compile(expression)
+        typed_bindings = self._encode_bindings(bindings)
+        handle = self._thread_handle()
+
+        def _run() -> dict[str, Any]:
+            return handle.eval(
+                expression, typed_bindings or None, relay_profile=True
+            )
+
+        try:
+            envelope = run_with_timeout(_run, self.timeout_ms / 1000.0)
+        except RelayCelTimeoutError:
+            self._quarantine_thread_handle()
+            raise
+
+        # Extract the udf_trace from a SUCCESS ({"ok": true}) envelope BEFORE the
+        # host finiteness guard runs (locked cross-host contract; keystone #16).
+        # On an ok:true envelope the udf_trace is forensic evidence that the
+        # relay.* UDFs genuinely RAN, and a host-side finiteness / safe-integer
+        # rejection (RELAY-CEL-006) of the DECODED result value does not erase it
+        # -- the TS host (contracts-typescript pipeline.ts evaluateUdfOutputs)
+        # emits the trace from that SAME ok:true envelope WITHOUT running a
+        # finiteness guard, so both hosts reconstruct byte-identical
+        # udf_outputs_jcs for a finiteness-failing result (only the outcome
+        # differs: error on both, computed downstream).
+        #
+        # CRITICAL (gate on ok:true): the wasm crate ALSO attaches a PARTIAL
+        # udf_trace to an {"ok": false} ENGINE-error envelope when a relay.* UDF
+        # ran before the error (lib.rs udf_trace_drain on the error path;
+        # "treat udf_trace on an error envelope as forensic-only"). The TS host
+        # THROWS on a non-ok envelope BEFORE reaching extractUdfTrace, so it never
+        # reconstructs that partial trace. Extracting + carrying it here would
+        # make the Python host emit a NON-EMPTY udf_outputs_jcs for an engine
+        # error while TS emits none -- a cross-host digest divergence (keystone
+        # #16). So we extract the trace ONLY for an ok:true envelope; an
+        # engine-error envelope leaves udf_trace as the empty dict, matching TS
+        # (and matching the pre-F7 behavior for engine errors).
+        is_ok_envelope = isinstance(envelope, dict) and envelope.get("ok") is True
+        udf_trace = self._extract_udf_trace(envelope) if is_ok_envelope else {}
+        try:
+            value = self._decode_envelope(envelope)
+        except RelayCelError as exc:
+            # ok:true + a POST-success host-guard rejection (the RELAY-CEL-006
+            # finiteness / safe-integer guard inside _decode_envelope) -> carry
+            # the real trace so the pipeline records byte-identical udf_outputs
+            # while the outcome stays error. ok:false ENGINE error -> udf_trace is
+            # the empty dict (gated out above), so this attaches {} and the
+            # engine-error udf_outputs stays empty, identical to the TS host.
+            exc.udf_trace = udf_trace
+            raise
+        return value, udf_trace
+
+    # --- helpers -----------------------------------------------------
+
+    def _encode_bindings(
+        self, bindings: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """Encode caller bindings into the wasm typed-canonical form.
+
+        ``None`` / empty -> ``{}``. Each binding value is converted via
+        ``py_to_typed`` (the single Python<->wasm value codec).
+
+        An unsupported Python binding type (a ``set``, a ``complex``, an
+        arbitrary object -- anything ``py_to_typed`` has no branch for) raises a
+        bare ``TypeError`` / ``ValueError`` out of the codec. The host facade
+        MUST NEVER leak a bare Python exception type for a bad binding, so the
+        encode step is wrapped: any codec ``TypeError`` / ``ValueError`` is
+        re-raised as a structured :class:`RelayCelEngineError`
+        (RELAY-CEL-009 / RELAY-CEL-ENGINE-REQUEST) naming the offending binding
+        and preserving the original cause (``raise ... from``). The binding name
+        is in the message for diagnosis; the binding value is carried by the
+        chained codec cause (which already includes the ``repr``).
+        """
+        if not bindings:
+            return {}
+        from .wasm_codec import py_to_typed
+
+        encoded: dict[str, Any] = {}
+        for name, value in bindings.items():
+            try:
+                encoded[name] = py_to_typed(value)
+            except (TypeError, ValueError) as exc:
+                raise RelayCelEngineError(
+                    f"wasm CEL binding {name!r} has an unsupported Python type "
+                    f"{type(value).__name__!r} that the value codec cannot "
+                    f"encode: {value!r}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                ) from exc
+        return encoded
+
+    def _extract_udf_trace(self, envelope: Any) -> dict[str, list[Any]]:
+        """Return the wasm ``udf_trace`` field as a per-name list-of-typed map.
+
+        The crate attaches ``udf_trace`` (an object mapping each executed UDF
+        name to a list of typed-canonical values in call order) only on a
+        success envelope where at least one relay.* UDF ran; it is ABSENT
+        otherwise (``lib.rs`` ``udf_trace_drain`` returns ``None`` -> field
+        omitted). This helper normalizes that absence to an empty dict and
+        validates the shape fail-closed so a malformed trace cannot silently
+        corrupt the reconstructed ``udf_outputs_jcs`` (which feeds a digest).
+        """
+        if not isinstance(envelope, dict):
+            return {}
+        trace = envelope.get("udf_trace")
+        if trace is None:
+            return {}
+        if not isinstance(trace, dict):
+            raise RelayCelEngineError(
+                f"wasm udf_trace must be an object; got {type(trace).__name__}",
+                subtype="RELAY-CEL-ENGINE-REQUEST",
+            )
+        normalized: dict[str, list[Any]] = {}
+        for name, values in trace.items():
+            if not isinstance(name, str):
+                raise RelayCelEngineError(
+                    f"wasm udf_trace key must be a string; got {type(name).__name__}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                )
+            if not isinstance(values, list):
+                raise RelayCelEngineError(
+                    f"wasm udf_trace[{name!r}] must be a list; "
+                    f"got {type(values).__name__}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                )
+            normalized[name] = list(values)
+        return normalized
+
+    def _decode_envelope(self, envelope: Any) -> Any:
+        """Translate a wasm response envelope into a value or a structured error.
+
+        Success -> ``typed_to_py`` of the typed-canonical value, then host
+        ``_check_finite`` (RELAY-CEL-006 / NUMERIC-OOB) on the converted result.
+        Failure -> RELAY-CEL-002 PROFILE (with the wasm's structured subtype) ->
+        :class:`RelayCelProfileError`; RELAY-CEL-003 (the wasm's in-engine
+        fuel-budget exhaustion, structured subtype RELAY-CEL-TIMEOUT-001) ->
+        :class:`RelayCelTimeoutError` -- the SAME class + code + subtype the host
+        wall-clock kill throws, so a fuel-derived timeout is INDISTINGUISHABLE
+        downstream from the host timeout (cross-host parity with the TS
+        ``decodeWasmEnvelope`` path); every other ``{"ok": false}`` cause (001
+        compile / 004 exec / 006 request / RELAY-CEL-PANIC) ->
+        :class:`RelayCelEngineError` (RELAY-CEL-009) via
+        :meth:`RelayCelEngineError.from_wasm_envelope` (never the host 004/006).
+        Like the profile branch, a 003 envelope that lacks the structured
+        RELAY-CEL-TIMEOUT-001 subtype is treated as an engine-request anomaly
+        (RELAY-CEL-009 / ENGINE-REQUEST), never a blindly-trusted timeout.
+        """
+        if not isinstance(envelope, dict):
+            raise RelayCelEngineError(
+                f"wasm engine returned a non-dict response: {type(envelope).__name__}",
+                subtype="RELAY-CEL-ENGINE-REQUEST",
+            )
+
+        if envelope.get("ok") is True:
+            # An ok=true envelope MUST carry "value"; a raw subscript would leak
+            # a bare KeyError out of the host facade (violating the module's
+            # "never a bare exception" invariant + TS decodeWasmEnvelope parity).
+            # Treat an absent "value" as an engine-request anomaly (re-hunt #10).
+            if "value" not in envelope:
+                raise RelayCelEngineError(
+                    "wasm engine returned an ok=true envelope with no 'value' "
+                    "field",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                )
+            value = typed_to_py(envelope["value"])
+            # Host-side finiteness / safe-integer guard on the converted result.
+            _check_finite(value)
+            return value
+
+        code = envelope.get("code", "")
+        message = envelope.get("error", "wasm engine error")
+
+        # RELAY-CEL-002 profile rejection: the wasm emits a STRUCTURED subtype;
+        # map (code, subtype) -> RelayCelProfileError without message parsing.
+        if code == _WASM_PROFILE_CODE:
+            subtype = envelope.get("subtype")
+            if not isinstance(subtype, str) or not subtype:
+                # A profile rejection MUST carry a structured subtype; absent
+                # one, treat it as an engine-request anomaly rather than guess.
+                raise RelayCelEngineError(
+                    f"wasm profile rejection missing structured subtype: {message}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                )
+            raise RelayCelProfileError(message, subtype=subtype)
+
+        # RELAY-CEL-003 timeout: the wasm's in-engine fuel counter exhausted the
+        # per-evaluation budget (WS-J / the Cloudflare-edge path). Map
+        # (code, subtype) -> RelayCelTimeoutError -- the SAME class + code +
+        # subtype the host wall-clock kill throws -- so the two timeout origins
+        # are INDISTINGUISHABLE downstream (cross-host parity with the TS
+        # decodeWasmEnvelope path). Like the profile branch above, a 003 envelope
+        # MUST carry the structured subtype RELAY-CEL-TIMEOUT-001; an absent /
+        # unexpected subtype is an engine-request anomaly, NOT a trustworthy
+        # timeout (it would otherwise mask a malformed envelope as a benign
+        # timeout and let a bogus signed per-condition subtype through).
+        if code == _WASM_TIMEOUT_CODE:
+            subtype = envelope.get("subtype")
+            if subtype != SUBTYPE_TIMEOUT:
+                raise RelayCelEngineError(
+                    "wasm timeout envelope (RELAY-CEL-003) carried an unexpected "
+                    f"subtype {subtype!r} (expected {SUBTYPE_TIMEOUT!r}): {message}",
+                    subtype="RELAY-CEL-ENGINE-REQUEST",
+                )
+            raise RelayCelTimeoutError(message)
+
+        # Every other wasm failure cause -> the dedicated RELAY-CEL-009 engine
+        # error with a per-cause subtype. Reuse the canonical mapping in
+        # errors.py (do NOT reinvent it).
+        raise RelayCelEngineError.from_wasm_envelope(code, message)
+
+
+__all__ = ["WasmCelEvaluator"]

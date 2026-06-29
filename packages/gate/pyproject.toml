@@ -4,7 +4,8 @@
 # evaluator that consumes a gate_decision_drafts envelope, resolves
 # evidence_bundle ids through a pluggable provider, sorts assertions by
 # priority (P0 > P1 > P2 > P3), evaluates conditions through the W6
-# contract engine (cel-python), enforces three-gate ordering
+# contract engine (the wasm-backed Relay CEL evaluator constructed via
+# the relay_contracts factory), enforces three-gate ordering
 # (scrutiny -> structural-review -> testing), draft TTL, concurrent-draft
 # conflict, and the anti-bypass guard (W2.5 mirror).
 #
@@ -45,6 +46,12 @@ name = "epochly-relay-gate-engine"
 version = "0.0.0"
 description = "Relay gate evaluation pipeline (Python; deterministic three-gate evaluator + draft lock)."
 readme = "README.md"
+# >=3.12: the workspace baseline. The gate engine is a deterministic in-process
+# evaluator with no CVE-2024-4032-dependent egress SSRF code of its own. Its
+# first-party deps are `epochly-relay-contracts`, `epochly-relay-schemas`, and
+# `epochly-relay-sidecar` -- all >=3.12 and none on a runtime path to the SDK
+# (the sidecar no longer runtime-depends on `epochly-relay`). (The SDK/CLI keep
+# >=3.12.4; the dev workspace root also stays >=3.12.4.)
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [

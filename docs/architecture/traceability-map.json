@@ -1,0 +1,1800 @@
+{
+  "schema": "relay.architecture.traceability-map/v1",
+  "generated_by": "scripts/gen-traceability-map.py",
+  "keystone_invariants": [
+    {
+      "n": "1",
+      "name": "Control plane writes the result",
+      "enforcement": "apps/local-sidecar/relay_sidecar/state_engine/compare_and_set.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/_w25_helpers.py",
+        "apps/local-sidecar/tests/test_audit_r4_actors_kind_alignment.py",
+        "apps/local-sidecar/tests/test_crash_kill_minus_9.py",
+        "apps/local-sidecar/tests/test_e2e_event_log_ordering_post_crash.py",
+        "apps/local-sidecar/tests/test_event_log_append_only.py",
+        "apps/local-sidecar/tests/test_event_log_concurrent_sequence.py",
+        "apps/local-sidecar/tests/test_forced_stop_event.py",
+        "apps/local-sidecar/tests/test_idempotency_records_canonical_mirror.py",
+        "apps/local-sidecar/tests/test_iso_027_malformed_lockfile.py",
+        "apps/local-sidecar/tests/test_reader_separation.py",
+        "apps/local-sidecar/tests/test_run_results_check_constraints.py",
+        "apps/local-sidecar/tests/test_scope_state_per_kind.py",
+        "apps/local-sidecar/tests/test_seeded_secret_redaction.py",
+        "apps/local-sidecar/tests/test_state_engine_writes_only.py",
+        "apps/local-sidecar/tests/test_v2_audit_p0_fixes.py",
+        "apps/local-sidecar/tests/test_v2m02_eval_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_gate_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_idempotency.py",
+        "apps/local-sidecar/tests/test_v2m02_replay_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_runs_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m03_manifest_enforcement.py",
+        "apps/local-sidecar/tests/test_v3m1_sr_r1_findings.py",
+        "apps/local-sidecar/tests/test_v3m2_hosted_501_stubs.py",
+        "apps/local-sidecar/tests/test_v3m2_pagination.py",
+        "apps/local-sidecar/tests/test_v3m3_temporal_query.py",
+        "packages/acef/tests/test_w11_2_x_relay_extensions.py",
+        "packages/acef/tests/test_w11_3_acef_roundtrip.py",
+        "packages/acef/tests/test_w11_4_bundle_verifier.py",
+        "packages/cli/tests/test_iso_035_control_plane_sql_scan.py",
+        "packages/cli/tests/test_w11_4_acef_verify_wiring.py",
+        "packages/cli/tests/test_w5_3_replay_commands.py",
+        "packages/explain/tests/test_v2m05_explain.py",
+        "packages/gate/tests/_w8_3_helpers.py",
+        "packages/gate/tests/_w8_4_helpers.py",
+        "packages/gate/tests/test_w8_3_restart.py",
+        "packages/schemas/python/tests/test_audit_r3_schema_fixes.py",
+        "packages/schemas/python/tests/test_codegen_pipeline.py",
+        "packages/schemas/python/tests/test_envelopes.py",
+        "packages/schemas/python/tests/test_v3m1_evidence_claim_shape.py",
+        "packages/schemas/python/tests/test_v3m1_schema_drift_fixes.py",
+        "packages/schemas/python/tests/test_v3m3_temporal_query_parity.py",
+        "packages/schemas/typescript/test/envelopes.test.ts",
+        "packages/sdk-python/tests/test_canonical_status_sidecar.py",
+        "packages/sdk-python/tests/test_envelope_lifecycle_metadata.py",
+        "packages/sdk-python/tests/test_evidence_submit.py",
+        "packages/sdk-python/tests/test_gate_draft_envelope_parity.py",
+        "packages/sdk-python/tests/test_gate_evaluate.py",
+        "packages/sdk-python/tests/test_replay_create.py",
+        "packages/sdk-typescript/test/codegen_pipeline.test.ts",
+        "packages/sdk-typescript/test/w4_2_canonical_write.test.ts",
+        "packages/verifier-typescript/test/v2m08_trust_anchor_parity.test.ts",
+        "packages/verifier/tests/test_v2m08_trust_anchor.py",
+        "packages/verifier/tests/test_v3m1_claim_rules.py",
+        "packages/verifier/tests/test_v3m1_no_deprecation_on_subject_access.py",
+        "tests/examples/conftest.py",
+        "tests/guards/test_guard_registry_index.py",
+        "tests/hardening/test_v2m08_ai_hardening.py"
+      ],
+      "guard_test_count": 57
+    },
+    {
+      "n": "2",
+      "name": "Pass without evidence is not a pass",
+      "enforcement": "packages/gate/src/relay_gate_engine",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_v2m03_state_guards.py",
+        "packages/explain/tests/test_v3m4_quality_per_class.py",
+        "packages/gate/tests/_w8_4_helpers.py",
+        "packages/gate/tests/test_w8_3_restart.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py"
+      ],
+      "guard_test_count": 5
+    },
+    {
+      "n": "3",
+      "name": "Manifest is the source of truth",
+      "enforcement": "packages/cli/src/relay_cli/commands/manifest.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_audit_v3_manifest_side_effect_binding.py",
+        "apps/local-sidecar/tests/test_iso_r2_ingest_bearer_scope.py",
+        "apps/local-sidecar/tests/test_rawcap_ingest_runs_gate.py",
+        "apps/local-sidecar/tests/test_v2_audit_p0_fixes.py",
+        "apps/local-sidecar/tests/test_v2m02_auth_scope.py",
+        "apps/local-sidecar/tests/test_v2m02_idempotency.py",
+        "apps/local-sidecar/tests/test_v2m02_ingest.py",
+        "apps/local-sidecar/tests/test_v2m03_manifest_enforcement.py",
+        "packages/cli/tests/test_v2m07_cli_completeness.py",
+        "packages/gate/tests/_w8_1_helpers.py",
+        "packages/gate/tests/test_w8_1_anti_bypass.py",
+        "packages/gate/tests/test_w8_1_cel_engine_panic.py",
+        "packages/gate/tests/test_w8_3_restart.py",
+        "packages/schemas/python/tests/test_v2m03_manifest.py",
+        "tests/examples/test_w16_1_manifest_schema.py",
+        "tests/examples/test_w16_2_manifest_schema.py",
+        "tests/examples/test_w16_3_manifest_schema.py",
+        "tests/examples/test_w16_4_manifest_schema.py"
+      ],
+      "guard_test_count": 18
+    },
+    {
+      "n": "4",
+      "name": "Three-anchor handoff",
+      "enforcement": "apps/local-sidecar/relay_sidecar/state_engine/guards.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/_v2m02_w25_helpers.py",
+        "apps/local-sidecar/tests/test_anti_bypass.py",
+        "apps/local-sidecar/tests/test_audit_r3_p0_fixes.py",
+        "apps/local-sidecar/tests/test_audit_r4_actors_kind_alignment.py",
+        "apps/local-sidecar/tests/test_canon_002_int_coercion_422.py",
+        "apps/local-sidecar/tests/test_compare_and_set_state.py",
+        "apps/local-sidecar/tests/test_gate_decision_draft_handoff.py",
+        "apps/local-sidecar/tests/test_guards_pred_handoff_draft_actions.py",
+        "apps/local-sidecar/tests/test_guards_pred_registry.py",
+        "apps/local-sidecar/tests/test_http_boundary_handoff.py",
+        "apps/local-sidecar/tests/test_idemp_001_surface_path_param.py",
+        "apps/local-sidecar/tests/test_idemp_002_toctou_reservation.py",
+        "apps/local-sidecar/tests/test_iso003_three_anchor_fail_closed.py",
+        "apps/local-sidecar/tests/test_iso025_handoff_stale_no_body_backdoor.py",
+        "apps/local-sidecar/tests/test_iso026_gate_drafts_active_expiry.py",
+        "apps/local-sidecar/tests/test_iso029_handoff_guard_authenticated_actor.py",
+        "apps/local-sidecar/tests/test_iso_r2_ingest_bearer_scope.py",
+        "apps/local-sidecar/tests/test_payload_engine_audit_keys_win.py",
+        "apps/local-sidecar/tests/test_rawcap_ingest_runs_gate.py",
+        "apps/local-sidecar/tests/test_run_results_check_constraints.py",
+        "apps/local-sidecar/tests/test_state_machine_property.py",
+        "apps/local-sidecar/tests/test_state_transition_coverage.py",
+        "apps/local-sidecar/tests/test_three_anchor_handoff.py",
+        "apps/local-sidecar/tests/test_v2_audit_p0_fixes.py",
+        "apps/local-sidecar/tests/test_v2m02_auth_scope.py",
+        "apps/local-sidecar/tests/test_v2m02_gate_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_ingest.py",
+        "apps/local-sidecar/tests/test_v2m02_manifest_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_pagination.py",
+        "apps/local-sidecar/tests/test_v2m02_rate_limit.py",
+        "apps/local-sidecar/tests/test_v2m02_replay_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_runs_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m03_manifest_enforcement.py",
+        "apps/local-sidecar/tests/test_v2m03_state_guards.py",
+        "apps/local-sidecar/tests/test_v3m1_admin_override_audit_rename.py",
+        "apps/local-sidecar/tests/test_v3m2_pagination.py",
+        "apps/local-sidecar/tests/test_v3m3_per_project_manifest_scoping.py",
+        "apps/replay-proxy/tests/test_v2m04_replay.py",
+        "packages/acef/tests/test_w11_2_x_relay_extensions.py",
+        "packages/acef/tests/test_w11_3_acef_roundtrip.py",
+        "packages/acef/tests/test_w11_4_bundle_verifier.py",
+        "packages/cli/tests/test_v2m07_cli_completeness.py",
+        "packages/cli/tests/test_w11_4_acef_verify_wiring.py",
+        "packages/cli/tests/test_w5_1_skeleton.py",
+        "packages/explain/tests/test_v3m4_quality_per_class.py",
+        "packages/gate/tests/_w8_1_helpers.py",
+        "packages/gate/tests/_w8_2_helpers.py",
+        "packages/gate/tests/_w8_3_helpers.py",
+        "packages/gate/tests/test_cross_engine_signed_decision_parity.py",
+        "packages/gate/tests/test_v3m3_canonical_gate_stalled.py",
+        "packages/gate/tests/test_w8_1_anti_bypass.py",
+        "packages/gate/tests/test_w8_2_decision_writer.py",
+        "packages/gate/tests/test_w8_3_restart.py",
+        "packages/gate/tests/test_w8_4_admin_actions.py",
+        "packages/gate/tests/test_w8_4_circuit_breaker.py",
+        "packages/schemas/python/tests/test_audit_r3_schema_fixes.py",
+        "packages/schemas/python/tests/test_codegen_pipeline.py",
+        "packages/schemas/python/tests/test_envelopes.py",
+        "packages/schemas/python/tests/test_golden_corpus.py",
+        "packages/schemas/python/tests/test_v3m1_evidence_claim_shape.py",
+        "packages/schemas/typescript/test/envelopes.test.ts",
+        "packages/sdk-python/tests/test_audit_r3_ssrf.py",
+        "packages/sdk-python/tests/test_envelope_handoff.py",
+        "packages/sdk-python/tests/test_envelope_lifecycle_metadata.py",
+        "packages/sdk-python/tests/test_error_envelope_w34.py",
+        "packages/sdk-python/tests/test_evidence_submit.py",
+        "packages/sdk-python/tests/test_flush_async.py",
+        "packages/sdk-python/tests/test_flush_drop_and_log.py",
+        "packages/sdk-python/tests/test_gate_draft_envelope_parity.py",
+        "packages/sdk-python/tests/test_gate_evaluate.py",
+        "packages/sdk-python/tests/test_idempotency_ulid.py",
+        "packages/sdk-python/tests/test_iso019_async_teardown_drains_queue.py",
+        "packages/sdk-python/tests/test_replay_create.py",
+        "packages/sdk-typescript/test/codegen_pipeline.test.ts",
+        "packages/sdk-typescript/test/gate_draft_cross_language_parity.test.ts",
+        "packages/sdk-typescript/test/w4_2_lifecycle_envelope.test.ts",
+        "packages/sdk-typescript/test/w4_4_cross_language_parity.test.ts",
+        "packages/sdk-typescript/test/w4_4_error_envelope.test.ts",
+        "packages/sdk-typescript/test/w4_4_exit_codes.test.ts",
+        "packages/sdk-typescript/test/w4_5_cross_language_parity.test.ts",
+        "packages/verifier/tests/test_v3m1_no_deprecation_on_subject_access.py",
+        "tests/conformance/cli-exit-codes/generate_parity_fixtures.py",
+        "tests/conformance/errors/generate_parity_fixtures.py",
+        "tests/conformance/ingest/generate_parity_fixtures.py",
+        "tests/docs/test_build_error_reference.py",
+        "tests/examples/test_w16_1_lifecycle_e2e.py",
+        "tests/examples/test_w16_2_lifecycle_e2e.py",
+        "tests/examples/test_w16_3_lifecycle_e2e.py",
+        "tests/examples/test_w16_4_lifecycle_e2e.py"
+      ],
+      "guard_test_count": 89
+    },
+    {
+      "n": "5",
+      "name": "Gate restart on failure",
+      "enforcement": "packages/gate/src/relay_gate_engine/restart_pipeline.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_canon_002_int_coercion_422.py",
+        "apps/local-sidecar/tests/test_guards_pred_signing_retention_round_admin.py",
+        "apps/local-sidecar/tests/test_state_engine_writes_only.py",
+        "packages/gate/tests/_w8_4_helpers.py",
+        "packages/gate/tests/test_anti_bypass_shell_quote_evasion.py",
+        "packages/gate/tests/test_v3m3_canonical_gate_stalled.py",
+        "packages/gate/tests/test_w8_3_restart.py",
+        "packages/gate/tests/test_w8_4_cap_config.py",
+        "packages/gate/tests/test_w8_4_circuit_breaker.py"
+      ],
+      "guard_test_count": 9
+    },
+    {
+      "n": "6",
+      "name": "Side-effect idempotency",
+      "enforcement": "apps/local-sidecar/relay_sidecar/side_effect_markers.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_cas_gaps_idempotency.py",
+        "apps/local-sidecar/tests/test_idemp_002_toctou_reservation.py",
+        "apps/local-sidecar/tests/test_v2m04_side_effects.py",
+        "packages/sdk-python/tests/test_adapter_side_effects.py",
+        "packages/sdk-python/tests/test_iso017_side_effect_idempotency_determinism.py"
+      ],
+      "guard_test_count": 5
+    },
+    {
+      "n": "7",
+      "name": "Default-deny raw capture",
+      "enforcement": "apps/local-sidecar/relay_sidecar/validation/raw_capture.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_iso_r2_ingest_bearer_scope.py",
+        "apps/local-sidecar/tests/test_payload_raw_check.py",
+        "apps/local-sidecar/tests/test_rawcap_ingest_runs_gate.py",
+        "apps/local-sidecar/tests/test_v2_audit_p0_fixes.py",
+        "apps/local-sidecar/tests/test_v2m02_redaction_policy_endpoints.py",
+        "packages/schemas/python/tests/test_envelopes.py",
+        "packages/schemas/python/tests/test_v2m01_envelopes.py",
+        "packages/schemas/typescript/test/envelopes.test.ts",
+        "packages/sdk-python/tests/test_json_pointer_null_leaf_parity.py",
+        "packages/sdk-python/tests/test_redaction.py",
+        "packages/sdk-python/tests/test_redaction_parity.py",
+        "packages/sdk-python/tests/test_redaction_property.py",
+        "packages/sdk-python/tests/test_v2m08_redaction.py",
+        "packages/sdk-python/tests/test_v3m5_hosted_default_policy.py",
+        "packages/sdk-python/tests/test_v3m5_json_path_matcher.py",
+        "packages/sdk-typescript/test/redact_001_pointer_wildcard.test.ts",
+        "packages/sdk-typescript/test/sdk_ts_01_proto_key_parity.test.ts",
+        "packages/sdk-typescript/test/v3m5_json_path_matcher.test.ts",
+        "packages/sdk-typescript/test/w4_3_binary_attachments.test.ts",
+        "packages/sdk-typescript/test/w4_3_combining_mark_splice.test.ts",
+        "packages/sdk-typescript/test/w4_3_confusables_preserve_original.test.ts",
+        "packages/sdk-typescript/test/w4_3_policy_validation.test.ts",
+        "packages/sdk-typescript/test/w4_3_redaction_engine.test.ts",
+        "packages/sdk-typescript/test/w4_3_regex_inline_flags.test.ts",
+        "tests/conformance/redaction/generate_parity_fixtures.py",
+        "tests/examples/test_w16_4_lifecycle_e2e.py"
+      ],
+      "guard_test_count": 26
+    },
+    {
+      "n": "8",
+      "name": "Atomic persistence -- four primitives only",
+      "enforcement": "apps/local-sidecar/relay_sidecar/primitives",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_audit_r3_p0_fixes.py",
+        "apps/local-sidecar/tests/test_begin_immediate.py",
+        "apps/local-sidecar/tests/test_crash_kill_minus_9.py",
+        "apps/local-sidecar/tests/test_disk_full_rollback.py",
+        "apps/local-sidecar/tests/test_e2e_event_log_ordering_post_crash.py",
+        "apps/local-sidecar/tests/test_event_id_monotonic.py",
+        "apps/local-sidecar/tests/test_event_log_concurrent_sequence.py",
+        "apps/local-sidecar/tests/test_forced_stop_atomic_primitive.py",
+        "apps/local-sidecar/tests/test_idemp_002_toctou_reservation.py",
+        "apps/local-sidecar/tests/test_invalid_transition_secondary_error.py",
+        "apps/local-sidecar/tests/test_iso009_retention_crash_safe.py",
+        "apps/local-sidecar/tests/test_local_two_layer_locked_write.py",
+        "apps/local-sidecar/tests/test_reader_separation.py",
+        "apps/local-sidecar/tests/test_retention_pass.py",
+        "apps/local-sidecar/tests/test_sqlite_busy_exhausted.py",
+        "apps/local-sidecar/tests/test_v2m02_manifest_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m04_side_effects.py",
+        "apps/local-sidecar/tests/test_wal_checkpoint_failure.py",
+        "apps/local-sidecar/tests/test_wal_checkpoint_on_shutdown.py",
+        "apps/local-sidecar/tests/test_writer_loop_serialization.py",
+        "apps/local-sidecar/tests/test_writer_queue_concurrency.py",
+        "packages/cli/tests/test_v2m07_cli_completeness.py",
+        "packages/cli/tests/test_w5_2_sidecar_commands.py",
+        "packages/schemas/python/tests/test_v3m1_join_tables.py",
+        "packages/schemas/python/tests/test_v3m1_runresult_no_array.py",
+        "tests/release/test_w12_6_release_evidence_bundle.py"
+      ],
+      "guard_test_count": 26
+    },
+    {
+      "n": "9",
+      "name": "Cassette-first replay",
+      "enforcement": "apps/replay-proxy/relay_replay_proxy",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/replay-proxy/tests/test_v2m08_replay_determinism.py",
+        "apps/replay-proxy/tests/test_w7_1_addon_fail_closed.py",
+        "packages/cli/tests/test_w5_3_replay_commands.py",
+        "packages/sdk-python/tests/test_egress_ssrf_parity_property.py",
+        "packages/sdk-python/tests/test_replay_mode.py",
+        "packages/sdk-typescript/test/w4_2_replay_and_flush.test.ts",
+        "tests/examples/test_w16_1_lifecycle_e2e.py",
+        "tests/examples/test_w16_2_cassettes.py",
+        "tests/examples/test_w16_2_lifecycle_e2e.py",
+        "tests/examples/test_w16_2_manifest_schema.py",
+        "tests/examples/test_w16_3_manifest_schema.py",
+        "tests/examples/test_w16_4_lifecycle_e2e.py",
+        "tests/examples/test_w16_4_manifest_schema.py",
+        "tests/examples/test_w16_4_readme.py"
+      ],
+      "guard_test_count": 14
+    },
+    {
+      "n": "10",
+      "name": "Schema versioning on every envelope",
+      "enforcement": "packages/schemas/python/relay_schemas",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/_w25_helpers.py",
+        "apps/local-sidecar/tests/test_audit_r3_p0_fixes.py",
+        "apps/local-sidecar/tests/test_canon_002_int_coercion_422.py",
+        "apps/local-sidecar/tests/test_cas_gaps_idempotency.py",
+        "apps/local-sidecar/tests/test_context_reinjection_guard.py",
+        "apps/local-sidecar/tests/test_crash_kill_minus_9.py",
+        "apps/local-sidecar/tests/test_e2e_event_log_ordering_post_crash.py",
+        "apps/local-sidecar/tests/test_e2e_schema_version_mismatch.py",
+        "apps/local-sidecar/tests/test_event_log_append_only.py",
+        "apps/local-sidecar/tests/test_event_log_schema_version_check.py",
+        "apps/local-sidecar/tests/test_gate_decision_draft_handoff.py",
+        "apps/local-sidecar/tests/test_http_boundary_handoff.py",
+        "apps/local-sidecar/tests/test_idempotency_records_canonical_mirror.py",
+        "apps/local-sidecar/tests/test_iso001_schema_version_drift_guard.py",
+        "apps/local-sidecar/tests/test_iso_r2_ingest_bearer_scope.py",
+        "apps/local-sidecar/tests/test_rawcap_ingest_runs_gate.py",
+        "apps/local-sidecar/tests/test_schema_version_mismatch.py",
+        "apps/local-sidecar/tests/test_seeded_secret_redaction.py",
+        "apps/local-sidecar/tests/test_v2_audit_p0_fixes.py",
+        "apps/local-sidecar/tests/test_v2m02_eval_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_gate_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_idempotency.py",
+        "apps/local-sidecar/tests/test_v2m02_ingest.py",
+        "apps/local-sidecar/tests/test_v2m02_manifest_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_pagination.py",
+        "apps/local-sidecar/tests/test_v2m02_replay_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m02_runs_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m03_manifest_enforcement.py",
+        "apps/local-sidecar/tests/test_v3m1_admin_override_audit_rename.py",
+        "apps/local-sidecar/tests/test_v3m1_sr_r1_findings.py",
+        "apps/local-sidecar/tests/test_v3m2_pagination.py",
+        "apps/local-sidecar/tests/test_v3m3_temporal_query.py",
+        "apps/replay-proxy/tests/conftest.py",
+        "apps/replay-proxy/tests/test_v2m08_replay_determinism.py",
+        "apps/replay-proxy/tests/test_w7_2_cassette_format.py",
+        "apps/replay-proxy/tests/test_w7_2_cassette_security.py",
+        "packages/acef/tests/test_w11_2_x_relay_extensions.py",
+        "packages/acef/tests/test_w11_3_acef_roundtrip.py",
+        "packages/acef/tests/test_w11_4_bundle_verifier.py",
+        "packages/cli/tests/test_audit_r3_cli.py",
+        "packages/cli/tests/test_audit_v3_json_injection.py",
+        "packages/cli/tests/test_iso_042_gate_malformed_200_payload.py",
+        "packages/cli/tests/test_v2m07_cli_completeness.py",
+        "packages/cli/tests/test_v3m2_sidecar_json_flag.py",
+        "packages/cli/tests/test_w11_4_acef_verify_wiring.py",
+        "packages/cli/tests/test_w5_1_skeleton.py",
+        "packages/cli/tests/test_w5_2_sidecar_commands.py",
+        "packages/cli/tests/test_w5_3_replay_commands.py",
+        "packages/cli/tests/test_w5_4_evidence_commands.py",
+        "packages/cli/tests/test_w5_5_verify_self.py",
+        "packages/cli/tests/test_w6_6_contract_publish.py",
+        "packages/contracts-typescript/test/fixtures/generate_udf_outputs_golden.py",
+        "packages/contracts-typescript/test/w17_3_celspec_corpus.test.ts",
+        "packages/contracts-typescript/test/w6_2_014_jcs_canonical.test.ts",
+        "packages/contracts-typescript/test/w6_5_corpus.test.ts",
+        "packages/contracts/tests/test_f7_oob_result_keeps_udf_trace.py",
+        "packages/contracts/tests/test_pipeline_udf_capture_multi_call.py",
+        "packages/contracts/tests/test_pipeline_udf_outputs_parity.py",
+        "packages/contracts/tests/test_pipeline_wasm_udf_trace.py",
+        "packages/contracts/tests/test_roborev_m6_callee_publish_screens.py",
+        "packages/contracts/tests/test_w6_4_dsl_parser.py",
+        "packages/contracts/tests/test_w6_5_corpus.py",
+        "packages/evals/tests/test_w9_1_delta.py",
+        "packages/evals/tests/test_w9_1_runner.py",
+        "packages/evals/tests/test_w9_2_templates.py",
+        "packages/evals/tests/test_w9_3_llm_judge.py",
+        "packages/explain/tests/test_v2m05_explain.py",
+        "packages/explain/tests/test_v3m4_generator_auto_disable.py",
+        "packages/explain/tests/test_v3m4_sla_aging.py",
+        "packages/gate/tests/_w8_3_helpers.py",
+        "packages/gate/tests/_w8_4_helpers.py",
+        "packages/gate/tests/test_cross_engine_signed_decision_parity.py",
+        "packages/gate/tests/test_v2m01_metric_catalog.py",
+        "packages/gate/tests/test_w8_2_decision_writer.py",
+        "packages/schemas/python/tests/test_audit_r3_schema_fixes.py",
+        "packages/schemas/python/tests/test_audit_r4_schema_reconcile.py",
+        "packages/schemas/python/tests/test_codegen_pipeline.py",
+        "packages/schemas/python/tests/test_envelopes.py",
+        "packages/schemas/python/tests/test_v2m01_envelopes.py",
+        "packages/schemas/python/tests/test_v2m01_evidence_timestamps.py",
+        "packages/schemas/python/tests/test_v2m01_human_oversight.py",
+        "packages/schemas/python/tests/test_v2m01_legal_holds.py",
+        "packages/schemas/python/tests/test_v2m01_scope_state_extension.py",
+        "packages/schemas/python/tests/test_v2m03_manifest.py",
+        "packages/schemas/python/tests/test_v3m1_evidence_claim_shape.py",
+        "packages/schemas/python/tests/test_v3m3_temporal_query_parity.py",
+        "packages/schemas/python/tests/test_yaml_alignment.py",
+        "packages/schemas/typescript/test/envelopes.test.ts",
+        "packages/schemas/typescript/test/golden_corpus.test.ts",
+        "packages/sdk-python/tests/test_audit_r3_ssrf.py",
+        "packages/sdk-python/tests/test_canonical_status_sidecar.py",
+        "packages/sdk-python/tests/test_envelope_lifecycle_metadata.py",
+        "packages/sdk-python/tests/test_error_envelope_w34.py",
+        "packages/sdk-python/tests/test_evidence_submit.py",
+        "packages/sdk-python/tests/test_exit_code_parity.py",
+        "packages/sdk-python/tests/test_gate_draft_envelope_parity.py",
+        "packages/sdk-python/tests/test_gate_evaluate.py",
+        "packages/sdk-python/tests/test_json_pointer_null_leaf_parity.py",
+        "packages/sdk-python/tests/test_loopback_server.py",
+        "packages/sdk-python/tests/test_redaction.py",
+        "packages/sdk-python/tests/test_redaction_parity.py",
+        "packages/sdk-python/tests/test_redaction_property.py",
+        "packages/sdk-python/tests/test_replay_create.py",
+        "packages/sdk-python/tests/test_v2m08_redaction.py",
+        "packages/sdk-python/tests/test_v3m5_json_path_matcher.py",
+        "packages/sdk-typescript/test/codegen_pipeline.test.ts",
+        "packages/sdk-typescript/test/gate_draft_cross_language_parity.test.ts",
+        "packages/sdk-typescript/test/redact_001_pointer_wildcard.test.ts",
+        "packages/sdk-typescript/test/sdk_ts_01_proto_key_parity.test.ts",
+        "packages/sdk-typescript/test/v3m5_json_path_matcher.test.ts",
+        "packages/sdk-typescript/test/w4_1_bundle_wrapper.test.ts",
+        "packages/sdk-typescript/test/w4_1_package_surface.test.ts",
+        "packages/sdk-typescript/test/w4_2_canonical_write.test.ts",
+        "packages/sdk-typescript/test/w4_2_lifecycle_envelope.test.ts",
+        "packages/sdk-typescript/test/w4_2_replay_and_flush.test.ts",
+        "packages/sdk-typescript/test/w4_3_binary_attachments.test.ts",
+        "packages/sdk-typescript/test/w4_3_combining_mark_splice.test.ts",
+        "packages/sdk-typescript/test/w4_3_confusables_preserve_original.test.ts",
+        "packages/sdk-typescript/test/w4_3_cross_language_parity.test.ts",
+        "packages/sdk-typescript/test/w4_3_policy_validation.test.ts",
+        "packages/sdk-typescript/test/w4_3_redaction_engine.test.ts",
+        "packages/sdk-typescript/test/w4_3_regex_inline_flags.test.ts",
+        "packages/sdk-typescript/test/w4_4_cross_language_parity.test.ts",
+        "packages/sdk-typescript/test/w4_4_error_envelope.test.ts",
+        "packages/sdk-typescript/test/w4_4_exit_codes.test.ts",
+        "packages/sdk-typescript/test/w4_5_cross_language_parity.test.ts",
+        "packages/sdk-typescript/test/w4_6_manifest_signature.test.ts",
+        "packages/verifier-typescript/test/audit_r3_parity.test.ts",
+        "packages/verifier-typescript/test/m06_parity.test.ts",
+        "packages/verifier-typescript/test/parity_003_evidence_ref_manifest_binding.test.ts",
+        "packages/verifier-typescript/test/parity_008_namespace_closed_set.test.ts",
+        "packages/verifier-typescript/test/parity_013_no_signatures_structure.test.ts",
+        "packages/verifier-typescript/test/parity_014_verifier_output_parity.test.ts",
+        "packages/verifier-typescript/test/parity_015_signature_reason_ascii.test.ts",
+        "packages/verifier-typescript/test/v2m08_trust_anchor_parity.test.ts",
+        "packages/verifier/tests/conftest_w10_4.py",
+        "packages/verifier/tests/test_v3m1_claim_rules.py",
+        "packages/verifier/tests/test_v3m1_no_deprecation_on_subject_access.py",
+        "packages/verifier/tests/test_v3m5_toctou_symlink_safe.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py",
+        "packages/verifier/tests/test_w10_1_jwks_loader.py",
+        "packages/verifier/tests/test_w10_4_bundle_validator.py",
+        "tests/conformance/cassettes/generate_parity_fixtures.py",
+        "tests/conformance/cel-spec/test_w17_3_celspec_corpus.py",
+        "tests/conformance/cli-exit-codes/generate_parity_fixtures.py",
+        "tests/conformance/errors/generate_parity_fixtures.py",
+        "tests/conformance/ingest/generate_parity_fixtures.py",
+        "tests/conformance/redaction/generate_parity_fixtures.py",
+        "tests/docs/test_audit_codebase_alignment.py",
+        "tests/docs/test_build_cli_reference.py",
+        "tests/docs/test_build_error_reference.py",
+        "tests/examples/test_w16_1_cassettes.py",
+        "tests/examples/test_w16_2_cassettes.py",
+        "tests/examples/test_w16_3_cassettes.py",
+        "tests/examples/test_w16_4_cassettes.py",
+        "tests/release/test_w12_5_build_driver.py",
+        "tests/release/test_w12_6_release_evidence_bundle.py",
+        "tests/release/test_w12_6_verify_install.py"
+      ],
+      "guard_test_count": 158
+    },
+    {
+      "n": "11",
+      "name": "Trust anchor is the moat",
+      "enforcement": "packages/verifier/src/relay_verifier/jwks_loader.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_v2m02_evidence_endpoints.py",
+        "packages/cli/tests/test_iso_034_verify_install_jwks_cache_path.py",
+        "packages/cli/tests/test_w11_4_acef_verify_wiring.py",
+        "packages/cli/tests/test_w5_2_sidecar_commands.py",
+        "packages/cli/tests/test_w5_4_evidence_commands.py",
+        "packages/cli/tests/test_w9_sigstore_verifier.py",
+        "packages/sdk-typescript-sidecar-bundle/test/index.test.ts",
+        "packages/verifier-typescript/test/audit_r3_parity.test.ts",
+        "packages/verifier-typescript/test/m06_parity.test.ts",
+        "packages/verifier-typescript/test/parity_003_evidence_ref_manifest_binding.test.ts",
+        "packages/verifier-typescript/test/parity_005_trust_anchor_homograph_guard.test.ts",
+        "packages/verifier-typescript/test/parity_008_namespace_closed_set.test.ts",
+        "packages/verifier-typescript/test/parity_012_esm_dist_tsa_crypto.test.ts",
+        "packages/verifier-typescript/test/parity_013_no_signatures_structure.test.ts",
+        "packages/verifier-typescript/test/parity_014_verifier_output_parity.test.ts",
+        "packages/verifier-typescript/test/parity_015_signature_reason_ascii.test.ts",
+        "packages/verifier-typescript/test/v2m08_trust_anchor_parity.test.ts",
+        "packages/verifier/tests/conftest_w10_4.py",
+        "packages/verifier/tests/guards/default_trust_anchor_lock.py",
+        "packages/verifier/tests/guards/test_default_trust_anchor_lock.py",
+        "packages/verifier/tests/test_v2m08_trust_anchor.py",
+        "packages/verifier/tests/test_v3m1_claim_rules.py",
+        "packages/verifier/tests/test_v3m1_no_deprecation_on_subject_access.py",
+        "packages/verifier/tests/test_v3m5_idn_homograph.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py",
+        "packages/verifier/tests/test_w10_1_default_jwks_url.py",
+        "packages/verifier/tests/test_w10_1_jwks_loader.py",
+        "packages/verifier/tests/test_w10_4_bundle_validator.py",
+        "packages/verifier/tests/test_w10_4_retention_and_anchor.py",
+        "tests/docs/test_w13_1_trust_anchor_governance_doc.py",
+        "tests/guards/test_default_trust_anchor_unchanged.py",
+        "tests/release/test_w12_5_sidecar_bundle_workflow.py",
+        "tests/release/test_w12_6_release_evidence_bundle.py",
+        "tests/release/test_w12_6_verify_install.py"
+      ],
+      "guard_test_count": 34
+    },
+    {
+      "n": "12",
+      "name": "Live replay against irreversible effects is gated",
+      "enforcement": "apps/local-sidecar/relay_sidecar/side_effect_markers.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_audit_v3_manifest_side_effect_binding.py",
+        "apps/local-sidecar/tests/test_v2m02_ingest.py",
+        "apps/local-sidecar/tests/test_v2m02_replay_endpoints.py",
+        "apps/local-sidecar/tests/test_v2m04_side_effects.py",
+        "apps/replay-proxy/tests/conftest.py",
+        "apps/replay-proxy/tests/test_v2m04_replay.py",
+        "apps/replay-proxy/tests/test_w7_2_cassette_format.py",
+        "apps/replay-proxy/tests/test_w7_5_exit_code_matrix.py",
+        "apps/replay-proxy/tests/test_w7_5_side_effects_and_replay.py",
+        "packages/acef/tests/test_w11_3_acef_roundtrip.py",
+        "packages/cli/tests/test_audit_r3_approval_bypass.py",
+        "packages/cli/tests/test_v2m04_constants_removed.py",
+        "packages/cli/tests/test_w5_3_replay_commands.py",
+        "packages/evals/tests/test_w9_2_templates.py",
+        "packages/schemas/python/tests/test_envelopes.py",
+        "packages/schemas/python/tests/test_v2m01_envelopes.py",
+        "packages/schemas/python/tests/test_v2m04_side_effects.py",
+        "packages/schemas/typescript/test/envelopes.test.ts",
+        "packages/sdk-python/tests/test_error_envelope_w34.py",
+        "packages/sdk-typescript/test/w4_4_cross_language_parity.test.ts",
+        "packages/sdk-typescript/test/w4_4_error_envelope.test.ts",
+        "tests/conformance/errors/generate_parity_fixtures.py",
+        "tests/docs/test_w15_1_sandbox_threat_model_doc.py",
+        "tests/examples/test_w16_1_cassettes.py",
+        "tests/examples/test_w16_1_manifest_schema.py",
+        "tests/examples/test_w16_2_cassettes.py",
+        "tests/examples/test_w16_2_manifest_schema.py",
+        "tests/examples/test_w16_3_cassettes.py",
+        "tests/examples/test_w16_3_lifecycle_e2e.py",
+        "tests/examples/test_w16_3_manifest_schema.py",
+        "tests/examples/test_w16_4_cassettes.py",
+        "tests/examples/test_w16_4_manifest_schema.py"
+      ],
+      "guard_test_count": 32
+    },
+    {
+      "n": "13",
+      "name": "OSS default trust-anchor change is board-level",
+      "enforcement": "packages/verifier/src/relay_verifier/jwks_loader.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "packages/cli/tests/test_iso_034_verify_install_jwks_cache_path.py",
+        "packages/cli/tests/test_verifier_crypto_failclosed.py",
+        "packages/cli/tests/test_w5_2_sidecar_commands.py",
+        "packages/cli/tests/test_w5_4_evidence_commands.py",
+        "packages/cli/tests/test_w9_sigstore_verifier.py",
+        "packages/schemas/python/tests/test_v2m03_manifest.py",
+        "packages/sdk-typescript-sidecar-bundle/test/index.test.ts",
+        "packages/sdk-typescript-sidecar-bundle/test/launcher.test.ts",
+        "packages/sdk-typescript/test/w4_1_bundle_wrapper.test.ts",
+        "packages/sdk-typescript/test/w4_4_error_envelope.test.ts",
+        "packages/sdk-typescript/test/w4_5_sigstore_verify.test.ts",
+        "packages/sdk-typescript/test/w4_6_manifest_signature.test.ts",
+        "packages/sdk-typescript/test/w4_7_sigstore_trust_chain.test.ts",
+        "packages/verifier-typescript/test/audit_r3_parity.test.ts",
+        "packages/verifier-typescript/test/m06_parity.test.ts",
+        "packages/verifier-typescript/test/parity_005_trust_anchor_homograph_guard.test.ts",
+        "packages/verifier-typescript/test/parity_012_esm_dist_tsa_crypto.test.ts",
+        "packages/verifier-typescript/test/parity_013_no_signatures_structure.test.ts",
+        "packages/verifier-typescript/test/parity_014_verifier_output_parity.test.ts",
+        "packages/verifier-typescript/test/parity_015_signature_reason_ascii.test.ts",
+        "packages/verifier-typescript/test/v2m08_trust_anchor_parity.test.ts",
+        "packages/verifier/tests/conftest_w10_4.py",
+        "packages/verifier/tests/guards/default_trust_anchor_lock.py",
+        "packages/verifier/tests/guards/test_default_trust_anchor_lock.py",
+        "packages/verifier/tests/test_v2m08_trust_anchor.py",
+        "packages/verifier/tests/test_v3m1_claim_rules.py",
+        "packages/verifier/tests/test_v3m5_idn_homograph.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py",
+        "packages/verifier/tests/test_w10_1_default_jwks_url.py",
+        "packages/verifier/tests/test_w10_4_bundle_validator.py",
+        "packages/verifier/tests/test_w10_4_retention_and_anchor.py",
+        "tests/docs/test_build_error_reference.py",
+        "tests/docs/test_w13_1_trust_anchor_governance_doc.py",
+        "tests/guards/test_default_trust_anchor_unchanged.py",
+        "tests/release/test_w12_5_build_driver.py",
+        "tests/release/test_w12_5_sidecar_bundle_workflow.py",
+        "tests/release/test_w12_6_release_evidence_bundle.py",
+        "tests/release/test_w12_6_verify_install.py"
+      ],
+      "guard_test_count": 38
+    },
+    {
+      "n": "14",
+      "name": "No trust-anchor key material in OSS repo",
+      "enforcement": "scripts/lint-banned-copy.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_v2m02_evidence_endpoints.py",
+        "packages/gate/tests/test_cross_engine_signed_decision_parity.py",
+        "packages/sdk-typescript/test/w4_5_sigstore_verify.test.ts",
+        "packages/verifier-typescript/test/parity_012_esm_dist_tsa_crypto.test.ts",
+        "packages/verifier-typescript/test/v3m5_tsa_parity_p2.test.ts",
+        "packages/verifier/tests/conftest_w10_4.py",
+        "packages/verifier/tests/test_v2m08_trust_anchor.py",
+        "packages/verifier/tests/test_verifier_failclosed_property.py",
+        "packages/verifier/tests/test_w10_4_chain_and_invariants.py",
+        "packages/verifier/tests/test_w9_tsa_verifier.py",
+        "tests/guards/test_no_private_keys.py",
+        "tests/guards/test_no_private_keys_repo_wide.py",
+        "tests/release/test_w12_5_sidecar_bundle_workflow.py"
+      ],
+      "guard_test_count": 13
+    },
+    {
+      "n": "15",
+      "name": "OSS/hosted source-boundary discipline",
+      "enforcement": "scripts/gen-dependency-graph.py",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_v3m2_hosted_501_stubs.py",
+        "packages/schemas/python/tests/test_v3m1_fresh_db_migration.py",
+        "packages/schemas/python/tests/test_v3m3_scope_state_trigger.py",
+        "tests/docs/test_build_error_reference.py",
+        "tests/examples/test_w16_1_manifest_schema.py",
+        "tests/release/test_w12_4_in_toto_attestations.py"
+      ],
+      "guard_test_count": 6
+    },
+    {
+      "n": "16",
+      "name": "CEL UDFs deterministic; Py<->wasm<->TS parity",
+      "enforcement": "packages/cel-wasm",
+      "enforcement_exists": true,
+      "guard_tests": [
+        "apps/local-sidecar/tests/test_e2e_partial_lockfile.py",
+        "apps/local-sidecar/tests/test_guards_pred_idem_manifest.py",
+        "apps/local-sidecar/tests/test_http_boundary_handoff.py",
+        "apps/local-sidecar/tests/test_iso024_nonce_store_bounded.py",
+        "apps/local-sidecar/tests/test_lifespan_sqlite_wal.py",
+        "apps/local-sidecar/tests/test_shared_httpx_client.py",
+        "apps/local-sidecar/tests/test_shutdown_drain.py",
+        "apps/local-sidecar/tests/test_sigterm_drain_ingest.py",
+        "apps/local-sidecar/tests/test_state_machine_stateful_property.py",
+        "apps/local-sidecar/tests/test_v2m02_rate_limit.py",
+        "apps/local-sidecar/tests/test_v3m2_hosted_501_stubs.py",
+        "apps/local-sidecar/tests/test_writer_queue_concurrency.py",
+        "apps/replay-proxy/tests/test_v2m08_replay_determinism.py",
+        "apps/replay-proxy/tests/test_w7_2_cassette_format.py",
+        "apps/replay-proxy/tests/test_w7_5_egress_denial_python.py",
+        "apps/replay-proxy/tests/test_w7_5_subprocess_curl.py",
+        "packages/acef/tests/test_w11_3_acef_roundtrip.py",
+        "packages/acef/upstream/tests/conformance/test_golden_bundles.py",
+        "packages/acef/upstream/tests/conformance/test_provision_rollup.py",
+        "packages/acef/upstream/tests/conformance/test_review_findings.py",
+        "packages/acef/upstream/tests/conformance/test_roundtrip.py",
+        "packages/acef/upstream/tests/integration/test_end_to_end.py",
+        "packages/acef/upstream/tests/unit/test_export_loader.py",
+        "packages/acef/upstream/tests/unit/test_integrity.py",
+        "packages/acef/upstream/tests/unit/test_redaction.py",
+        "packages/acef/upstream/tests/unit/test_templates.py",
+        "packages/cel-wasm/tests/test_g3_type_values.py",
+        "packages/cel-wasm/tests/test_profile_fence.py",
+        "packages/cel-wasm/tests/test_relay_profile_fence.py",
+        "packages/cel-wasm/tests/test_relay_udfs.py",
+        "packages/cel-wasm/tests/test_udf_trace.py",
+        "packages/cel-wasm/tests/test_wsj_fuel_timeout.py",
+        "packages/cli/tests/test_cwc_p5flip_cel_engine_invariant.py",
+        "packages/cli/tests/test_v2m07_cli_completeness.py",
+        "packages/cli/tests/test_w5_3_replay_commands.py",
+        "packages/cli/tests/test_w5_5_verify_self.py",
+        "packages/cli/tests/test_w6_6_contract_publish.py",
+        "packages/contracts-typescript/test/async-evaluate.test.ts",
+        "packages/contracts-typescript/test/default-equals-wasm-guard.test.ts",
+        "packages/contracts-typescript/test/fixtures/generate_udf_outputs_golden.py",
+        "packages/contracts-typescript/test/mjs-loader-relay-profile.test.ts",
+        "packages/contracts-typescript/test/parity_007_regex_backref_scope.test.ts",
+        "packages/contracts-typescript/test/pipeline_udf_outputs_parity.test.ts",
+        "packages/contracts-typescript/test/roborev_canonical_double_parity.test.ts",
+        "packages/contracts-typescript/test/roborev_round2_cel_wasm_precedence.test.ts",
+        "packages/contracts-typescript/test/roborev_round2_startup_waiter_race.test.ts",
+        "packages/contracts-typescript/test/roborev_round3_map_key_utf8_order.test.ts",
+        "packages/contracts-typescript/test/roborev_tool_arg_double_parity.test.ts",
+        "packages/contracts-typescript/test/roborev_wasm_startup_timeout.test.ts",
+        "packages/contracts-typescript/test/udf_via_cel_cross_host.test.ts",
+        "packages/contracts-typescript/test/w17_3_celspec_corpus.test.ts",
+        "packages/contracts-typescript/test/w6_2_011_profile.test.ts",
+        "packages/contracts-typescript/test/w6_2_012_timeout.test.ts",
+        "packages/contracts-typescript/test/w6_2_014_jcs_canonical.test.ts",
+        "packages/contracts-typescript/test/w6_3_determinism.test.ts",
+        "packages/contracts-typescript/test/w6_5_corpus.test.ts",
+        "packages/contracts-typescript/test/wasm-engine-error-mapping.test.ts",
+        "packages/contracts-typescript/test/wasm-marshaling.test.ts",
+        "packages/contracts-typescript/test/wasm-timeout.test.ts",
+        "packages/contracts-typescript/test/wasm_loader_package_data.test.ts",
+        "packages/contracts-typescript/test/wasm_package_data.test.ts",
+        "packages/contracts-typescript/test/wsj_edge_timeout_code_identity.test.ts",
+        "packages/contracts/tests/test_canonical_bmp_only_keys.py",
+        "packages/contracts/tests/test_engine_factory.py",
+        "packages/contracts/tests/test_f7_oob_result_keeps_udf_trace.py",
+        "packages/contracts/tests/test_p5flip_default_engine_wasm.py",
+        "packages/contracts/tests/test_p5flip_default_equals_wasm_guard.py",
+        "packages/contracts/tests/test_parity_007_regex_backref_scope.py",
+        "packages/contracts/tests/test_pipeline_udf_outputs_parity.py",
+        "packages/contracts/tests/test_pipeline_wasm_udf_trace.py",
+        "packages/contracts/tests/test_run_with_timeout_helper.py",
+        "packages/contracts/tests/test_w16_jcs_canonical_parity_property.py",
+        "packages/contracts/tests/test_w16_p4dualrun_default_engine_guard.py",
+        "packages/contracts/tests/test_w6_1_evaluator.py",
+        "packages/contracts/tests/test_w6_3_determinism.py",
+        "packages/contracts/tests/test_w6_3_timeout.py",
+        "packages/contracts/tests/test_w6_5_corpus.py",
+        "packages/contracts/tests/test_wasm_codec.py",
+        "packages/contracts/tests/test_wasm_evaluator.py",
+        "packages/contracts/tests/test_wasm_loader_package_data.py",
+        "packages/contracts/tests/test_wasm_one_shot_path_failclosed.py",
+        "packages/contracts/tests/test_wasm_package_data.py",
+        "packages/evals/tests/conftest.py",
+        "packages/evals/tests/test_w9_1_delta.py",
+        "packages/evals/tests/test_w9_1_invariants.py",
+        "packages/evals/tests/test_w9_1_runner.py",
+        "packages/evals/tests/test_w9_2_templates.py",
+        "packages/evals/tests/test_w9_3_llm_judge.py",
+        "packages/explain/tests/test_audit_r3_explain.py",
+        "packages/explain/tests/test_v2m05_explain.py",
+        "packages/explain/tests/test_v3m4_generator_auto_disable.py",
+        "packages/explain/tests/test_v3m4_quality_per_class.py",
+        "packages/explain/tests/test_v3m4_sla_aging.py",
+        "packages/gate/tests/test_anti_bypass_shell_quote_evasion.py",
+        "packages/gate/tests/test_cross_engine_signed_decision_parity.py",
+        "packages/gate/tests/test_w8_1_determinism.py",
+        "packages/gate/tests/test_w8_1_w6_conditions.py",
+        "packages/gate/tests/test_w8_2_decision_writer.py",
+        "packages/gate/tests/test_w8_3_restart.py",
+        "packages/schemas/python/tests/test_canonical_bytes_parity.py",
+        "packages/schemas/python/tests/test_canonical_bytes_property.py",
+        "packages/schemas/python/tests/test_v2m01_envelopes.py",
+        "packages/schemas/python/tests/test_v2m03_manifest.py",
+        "packages/schemas/python/tests/test_v3m5_yaml_hardening.py",
+        "packages/sdk-python/tests/test_adapter_error_normalization.py",
+        "packages/sdk-python/tests/test_adapters_anthropic.py",
+        "packages/sdk-python/tests/test_adapters_openai.py",
+        "packages/sdk-python/tests/test_audit_r3_misc.py",
+        "packages/sdk-python/tests/test_audit_r4_budget_race.py",
+        "packages/sdk-python/tests/test_config_validation.py",
+        "packages/sdk-python/tests/test_gate_draft_envelope_parity.py",
+        "packages/sdk-python/tests/test_idempotency_ulid.py",
+        "packages/sdk-python/tests/test_iso017_side_effect_idempotency_determinism.py",
+        "packages/sdk-python/tests/test_iso019_async_teardown_drains_queue.py",
+        "packages/sdk-python/tests/test_redaction.py",
+        "packages/sdk-python/tests/test_redaction_parity.py",
+        "packages/sdk-python/tests/test_redaction_property.py",
+        "packages/sdk-python/tests/test_v2m08_redaction.py",
+        "packages/sdk-typescript/test/iso_022_040_041_run_digest_and_tokens.test.ts",
+        "packages/sdk-typescript/test/replay_egress_allowlist_ssrf.test.ts",
+        "packages/sdk-typescript/test/sdk_ts_01_proto_key_parity.test.ts",
+        "packages/sdk-typescript/test/w4_3_cross_language_parity.test.ts",
+        "packages/sdk-typescript/test/w4_3_redaction_engine.test.ts",
+        "packages/sdk-typescript/test/w4_5_openai_adapter.test.ts",
+        "packages/sdk-typescript/test/w4_5_replay_mode.test.ts",
+        "packages/verifier-typescript/test/m06_parity.test.ts",
+        "packages/verifier-typescript/test/parity_013_no_signatures_structure.test.ts",
+        "packages/verifier-typescript/test/parity_014_verifier_output_parity.test.ts",
+        "packages/verifier-typescript/test/parity_015_signature_reason_ascii.test.ts",
+        "packages/verifier-typescript/test/v2m08_trust_anchor_parity.test.ts",
+        "packages/verifier-typescript/test/v3m5_tsa_crypto.test.ts",
+        "packages/verifier-typescript/test/v3m5_tsa_parity_p2.test.ts",
+        "packages/verifier-typescript/test/w10_2_parity.test.ts",
+        "packages/verifier-typescript/test/w10_2_rfc7515_corpus.test.ts",
+        "packages/verifier-typescript/test/w10_3_jcs_corpus.test.ts",
+        "packages/verifier-typescript/test/w17_1_ietf_corpus.test.ts",
+        "packages/verifier-typescript/test/w17_2_appendix_a.test.ts",
+        "packages/verifier/tests/conftest_w10_4.py",
+        "packages/verifier/tests/test_merkle_property.py",
+        "packages/verifier/tests/test_v3m5_toctou_symlink_safe.py",
+        "packages/verifier/tests/test_w10_2_rfc7515_corpus.py",
+        "packages/verifier/tests/test_w10_3_jcs_corpus.py",
+        "packages/verifier/tests/test_w10_4_round4_p1_fixes.py",
+        "tests/conformance/cel-spec/test_w17_3_celspec_corpus.py",
+        "tests/conformance/cel/test_dual_run_cross_host_wasm_parity.py",
+        "tests/conformance/cel/test_fuel_exhaustion_cross_host_envelope_parity.py",
+        "tests/conformance/cel/test_udf_via_cel_byte_match_runner.py",
+        "tests/conformance/cel/test_udf_via_cel_corpus.py",
+        "tests/conformance/cel/test_w17_4_corpus_size.py",
+        "tests/conformance/cel/test_w17_4_cross_runtime.py",
+        "tests/conformance/cel/test_w17_4_idiom_coverage.py",
+        "tests/conformance/cel/test_w17_4_purity.py",
+        "tests/conformance/cel/test_w17_4_timing.py",
+        "tests/conformance/cel/test_w17_4_udf_coverage.py",
+        "tests/conformance/cel/test_wsj_edge_fuel_timeout_node_harness.py",
+        "tests/conformance/conftest.py",
+        "tests/conformance/ingest/generate_parity_fixtures.py",
+        "tests/conformance/jcs/test_w17_1_rfc8785_corpus.py",
+        "tests/conformance/jws/test_w17_2_rfc7515_appendix_a.py",
+        "tests/conformance/redaction/generate_parity_fixtures.py",
+        "tests/conformance/redaction/validation_fixtures.py",
+        "tests/examples/test_w16_1_lifecycle_e2e.py",
+        "tests/examples/test_w16_2_cassettes.py",
+        "tests/examples/test_w16_2_lifecycle_e2e.py",
+        "tests/examples/test_w16_3_cassettes.py",
+        "tests/examples/test_w16_4_cassettes.py",
+        "tests/examples/test_w16_4_lifecycle_e2e.py",
+        "tests/guards/test_default_trust_anchor_unchanged.py",
+        "tests/release/test_w12_1_pre_announcement.py",
+        "tests/release/test_w12_4_in_toto_attestations.py",
+        "tests/tooling/test_build_celspec_corpus.py",
+        "tests/tooling/test_v2m08_tooling.py"
+      ],
+      "guard_test_count": 172
+    }
+  ],
+  "spec_sections_total": 171,
+  "spec_sections": [
+    {
+      "section": "A",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "A.1",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "A.10",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "A.11",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "A.12",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "A.13",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "A.14",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "A.15",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "A.16",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "A.2",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "A.3",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "A.4",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "A.5",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "A.6",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "A.7",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "A.8",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "A.9",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AA",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AB",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AC",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "ACEF",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "AD",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AE",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AF",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "AG",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AG.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AG.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AG.3",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AG.4",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AG.5",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AG.6",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AG.7",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AG.8",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AH",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AH.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AH.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AI",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AI.1",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AI.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AI.3",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AI.4",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AI.5",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AI.6",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AI.7",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AJ",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AK",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AL",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AL.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AL.2",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AL.3",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AM",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AM.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AM.2",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "AM.3",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AM.4",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "AM.5",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "AM.6",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AM.7",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AM.8",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AN",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AN.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AN.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AN.3",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AN.4",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AN.5",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AN.6",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AN.7",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AN.8",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AO",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "AO.1",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "AO.2",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "AO.3",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "AO.4",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "AO.5",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AO.6",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AO.7",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AP",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AP.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AP.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AP.3",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AP.4",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AP.5",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AP.6",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "AP.7",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "B",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "B.1",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "B.2",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "B.3",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "B.4",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "B.5",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "B.6",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "B.7",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "C",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "C.1",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "C.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "C.3",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "C.4",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "C.5",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "CI",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "CLA",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "D",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "D.1",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "D.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "D.3",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "D.4",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "D.5",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "D.6",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "E",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "E.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "E.2",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "E.3",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "E.4",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "E.5",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "EU",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "F",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "G",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "G.1",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "G.2",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "G.3",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "H",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "H.5",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "I",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "J",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "J.1",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "J.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "J.3",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "J.4",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "J.5",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "K",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "L",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "L.1",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "L.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "L.3",
+      "in_source": false,
+      "in_tests": true
+    },
+    {
+      "section": "L.4",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "L.5",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "M",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "N",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "N.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "N.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "N.3",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "N.4",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "O",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "O.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "P",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "P.1",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "P.2",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "P.3",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "Q",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "Q.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "Q.2",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "Q.3",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "Q.4",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "Q.5",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "Q.6",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "R",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "R.1",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "R.2",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "R.3",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "R.4",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "R.5",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "RAG",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "S",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "SDK",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "T",
+      "in_source": true,
+      "in_tests": false
+    },
+    {
+      "section": "TDD",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "U",
+      "in_source": false,
+      "in_tests": false
+    },
+    {
+      "section": "V",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "W",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "X",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "Y",
+      "in_source": true,
+      "in_tests": true
+    },
+    {
+      "section": "Z",
+      "in_source": true,
+      "in_tests": true
+    }
+  ],
+  "spec_sections_uncited": [
+    "A.14",
+    "AG",
+    "AG.1",
+    "AG.2",
+    "AG.3",
+    "AG.4",
+    "AG.5",
+    "AG.6",
+    "AG.7",
+    "AG.8",
+    "AH",
+    "AH.1",
+    "AH.2",
+    "AI.2",
+    "AI.3",
+    "AI.4",
+    "AI.5",
+    "AI.6",
+    "AI.7",
+    "AK",
+    "AL",
+    "AL.1",
+    "AL.3",
+    "AM.1",
+    "AM.6",
+    "AM.7",
+    "AM.8",
+    "AN",
+    "AN.1",
+    "AN.2",
+    "AN.3",
+    "AN.4",
+    "AN.5",
+    "AN.6",
+    "AN.7",
+    "AN.8",
+    "AO.5",
+    "AO.6",
+    "AO.7",
+    "AP",
+    "AP.1",
+    "AP.2",
+    "AP.3",
+    "AP.4",
+    "AP.5",
+    "AP.6",
+    "AP.7",
+    "B.5",
+    "C.2",
+    "CI",
+    "CLA",
+    "D.2",
+    "E",
+    "E.1",
+    "E.5",
+    "EU",
+    "I",
+    "J.2",
+    "J.4",
+    "L.2",
+    "L.4",
+    "M",
+    "N",
+    "N.1",
+    "N.2",
+    "N.3",
+    "N.4",
+    "O",
+    "O.1",
+    "P",
+    "Q",
+    "Q.1",
+    "Q.3",
+    "Q.4",
+    "Q.5",
+    "Q.6",
+    "R",
+    "R.1",
+    "R.2",
+    "R.3",
+    "R.4",
+    "R.5",
+    "RAG",
+    "SDK",
+    "TDD",
+    "U"
+  ],
+  "val_assertions_bound_to_tests": 987,
+  "findings": []
+}

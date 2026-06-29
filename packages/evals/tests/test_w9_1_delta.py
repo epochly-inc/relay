@@ -40,8 +40,16 @@ from relay_evals import (
     EvalCaseOutcome,
     EvalRunner,
     EvidenceBinding,
+    apply_migrations,
     compute_eval_delta,
+    connect_memory,
 )
+
+# Stable sha256-form artifact hash accepted by the eval_results CHECK
+# constraint (artifact_hash GLOB 'sha256-*'). Mirrors conftest's
+# FIXED_ARTIFACT_HASH; defined locally to avoid a cross-module relative
+# import (tests are collected as top-level modules, not a package).
+FIXED_ARTIFACT_HASH = "sha256-" + ("beef" * 16)
 
 # ---------------------------------------------------------------------------
 # Builders
@@ -563,6 +571,289 @@ def test_flake_window_default_logged_into_summary(
     ).fetchone()
     payload = _json.loads(row["summary"])
     assert payload["flake_window_n"] == 7
+
+
+# ---------------------------------------------------------------------------
+# VAL-W9-005: deterministic flake window membership under created_at ties
+# ---------------------------------------------------------------------------
+
+
+def _insert_run(
+    conn: sqlite3.Connection,
+    *,
+    eval_run_id: str,
+    dataset_id: str,
+    agent_version: str,
+    created_at: str,
+    case_id: str,
+    status: str,
+    manifest_hash: str,
+) -> None:
+    """Directly insert one eval_run + its single per-case eval_result.
+
+    Bypasses EvalRunner so the test controls ``created_at`` exactly (to
+    force a tie) and the lexicographic ordering of ``eval_run_id`` (to
+    decouple uuid order from insertion/recency order). ``status`` is the
+    canonical eval_results enum value ('passed' or 'failed'); each id is
+    unique within a fresh DB so a plain INSERT is sufficient.
+    """
+    if status not in ("passed", "failed"):
+        raise ValueError(f"unexpected status token: {status!r}")
+    passed = 1 if status == "passed" else 0
+    observed = "pass" if status == "passed" else "fail"
+    conn.execute(
+        "INSERT INTO eval_runs "
+        "(eval_run_id, dataset_id, agent_version, release_sha, status, "
+        " passed, manifest_commit_hash, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            eval_run_id,
+            dataset_id,
+            agent_version,
+            "rel-x",
+            status,
+            passed,
+            manifest_hash,
+            created_at,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO eval_results "
+        "(eval_result_id, eval_run_id, case_id, status, observed_outcome, "
+        " artifact_hash, command_id, exit_code, span_ids, assertion_id, "
+        " manifest_commit_hash, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            f"res-{eval_run_id}",
+            eval_run_id,
+            case_id,
+            status,
+            observed,
+            FIXED_ARTIFACT_HASH,
+            "cmd-test-1",
+            0,
+            '["span-1"]',
+            "VAL-CASE-q",
+            manifest_hash,
+            created_at,
+        ),
+    )
+    conn.commit()
+
+
+def _build_tied_history_db(
+    *,
+    fixed_manifest_hash: str,
+    uuid_order_matches_recency: bool,
+) -> tuple[sqlite3.Connection, str, str]:
+    """Build a fresh DB whose flake history all shares one millisecond.
+
+    Inserts, in recency order (oldest first), six prior runs for case 'q'
+    with outcomes:
+
+        oldest -> [failed, passed, passed, passed, passed, passed] <- newest
+
+    The lone 'failed' is the OLDEST run. With window_n=5 and TRUE recency
+    (the 5 NEWEST runs) the window is [passed, passed, passed, passed,
+    passed] -- a single outcome, NOT flaky. Combined with baseline='fail'
+    and current='pass' the correct class is 'net_new_success'.
+
+    If the window is instead cut by random-uuid lexicographic order, that
+    oldest 'failed' run can be pulled INTO the window (and a newer 'pass'
+    pushed out), making the window contain BOTH outcomes and mislabelling
+    the case 'flaky'. The class therefore flips with uuid assignment --
+    exactly the non-determinism this test pins down.
+
+    All six runs share the SAME ``created_at`` millisecond, so the only
+    tie-breaker is the secondary sort key. ``eval_run_id`` values are
+    assigned so their lexicographic order either matches recency
+    (``uuid_order_matches_recency=True``) or is the exact reverse
+    (``False``). A correct (rowid-ordered) implementation yields the SAME
+    window -- and the SAME delta_class ('net_new_success') -- for both; a
+    uuid-ordered implementation flips between net_new_success and flaky.
+
+    Returns (conn, current_run_id, baseline_run_id).
+    """
+    conn = connect_memory()
+    apply_migrations(conn)
+
+    dataset_id = "ds-tie"
+    agent_version = "agent-v1"
+    tied_created_at = "2026-06-14T00:00:00.000Z"
+
+    # recency order, oldest first. The lone 'failed' is the OLDEST run, so
+    # a recency-correct window of 5 excludes it (all-pass, not flaky); a
+    # uuid-cut window may include it (both outcomes, flaky).
+    recency_outcomes = [
+        "failed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+    ]
+    n = len(recency_outcomes)
+
+    # Assign eval_run_ids so that lexicographic order is controllable and
+    # INDEPENDENT of insertion (recency) order. We always INSERT in
+    # recency order (so rowid == recency rank), but choose the id string
+    # so its lexicographic rank is either the same or reversed.
+    for recency_idx, status in enumerate(recency_outcomes):
+        if uuid_order_matches_recency:
+            lex_rank = recency_idx
+        else:
+            lex_rank = (n - 1) - recency_idx
+        # Zero-padded numeric prefix gives a clean lexicographic order;
+        # the random-uuid bug is modelled by lex order != recency order.
+        run_id = f"run-{lex_rank:02d}-{recency_idx:02d}"
+        _insert_run(
+            conn,
+            eval_run_id=run_id,
+            dataset_id=dataset_id,
+            agent_version=agent_version,
+            created_at=tied_created_at,
+            case_id="q",
+            status=status,
+            manifest_hash=fixed_manifest_hash,
+        )
+
+    # Baseline: a separate run on a DIFFERENT (dataset stays same, agent
+    # differs) scope so it is NOT pulled into the flake history window of
+    # the current run. Its case 'q' is 'fail' so the simple comparison
+    # against a current 'pass' would say net_new_success absent the flake
+    # override.
+    baseline_id = "baseline-q"
+    _insert_run(
+        conn,
+        eval_run_id=baseline_id,
+        dataset_id=dataset_id,
+        agent_version="agent-baseline",
+        created_at="2026-06-13T00:00:00.000Z",
+        case_id="q",
+        status="failed",
+        manifest_hash=fixed_manifest_hash,
+    )
+
+    # Current run: case 'q' passes. Same (dataset, agent) as the history
+    # so the history window applies. Inserted last (newest rowid) but
+    # excluded from its own window by exclude_eval_run_id.
+    current_id = "current-q"
+    _insert_run(
+        conn,
+        eval_run_id=current_id,
+        dataset_id=dataset_id,
+        agent_version=agent_version,
+        created_at="2026-06-14T00:00:00.000Z",
+        case_id="q",
+        status="passed",
+        manifest_hash=fixed_manifest_hash,
+    )
+    return conn, current_id, baseline_id
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W9-005")
+def test_flake_window_membership_deterministic_under_created_at_ties(
+    fixed_manifest_hash: str,
+) -> None:
+    """Window membership must be deterministic when >window_n runs share
+    the same ``created_at`` millisecond.
+
+    The defect: ``_fetch_flake_history`` ordered by
+    ``created_at DESC, eval_run_id DESC`` -- when created_at ties, the
+    window boundary is cut by RANDOM uuid lexicographic order, so which
+    runs fall inside the window (and therefore whether the case is
+    'flaky') depends on uuid assignment, not recency. Logically identical
+    history then yields different persisted delta_class.
+
+    Fix: order by a monotonic insertion key (rowid DESC) as the
+    tie-breaker so the most-recently-INSERTED runs form the window
+    regardless of uuid.
+
+    This test builds the SAME logical history two ways -- once with
+    eval_run_id lexicographic order matching recency, once reversed --
+    and asserts the resulting delta_class is identical (and equals the
+    recency-correct answer, 'net_new_success'). Pre-fix the two diverge
+    (one is 'flaky', the other 'net_new_success'); post-fix they agree.
+    """
+    classes: list[str] = []
+    for uuid_matches in (True, False):
+        conn, current_id, baseline_id = _build_tied_history_db(
+            fixed_manifest_hash=fixed_manifest_hash,
+            uuid_order_matches_recency=uuid_matches,
+        )
+        try:
+            compute_eval_delta(
+                conn,
+                eval_run_id=current_id,
+                baseline_eval_run_id=baseline_id,
+                flake_window_n=5,
+            )
+            row = conn.execute(
+                "SELECT delta_class FROM eval_run_deltas "
+                "WHERE eval_run_id = ? AND case_id = 'q'",
+                (current_id,),
+            ).fetchone()
+            classes.append(row["delta_class"])
+        finally:
+            conn.close()
+
+    assert classes[0] == classes[1], (
+        "flake window membership is non-deterministic under created_at "
+        f"ties: uuid-matches-recency gave {classes[0]!r} but "
+        f"uuid-reversed gave {classes[1]!r}. The window must be cut by a "
+        "monotonic insertion key (rowid), not random uuid order."
+    )
+    # The recency-correct window (5 newest runs) is all 'pass'; with
+    # baseline='fail' and current='pass' the class is net_new_success.
+    assert classes[0] == DELTA_NET_NEW_SUCCESS, (
+        "with the 5 most-recently-inserted runs all passing, the case is "
+        "a clean fail->pass improvement (net_new_success), not flaky."
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W9-005")
+def test_flake_window_picks_most_recent_runs_under_created_at_ties(
+    fixed_manifest_hash: str,
+) -> None:
+    """The window must contain the most-recently-INSERTED runs, not a
+    uuid-lexicographic slice, when created_at ties.
+
+    History (recency, oldest->newest):
+    [failed, passed, passed, passed, passed, passed]. The OLDEST run (the
+    lone 'failed', inserted first) must be EXCLUDED from a window of 5, so
+    the window is all 'passed' and the case is net_new_success. With the
+    uuid order reversed vs recency, a uuid-ordered implementation would
+    instead pull that oldest 'failed' INTO the window and flip the class
+    to 'flaky'. We assert the result is deterministically net_new_success
+    across repeated computation regardless of uuid order.
+    """
+    seen: set[str] = set()
+    for _ in range(20):
+        conn, current_id, baseline_id = _build_tied_history_db(
+            fixed_manifest_hash=fixed_manifest_hash,
+            uuid_order_matches_recency=False,
+        )
+        try:
+            compute_eval_delta(
+                conn,
+                eval_run_id=current_id,
+                baseline_eval_run_id=baseline_id,
+                flake_window_n=5,
+            )
+            row = conn.execute(
+                "SELECT delta_class FROM eval_run_deltas "
+                "WHERE eval_run_id = ? AND case_id = 'q'",
+                (current_id,),
+            ).fetchone()
+            seen.add(row["delta_class"])
+        finally:
+            conn.close()
+    assert seen == {DELTA_NET_NEW_SUCCESS}, (
+        "delta_class must be deterministically 'net_new_success' across "
+        f"repeated runs; observed {sorted(seen)!r}."
+    )
 
 
 # ---------------------------------------------------------------------------

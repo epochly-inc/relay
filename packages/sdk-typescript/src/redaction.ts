@@ -103,12 +103,17 @@ const KNOWN_ACTIONS: ReadonlySet<string> = new Set(["redact", "hash", "drop"]);
 //       with code ``RELAY-SDK-017`` and ``details.reason == "redos_pattern"``.
 //
 //   (2) An input-length CLAMP: a leaf longer than ``MAX_REDACTION_LEAF_LENGTH``
-//       UTF-16 code units is truncated to the cap before matching, with the
-//       removed tail replaced by ``REDACTION_TRUNCATION_MARKER``. This bounds
-//       total matcher work even for linear-but-slow patterns over very large
-//       inputs (and keeps raw plaintext beyond the cap from ever crossing the
-//       wire). Trace leaves are bounded in practice; payloads larger than the
-//       cap are a denial-of-service vector, not a legitimate redaction target.
+//       Unicode CODE POINTS (NOT UTF-16 code units -- matching the Python SDK's
+//       ``len(value)`` / ``value[:N]`` so the clamp boundary is byte-identical
+//       cross-runtime for supplementary-plane leaves; F8) is truncated to the cap
+//       before matching, with the removed tail replaced by
+//       ``REDACTION_TRUNCATION_MARKER``. This bounds total matcher work even for
+//       linear-but-slow patterns over very large inputs (and keeps raw plaintext
+//       beyond the cap from ever crossing the wire); the clamp walks the code-
+//       point iterator only up to the cap, so its own allocation is O(cap) and it
+//       does not re-introduce an unbounded copy of the oversized leaf. Trace
+//       leaves are bounded in practice; payloads larger than the cap are a
+//       denial-of-service vector, not a legitimate redaction target.
 //
 // BOTH constants and the marker are identical on the Python SDK
 // (``relay.redaction.MAX_REDACTION_LEAF_LENGTH`` /
@@ -116,11 +121,14 @@ const KNOWN_ACTIONS: ReadonlySet<string> = new Set(["redact", "hash", "drop"]);
 // clamped leaf (Pattern B/C parity).
 
 /**
- * Maximum length (in UTF-16 code units) of a single string leaf the matcher
- * loop will scan. Leaves longer than this are clamped before matching. Must
- * stay byte-for-byte equal to the Python SDK constant.
+ * Maximum length (in Unicode CODE POINTS) of a single string leaf the matcher
+ * loop will scan. Leaves longer than this are clamped before matching. The unit
+ * is code points -- NOT UTF-16 code units -- so the clamp boundary is identical
+ * to the Python SDK (`len(value)` / `value[:N]`); a supplementary-plane char
+ * counts as ONE here exactly as in Python (F8 parity fix). Must stay
+ * byte-for-byte equal to the Python SDK constant.
  */
-export const MAX_REDACTION_LEAF_LENGTH = 1_048_576; // 1 MiB of UTF-16 code units.
+export const MAX_REDACTION_LEAF_LENGTH = 1_048_576; // 1 Mi code points.
 
 /**
  * Deterministic marker spliced in where a leaf was truncated at the cap.
@@ -133,12 +141,20 @@ export const REDACTION_TRUNCATION_MARKER = "[relay:truncated]";
  * (ReDoS) risk, BEFORE it is compiled. The check is a deterministic static
  * scan of the raw pattern -- no compilation, no execution, no wall clock.
  *
- * The dangerous class is a quantifier applied to a GROUP whose body itself
- * CONTAINS a quantifier (nested quantifiers), e.g. ``(a+)+``, ``(a*)*``,
- * ``(a+)*``, ``(\\w+\\s?)*``, ``(.*a){2,}``. These cause exponential
- * backtracking on a long near-matching input. A single quantifier (``a+``,
- * ``[A-Za-z0-9]{20,}``) or an optional inside a group with no OUTER quantifier
- * (``(?i)api[_-]?key``) is linear and accepted.
+ * Two dangerous classes are rejected:
+ *   1. A quantifier applied to a GROUP whose body itself CONTAINS a quantifier
+ *      (nested quantifiers), e.g. ``(a+)+``, ``(a*)*``, ``(a+)*``,
+ *      ``(\\w+\\s?)*``, ``(.*a){2,}``.
+ *   2. (REDACT cluster Bug B) A top-level alternation of OVERLAPPING branches
+ *      under an UNBOUNDED quantifier (``*`` / ``+`` / ``{n,}``), e.g.
+ *      ``(a|a)*``, ``(a|a)+``, ``(\\w|a)+``. The branches share a possible
+ *      first character, so a run of that character has exponentially many
+ *      branch partitions. A DISJOINT alternation (``(?:sk-|key_)+``: first
+ *      chars ``s`` vs ``k``) is linear and accepted.
+ *
+ * A single quantifier (``a+``, ``[A-Za-z0-9]{20,}``), an optional inside a
+ * group with no OUTER quantifier (``(?i)api[_-]?key``), or an alternation under
+ * a BOUNDED quantifier (``(a|a){2,4}``) is linear and accepted.
  *
  * Returns ``null`` when the pattern is accepted, or a structured rejection
  * ``reason``/``error`` consumed by :func:`loadRedactionPolicy`. Mirrors
@@ -160,12 +176,43 @@ function checkRegexRedosSafety(
       "whose body itself contains a quantifier), e.g. '(a+)+'; this is a " +
       "catastrophic-backtracking (ReDoS) risk and is rejected before compilation",
   } as const;
+  // REDACT cluster Bug B: an OVERLAPPING top-level alternation under an
+  // UNBOUNDED quantifier ((a|a)* / (a|a)+ / (a|a){2,}) is also catastrophic
+  // backtracking even though no inner quantifier is present.
+  const REDOS_OVERLAP_ALTERNATION = {
+    reason: "redos_pattern",
+    error:
+      "regex pattern has an overlapping alternation under an unbounded " +
+      "quantifier (a group of overlapping branches followed by '*', '+', or " +
+      "'{n,}'), e.g. '(a|a)*'; this is a catastrophic-backtracking (ReDoS) " +
+      "risk and is rejected before compilation",
+  } as const;
   // Per open group: does its body (so far) contain a quantifier?
   const groupBodyHasQuantifier: boolean[] = [];
+  // Per open group: does its body (so far) contain a TOP-LEVEL `|`?
+  const groupBodyHasAlternation: boolean[] = [];
+  // Per open group: index of the first body character (just past the open
+  // token). Used to slice the body for overlap analysis when the group closes.
+  const groupBodyStart: number[] = [];
+  // Per open group: does its body (so far) CONTAIN an overlapping top-level
+  // alternation at ANY nesting depth -- its OWN top-level alternation OR a
+  // deeper WRAPPED group's (propagated up like the quantifier signal). Without
+  // this, a wrapper hides the overlap one level down (((a|a))* /
+  // (?:(?:a|a))*) where neither the inner alternation is directly quantified
+  // nor the outer group has a top-level `|` -- so the catastrophe is missed
+  // (roborev 7feb671 HIGH). The signal trips when ANY enclosing group is
+  // unbounded-quantified. Mirrors the Python guard byte-for-byte.
+  const groupBodyHasOverlap: boolean[] = [];
 
   const markCurrentGroupQuantifier = (): void => {
     if (groupBodyHasQuantifier.length > 0) {
       groupBodyHasQuantifier[groupBodyHasQuantifier.length - 1] = true;
+    }
+  };
+
+  const markCurrentGroupOverlap = (): void => {
+    if (groupBodyHasOverlap.length > 0) {
+      groupBodyHasOverlap[groupBodyHasOverlap.length - 1] = true;
     }
   };
 
@@ -200,8 +247,11 @@ function checkRegexRedosSafety(
         if (prefix.opensBody) {
           // A group body follows the prefix; push a frame and let the matching
           // `)` close it normally so a genuine nested quantifier in the BODY
-          // ((?:a+)+) is still detected.
+          // ((?:a+)+) is still detected. `prefix.end` is the first body char.
           groupBodyHasQuantifier.push(false);
+          groupBodyHasAlternation.push(false);
+          groupBodyHasOverlap.push(false);
+          groupBodyStart.push(prefix.end);
         }
         // Else: self-terminating directive ((?flags) / (?P=name)) -- no
         // quantifiable body and it consumes its own `)`; push NO frame.
@@ -209,6 +259,19 @@ function checkRegexRedosSafety(
         continue;
       }
       groupBodyHasQuantifier.push(false);
+      groupBodyHasAlternation.push(false);
+      groupBodyHasOverlap.push(false);
+      groupBodyStart.push(i + 1);
+      i += 1;
+      continue;
+    }
+    if (ch === "|") {
+      // A TOP-LEVEL `|` for the innermost open group (the alternation
+      // separator). A `|` at the very top of the pattern (no open group) is not
+      // a quantifiable-group body, so it is ignored here.
+      if (groupBodyHasAlternation.length > 0) {
+        groupBodyHasAlternation[groupBodyHasAlternation.length - 1] = true;
+      }
       i += 1;
       continue;
     }
@@ -217,14 +280,49 @@ function checkRegexRedosSafety(
         groupBodyHasQuantifier.length > 0
           ? (groupBodyHasQuantifier.pop() ?? false)
           : false;
+      const innerHadAlternation =
+        groupBodyHasAlternation.length > 0
+          ? (groupBodyHasAlternation.pop() ?? false)
+          : false;
+      const innerHadOverlap =
+        groupBodyHasOverlap.length > 0
+          ? (groupBodyHasOverlap.pop() ?? false)
+          : false;
+      const bodyStart =
+        groupBodyStart.length > 0 ? (groupBodyStart.pop() ?? i) : i;
       const next = i + 1 < n ? rawPattern[i + 1] : undefined;
       const groupImmediatelyQuantified =
         next === "*" || next === "+" || next === "?" || next === "{";
       const groupIsQuantified =
         groupImmediatelyQuantified &&
         (next !== "{" || isIntervalQuantifierAt(rawPattern, i + 1));
+      // An UNBOUNDED quantifier is `*`, `+`, or an open-ended interval `{n,}`.
+      // A bounded quantifier (`?` or `{n,m}`) caps the repetition count, so it
+      // cannot drive exponential backtracking.
+      const groupIsUnboundedQuantified =
+        groupIsQuantified &&
+        (next === "*" ||
+          next === "+" ||
+          (next === "{" && intervalQuantifierIsUnbounded(rawPattern, i + 1)));
       if (innerHadQuantifier && groupIsQuantified) {
         return REDOS;
+      }
+      // This group's OWN top-level alternation overlaps? (Short-circuit on
+      // innerHadAlternation so the slice scan only runs when there is a
+      // top-level `|` to analyze.)
+      const thisGroupOverlaps =
+        innerHadAlternation &&
+        alternationOverlaps(rawPattern.slice(bodyStart, i));
+      // The body contains an overlapping alternation at ANY nesting depth: its
+      // OWN top-level alternation OR a deeper WRAPPED group's (propagated up).
+      const bodyContainsOverlap = thisGroupOverlaps || innerHadOverlap;
+      // REDACT cluster Bug B (+ nested-wrapper bypass, roborev 7feb671): an
+      // UNBOUNDED quantifier applied to a body that contains an overlapping
+      // alternation at ANY depth -- DIRECTLY ((a|a)*) OR WRAPPED (((a|a))* /
+      // (?:(?:a|a))*) -- is catastrophic backtracking. The 1 MiB leaf clamp
+      // does not bound the 2^n blow-up.
+      if (groupIsUnboundedQuantified && bodyContainsOverlap) {
+        return REDOS_OVERLAP_ALTERNATION;
       }
       // The closed group is part of its ENCLOSING group's body. Propagate the
       // "contains a quantifier" signal upward when EITHER the inner body had a
@@ -232,6 +330,12 @@ function checkRegexRedosSafety(
       // (e.g. ``((a+))+``) is still detected when an outer quantifier applies.
       if (innerHadQuantifier || groupIsQuantified) {
         markCurrentGroupQuantifier();
+      }
+      // Propagate the overlap signal to the ENCLOSING group so a wrapper that
+      // is itself unbounded-quantified higher up still trips, even though this
+      // group is not directly quantified.
+      if (bodyContainsOverlap) {
+        markCurrentGroupOverlap();
       }
       i += 1;
       continue;
@@ -281,6 +385,168 @@ function intervalQuantifierEnd(rawPattern: string, start: number): number | null
 /** True iff a well-formed interval quantifier begins at ``rawPattern[start]``. */
 function isIntervalQuantifierAt(rawPattern: string, start: number): boolean {
   return intervalQuantifierEnd(rawPattern, start) !== null;
+}
+
+/**
+ * True iff a well-formed interval quantifier at ``start`` is OPEN-ENDED
+ * (``{n,}``) -- it permits an unbounded number of repetitions. A closed
+ * interval ``{n}`` / ``{n,m}`` is bounded. ``rawPattern[start]`` MUST be ``{``.
+ * Mirrors :func:`relay.redaction._interval_quantifier_is_unbounded` (Python).
+ */
+function intervalQuantifierIsUnbounded(rawPattern: string, start: number): boolean {
+  if (intervalQuantifierEnd(rawPattern, start) === null) return false;
+  let j = start + 1;
+  let body = "";
+  const n = rawPattern.length;
+  while (j < n && rawPattern[j] !== "}") {
+    body += rawPattern[j];
+    j += 1;
+  }
+  // ``{n,}`` is open-ended: a comma present AND nothing after it.
+  return body.includes(",") && body.endsWith(",");
+}
+
+/**
+ * Class-style escapes ``\\w \\W \\d \\D \\s \\S`` and zero-width escapes
+ * ``\\b \\B \\A \\Z`` that match a SET of characters (or no character) and are
+ * therefore BROAD/NULLABLE first tokens for alternation-overlap analysis. MUST
+ * match the Python set in :func:`relay.redaction._branch_first_chars`.
+ */
+const BROAD_ESCAPE_CHARS: ReadonlySet<string> = new Set([
+  "w",
+  "W",
+  "d",
+  "D",
+  "s",
+  "S",
+  "b",
+  "B",
+  "A",
+  "Z",
+]);
+
+/**
+ * Return the set of literal characters a top-level alternation BRANCH can begin
+ * with, or ``null`` when the branch's first matchable token is BROAD or the
+ * branch is NULLABLE (so it overlaps any other branch). Used only by
+ * :func:`alternationOverlaps`.
+ *
+ * Deterministic, conservative (fail-closed): a leading literal yields that
+ * char; a class-style escape (``\\w``...), ``.``, ``[...]``, group ``(``,
+ * anchor (``^``/``$``), a stray leading quantifier, or an empty branch is
+ * BROAD/NULLABLE -> ``null`` (forces overlap -> REJECT, the safe direction).
+ * Mirrors :func:`relay.redaction._branch_first_chars` (Python).
+ */
+function branchFirstChars(branch: string): ReadonlySet<string> | null {
+  if (branch === "") {
+    // Empty branch (e.g. ``(a|)*``): matches the empty string -> nullable.
+    return null;
+  }
+  const ch = branch[0] as string;
+  if (ch === "\\") {
+    if (branch.length < 2) {
+      // Trailing backslash: malformed; treat as broad (fail-closed).
+      return null;
+    }
+    const esc = branch[1] as string;
+    if (BROAD_ESCAPE_CHARS.has(esc)) {
+      // Class-style escape matches a SET of characters -> broad.
+      return null;
+    }
+    // Ordinary escaped literal (``\\.``, ``\\+``, ``\\\\`` ...): the literal char.
+    return new Set([esc]);
+  }
+  if (ch === "." || ch === "[" || ch === "(") {
+    // Wildcard, character class, or a nested group: a broad first token.
+    return null;
+  }
+  if (ch === "^" || ch === "$") {
+    // Zero-width anchor leads the branch: treat as nullable (broad).
+    return null;
+  }
+  if (ch === "*" || ch === "+" || ch === "?" || ch === "{") {
+    // A quantifier with no preceding atom is malformed; fail-closed broad.
+    return null;
+  }
+  // Plain literal first character.
+  return new Set([ch]);
+}
+
+/**
+ * Split a group BODY on its TOP-LEVEL ``|`` alternation separators. Nested
+ * groups ``(...)``, character classes ``[...]``, and escapes ``\\x`` are
+ * skipped so a ``|`` inside them is NOT a top-level separator. Returns the
+ * branch substrings (a single-element array when there is no top-level ``|``).
+ * Mirrors :func:`relay.redaction._split_top_level_alternation` (Python).
+ */
+function splitTopLevelAlternation(body: string): string[] {
+  const branches: string[] = [];
+  let depth = 0;
+  let i = 0;
+  const n = body.length;
+  let start = 0;
+  while (i < n) {
+    const c = body[i];
+    if (c === "\\") {
+      i += 2;
+      continue;
+    }
+    if (c === "[") {
+      i += 1;
+      while (i < n && body[i] !== "]") {
+        if (body[i] === "\\") i += 1;
+        i += 1;
+      }
+      i += 1; // consume ']'
+      continue;
+    }
+    if (c === "(") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (c === ")") {
+      if (depth > 0) depth -= 1;
+      i += 1;
+      continue;
+    }
+    if (c === "|" && depth === 0) {
+      branches.push(body.slice(start, i));
+      start = i + 1;
+      i += 1;
+      continue;
+    }
+    i += 1;
+  }
+  branches.push(body.slice(start));
+  return branches;
+}
+
+/**
+ * Return ``true`` iff a group BODY is a top-level alternation whose branches can
+ * match OVERLAPPING input -- the catastrophic-backtracking shape when the group
+ * carries an UNBOUNDED quantifier (REDACT cluster Bug B). Two branches overlap
+ * when they share a possible first character, or when any branch is BROAD /
+ * NULLABLE. A body with no top-level ``|`` (one branch) never overlaps; a
+ * DISJOINT alternation (``sk-`` vs ``key_``) has empty intersections.
+ * Mirrors :func:`relay.redaction._alternation_overlaps` (Python).
+ */
+function alternationOverlaps(body: string): boolean {
+  const branches = splitTopLevelAlternation(body);
+  if (branches.length < 2) return false;
+  const seen = new Set<string>();
+  for (const branch of branches) {
+    const first = branchFirstChars(branch);
+    if (first === null) {
+      // A broad / nullable branch overlaps with every other branch.
+      return true;
+    }
+    for (const c of first) {
+      if (seen.has(c)) return true;
+    }
+    for (const c of first) seen.add(c);
+  }
+  return false;
 }
 
 /**
@@ -1477,9 +1743,37 @@ export class RedactionEngine {
     // never crosses the wire. Byte-identical to the Python SDK clamp.
     let truncated = false;
     let leaf = value;
+    // `value.length` is UTF-16 CODE UNITS; the Python SDK clamps by CODE POINTS
+    // (`len(value)` / `value[:N]`). A supplementary-plane char is 2 code units
+    // but 1 code point, so a leaf can EXCEED the cap in code units while being
+    // WITHIN it in code points -- Python would not clamp it but a UTF-16 clamp
+    // would, AND `slice` on code units can split a surrogate pair into a lone
+    // surrogate. Clamp by CODE POINTS to match Python exactly and never split a
+    // surrogate (F8 parity fix, keystone #16).
+    //
+    // The cheap `value.length > cap` gate runs first: code points <= code units
+    // always, so a leaf within the code-unit cap is also within the code-point
+    // cap and the common path skips the rest. On the over-(code-unit)-cap path we
+    // walk the code-point ITERATOR up to at most `cap + 1` code points and STOP --
+    // we never materialise the whole (attacker-controlled) leaf into an array, so
+    // the size-clamp's memory bound is O(cap), not O(leaf) (roborev 3da28d3: the
+    // clamp exists to bound work on huge inputs; a full Array.from would have
+    // re-introduced the unbounded allocation it defends against).
     if (leaf.length > MAX_REDACTION_LEAF_LENGTH) {
-      leaf = leaf.slice(0, MAX_REDACTION_LEAF_LENGTH);
-      truncated = true;
+      const kept: string[] = [];
+      let exceeded = false;
+      for (const cp of leaf) {
+        if (kept.length >= MAX_REDACTION_LEAF_LENGTH) {
+          // A (cap+1)th code point exists -> the leaf is over the code-point cap.
+          exceeded = true;
+          break;
+        }
+        kept.push(cp);
+      }
+      if (exceeded) {
+        leaf = kept.join("");
+        truncated = true;
+      }
     }
     const redacted = this.applyMatchersToClampedString(leaf);
     return truncated ? redacted + REDACTION_TRUNCATION_MARKER : redacted;
@@ -1687,7 +1981,17 @@ export class RedactionEngine {
     }
     if (typeof value === "object") {
       const obj = value as Record<string, unknown>;
-      const out: Record<string, unknown> = {};
+      // Null-prototype target so an OWN "__proto__" key round-trips as a
+      // real own enumerable property instead of mutating the prototype
+      // (which would silently DROP the field). Python's dict keeps
+      // "__proto__" as a normal key; matching it preserves Py<->TS
+      // canonical-wire byte parity (sdk-ts-01). JSON.stringify /
+      // canonicalJsonStringify enumerate own enumerable keys, so a
+      // null-prototype object serialises identically to a plain object.
+      const out: Record<string, unknown> = Object.create(null) as Record<
+        string,
+        unknown
+      >;
       for (const k of Object.keys(obj)) {
         out[k] = this.walk(obj[k], pointer + "/" + escapePointerToken(k));
       }

@@ -127,12 +127,35 @@ def _is_address_bearing(value: Any) -> bool:
     return _ADDRESS_BEARING_REPR.search(str(value)) is not None
 
 
-def _strict_default(value: Any) -> str:
+def _canonicalize_set(value: set[Any] | frozenset[Any], default: Any) -> list[str]:
+    """Return a hash-seed-independent canonical projection of a set.
+
+    ``str(set)`` renders elements in CPython hash-iteration order, which is
+    salted by ``PYTHONHASHSEED`` and therefore differs across processes.
+    Folding that into the idempotency key makes it non-deterministic and
+    breaks replay matching (keystone #6). Instead we canonicalise each
+    element to its own sorted-key JSON (recursing through ``default`` so
+    nested sets / sets of dicts are handled too) and return the elements
+    SORTED by that canonical string -- a total order that does not depend
+    on the hash seed. The result is itself a JSON-serialisable list, so the
+    enclosing ``json.dumps`` emits it deterministically.
+    """
+    return sorted(
+        json.dumps(e, sort_keys=True, default=default, separators=(",", ":"))
+        for e in value
+    )
+
+
+def _strict_default(value: Any) -> Any:
     """``json.dumps`` ``default`` callback for the idempotency-key path.
 
-    Refuse any non-JSON value that would serialise to an address-bearing
-    repr (non-deterministic). Otherwise fall back to a stable ``str()``.
+    Canonicalise set/frozenset to a hash-seed-independent ordering (so a
+    replayed run recomputes the same key). Refuse any non-JSON value that
+    would serialise to an address-bearing repr (non-deterministic).
+    Otherwise fall back to a stable ``str()``.
     """
+    if isinstance(value, set | frozenset):
+        return _canonicalize_set(value, _strict_default)
     if _is_address_bearing(value):
         raise NonDeterministicIdempotencyKey(
             "cannot derive a deterministic idempotency key from a value "
@@ -140,6 +163,20 @@ def _strict_default(value: Any) -> str:
             f"({str(value)!r}); give the argument a stable __repr__/JSON "
             "form or supply an explicit stable idempotency key"
         )
+    return str(value)
+
+
+def _lenient_default(value: Any) -> Any:
+    """``json.dumps`` ``default`` callback for the non-strict marker path.
+
+    Mirrors :func:`_strict_default`'s set canonicalisation so the
+    ``args_hash`` observability digest stays consistent with the
+    idempotency key, but preserves the historical ``str()`` fallback for
+    address-bearing values instead of raising (marker hashes are
+    observability digests, not replay-matching keys).
+    """
+    if isinstance(value, set | frozenset):
+        return _canonicalize_set(value, _lenient_default)
     return str(value)
 
 
@@ -165,7 +202,7 @@ def _canonical_args(
     hashes, which are observability digests rather than replay-matching
     keys.
     """
-    default = _strict_default if strict else str
+    default = _strict_default if strict else _lenient_default
     try:
         encoded = json.dumps(
             {"name": name, "args": list(args), "kwargs": kwargs},

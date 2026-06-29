@@ -8,7 +8,6 @@ ASCII-only per CLAUDE.md "ASCII-Safe Source".
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -269,8 +268,11 @@ def test_anthropic_adapter_model_signature_deterministic(
     )
     [span] = [s for s in recorder.spans if s.kind == "model_call"]
     sig = span.attributes["model_signature"]
-    assert re.match(r"^anthropic:[a-z0-9.-]+$", sig), sig
-    assert sig == "anthropic:claude-opus-4-7"
+    # Round-5 re-hunt parity fix: model_signature is anthropic:<model>:<response.id>
+    # (or :<sha256(model)[:16]> when the id is absent), byte-identical to the TS
+    # Anthropic adapter and the OpenAI sibling. plain_response.id == "msg_02".
+    assert sig == "anthropic:claude-opus-4-7:msg_02", sig
+    assert span.attributes["response_id"] == "msg_02"
 
 
 @pytest.mark.plumbing
@@ -298,3 +300,280 @@ def test_anthropic_adapter_model_signature_is_stable_across_calls(
     ]
     assert len(sigs) == 2
     assert sigs[0] == sigs[1]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W3-043")
+def test_anthropic_model_signature_falls_back_to_sha256_when_id_absent() -> None:
+    """When response.id is absent the signature is anthropic:<model>:<sha256
+    (model)[:16]>, byte-identical to the TS adapter + OpenAI sibling."""
+    import hashlib
+
+    resp = _AnthroMessage(
+        id="",  # no provider id
+        model="claude-opus-4-7",
+        role="assistant",
+        content=[_TextBlock(type="text", text="hi")],
+        stop_reason="end_turn",
+        usage=_AnthroUsage(input_tokens=1, output_tokens=1),
+    )
+    recorder = SpanRecorder()
+    client = wrap_anthropic(_FakeAnthropicClient(resp), recorder=recorder)
+    client.messages.create(model="claude-opus-4-7", max_tokens=1, messages=[])
+    [span] = [s for s in recorder.spans if s.kind == "model_call"]
+    fallback = hashlib.sha256(b"claude-opus-4-7").hexdigest()[:16]
+    assert span.attributes["model_signature"] == f"anthropic:claude-opus-4-7:{fallback}"
+    assert span.attributes["response_id"] is None
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W4-033")
+def test_anthropic_streaming_model_signature_carries_message_id(
+    stream_events: list[_AnthroEvent],
+) -> None:
+    """The streaming finalize captures message.id from message_start and
+    re-computes model_signature as anthropic:<model>:<message.id> + sets
+    response_id (Py<->TS parity). stream_events' message_start id == 'msg_s'."""
+    recorder = SpanRecorder()
+    client = wrap_anthropic(_FakeAnthropicClient(stream_events), recorder=recorder)
+    stream = client.messages.create(
+        model="claude-opus-4-7", max_tokens=64, stream=True, messages=[]
+    )
+    for _ in stream:
+        pass
+    [span] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert span.attributes["model_signature"] == "anthropic:claude-opus-4-7:msg_s"
+    assert span.attributes["response_id"] == "msg_s"
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W4-033")
+def test_anthropic_streaming_refreshes_model_from_message_start() -> None:
+    """The streamed message_start may carry a RESOLVED model that differs from
+    the request arg; finalize must reflect it in both model and
+    model_signature (TS: state.model = message.model), or Py<->TS diverges."""
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={"id": "msg_r", "model": "claude-opus-4-7-20260101"},
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    recorder = SpanRecorder()
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    for _ in client.messages.create(
+        model="claude-opus-4-7", max_tokens=1, stream=True, messages=[]
+    ):
+        pass
+    [span] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert span.attributes["model"] == "claude-opus-4-7-20260101"
+    assert (
+        span.attributes["model_signature"]
+        == "anthropic:claude-opus-4-7-20260101:msg_r"
+    )
+
+
+# ---------------------------------------------------------------------------
+# VAL-ISO-020: streaming usage aggregation must not double-count output
+# tokens and must seed input tokens from message_start (Py<->TS parity).
+#
+# Mirrors packages/sdk-typescript/test/w4_5_anthropic_adapter.test.ts
+# describe("VAL-ISO-020: ..."). Anthropic's message_delta usage.output_tokens
+# is the AUTHORITATIVE CUMULATIVE final output count, not a per-event
+# increment; message_start carries the input token count plus a small initial
+# output seed. The adapter must ASSIGN (not add) the cumulative output and
+# read input from event.message.usage on message_start.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-020")
+def test_anthropic_streaming_does_not_double_count_output_tokens() -> None:
+    """message_delta cumulative output_tokens is authoritative (assign, not
+    add); input is seeded once from message_start.
+
+    Real stream: message_start{input=40, output=2}, two message_delta
+    cumulative snapshots (80 then 150). Correct: input=40, output=150. The
+    pre-fix Python summed every event (output 2+80+150=232) and never read
+    event.message.usage (input 0)."""
+    recorder = SpanRecorder()
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={
+                "id": "msg_dbl_count",
+                "model": "claude-3-5-sonnet",
+                "usage": {"input_tokens": 40, "output_tokens": 2},
+            },
+        ),
+        _AnthroEvent(
+            type="content_block_start",
+            index=0,
+            content_block=_TextBlock(type="text", text=""),
+        ),
+        # First message_delta: cumulative output so far = 80.
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": None},
+            usage=_AnthroUsage(input_tokens=0, output_tokens=80),
+        ),
+        # Second message_delta: cumulative final output = 150 (NOT +150).
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": "end_turn"},
+            usage=_AnthroUsage(input_tokens=0, output_tokens=150),
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    it = client.messages.create(
+        model="claude-3-5-sonnet",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": "stream"}],
+        stream=True,
+    )
+    list(it)
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    # input seeded from message_start only.
+    assert parent.attributes["input_tokens"] == 40
+    # output is the LAST cumulative message_delta value, NOT 2+80+150=232.
+    assert parent.attributes["output_tokens"] == 150
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-020")
+def test_anthropic_streaming_seed_not_clobbered_without_delta_usage() -> None:
+    """When no message_delta carries a usage block, the message_start output
+    seed must NOT be clobbered to 0, and input stays seeded."""
+    recorder = SpanRecorder()
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={
+                "id": "msg_no_delta_usage",
+                "model": "claude-3-5-sonnet",
+                "usage": {"input_tokens": 9, "output_tokens": 3},
+            },
+        ),
+        # message_delta with no usage block: must not clobber the seed to 0.
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": "end_turn"},
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    it = client.messages.create(
+        model="claude-3-5-sonnet",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": "x"}],
+        stream=True,
+    )
+    list(it)
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert parent.attributes["input_tokens"] == 9
+    assert parent.attributes["output_tokens"] == 3
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-ISO-020")
+def test_anthropic_streaming_input_tokens_from_message_start_only() -> None:
+    """input_tokens is seeded from message_start ONLY; a message_delta carrying
+    a (cumulative) input count -- as server-tool/web-search streams do -- must
+    NOT override the seed. The TS adapter never reads input from a
+    message_delta, so reading it diverged Py<->TS (round-7 re-hunt); both now
+    report the message_start value (output stays cumulative-from-delta)."""
+    recorder = SpanRecorder()
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={
+                "id": "msg_servertool",
+                "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 2679, "output_tokens": 3},
+            },
+        ),
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": "end_turn"},
+            usage=_AnthroUsage(input_tokens=10682, output_tokens=510),
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    list(
+        client.messages.create(
+            model="claude-opus-4-8", max_tokens=10, stream=True, messages=[]
+        )
+    )
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert parent.attributes["input_tokens"] == 2679  # message_start seed, NOT 10682
+    assert parent.attributes["output_tokens"] == 510  # cumulative from delta
+
+
+# ---------------------------------------------------------------------------
+# VAL-W4-039: streamed tool_use reconstructed from input_json_delta fragments
+# (Py<->TS parity with the TypeScript adapter's ingestEvent/finalizeStream).
+# Pre-fix the Python streaming wrapper emitted only generic stream_chunk spans
+# and never reconstructed the tool_use block, nor set chunk_count.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-W4-039")
+def test_anthropic_streaming_reconstructs_tool_use() -> None:
+    recorder = SpanRecorder()
+    events = [
+        _AnthroEvent(
+            type="message_start",
+            message={"id": "msg_t", "model": "claude-opus-4-7"},
+        ),
+        _AnthroEvent(
+            type="content_block_start",
+            index=0,
+            content_block=_ToolUseBlock(
+                type="tool_use", id="toolu_9", name="get_weather", input={}
+            ),
+        ),
+        # The tool args arrive as input_json_delta fragments, never as a single
+        # block -- the wrapper must accumulate partial_json across deltas.
+        _AnthroEvent(
+            type="content_block_delta",
+            index=0,
+            delta={"type": "input_json_delta", "partial_json": '{"city": "Par'},
+        ),
+        _AnthroEvent(
+            type="content_block_delta",
+            index=0,
+            delta={"type": "input_json_delta", "partial_json": 'is"}'},
+        ),
+        _AnthroEvent(type="content_block_stop", index=0),
+        _AnthroEvent(
+            type="message_delta",
+            delta={"stop_reason": "tool_use"},
+            usage=_AnthroUsage(input_tokens=50, output_tokens=12),
+        ),
+        _AnthroEvent(type="message_stop"),
+    ]
+    client = wrap_anthropic(_FakeAnthropicClient(events), recorder=recorder)
+    it = client.messages.create(
+        model="claude-opus-4-7",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": "weather in Paris"}],
+        stream=True,
+    )
+    list(it)
+    tool_spans = [s for s in recorder.spans if s.kind == "tool_call"]
+    assert len(tool_spans) == 1
+    assert tool_spans[0].attributes["tool_name"] == "get_weather"
+    # Args reconstructed from the streamed fragments ('{"city": "Paris"}').
+    assert "Paris" in str(tool_spans[0].attributes["args_redacted"])
+    assert tool_spans[0].attributes["parent_span_id"] == (
+        [s for s in recorder.spans if s.kind == "model_call"][0].span_id
+    )
+    # chunk_count populated on the model_call parent (parity with the TS
+    # finalizeStream, which sets state.chunkCount).
+    [parent] = [s for s in recorder.spans if s.kind == "model_call"]
+    assert parent.attributes["chunk_count"] == len(events)
+    # stop_reason surfaced on the parent (parity with non-stream + TS stream).
+    assert parent.attributes["stop_reason"] == "tool_use"

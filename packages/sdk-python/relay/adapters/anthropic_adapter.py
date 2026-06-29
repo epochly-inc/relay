@@ -20,6 +20,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
+from ..redaction import _canonical_json_stringify
 from ._spans import Span, SpanRecorder
 from .openai_adapter import _scrub  # reuse the same secret-scrubber
 
@@ -49,14 +50,23 @@ def _safe_anthropic_sdk_version() -> str:
     return "anthropic@unknown"
 
 
-def _model_signature(model: str) -> str:
-    """``anthropic:<model>`` -- Anthropic does not expose system_fingerprint.
+def _model_signature(model: str, response_id: str | None = None) -> str:
+    """``anthropic:<model>:<response.id-or-sha256(model)[:16]>`` (VAL-W4-033).
 
-    Per VAL-W3-043 the signature is deterministic across calls with the
-    same model. The refresh policy detects drift by observing a change
-    in this string.
+    Anthropic does not expose a ``system_fingerprint``; per the spec gap note
+    the provider ``response.id`` is the drift surrogate. Byte-identical to the
+    TS Anthropic adapter (``modelSignature``) and to the OpenAI sibling's
+    ``provider:model:<discriminator-or-sha256(model)[:16]>`` form: the third
+    segment is the response id when present, else a SHA-256 prefix of the model
+    so the signature stays deterministic + drift-detectable. The caller also
+    surfaces the id as its own ``response_id`` span attribute. Mirrors the TS
+    guard (``responseId !== null && responseId !== ""``): an empty/absent id
+    falls back to the hash.
     """
-    return f"{_ANTHROPIC_PROVIDER}:{model}"
+    if response_id:
+        return f"{_ANTHROPIC_PROVIDER}:{model}:{response_id}"
+    fallback = hashlib.sha256(model.encode("utf-8")).hexdigest()[:16]
+    return f"{_ANTHROPIC_PROVIDER}:{model}:{fallback}"
 
 
 def _estimate_cost_usd(
@@ -80,9 +90,17 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
 
 
 def _redact_tool_input(value: Any) -> tuple[Any, str]:
-    """Redact Anthropic tool input and compute its args_hash."""
+    """Redact Anthropic tool input and compute its args_hash.
+
+    Serialises through the shared JCS canonicalizer (RFC 8785) so the bytes
+    are byte-identical to the TypeScript adapter's ``canonicalStringify``
+    (compact separators, ensure_ascii=False), keeping the Py/TS args_hash in
+    lockstep (sdk-python-run-005). The prior
+    ``json.dumps(..., sort_keys=True, default=str)`` diverged from TS on
+    separators + non-ASCII escaping and silently coerced unsupported types.
+    """
     redacted = _scrub(value)
-    canon = json.dumps(redacted, sort_keys=True, default=str).encode("utf-8")
+    canon = _canonical_json_stringify(redacted).encode("utf-8")
     return redacted, hashlib.sha256(canon).hexdigest()
 
 
@@ -179,7 +197,13 @@ def _populate_parent_from_response(parent: Span, response: Any) -> None:
     parent.attributes["total_cost_usd"] = _estimate_cost_usd(
         model, input_tokens, output_tokens
     )
-    parent.attributes["model_signature"] = _model_signature(model)
+    # response.id seeds the model_signature drift surrogate + its own attribute,
+    # mirroring the TS adapter (asString(response.id, "") || null). A non-string
+    # or empty id collapses to None so the signature uses the sha256 fallback.
+    _rid = _get(response, "id", "")
+    response_id = _rid if isinstance(_rid, str) and _rid else None
+    parent.attributes["model_signature"] = _model_signature(model, response_id)
+    parent.attributes["response_id"] = response_id
     parent.attributes["stop_reason"] = _get(response, "stop_reason")
 
 
@@ -244,6 +268,16 @@ class _StreamWrapper:
         self._model = model
         self._cum_input = 0
         self._cum_output = 0
+        self._chunk_count = 0
+        self._stop_reason: str | None = None
+        # Captured from message_start (event.message.id); seeds the finalized
+        # model_signature + response_id attribute, mirroring the TS finalizeStream.
+        self._response_id: str | None = None
+        # Streamed tool_use blocks arrive as a content_block_start (carrying the
+        # tool name) followed by input_json_delta fragments (carrying the args
+        # JSON in pieces). Aggregate per block index, mirroring the TS adapter's
+        # toolUsesByIndex, and emit one tool_call span per block on finalize.
+        self._tool_uses: dict[int, dict[str, Any]] = {}
 
     def __iter__(self) -> _StreamWrapper:
         return self
@@ -254,26 +288,137 @@ class _StreamWrapper:
         except StopIteration:
             duration_ms = (time.monotonic() - self._start_t) * 1000.0
             self._parent.attributes["duration_ms"] = duration_ms
+            # Surface the resolved streamed model (TS finalizeStream sets
+            # parent.attributes["model"] = state.model) so model + model_signature
+            # agree with the non-stream path and the TS adapter.
+            self._parent.attributes["model"] = self._model
             self._parent.attributes["input_tokens"] = self._cum_input
             self._parent.attributes["output_tokens"] = self._cum_output
             self._parent.attributes["total_cost_usd"] = _estimate_cost_usd(
                 self._model, self._cum_input, self._cum_output
             )
+            # Re-compute model_signature with the captured response id (TS
+            # finalizeStream: modelSignature(model, state.responseId)) and surface
+            # response_id, so a fixture/cassette recorded under either SDK carries
+            # byte-identical span attributes.
+            self._parent.attributes["model_signature"] = _model_signature(
+                self._model, self._response_id
+            )
+            self._parent.attributes["response_id"] = self._response_id
+            self._parent.attributes["chunk_count"] = self._chunk_count
+            self._parent.attributes["stop_reason"] = self._stop_reason
+            # Emit ONE tool_call span per aggregated streamed tool_use block
+            # (VAL-W4-039), mirroring the TS finalizeStream. The args JSON was
+            # streamed in input_json_delta fragments; parse the concatenation,
+            # falling back to the raw string on a parse error and to the initial
+            # block input when no fragments arrived.
+            for agg in self._tool_uses.values():
+                partial = agg.get("partial_json", "")
+                parsed_input: Any = agg.get("input", {})
+                if partial:
+                    try:
+                        parsed_input = json.loads(partial)
+                    except (ValueError, TypeError):
+                        parsed_input = partial
+                args_red, args_hash = _redact_tool_input(parsed_input)
+                self._recorder.new_span(
+                    "tool_call",
+                    tool_name=str(agg.get("name", "")),
+                    parent_span_id=self._parent.span_id,
+                    args_redacted=args_red,
+                    args_hash=args_hash,
+                    result_hash="",
+                    status="pending",
+                    duration_ms=0.0,
+                    retry_count=0,
+                    side_effect_marker=False,
+                    normalized_error_class=None,
+                )
             raise
 
+        self._chunk_count += 1
         event_type = _get(event, "type", "")
         if not isinstance(event_type, str):
             event_type = ""
 
-        # Aggregate usage from message_delta events if present.
-        usage = _get(event, "usage")
-        if usage is not None:
-            in_tok = _get(usage, "input_tokens")
-            out_tok = _get(usage, "output_tokens")
-            if isinstance(in_tok, int):
-                self._cum_input += in_tok
-            if isinstance(out_tok, int):
-                self._cum_output += out_tok
+        # Usage aggregation MUST mirror the TypeScript adapter's
+        # ``ingestEvent`` (VAL-ISO-020) exactly so Py/TS report identical
+        # token counts. Anthropic's streaming usage is NOT a running sum:
+        #
+        #   * ``message_start`` carries usage on ``event.message.usage`` (the
+        #     authoritative input token count plus a small initial output
+        #     SEED). We read input from there and ASSIGN the output seed.
+        #   * ``message_delta`` carries usage on ``event.usage`` whose
+        #     ``output_tokens`` is the authoritative CUMULATIVE final output
+        #     count, not a per-event increment. We ASSIGN it (never ``+=``)
+        #     so the running total is not double-counted with the seed.
+        #
+        # Summing every event (the prior behaviour) inflated output and never
+        # populated input (it read ``event.usage`` only, which is absent on
+        # ``message_start``). Assigning cumulative snapshots is correct.
+        if event_type == "message_start":
+            message = _get(event, "message")
+            # Capture the provider message id for the finalized model_signature
+            # (TS: if (id !== "") state.responseId = id). Empty/non-string ids
+            # leave the seed None so finalize uses the sha256 fallback.
+            _mid = _get(message, "id", "")
+            if isinstance(_mid, str) and _mid:
+                self._response_id = _mid
+            # Refresh the model from the streamed provider model so the finalized
+            # model + model_signature reflect the RESOLVED model, not the request
+            # arg (TS: if (model !== "") state.model = model). A resolved model
+            # name or an empty request model would otherwise diverge from TS.
+            _smodel = _get(message, "model", "")
+            if isinstance(_smodel, str) and _smodel:
+                self._model = _smodel
+            usage = _get(message, "usage")
+            if usage is not None:
+                in_tok = _get(usage, "input_tokens")
+                out_tok = _get(usage, "output_tokens")
+                if isinstance(in_tok, int):
+                    self._cum_input += in_tok
+                if isinstance(out_tok, int):
+                    self._cum_output = out_tok
+        elif event_type == "content_block_start":
+            block = _get(event, "content_block")
+            if _get(block, "type") == "tool_use":
+                idx = _get(event, "index", -1)
+                if isinstance(idx, int) and idx >= 0:
+                    self._tool_uses[idx] = {
+                        "name": _get(block, "name", ""),
+                        "partial_json": "",
+                        "input": _get(block, "input", {}),
+                    }
+        elif event_type == "content_block_delta":
+            idx = _get(event, "index", -1)
+            if isinstance(idx, int) and idx >= 0:
+                delta = _get(event, "delta")
+                if _get(delta, "type") == "input_json_delta":
+                    partial = _get(delta, "partial_json", "")
+                    existing = self._tool_uses.get(idx)
+                    if existing is not None and isinstance(partial, str):
+                        existing["partial_json"] += partial
+        elif event_type == "message_delta":
+            usage = _get(event, "usage")
+            if usage is not None:
+                # message_delta usage.output_tokens is the AUTHORITATIVE
+                # CUMULATIVE final output count; ASSIGN it (never += ). The
+                # isinstance(int) guard means a usage block WITHOUT an integer
+                # output_tokens leaves the message_start seed intact (Py<->TS
+                # parity with the TS asInt-number guard).
+                out_tok = _get(usage, "output_tokens")
+                if isinstance(out_tok, int):
+                    self._cum_output = out_tok
+                # input_tokens is read ONLY from message_start (the documented
+                # VAL-ISO-020 design above); the TS adapter never reads input
+                # from a message_delta, so reading it here diverged Py<->TS for
+                # server-tool/web-search streams whose final message_delta
+                # carries a cumulative input count differing from message_start
+                # (round-7 re-hunt HIGH). Do not read input from the delta.
+            delta = _get(event, "delta")
+            stop_reason = _get(delta, "stop_reason")
+            if isinstance(stop_reason, str) and stop_reason:
+                self._stop_reason = stop_reason
 
         self._recorder.new_span(
             "stream_chunk",

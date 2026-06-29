@@ -32,6 +32,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ._compat import field
+
 # Canonical CEL identifier the contract author writes:
 # ``relay.tool_arg(call, "k")``.
 RELAY_TOOL_ARG_NAME: str = "relay.tool_arg"
@@ -59,13 +61,14 @@ def relay_tool_arg(call: Any, key: Any) -> Any:
         return None
     if not isinstance(key, str):
         return None
-    args = call.get("args")
+    # Total field access: a legacy MapType.get raises on a missing key, so use
+    # the membership-guarded `field` helper (a missing "args" -> None).
+    args = field(call, "args")
     if not isinstance(args, Mapping):
         return None
     # Mapping's __contains__ uses key __hash__/__eq__. For Python str
-    # this is codepoint-based and locale-independent. cel-python's
-    # StringType is a str subclass and shares the same hash/eq, so
-    # parity holds across runtimes.
+    # this is codepoint-based and locale-independent, so parity holds
+    # across runtimes.
     if key not in args:
         return None
     return args[key]

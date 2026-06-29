@@ -22,6 +22,8 @@ import pytest
 from relay.errors import RelayPolicyError
 from relay.redaction import (
     DEFAULT_APPLIES_TO_FIELDS,
+    MAX_REDACTION_LEAF_LENGTH,
+    REDACTION_TRUNCATION_MARKER,
     RedactionEngine,
     RedactionPolicy,
     redact_capture_payload,
@@ -787,6 +789,41 @@ def test_redos_group_prefix_credential_matcher_loads() -> None:
 
 
 @pytest.mark.plumbing
+def test_f8_leaf_clamp_counts_code_points_not_utf16_units() -> None:
+    """F8 (keystone #16): the leaf clamp counts Unicode CODE POINTS.
+
+    A supplementary-plane char (U+1F600) is 1 code point but 2 UTF-16 code units.
+    Python's ``len()`` / ``[:N]`` clamp is code-point based; this is the reference
+    the TS SDK now mirrors (it previously clamped by UTF-16 units, over-clamping
+    SMP-heavy leaves and diverging the redacted bytes). This test anchors the
+    Python reference so a regression to UTF-16 semantics is caught.
+
+    Boundary leaf: ``cap // 2 + 1`` emoji -> code points <= cap (NOT clamped) but
+    UTF-16 units > cap. Over-cap leaf: ``cap + 5`` emoji -> clamped at exactly
+    ``cap`` CODE POINTS (each emoji intact, never a split surrogate)."""
+    policy = RedactionPolicy.load(_BASE_POLICY)
+    engine = RedactionEngine(policy=policy, salt_provider=_salt_provider)
+
+    n = MAX_REDACTION_LEAF_LENGTH // 2 + 1
+    boundary = "\U0001f600" * n
+    assert len(boundary) <= MAX_REDACTION_LEAF_LENGTH  # code points within cap
+    out = engine._apply_matchers_to_string(boundary)
+    # NOT clamped: no truncation marker, every code point preserved verbatim
+    # (the base policy matchers find no secret in benign emoji).
+    assert REDACTION_TRUNCATION_MARKER not in out, out[:40]
+    assert out == boundary
+
+    over = "\U0001f600" * (MAX_REDACTION_LEAF_LENGTH + 5)
+    out2 = engine._apply_matchers_to_string(over)
+    assert out2.endswith(REDACTION_TRUNCATION_MARKER), out2[-40:]
+    body = out2[: -len(REDACTION_TRUNCATION_MARKER)]
+    # Clamped at exactly cap CODE POINTS; Python str slicing never splits a
+    # character, so this is structurally guaranteed -- assert the boundary.
+    assert len(body) == MAX_REDACTION_LEAF_LENGTH
+    assert body == "\U0001f600" * MAX_REDACTION_LEAF_LENGTH
+
+
+@pytest.mark.plumbing
 def test_redos_noncapturing_group_policy_loads() -> None:
     """A non-capturing group + outer quantifier (``(?:abc)+``) MUST LOAD."""
     body = {
@@ -796,3 +833,188 @@ def test_redos_noncapturing_group_policy_loads() -> None:
         ],
     }
     RedactionPolicy.load(body)
+
+
+# ---------------------------------------------------------------------------
+# REDACT cluster Bug B (P2 / security): the ReDoS static guard caught a
+# quantifier over a group whose BODY itself contained a quantifier (``(a+)+``)
+# but MISSED the overlapping-alternation-under-quantifier shape: a group whose
+# body is a top-level alternation of OVERLAPPING branches, immediately followed
+# by an UNBOUNDED quantifier (``(a|a)*``, ``(a|a)+``, ``(a|a){2,}``). There is
+# no inner quantifier, so ``inner_had_quantifier`` was ``False`` and the guard
+# ACCEPTED it -- yet ``(a|a)*b`` backtracks super-linearly (98s on a 30-char
+# leaf locally) because each ``a`` can be consumed by EITHER branch, giving the
+# engine 2^n ways to partition the run. The 1 MiB leaf clamp does NOT bound that
+# blow-up. The fix REJECTS a top-level alternation whose branches share a
+# possible first character (overlap) when the group is immediately followed by
+# an unbounded quantifier, while still ACCEPTING a DISJOINT alternation such as
+# the legitimate credential matcher ``(?:sk-|key_)+`` (first chars ``s`` vs
+# ``k`` do not overlap, so it is linear -- 0.0003s on a 40-char leaf locally).
+# ---------------------------------------------------------------------------
+
+_OVERLAP_ALTERNATION_REDOS_PATTERNS = [
+    "(a|a)*b",  # the contract trigger: identical overlapping branches + '*'
+    "(a|a)+b",  # same overlap under '+'
+    "(a|a){2,}b",  # same overlap under an open-ended interval {2,}
+    "(?:a|a)*x",  # non-capturing group, same overlap
+    r"(\w|a)+b",  # '\w' first-class includes 'a' -> branches overlap
+    "(.|a)+b",  # '.' matches any char incl 'a' -> branches overlap
+    "(ab|a)*c",  # 'ab' and 'a' share first char 'a'
+]
+
+# Disjoint alternations under an unbounded quantifier are LINEAR and MUST be
+# accepted: no two branches share a possible first character, so at most one
+# branch matches at any position.
+_DISJOINT_ALTERNATION_SAFE_PATTERNS = [
+    "(?:sk-|key_)+[A-Za-z0-9]{20,}",  # the legitimate credential matcher (s vs k)
+    "(?:abc|def)+x",  # a vs d -- disjoint first chars
+]
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _OVERLAP_ALTERNATION_REDOS_PATTERNS)
+def test_redos_guard_rejects_overlapping_alternation_under_quantifier(
+    pattern: str,
+) -> None:
+    """The guard MUST REJECT a top-level alternation of OVERLAPPING branches
+    immediately followed by an UNBOUNDED quantifier (``*`` / ``+`` / ``{n,}``).
+
+    RED at base: ``(a|a)*b`` has no inner quantifier, so the nested-quantifier
+    heuristic returned ``None`` (accepted) and the pattern was compiled and run
+    against the unbounded leaf -- catastrophic backtracking. GREEN after the
+    overlap-alternation rule.
+    """
+    from relay.redaction import _check_regex_redos_safety
+
+    result = _check_regex_redos_safety(pattern)
+    assert result is not None, (
+        f"overlapping-alternation pattern {pattern!r} not flagged as ReDoS"
+    )
+    assert result["reason"] == "redos_pattern", (
+        f"unexpected reason for {pattern!r}: {result!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "pattern", ["(?:sk-|key_)+[A-Za-z0-9]{20,}", "(?:abc|def)+x"]
+)
+def test_redos_guard_accepts_disjoint_alternation_under_quantifier(
+    pattern: str,
+) -> None:
+    """A DISJOINT alternation under an unbounded quantifier is LINEAR and MUST
+    be ACCEPTED: no two branches share a possible first character, so the
+    overlap rule must NOT fire. This guards the legitimate credential matcher
+    ``(?:sk-|key_)+`` -- rejecting it would disable redaction for that policy.
+    """
+    from relay.redaction import _check_regex_redos_safety
+
+    assert _check_regex_redos_safety(pattern) is None, (
+        f"disjoint alternation {pattern!r} falsely flagged as ReDoS"
+    )
+
+
+@pytest.mark.plumbing
+def test_redos_guard_accepts_alternation_with_bounded_quantifier() -> None:
+    """An overlapping alternation under a BOUNDED quantifier (``?`` or
+    ``{n,m}``) is NOT catastrophic (no unbounded repetition), so the overlap
+    rule MUST NOT fire. A non-quantified alternation group is also accepted.
+    """
+    from relay.redaction import _check_regex_redos_safety
+
+    assert _check_regex_redos_safety("(a|a)?b") is None
+    assert _check_regex_redos_safety("(a|a){2,4}b") is None
+    assert _check_regex_redos_safety("(a|a)b") is None
+
+
+# ---------------------------------------------------------------------------
+# NESTED-WRAPPER BYPASS (roborev 7feb671 HIGH). The overlap rule above checked
+# only a group whose OWN top-level alternation is DIRECTLY followed by an
+# unbounded quantifier. A WRAPPER hides the overlap one level down: in
+# ``((a|a))*b`` the OUTER group ``((a|a))`` has no top-level ``|`` (its body is
+# the inner group), and the INNER ``(a|a)`` is not itself quantified -- so
+# NEITHER condition fired and the catastrophic pattern loaded. ``((a|a))*`` is
+# just as exponential as ``(a|a)*`` (each ``a`` is consumed two ways, the outer
+# ``*`` partitions the run 2^n ways). The fix PROPAGATES an
+# "overlap-alternation present at any depth" signal up the group stack (like the
+# existing nested-quantifier signal) and trips when ANY enclosing group is
+# unbounded-quantified.
+# ---------------------------------------------------------------------------
+
+_WRAPPED_OVERLAP_ALTERNATION_REDOS_PATTERNS = [
+    "((a|a))*b",  # capturing wrapper around the overlap, outer '*'
+    "(?:(?:a|a))*b",  # non-capturing wrapper, outer '*'
+    "((a|a))+y",  # capturing wrapper, outer '+'
+    "((a|a)){2,}z",  # capturing wrapper, outer open-ended interval {2,}
+    "(((a|a)))+x",  # DOUBLE wrapper, outer '+'
+    r"((\w|a))*b",  # wrapped '\w'-vs-'a' overlap, outer '*'
+    "((a|a)?)*w",  # inner BOUNDED '?' but outer UNBOUNDED '*' -> still 2^n
+    "(?:(a|a))+q",  # mixed non-capturing wrapper around a capturing overlap
+]
+
+# Wrapped forms that MUST still LOAD: a wrapped DISJOINT alternation is linear,
+# and a wrapped overlap under only a BOUNDED outer quantifier (or none) cannot
+# blow up. The propagation must NOT over-reject these.
+_WRAPPED_SAFE_PATTERNS = [
+    "((?:sk-|key_))*[A-Za-z0-9]{20,}",  # wrapped DISJOINT credential matcher
+    "((foo|bar))+y",  # wrapped disjoint (f vs b) -> linear
+    "((a|a))?b",  # wrapped overlap, OUTER bounded '?' -> at most one rep
+    "((a|a)){2,4}c",  # wrapped overlap, OUTER bounded interval -> capped
+    "((a|a))b",  # wrapped overlap, NO outer quantifier -> linear
+]
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _WRAPPED_OVERLAP_ALTERNATION_REDOS_PATTERNS)
+def test_redos_guard_rejects_wrapped_overlapping_alternation(pattern: str) -> None:
+    """A WRAPPED overlapping alternation under an outer UNBOUNDED quantifier is
+    just as catastrophic as the direct form and MUST be REJECTED.
+
+    RED at base (roborev 7feb671 HIGH): the overlap signal was read only from
+    the just-closed group's OWN top-level alternation, so ``((a|a))*b`` and
+    ``(?:(?:a|a))*b`` loaded. GREEN after propagating the overlap signal up the
+    group stack.
+    """
+    from relay.redaction import _check_regex_redos_safety
+
+    result = _check_regex_redos_safety(pattern)
+    assert result is not None, (
+        f"wrapped overlapping-alternation pattern {pattern!r} not flagged as ReDoS"
+    )
+    assert result["reason"] == "redos_pattern", (
+        f"unexpected reason for {pattern!r}: {result!r}"
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("pattern", _WRAPPED_SAFE_PATTERNS)
+def test_redos_guard_accepts_wrapped_safe_alternation(pattern: str) -> None:
+    """The overlap-propagation must NOT over-reject: a wrapped DISJOINT
+    alternation is linear, and a wrapped overlap under only a BOUNDED outer
+    quantifier (or none) cannot blow up. All MUST LOAD (return ``None``).
+    """
+    from relay.redaction import _check_regex_redos_safety
+
+    assert _check_regex_redos_safety(pattern) is None, (
+        f"wrapped-safe pattern {pattern!r} falsely flagged as ReDoS"
+    )
+
+
+@pytest.mark.plumbing
+def test_redos_guard_overlap_alternation_policy_rejected_at_load() -> None:
+    """The overlapping-alternation pattern is rejected end-to-end at policy
+    LOAD with code ``RELAY-SDK-017`` / reason ``redos_pattern`` (never
+    compiled or executed).
+    """
+    from relay.errors import RelayPolicyError
+
+    body = {
+        **_BASE_POLICY,
+        "matchers": [
+            {"id": "redos", "kind": "regex", "pattern": "(a|a)*b", "action": "redact"}
+        ],
+    }
+    with pytest.raises(RelayPolicyError) as excinfo:
+        RedactionPolicy.load(body)
+    assert excinfo.value.code == "RELAY-SDK-017"
+    assert excinfo.value.details.get("reason") == "redos_pattern"

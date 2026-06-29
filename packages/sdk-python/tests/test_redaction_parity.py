@@ -658,6 +658,100 @@ def test_hosted_default_policy_redacts_output_text_exact_pointer() -> None:
     assert redacted["output"]["text"] == "<redacted>"
 
 
+# ---------------------------------------------------------------------------
+# REDACT cluster Bug A (P2 / security): the default policy matcher path
+# ``/messages/*/content/text`` only covers the OBJECT content shape
+# (``content: {text: ...}``). The standard chat shape used by OpenAI Chat
+# Completions and Anthropic Messages is a LIST of content PARTS:
+# ``content: [{type: "text", text: ...}]`` whose leaf pointer is
+# ``/messages/0/content/0/text`` (6 segments) -- the 5-segment matcher path
+# never matched it, so prompt text LEAKED verbatim. The fix adds the sibling
+# matcher path ``/messages/*/content/*/text`` (and ``/output/*/text`` alongside
+# ``/output/text``) using the existing single-segment ``*`` wildcard machinery.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+def test_hosted_default_policy_redacts_array_of_content_parts() -> None:
+    """The default policy MUST redact the text leaf in the list-of-content-parts
+    chat shape ``messages[*].content[j].text`` (OpenAI Chat Completions /
+    Anthropic Messages), not only the object ``content.text`` shape.
+
+    RED at base: the matcher path ``/messages/*/content/text`` has 5 segments
+    but the array-of-parts pointer ``/messages/0/content/0/text`` has 6, so the
+    private medical text leaked. GREEN after adding ``/messages/*/content/*/text``.
+    """
+    policy = RedactionPolicy.load(HOSTED_DEFAULT_POLICY)
+    engine = RedactionEngine(
+        policy=policy, salt_provider=lambda _ref: b"hosted-default-salt"
+    )
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "my private medical diagnosis is X"}
+                ],
+            }
+        ]
+    }
+    body = redact_capture_payload(engine, payload)
+    assert b"my private medical diagnosis is X" not in body, (
+        "default policy leaked array-of-parts prompt content verbatim: "
+        f"{body!r}"
+    )
+    assert b"<redacted>" in body, f"expected the redact placeholder in {body!r}"
+
+
+@pytest.mark.plumbing
+def test_hosted_default_policy_redacts_both_content_shapes() -> None:
+    """BOTH content shapes (object ``content.text`` AND array-of-parts
+    ``content[j].text``) MUST be redacted under the default policy in a single
+    payload, proving the fix did not REPLACE the object-shape matcher but
+    ADDED the array-of-parts matcher alongside it.
+    """
+    policy = RedactionPolicy.load(HOSTED_DEFAULT_POLICY)
+    engine = RedactionEngine(
+        policy=policy, salt_provider=lambda _ref: b"hosted-default-salt"
+    )
+    redacted = engine.redact(
+        {
+            "messages": [
+                # Object shape: /messages/0/content/text
+                {"role": "user", "content": {"text": "object shape ssn 111-11-1111"}},
+                # Array-of-parts shape: /messages/1/content/0/text
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "array shape ssn 222-22-2222"}
+                    ],
+                },
+            ]
+        }
+    )
+    assert redacted["messages"][0]["content"]["text"] == "<redacted>"
+    assert redacted["messages"][1]["content"][0]["text"] == "<redacted>"
+    # The ``type`` sibling (``/messages/1/content/0/type``) value is "text" and
+    # MUST NOT be matched by ``/messages/*/content/*/text`` (last segment differs).
+    assert redacted["messages"][1]["content"][0]["type"] == "text"
+
+
+@pytest.mark.plumbing
+def test_hosted_default_policy_redacts_array_output_text() -> None:
+    """The default policy MUST redact the array-of-parts OUTPUT shape
+    ``output[j].text`` (``/output/*/text``) alongside the object
+    ``/output/text`` shape.
+    """
+    policy = RedactionPolicy.load(HOSTED_DEFAULT_POLICY)
+    engine = RedactionEngine(
+        policy=policy, salt_provider=lambda _ref: b"hosted-default-salt"
+    )
+    redacted = engine.redact(
+        {"output": [{"type": "text", "text": "agent leaked 333-33-3333"}]}
+    )
+    assert redacted["output"][0]["text"] == "<redacted>"
+
+
 @pytest.mark.plumbing
 def test_json_pointer_wildcard_does_not_overmatch_segment_count() -> None:
     """A ``*`` matches exactly ONE segment, never spans multiple.
@@ -1366,6 +1460,26 @@ _REDOS_PATTERNS = [
     r"(\w+\s?)*$",
     "(?:a+)+",
     "(?i)(?:secret+)+",
+    # REDACT cluster Bug B: overlapping-alternation-under-quantifier. No inner
+    # quantifier, so the original nested-quantifier heuristic MISSED these, yet
+    # they backtrack super-linearly. Both runtimes MUST now reject them with the
+    # same RELAY-SDK-017 / redos_pattern outcome.
+    "(a|a)*b",
+    "(a|a)+b",
+    "(a|a){2,}b",
+    "(?:a|a)*x",
+    "(ab|a)*c",
+    # Nested-wrapper bypass (roborev 7feb671 HIGH): the overlap is hidden one
+    # level down -- the OUTER group has no top-level `|` and the INNER overlap
+    # group is not itself quantified -- yet ((a|a))* is just as exponential as
+    # (a|a)*. Both runtimes MUST reject these identically after propagating the
+    # overlap signal up the group stack.
+    "((a|a))*b",
+    "(?:(?:a|a))*b",
+    "((a|a))+y",
+    "((a|a)){2,}z",
+    "(((a|a)))+x",
+    "((a|a)?)*w",
 ]
 
 # Gate-2: legitimate GROUP-PREFIX constructs (non-capturing / inline-flag /

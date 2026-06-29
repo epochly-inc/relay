@@ -1,0 +1,631 @@
+"""tier-1 plumbing tests for the wasm typed-canonical codec (WS-A, VAL-CWC-P1HOST-001).
+
+``packages/contracts/src/relay_contracts/wasm_codec.py`` is the canonical
+Python implementation of the wasm reactor's typed-canonical value form -- the
+cross-host byte-parity contract (CLAUDE.md keystone invariant #16). It MUST be
+byte-faithful to the Rust source of truth in
+``packages/cel-wasm/crate/src/lib.rs`` ``value_to_typed`` / ``typed_to_value``
+/ ``key_to_typed`` / ``key_sort_string`` (verified file:line in the worker
+exploration log). The wire form (lib.rs:22-31):
+
+    int       {"t":"int","v":"<decimal i64 as string>"}    (lib.rs:1137)
+    uint      {"t":"uint","v":"<decimal u64 as string>"}   (lib.rs:1138)
+    double    {"t":"double","v":"<canonical-g | inf|-inf|nan>"} (lib.rs:1139)
+    string    {"t":"string","v":"<utf8>"}                  (lib.rs:1140)
+    bool      {"t":"bool","v":true|false}                  (lib.rs:1141, JSON bool)
+    null      {"t":"null"}                                 (lib.rs:1142, NO "v")
+    bytes     {"t":"bytes","v":"<lowercase hex>"}          (lib.rs:1143-1145)
+    list      {"t":"list","v":[...]}  order preserved      (lib.rs:1147-1150)
+    map       {"t":"map","v":[[k,v],...]} sorted by key_sort_string (lib.rs:1151-1162)
+
+M6 WS-I type layer: the decode targets are NATIVE Python classes plus the two
+minimal tagged wrappers (``CelUint`` for the uint tag Python ints cannot
+discriminate; ``CelTypeValue`` for CEL type values). THE WIRE FORM IS
+UNCHANGED -- every byte-level assertion below is identical to the pre-removal
+suite; only the host-side classes moved off celtypes.
+
+Classification quirks that survive the type-layer move:
+  - ``bool`` is an ``int`` subclass, so a CEL boolean MUST be classified as
+    bool BEFORE int or it serialises as ``{"t":"int"}`` -- a P0 byte
+    divergence.
+  - ``CelUint`` is an ``int`` subclass and MUST be classified before the
+    generic int branch to preserve the distinct ``uint`` tag.
+
+ASCII-only per CLAUDE.md "ASCII-Safe Source".
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+from typing import Any
+
+import pytest
+from relay_contracts.errors import RelayCelEngineError
+from relay_contracts.wasm_codec import (
+    CelTypeValue,
+    CelUint,
+    py_to_typed,
+    typed_to_py,
+)
+
+
+# ---------------------------------------------------------------------------
+# bool-before-int (the keystone P0 hazard)
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+def test_py_to_typed_plain_bool_is_bool_not_int():
+    # A Python bool MUST serialise as {"t":"bool","v":true}, never {"t":"int"}.
+    assert py_to_typed(True) == {"t": "bool", "v": True}
+    assert py_to_typed(False) == {"t": "bool", "v": False}
+    # ASCII-faithful: the JSON literal for the bool branch is `true`/`false`.
+    assert json.dumps(py_to_typed(True), separators=(",", ":")) == '{"t":"bool","v":true}'
+
+
+@pytest.mark.plumbing
+def test_py_to_typed_cel_uint_is_uint_not_int():
+    # CelUint is an int subclass -- it MUST be classified as uint before the
+    # generic int branch or the distinct uint tag is lost (a byte divergence).
+    assert isinstance(CelUint(7), int)
+    assert py_to_typed(CelUint(7)) == {"t": "uint", "v": "7"}
+    assert py_to_typed(7) == {"t": "int", "v": "7"}
+
+
+# ---------------------------------------------------------------------------
+# typed_to_py returns the EXACT native Python classes (M6 type layer)
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+def test_typed_to_py_int_is_native_int():
+    v = typed_to_py({"t": "int", "v": "3"})
+    assert type(v) is int
+    assert v == 3
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_uint_is_cel_uint():
+    v = typed_to_py({"t": "uint", "v": "7"})
+    assert type(v) is CelUint
+    assert v == 7
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_double_is_native_float():
+    v = typed_to_py({"t": "double", "v": "1.5"})
+    assert type(v) is float
+    assert v == 1.5
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_string_is_native_str():
+    v = typed_to_py({"t": "string", "v": "hi"})
+    assert type(v) is str
+    assert v == "hi"
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_bool_is_native_bool():
+    v = typed_to_py({"t": "bool", "v": True})
+    assert type(v) is bool
+    assert v is True
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_bytes_is_native_bytes():
+    v = typed_to_py({"t": "bytes", "v": "deadbeef"})
+    assert type(v) is bytes
+    assert v == b"\xde\xad\xbe\xef"
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_list_is_native_list():
+    v: Any = typed_to_py({"t": "list", "v": [{"t": "int", "v": "1"}, {"t": "int", "v": "2"}]})
+    assert type(v) is list
+    assert v == [1, 2]
+    assert all(type(x) is int for x in v)
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_map_is_native_dict():
+    v = typed_to_py(
+        {
+            "t": "map",
+            "v": [
+                [{"t": "string", "v": "a"}, {"t": "int", "v": "1"}],
+                [{"t": "string", "v": "z"}, {"t": "int", "v": "2"}],
+            ],
+        }
+    )
+    assert type(v) is dict
+    assert v == {"a": 1, "z": 2}
+    # Wire pair order is preserved as dict insertion order.
+    assert list(v.keys()) == ["a", "z"]
+
+
+# ---------------------------------------------------------------------------
+# wire-form exactness against the Rust source of truth
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+def test_int_uint_are_string_encoded():
+    # lib.rs:1137-1138: i.to_string() / u.to_string() -- string-encoded v.
+    assert py_to_typed(3) == {"t": "int", "v": "3"}
+    assert py_to_typed(-5) == {"t": "int", "v": "-5"}
+    assert py_to_typed(CelUint(7)) == {"t": "uint", "v": "7"}
+
+
+@pytest.mark.plumbing
+def test_null_has_no_v_key():
+    # lib.rs:1142: json!({"t":"null"}) -- there is no "v" key on null.
+    assert py_to_typed(None) == {"t": "null"}
+    assert "v" not in py_to_typed(None)
+
+
+@pytest.mark.plumbing
+def test_bytes_lowercase_hex():
+    # lib.rs:1143-1145: format!("{byte:02x}") -- lowercase, zero-padded hex.
+    assert py_to_typed(b"\x00\xff\xab") == {"t": "bytes", "v": "00ffab"}
+
+
+@pytest.mark.plumbing
+def test_double_canonical_forms():
+    # lib.rs:1004-1009 + 1002: nan/inf/-inf sentinels; finite stays decimal.
+    assert py_to_typed(1.5) == {"t": "double", "v": "1.5"}
+    assert py_to_typed(float("inf")) == {"t": "double", "v": "inf"}
+    assert py_to_typed(float("-inf")) == {"t": "double", "v": "-inf"}
+    nan = py_to_typed(float("nan"))
+    assert nan == {"t": "double", "v": "nan"}
+
+
+@pytest.mark.plumbing
+def test_map_key_ordering_matches_wasm_sort():
+    # lib.rs:1126-1133 key_sort_string puts bool(0) < int(1) < uint(2) < string(3),
+    # ints offset by 2^63 zero-padded to 20, strings by raw codepoint order.
+    # String keys sort lexicographically by codepoint.
+    m = {"z": 1, "a": 2, "m": 3}
+    out = py_to_typed(m)
+    assert out["t"] == "map"
+    keys = [k["v"] for k, _ in out["v"]]
+    assert keys == ["a", "m", "z"]
+
+
+@pytest.mark.plumbing
+def test_map_mixed_key_types_ordering():
+    # Cross-type ordering: bool < int < uint < string (lib.rs:1126-1133).
+    m: dict[Any, int] = {"s": 0, 5: 1, CelUint(2): 2, True: 3}
+    out = py_to_typed(m)
+    tags = [k["t"] for k, _ in out["v"]]
+    assert tags == ["bool", "int", "uint", "string"]
+
+
+@pytest.mark.plumbing
+def test_negative_int_key_ordering():
+    # int sort uses (i as i128 + 2^63): negative ints sort before positive.
+    m = {3: 0, -3: 1, 0: 2}
+    out = py_to_typed(m)
+    int_vals = [k["v"] for k, _ in out["v"]]
+    assert int_vals == ["-3", "0", "3"]
+
+
+# ---------------------------------------------------------------------------
+# round-trip identity over EVERY value class (the acceptance bar)
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "value,cls",
+    [
+        (42, int),
+        (-9007199254740991, int),
+        (CelUint(123), CelUint),
+        (3.25, float),
+        ("hello world", str),
+        (True, bool),
+        (False, bool),
+        (b"\x01\x02\xfe", bytes),
+    ],
+)
+def test_round_trip_scalar_value_classes(value, cls):
+    # py_to_typed -> typed_to_py must reproduce the EXACT native class + value.
+    decoded = typed_to_py(py_to_typed(value))
+    assert type(decoded) is cls
+    assert decoded == value
+
+
+@pytest.mark.plumbing
+def test_round_trip_null():
+    # null round-trips to Python None (the wasm Value::Null canonical form).
+    assert py_to_typed(None) == {"t": "null"}
+    assert typed_to_py({"t": "null"}) is None
+
+
+@pytest.mark.plumbing
+def test_round_trip_list():
+    value = [1, "x", True, None]
+    decoded: Any = typed_to_py(py_to_typed(value))
+    assert type(decoded) is list
+    assert type(decoded[0]) is int
+    assert type(decoded[1]) is str
+    assert type(decoded[2]) is bool
+    assert decoded[3] is None
+    assert decoded == [1, "x", True, None]
+
+
+@pytest.mark.plumbing
+def test_round_trip_map():
+    m = {"b": 2, "a": 1.5}
+    decoded: Any = typed_to_py(py_to_typed(m))
+    assert type(decoded) is dict
+    assert decoded == {"a": 1.5, "b": 2}
+    assert type(decoded["a"]) is float
+    assert type(decoded["b"]) is int
+    assert all(type(k) is str for k in decoded)
+
+
+@pytest.mark.plumbing
+def test_round_trip_nested_list_map():
+    # nested list/map round-trips through the recursive codec.
+    value: list[Any] = [{"k": [7, CelUint(8)]}, "tail"]
+    decoded: Any = typed_to_py(py_to_typed(value))
+    assert type(decoded) is list
+    assert type(decoded[0]) is dict
+    inner_list = decoded[0]["k"]
+    assert type(inner_list) is list
+    assert type(inner_list[0]) is int
+    assert type(inner_list[1]) is CelUint
+    assert inner_list[0] == 7
+    assert inner_list[1] == 8
+    assert decoded[1] == "tail"
+
+
+@pytest.mark.plumbing
+def test_round_trip_double_special_values():
+    for f in (float("inf"), float("-inf")):
+        decoded = typed_to_py(py_to_typed(f))
+        assert type(decoded) is float
+        assert decoded == f
+    nan_decoded = typed_to_py(py_to_typed(float("nan")))
+    assert type(nan_decoded) is float
+    assert nan_decoded != nan_decoded  # NaN != NaN
+
+
+# ---------------------------------------------------------------------------
+# error handling
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+def test_py_to_typed_rejects_unsupported_type():
+    class Weird:
+        pass
+
+    with pytest.raises((TypeError, ValueError)):
+        py_to_typed(Weird())
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_rejects_unknown_tag():
+    with pytest.raises((TypeError, ValueError, KeyError)):
+        typed_to_py({"t": "frobnicate", "v": "x"})
+
+
+# ---------------------------------------------------------------------------
+# FINDING A: typed_to_py / py_to_typed support the wasm type / duration /
+# timestamp tags (lib.rs value_to_typed/typed_to_value emit + accept them).
+#
+# The wasm value_to_typed (lib.rs:1248-1297) emits these tags:
+#   type      {"t":"type","v":"<cel-go type name>"}     (lib.rs:1295)
+#   duration  {"t":"duration","v":"[-]<secs>.<09-nanos>"} (value_to_typed Duration arm)
+#   timestamp {"t":"timestamp","v":"<RFC3339-Z>"}       (lib.rs:1290)
+# These reach the host: `type(x)` is NOT fenced under relay_profile so it can
+# arrive on the success envelope, and duration/timestamp VALUES (not the fenced
+# constructors) can arrive via bindings echoed back out.
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "name",
+    [
+        "int",
+        "uint",
+        "double",
+        "bool",
+        "string",
+        "bytes",
+        "list",
+        "map",
+        "null_type",
+        "type",
+        "google.protobuf.Timestamp",
+        "google.protobuf.Duration",
+    ],
+)
+def test_typed_to_py_type_tag_is_cel_type_value_carrying_celgo_name(name):
+    # lib.rs:1295 emits {"t":"type","v":<cel-go TypeName()>}; lib.rs:1401-1407
+    # accepts it back. The decode is a CelTypeValue carrying the cel-go name
+    # verbatim (the faithful mirror of Rust's Value::Type(Arc<str>)).
+    decoded = typed_to_py({"t": "type", "v": name})
+    assert type(decoded) is CelTypeValue
+    assert decoded.name == name
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "name",
+    [
+        "int",
+        "type",
+        "google.protobuf.Timestamp",
+        "google.protobuf.Duration",
+    ],
+)
+def test_round_trip_type_tag_is_byte_identical(name):
+    # typed_to_py -> py_to_typed reproduces the EXACT {"t":"type","v":<name>}.
+    typed = {"t": "type", "v": name}
+    assert py_to_typed(typed_to_py(typed)) == typed
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_duration_tag_is_timedelta():
+    # the wasm value_to_typed Duration arm emits
+    # {"t":"duration","v":"[-]<secs>.<09-nanos>"}; the host decodes it to a
+    # native datetime.timedelta.
+    decoded = typed_to_py({"t": "duration", "v": "5.000000000"})
+    assert type(decoded) is datetime.timedelta
+    assert decoded.total_seconds() == 5.0
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "wire,total_seconds",
+    [
+        ("5.000000000", 5.0),
+        ("-5.000000000", -5.0),
+        ("1.500000000", 1.5),
+        ("-1.500000000", -1.5),
+        ("0.000000000", 0.0),
+        ("0.250000000", 0.25),
+    ],
+)
+def test_round_trip_duration_tag_microsecond_domain(wire, total_seconds):
+    # Round-trip within the host-representable (microsecond) domain: decode
+    # then re-encode reproduces the wasm canonical wire form byte-for-byte. The
+    # encode mirrors the crate value_to_typed Duration arm: secs from
+    # num_seconds() (trunc toward zero) + the sub-second remainder, with the sign
+    # on the WHOLE value (a leading '-'), not on secs alone.
+    decoded = typed_to_py({"t": "duration", "v": wire})
+    assert type(decoded) is datetime.timedelta
+    assert decoded.total_seconds() == total_seconds
+    assert py_to_typed(decoded) == {"t": "duration", "v": wire}
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "micros_total,wire",
+    [
+        (-250_000, "-0.250000000"),  # -0.25s (sub-second negative: secs == 0)
+        (-1, "-0.000001000"),  # -1 microsecond, the smallest sub-second negative
+        (-999_999, "-0.999999000"),  # -0.999999s, just under -1s, still secs == 0
+        (-500_000, "-0.500000000"),  # -0.5s
+    ],
+)
+def test_py_to_typed_subsecond_negative_duration_round_trips(micros_total, wire):
+    # The crate-1 audit fix taught the wasm serializer/deserializer to carry the
+    # sign over the open interval (-1s, 0s) ("-0.<nanos>"). The Python host codec
+    # MUST match (roborev 8227bc4 HIGH): a sub-second NEGATIVE duration (secs == 0,
+    # e.g. -0.25s) now encodes WITH its sign ("-0.250000000"), and decodes back to
+    # the same negative timedelta -- no longer a fail-closed RELAY-CEL-009, and
+    # never the old silent sign corruption to +0.25s. This is the Python mirror of
+    # the wasm fix, keeping typed_to_py / py_to_typed byte-symmetric with the
+    # crate over the same wire form.
+    dur = datetime.timedelta(microseconds=micros_total)
+    # Sanity: genuinely a sub-second negative (-1s < total < 0).
+    assert -1.0 < dur.total_seconds() < 0
+    typed = py_to_typed(dur)
+    assert typed == {"t": "duration", "v": wire}, typed
+    back = typed_to_py(typed)
+    assert type(back) is datetime.timedelta
+    assert back == dur, (back, dur)
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "micros_total,total_seconds",
+    [
+        (-1_000_000, -1.0),  # negative whole second: sign carried on secs (OK)
+        (-5_500_000, -5.5),  # negative whole+frac: secs < 0 carries sign
+        (-1_250_000, -1.25),  # -1.25s: secs == -1 carries sign
+        (250_000, 0.25),  # positive sub-second: representable
+        (3_000_000, 3.0),  # positive whole second
+        (0, 0.0),  # zero
+    ],
+)
+def test_py_to_typed_representable_durations_round_trip(micros_total, total_seconds):
+    # Durations whose sign IS representable in the wire form (secs != 0 carries
+    # the sign, or the value is non-negative) encode and round-trip faithfully --
+    # the fail-closed guard does NOT over-reject. -1.25s (secs == -1) stays
+    # correct because the sign rides on the seconds component.
+    dur = datetime.timedelta(microseconds=micros_total)
+    assert dur.total_seconds() == total_seconds
+    typed = py_to_typed(dur)
+    assert typed["t"] == "duration"
+    back = typed_to_py(typed)
+    assert type(back) is datetime.timedelta
+    assert back.total_seconds() == total_seconds
+    # And the round-trip is byte-stable (decode of the re-encode is identical).
+    assert py_to_typed(back) == typed
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_timestamp_tag_is_aware_datetime():
+    # lib.rs:1290 emits {"t":"timestamp","v":"<RFC3339-Z>"}; the host decodes it
+    # to a timezone-AWARE native datetime.datetime.
+    decoded = typed_to_py({"t": "timestamp", "v": "2024-01-01T00:00:00Z"})
+    assert type(decoded) is datetime.datetime
+    assert decoded.tzinfo is not None
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize(
+    "wire",
+    [
+        "2024-01-01T00:00:00Z",
+        "2024-01-01T00:00:00.500Z",
+        "2024-06-15T13:45:30.123456Z",
+        "2024-01-01T00:00:00.120Z",
+        "2024-01-01T00:00:00.000001Z",
+    ],
+)
+def test_round_trip_timestamp_tag_microsecond_domain(wire):
+    # Round-trip within the host-representable (microsecond) domain: decode
+    # then re-encode reproduces the wasm canonical RFC3339-Z form byte-for-byte.
+    # The encode mirrors lib.rs rfc3339_utc_z (chrono AutoSi: sub-second only
+    # when nonzero, grouped in multiples of 3 digits, 'Z' suffix).
+    decoded = typed_to_py({"t": "timestamp", "v": wire})
+    assert type(decoded) is datetime.datetime
+    assert py_to_typed(decoded) == {"t": "timestamp", "v": wire}
+
+
+@pytest.mark.plumbing
+def test_py_to_typed_timestamp_normalizes_offset_to_utc_z():
+    # A non-UTC-offset timestamp value re-encodes to the canonical UTC 'Z' form,
+    # mirroring lib.rs rfc3339_utc_z (with_timezone(Utc)). +05:30 at 05:30 local
+    # is 00:00 UTC -- the same normalisation the wasm performs.
+    decoded = typed_to_py({"t": "timestamp", "v": "2024-01-01T05:30:00+05:30"})
+    assert py_to_typed(decoded) == {"t": "timestamp", "v": "2024-01-01T00:00:00Z"}
+
+
+@pytest.mark.plumbing
+def test_py_to_typed_naive_datetime_fails_closed():
+    # A NAIVE datetime binding would be interpreted in the machine-local zone
+    # by astimezone -- the encoded bytes would depend on host configuration, a
+    # determinism violation. Fail closed with the structured engine error.
+    naive = datetime.datetime(2024, 1, 1, 0, 0, 0)
+    with pytest.raises(RelayCelEngineError) as exc_info:
+        py_to_typed(naive)
+    assert exc_info.value.code == "RELAY-CEL-009"
+    assert exc_info.value.subtype == "RELAY-CEL-ENGINE-REQUEST"
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_timestamp_without_offset_rejected():
+    # RFC3339 requires an offset; a naive wire string must not silently decode
+    # (the deterministic re-encode would be poisoned).
+    with pytest.raises(ValueError):
+        typed_to_py({"t": "timestamp", "v": "2024-01-01T00:00:00"})
+
+
+# ---------------------------------------------------------------------------
+# FINDING B: typed_to_py enforces the wire JSON type of `v` (no lenient coerce).
+# The Rust request decoder (lib.rs:1352-1399) STRICTLY validates v's JSON type:
+# bool needs as_bool, string/int/uint/bytes need as_str. The host must mirror
+# this strictness or a malformed wire value is silently mis-decoded (e.g.
+# {"t":"bool","v":"false"} -> True because any non-empty string is truthy).
+# VALID inputs are unchanged (the parity tests must stay byte-identical).
+# ---------------------------------------------------------------------------
+@pytest.mark.plumbing
+@pytest.mark.parametrize("bad_v", ["false", "true", "", "0", 1, 0, [], {}, None])
+def test_typed_to_py_bool_requires_json_bool(bad_v):
+    # lib.rs:1392-1397 requires v.as_bool(); a non-bool v is a hard error.
+    with pytest.raises(ValueError):
+        typed_to_py({"t": "bool", "v": bad_v})
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_bool_accepts_real_json_bool():
+    # The VALID wire form is a JSON boolean -- unchanged by the strictness fix.
+    assert typed_to_py({"t": "bool", "v": True}) is True
+    assert typed_to_py({"t": "bool", "v": False}) is False
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("bad_v", [5, 5.0, True, False, None, [], {}])
+def test_typed_to_py_int_requires_string_v(bad_v):
+    # lib.rs:1353-1359 requires v.as_str() then i64 parse; a JSON number v is a
+    # hard error (the wire form is the decimal string, never a JSON number).
+    with pytest.raises(ValueError):
+        typed_to_py({"t": "int", "v": bad_v})
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("bad_v", [7, 7.0, True, None, [], {}])
+def test_typed_to_py_uint_requires_string_v(bad_v):
+    # lib.rs:1361-1367 requires v.as_str() then u64 parse.
+    with pytest.raises(ValueError):
+        typed_to_py({"t": "uint", "v": bad_v})
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("bad_v", [5, 5.0, True, None, [], {}])
+def test_typed_to_py_string_requires_str_v(bad_v):
+    # lib.rs:1385-1390 requires v.as_str(); a JSON number v is a hard error
+    # (lenient code would stringify it: str(5) -> "5").
+    with pytest.raises(ValueError):
+        typed_to_py({"t": "string", "v": bad_v})
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("bad_v", [5, 5.0, True, None, [], {}])
+def test_typed_to_py_bytes_requires_str_v(bad_v):
+    # lib.rs:1408-1414 requires v.as_str() then hex-decode.
+    with pytest.raises(ValueError):
+        typed_to_py({"t": "bytes", "v": bad_v})
+
+
+@pytest.mark.plumbing
+def test_typed_to_py_scalars_unchanged_for_valid_wire():
+    # VALID inputs MUST be byte-identical after the strictness fix (the parity
+    # tests depend on this -- the fix only rejects MALFORMED v, never valid v).
+    assert typed_to_py({"t": "int", "v": "3"}) == 3
+    assert typed_to_py({"t": "uint", "v": "7"}) == 7
+    assert typed_to_py({"t": "string", "v": "hi"}) == "hi"
+    assert typed_to_py({"t": "bytes", "v": "deadbeef"}) == b"\xde\xad\xbe\xef"
+
+
+# ---------------------------------------------------------------------------
+# FINDING C: py_to_typed enforces the i64 / u64 WIRE range. The wasm wire form
+# is i64 [-2^63, 2^63-1] for int and u64 [0, 2^64-1] for uint (lib.rs:1358 /
+# 1366 parse). An out-of-range Python int produces JSON the wasm CANNOT
+# deserialize, and _key_sort_string assumes in-range. This is the WIRE bound,
+# DISTINCT from the host _check_finite 2^53 result bound.
+# ---------------------------------------------------------------------------
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+_U64_MAX = 2**64 - 1
+
+
+@pytest.mark.plumbing
+def test_py_to_typed_int_accepts_i64_boundaries():
+    # The i64 endpoints are IN range and serialise as the decimal string.
+    assert py_to_typed(_I64_MIN) == {"t": "int", "v": str(_I64_MIN)}
+    assert py_to_typed(_I64_MAX) == {"t": "int", "v": str(_I64_MAX)}
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("oob", [_I64_MAX + 1, _I64_MIN - 1, 2**70, -(2**70)])
+def test_py_to_typed_int_rejects_out_of_i64_range(oob):
+    # A plain Python int outside [-2^63, 2^63-1] would serialise to JSON the
+    # wasm s.parse::<i64>() (lib.rs:1358) rejects -- raise a clear ValueError.
+    with pytest.raises(ValueError):
+        py_to_typed(oob)
+
+
+@pytest.mark.plumbing
+def test_py_to_typed_uint_accepts_u64_boundaries():
+    assert py_to_typed(CelUint(0)) == {"t": "uint", "v": "0"}
+    assert py_to_typed(CelUint(_U64_MAX)) == {"t": "uint", "v": str(_U64_MAX)}
+
+
+@pytest.mark.plumbing
+def test_py_to_typed_uint_rejects_out_of_u64_range():
+    # CelUint is a plain int subclass (no clamp), so an out-of-range magnitude
+    # reaches the encoder, which enforces the u64 wire bound.
+    too_big = CelUint(_U64_MAX + 1)
+    assert int(too_big) == _U64_MAX + 1
+    with pytest.raises(ValueError):
+        py_to_typed(too_big)
+    with pytest.raises(ValueError):
+        py_to_typed(CelUint(-1))
+
+
+@pytest.mark.plumbing
+def test_py_to_typed_int_range_check_applies_to_map_keys():
+    # Map keys go through the same validated encode path (_key_sort_string +
+    # py_to_typed), so an out-of-i64-range int KEY is rejected too.
+    bad_map = {_I64_MAX + 1: 1}
+    with pytest.raises(ValueError):
+        py_to_typed(bad_map)

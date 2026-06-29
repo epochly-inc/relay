@@ -370,12 +370,25 @@ def _fetch_flake_history(
     'pass' / 'fail' / 'invalid'.
     """
     # Get the last window_n eval_run_ids (excluding the current one) for
-    # this (dataset_id, agent_version). Order by created_at DESC.
+    # this (dataset_id, agent_version). Order by created_at DESC, then by
+    # the monotonic insertion key (SQLite rowid) DESC as the tie-breaker.
+    #
+    # created_at has only millisecond resolution (the table default is
+    # strftime('%Y-%m-%dT%H:%M:%fZ', 'now')). When more than window_n runs
+    # for the same (dataset_id, agent_version) share one millisecond, the
+    # window boundary must still reflect true recency. eval_run_id is a
+    # uuid4 -- its lexicographic order is RANDOM and unrelated to insertion
+    # order, so tie-breaking on it would cut the window non-deterministically
+    # and flip a case's flake classification (and the persisted delta_class)
+    # for logically identical history. rowid is assigned monotonically by
+    # INSERT order on this (rowid'd, i.e. non WITHOUT ROWID) table, so
+    # rowid DESC == most-recently-inserted-first == true recency, regardless
+    # of uuid. This keeps window membership deterministic and meaningful.
     run_id_rows = conn.execute(
         "SELECT eval_run_id FROM eval_runs "
         "WHERE dataset_id = ? AND agent_version = ? "
         "  AND eval_run_id != ? "
-        "ORDER BY created_at DESC, eval_run_id DESC "
+        "ORDER BY created_at DESC, rowid DESC "
         "LIMIT ?",
         (dataset_id, agent_version, exclude_eval_run_id, window_n),
     ).fetchall()

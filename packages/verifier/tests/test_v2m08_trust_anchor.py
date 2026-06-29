@@ -57,6 +57,7 @@ from relay_verifier.bundle_validator import (  # noqa: E402
     TRUST_ANCHOR_CLASS_BYO,
     TRUST_ANCHOR_CLASS_RELAY_INC,
     TRUST_ANCHOR_CLASS_UNTRUSTED_LOCAL,
+    classify_trust_anchor,
 )
 from relay_verifier.local_signer import (  # noqa: E402
     LOCAL_DEV_CACHE_PREFIX,
@@ -116,6 +117,115 @@ def test_verifier_rejects_more_than_four_signatures() -> None:
     assert err["reason"] == "signature_count_exceeded"
     assert "5" in err["message"]
     assert "4" in err["message"]
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-041")
+def test_non_bmp_key_takes_precedence_over_signature_count_cap() -> None:
+    """A bundle that is BOTH over-cap (5 signatures) AND carries a non-BMP
+    (supplementary-plane, >= U+10000) object key MUST be rejected as
+    ``non_canonicalizable_bundle`` (RELAY-CANON-NON-BMP-KEY), NOT merely
+    ``signature_count_exceeded``.
+
+    A bundle whose canonical bytes are not well-defined across runtimes is a
+    more fundamental failure than an over-cap signature count: every
+    downstream check -- including the over-cap branch's diagnostic
+    bundle_digest, whose ``contextlib.suppress(TypeError, ValueError)`` would
+    otherwise silently swallow the JCSEncodeError (it subclasses ValueError)
+    -- is meaningless if the bundle cannot be canonicalised at all. The
+    non-BMP screen therefore runs BEFORE the over-cap check (keystone
+    invariant #11/#16; roborev follow-on on the F1 fix).
+    """
+    # Build a normal (BMP) signed bundle, then INJECT a non-BMP object key
+    # into the signed payload AFTER signing. Signing canonicalises, so a
+    # non-BMP key present at sign time would (correctly) raise in the signer;
+    # injecting it post-signing leaves a stale signature, but both the non-BMP
+    # screen and the over-cap check run BEFORE per-signature verification.
+    built = build_bundle()
+    built.bundle["claims"][0]["namespaces"] = {"x" + chr(0x1F600) + "y": {}}
+    original_sigs = list(built.bundle["signatures"])
+    built.bundle["signatures"] = original_sigs * 5
+    assert len(built.bundle["signatures"]) == 5
+
+    output = validate_bundle(
+        bundle=built.bundle,
+        jwks=built.jwks,
+        trust_anchor_source="live",
+    )
+
+    assert output["overall"] == "fail", output
+    reasons = [e.get("reason") for e in output["errors"]]
+    # The non-canonicalisable rejection wins; the over-cap reason is absent.
+    assert "non_canonicalizable_bundle" in reasons, output["errors"]
+    assert "signature_count_exceeded" not in reasons, output["errors"]
+    nb = next(
+        e for e in output["errors"]
+        if e.get("reason") == "non_canonicalizable_bundle"
+    )
+    assert nb["code"] == "RELAY-CANON-NON-BMP-KEY", nb
+    # signatures_present is still recorded for diagnostic continuity.
+    assert output["signatures_present"] == 5, output
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-041")
+def test_unsafe_integer_value_rejected_as_non_canonicalizable() -> None:
+    """A bundle carrying an integer VALUE outside the IEEE-754 safe range
+    (abs > 2**53 - 1) MUST be rejected as ``non_canonicalizable_bundle``
+    with code ``RELAY-CANON-UNSAFE-INTEGER``.
+
+    A Python host keeps such an integer exact while a float64 host
+    (TypeScript ``JSON.parse``) rounds it (9007199254740993 ->
+    9007199254740992), so the same wire bundle would canonicalise to
+    DIFFERENT bytes -> different SHA-256 -> a cross-runtime verify split
+    (keystone invariant #11/#16). The verifier screens the bundle
+    value-boundary BEFORE canonicalisation and fails closed, mirroring the
+    contracts evaluator's safe-integer guard. The low-level JCS encoder is
+    intentionally unbounded (RFC 8785 conformance for large floats), so the
+    bound lives at this value-boundary.
+    """
+    built = build_bundle()
+    # Inject an out-of-safe-range integer VALUE into the signed payload
+    # AFTER signing (stale signature is irrelevant: the value-boundary
+    # screen runs BEFORE any signature / canonicalisation work).
+    built.bundle["claims"][0]["oversized_count"] = 9007199254740993  # 2**53 + 1
+    assert 9007199254740993 > 2**53 - 1
+
+    output = validate_bundle(
+        bundle=built.bundle,
+        jwks=built.jwks,
+        trust_anchor_source="live",
+    )
+
+    assert output["overall"] == "fail", output
+    reasons = [e.get("reason") for e in output["errors"]]
+    assert "non_canonicalizable_bundle" in reasons, output["errors"]
+    nb = next(
+        e for e in output["errors"]
+        if e.get("reason") == "non_canonicalizable_bundle"
+    )
+    assert nb["code"] == "RELAY-CANON-UNSAFE-INTEGER", nb
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-041")
+def test_safe_integer_value_at_bound_is_accepted() -> None:
+    """The bound is exclusive of MAX_SAFE_INTEGER itself: a value of exactly
+    2**53 - 1 (9007199254740991) is within the safe range and MUST NOT be
+    flagged ``non_canonicalizable_bundle`` -- it round-trips byte-identically
+    through a float64 host. (The bundle may still fail for other reasons such
+    as a stale signature; only the non-canonicalisable rejection is asserted
+    absent.)
+    """
+    built = build_bundle()
+    built.bundle["claims"][0]["max_safe"] = 9007199254740991  # 2**53 - 1
+    output = validate_bundle(
+        bundle=built.bundle,
+        jwks=built.jwks,
+        trust_anchor_source="live",
+    )
+    reasons = [e.get("reason") for e in output["errors"]]
+    assert "non_canonicalizable_bundle" not in reasons, output["errors"]
 
 
 @pytest.mark.plumbing
@@ -398,6 +508,95 @@ def test_local_dev_cache_key_prefix_isolates_from_default_anchor() -> None:
     # local_dev-prefixed cache key for the Relay-Inc URL.
     with pytest.raises(ValueError):
         local_dev_cache_key("https://relay.epochly.com/.well-known/jwks.json")
+
+
+# ---------------------------------------------------------------------------
+# VAL-V2M08-044 (bug verifier-py-001): attacker-controlled path on the
+# Relay-Inc host must NOT classify as relay_inc. The path component must be
+# matched by EXACT equality against "/.well-known/jwks.json", never a
+# suffix test -- a suffix test lets
+# "https://relay.epochly.com/attacker/path/.well-known/jwks.json" be
+# mislabeled relay_inc (and thus auto-promote signer_role to control_plane).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-044")
+def test_attacker_subpath_on_relay_host_is_byo_not_relay_inc() -> None:
+    """An attacker-controlled subpath that still ends in
+    ``/.well-known/jwks.json`` on the Relay-Inc host MUST classify as
+    ``byo``, not ``relay_inc``. The path is matched by EXACT equality, so
+    only the canonical ``/.well-known/jwks.json`` path qualifies."""
+    # Two attacker variants: a deep nested path and a sibling-prefixed one.
+    for attacker_url in (
+        "https://relay.epochly.com/attacker/path/.well-known/jwks.json",
+        "https://relay.epochly.com/evil/.well-known/jwks.json",
+    ):
+        cls = classify_trust_anchor(attacker_url)
+        assert cls == TRUST_ANCHOR_CLASS_BYO, (
+            f"attacker subpath {attacker_url!r} must classify as "
+            f"{TRUST_ANCHOR_CLASS_BYO!r}, got {cls!r}"
+        )
+        assert cls != TRUST_ANCHOR_CLASS_RELAY_INC
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-044")
+def test_non_numeric_port_keeps_host_and_path_parity_reference() -> None:
+    """A NON-NUMERIC port (``host:abc``) must NOT break host/path extraction.
+
+    Python ``urlparse`` keeps host and path for a ``host:abc`` authority (the
+    digit-validating ``.port`` accessor is never used by
+    ``classify_trust_anchor``), so the canonical Relay-Inc host still classifies
+    ``relay_inc``. This is the PARITY REFERENCE for the TS ``_RAW_URL_RE`` fix
+    (roborev 7feb671 MEDIUM): the TS regex previously required a numeric port and
+    diverged to ``byo``. A non-numeric port on a non-Relay host stays ``byo``.
+    """
+    assert (
+        classify_trust_anchor("https://relay.epochly.com:abc/.well-known/jwks.json")
+        == TRUST_ANCHOR_CLASS_RELAY_INC
+    )
+    assert (
+        classify_trust_anchor("https://relay.epochly.com:443/.well-known/jwks.json")
+        == TRUST_ANCHOR_CLASS_RELAY_INC
+    )
+    assert (
+        classify_trust_anchor("https://attacker.example:abc/.well-known/jwks.json")
+        == TRUST_ANCHOR_CLASS_BYO
+    )
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-044")
+def test_attacker_subpath_bundle_reports_byo_and_unknown_signer_role() -> None:
+    """End-to-end: a bundle declaring an attacker-controlled subpath on
+    the Relay-Inc host MUST surface ``trust_anchor_class='byo'`` and
+    ``signer_role='unknown'`` -- it cannot auto-promote to control_plane."""
+    from relay_verifier.bundle_validator import SIGNER_ROLE_UNKNOWN
+
+    built = build_bundle(
+        trust_anchor=(
+            "https://relay.epochly.com/attacker/path/.well-known/jwks.json"
+        ),
+    )
+    output = validate_bundle(
+        bundle=built.bundle,
+        jwks=built.jwks,
+        trust_anchor_source="byo_flag",
+    )
+    assert output["trust_anchor_class"] == TRUST_ANCHOR_CLASS_BYO, output
+    assert output["signer_role"] == SIGNER_ROLE_UNKNOWN, output
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M08-044")
+def test_canonical_relay_inc_path_still_classifies_relay_inc() -> None:
+    """Regression guard: the exact-path fix MUST NOT break the canonical
+    Relay-Inc URL, which still classifies as ``relay_inc``."""
+    cls = classify_trust_anchor(
+        "https://relay.epochly.com/.well-known/jwks.json"
+    )
+    assert cls == TRUST_ANCHOR_CLASS_RELAY_INC, cls
 
 
 @pytest.mark.plumbing

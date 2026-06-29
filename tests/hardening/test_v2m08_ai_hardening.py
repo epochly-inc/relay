@@ -226,7 +226,7 @@ def test_redos_regex_budget_50ms_rejects_catastrophic_pattern() -> None:
     """A catastrophic-backtracking regex applied to a stress input is
     rejected with RELAY-REDACT-014 and a measured_ms over the 50 ms cap;
     a benign regex passes."""
-    from relay.redaction_budget import (
+    from relay_schemas.redaction_budget import (
         REDACTION_REGEX_BUDGET_MS,
         evaluate_matcher_budget,
     )

@@ -271,6 +271,20 @@ _PERMITTED_ISO_035_TEST_FILE = (
     / "test_iso_035_control_plane_sql_scan.py"
 )
 
+# Documented V3M4-F03 test exception: the SLA-aging regression test seeds an
+# UNRELATED event_log_entries row (a non-breach event_type sharing the breach's
+# (scope_id, idempotency_key)) to prove the dedupe confirmation is scoped by
+# event_type and re-raises on a foreign collision (roborev d08550b). The INSERT
+# is test-fixture setup on an in-memory DB, never a production write path -- the
+# same kind of exception as the W5.5 / ISO-035 verify-self test fixtures.
+_PERMITTED_EXPLAIN_SLA_TEST_FILE = (
+    _REPO_ROOT
+    / "packages"
+    / "explain"
+    / "tests"
+    / "test_v3m4_sla_aging.py"
+)
+
 
 def _python_files(root: Path) -> list[Path]:
     if not root.exists():
@@ -323,6 +337,11 @@ def test_only_state_engine_writes_run_results_and_event_log() -> None:
             # positive. The literal is quoted test fixture data, never run
             # as SQL. See _PERMITTED_ISO_035_TEST_FILE.
             if path == _PERMITTED_ISO_035_TEST_FILE:
+                continue
+            # Documented V3M4-F03 test exception: SLA-aging regression test seeds
+            # an unrelated event_log row as fixture setup. See
+            # _PERMITTED_EXPLAIN_SLA_TEST_FILE.
+            if path == _PERMITTED_EXPLAIN_SLA_TEST_FILE:
                 continue
             # Documented W8.2 exception: the gate-engine decision writer
             # is the canonical control-plane writer for gate_decisions +
@@ -481,6 +500,11 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         # See _PERMITTED_EXPLAIN_HEURISTIC_FILE.
         "/packages/explain/src/relay_explain/heuristic.py:"
     )
+    explain_sla_test_marker = (
+        # V3M4-F03 SLA-aging regression-test fixture-write exception.
+        # See _PERMITTED_EXPLAIN_SLA_TEST_FILE.
+        "/packages/explain/tests/test_v3m4_sla_aging.py:"
+    )
     for raw_line in result.stdout.splitlines():
         # Normalize path separators so the forward-slash markers above match
         # on Windows. git-bash's grep emits paths whose absolute prefix uses
@@ -515,6 +539,8 @@ def test_grep_subprocess_matches_only_state_engine() -> None:
         if explain_sla_marker in line:
             continue
         if explain_heuristic_marker in line:
+            continue
+        if explain_sla_test_marker in line:
             continue
         offending_lines.append(line)
     assert not offending_lines, (

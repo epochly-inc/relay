@@ -22,7 +22,13 @@ name = "epochly-relay"
 version = "0.1.20"
 description = "Relay Python SDK (placeholder; W3 wires the client surface)."
 readme = "README.md"
-requires-python = ">=3.12"
+# >=3.12.4 (not >=3.12): the egress SSRF guard (relay.network_policy) classifies
+# IPv6 hosts via the stdlib ipaddress.is_private table, whose IPv6 private-blocks
+# + global-exception correctness fix (CVE-2024-4032) first shipped in CPython
+# 3.12.4. On 3.12.0-3.12.3 the guard under-denies 2001::/23 / 3fff::/20 and
+# diverges from the version-pinned TypeScript SDK -- so this package supports only
+# the patched point releases where its security classification is correct.
+requires-python = ">=3.12.4"
 license = { text = "Apache-2.0" }
 authors = [
   { name = "Epochly, Inc.", email = "engineering@epochly.com" },
@@ -61,6 +67,7 @@ test = [
   "pytest>=8.0",
   "pytest-timeout>=2.3",
   "httpx>=0.27,<0.29",
+  "hypothesis>=6.100",  # property suites (test_redaction_property.py)
 ]
 
 [tool.hatch.build.targets.wheel]

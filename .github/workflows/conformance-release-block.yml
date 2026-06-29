@@ -46,6 +46,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Single-engine WASM model (VAL-CWC-P6REMOVE-010): the legacy
+          # dual-engine axis is collapsed -- the CEL suites run ONLY under
+          # the pinned wasm engine, which is now the sole CEL backend (the
+          # legacy Python/TS CEL libraries were removed in M6). 4 suite rows,
+          # no engine fan-out.
           - suite_name: "w17.1-jcs"
             suite_paths: "tests/conformance/jcs/"
           - suite_name: "w17.2-jws"
@@ -84,7 +89,15 @@ jobs:
       - name: "build typescript contracts package"
         run: npm run build --workspace @epochly/relay-contracts
 
+      - name: "build wasm artifact"
+        # The wasm engine is the sole CEL backend (VAL-CWC-P6REMOVE-010), so
+        # every suite row needs the built artifact -- the build is now
+        # unconditional (no engine matrix to fence on).
+        run: bash packages/cel-wasm/conformance/build.sh build
+
       - name: "run conformance suite ${{ matrix.suite_name }}"
+        # No RELAY_CEL_ENGINE override: the contracts factory defaults to the
+        # wasm engine and there is no legacy alternative left to select.
         run: uv run pytest ${{ matrix.suite_paths }} -m plumbing --timeout=600 -q
 
   conformance-aggregate:

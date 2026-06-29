@@ -191,6 +191,29 @@ def _check_required_fields(doc: Mapping[str, Any], schema_version: str) -> None:
         )
 
 
+def _check_assertion_id(doc: Mapping[str, Any], schema_version: str) -> None:
+    """Reject a null / empty / whitespace / non-string ``assertion_id``.
+
+    Every assertion kind EXCEPT ``gate_policy`` (which legitimately has none)
+    MUST carry a non-empty string ``assertion_id``. ``_check_required_fields``
+    only verifies key PRESENCE, so a present-but-null ``assertion_id`` slipped
+    through, parsed as ``assertion_id=None``, and then bypassed ALL FOUR
+    coverage invariants on ``rly contract publish`` (the checks skip any
+    assertion whose id is None). The parser is the single chokepoint: an id-less
+    assertion must never reach the coverage gate (re-hunt cli-commands-1, P0).
+    """
+    if schema_version == "relay.gate_policy.v1":
+        return
+    assertion_id = doc.get("assertion_id")
+    if not isinstance(assertion_id, str) or not assertion_id.strip():
+        raise ContractParseError(
+            "Field 'assertion_id' MUST be a non-empty string for assertion "
+            f"kind {schema_version!r}; got {assertion_id!r}",
+            code=RelayErrorCode.RELAY_CONTRACT_001,
+            payload={"json_path": "$.assertion_id", "value": assertion_id},
+        )
+
+
 def _check_severity(doc: Mapping[str, Any]) -> str | None:
     """Validate and return ``severity`` if the kind has one."""
     if "severity" not in doc:
@@ -260,6 +283,7 @@ def parse_contract(doc: Mapping[str, Any]) -> ParsedContract:
 
     schema_version = _check_envelope(doc)
     _check_required_fields(doc, schema_version)
+    _check_assertion_id(doc, schema_version)
     severity = _check_severity(doc)
     lifecycle = _check_lifecycle(doc)
     digest, body_field, body_value = _compute_digest(doc, schema_version)

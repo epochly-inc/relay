@@ -55,6 +55,8 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
+from ._compat import field, is_bool
+
 RELAY_SCHEMA_MATCH_NAME: str = "relay.schema_match"
 RELAY_SCHEMA_MATCH_ARITY: int = 2
 
@@ -74,7 +76,10 @@ def _is_finite_number(payload: Any) -> bool:
     Python must too. Same input MUST yield the same boolean across both
     runtimes per the JCS byte-identity guarantee.
     """
-    if isinstance(payload, bool):
+    # `is_bool` also catches a legacy BoolType (an int subclass that is NOT a
+    # bool subclass, so a bare isinstance(payload, bool) would miss it and wrongly
+    # treat a CEL boolean as a number).
+    if is_bool(payload):
         return False
     if not isinstance(payload, int | float):
         return False
@@ -95,11 +100,11 @@ def _is_integer(payload: Any) -> bool:
       - float NaN / +Inf / -Inf are NOT integers (Number.isInteger rejects
         them) -- screened out by ``_is_finite_number``
       - a finite float with an integral value (e.g. ``1.0``, produced by
-        cel-python typing a CEL double literal as ``DoubleType``) IS an
+        a CEL double literal typed as a float) IS an
         integer
 
-    Cross-runtime parity: cel-python types a CEL double ``1.0`` as a
-    ``float`` subclass, while cel-js represents it as the integral JS
+    Cross-runtime parity: the Python host types a CEL double ``1.0`` as a
+    ``float``, while the TS host represents it as the integral JS
     number ``1``. Without the ``float`` arm below, the same input yielded
     ``False`` in Python but ``True`` in TS -- breaking the byte-identical
     JCS parity guarantee. ``int`` values are integral by definition; a
@@ -109,7 +114,11 @@ def _is_integer(payload: Any) -> bool:
     if not _is_finite_number(payload):
         return False
     if isinstance(payload, float):
-        return payload == int(payload)
+        # ``float.is_integer()`` (inherited by float subclasses) is total on
+        # a finite float and avoids ``payload == int(payload)``, whose cross-type
+        # ``==`` / ``int()`` can misbehave on float subclasses. Finiteness is already
+        # screened above, so ``int(nan)``/``int(inf)`` cannot be reached.
+        return float(payload).is_integer()
     # Remaining case is a non-bool ``int`` (bools were screened out by
     # ``_is_finite_number``); every such value is integral.
     return True
@@ -130,9 +139,10 @@ _VALID_TYPES: frozenset[str] = frozenset(
 
 def _matches_type(payload: Any, type_name: str) -> bool:
     # Booleans are a subclass of int in Python; route them out first
-    # so ``"type": "integer"`` does not silently accept ``True``.
+    # so ``"type": "integer"`` does not silently accept ``True``. `is_bool`
+    # also catches a legacy BoolType (not a Python bool subclass).
     if type_name == "boolean":
-        return isinstance(payload, bool)
+        return is_bool(payload)
     if type_name == "null":
         return payload is None
     if type_name == "string":
@@ -140,9 +150,9 @@ def _matches_type(payload: Any, type_name: str) -> bool:
     if type_name == "integer":
         # Pinned cross-runtime definition (VAL-PARITY-002): a finite
         # number whose value is integral is an "integer", matching the
-        # TS mirror's ``Number.isInteger``. cel-python types a CEL double
+        # TS mirror's ``Number.isInteger``. The Python host types a CEL double
         # ``1.0`` as ``float``; without this, ``1.0`` was rejected here
-        # (Python False) while cel-js accepted it (TS True). Booleans and
+        # (Python False) while the TS host accepted it (TS True). Booleans and
         # NaN / +Inf / -Inf are excluded by ``_is_integer``.
         return _is_integer(payload)
     if type_name == "number":
@@ -170,7 +180,7 @@ def _validate(payload: Any, schema: Any, depth: int) -> bool:
     # ``true`` / ``{}`` "always-pass" semantics.
     if len(schema) == 0:
         return True
-    type_name = schema.get("type")
+    type_name = field(schema, "type")
     if type_name is not None:
         if not isinstance(type_name, str):
             return False
@@ -182,7 +192,7 @@ def _validate(payload: Any, schema: Any, depth: int) -> bool:
     # mapping; if "type": "object" is set the type check above has
     # already gated this).
     if isinstance(payload, Mapping):
-        required = schema.get("required")
+        required = field(schema, "required")
         if required is not None:
             if not isinstance(required, list | tuple):
                 return False
@@ -191,7 +201,7 @@ def _validate(payload: Any, schema: Any, depth: int) -> bool:
                     return False
                 if name not in payload:
                     return False
-        properties = schema.get("properties")
+        properties = field(schema, "properties")
         if properties is not None:
             if not isinstance(properties, Mapping):
                 return False
@@ -208,7 +218,7 @@ def _validate(payload: Any, schema: Any, depth: int) -> bool:
     # list/tuple; if "type": "array" is set the type check above has
     # already gated this).
     if isinstance(payload, list | tuple) and not isinstance(payload, str | bytes):
-        items = schema.get("items")
+        items = field(schema, "items")
         if items is not None:
             if not isinstance(items, Mapping):
                 return False

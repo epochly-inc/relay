@@ -243,6 +243,76 @@ describe("VAL-ISO-020: Anthropic streaming does not double-count output tokens",
     expect(span.attributes["input_tokens"]).toBe(9);
     expect(span.attributes["output_tokens"]).toBe(3);
   });
+
+  it("a message_delta usage block PRESENT but lacking output_tokens does not clobber the output seed (round-7 re-hunt, Py<->TS)", async () => {
+    const recorder = new SpanRecorder();
+    async function* fakeStream(): AsyncGenerator<unknown> {
+      yield {
+        type: "message_start",
+        message: {
+          id: "msg_partial_usage",
+          model: "claude-3-5-sonnet",
+          usage: { input_tokens: 100, output_tokens: 5 },
+        },
+      };
+      // usage present but NO output_tokens: asInt(undefined)===0 previously
+      // clobbered the seed to 0. Must preserve the message_start output seed
+      // (mirrors the Python isinstance(int) guard).
+      yield {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { input_tokens: 100 },
+      };
+      yield { type: "message_stop" };
+    }
+    const stub = buildAnthropicStub({ stream: fakeStream() });
+    const wrapped = wrapAnthropic(stub, { recorder, sdkVersion: "anthropic@0.30.0" });
+    const stream = wrapped.messages.create({
+      model: "claude-3-5-sonnet",
+      stream: true,
+    }) as AsyncIterable<unknown>;
+    for await (const _evt of stream) {
+      void _evt;
+    }
+    const span = recorder.spansByKind("model_call")[0]!;
+    expect(span.attributes["output_tokens"]).toBe(5); // seed preserved, NOT 0
+    expect(span.attributes["input_tokens"]).toBe(100);
+  });
+
+  it("input_tokens is seeded from message_start ONLY; a cumulative message_delta input is ignored (round-7 re-hunt, Py<->TS)", async () => {
+    const recorder = new SpanRecorder();
+    async function* fakeStream(): AsyncGenerator<unknown> {
+      yield {
+        type: "message_start",
+        message: {
+          id: "msg_servertool",
+          model: "claude-opus-4-8",
+          usage: { input_tokens: 2679, output_tokens: 3 },
+        },
+      };
+      // Server-tool/web-search streams report a CUMULATIVE input in the final
+      // message_delta; the TS adapter must NOT read input from a delta (Python
+      // also reads input from message_start only).
+      yield {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { input_tokens: 10682, output_tokens: 510 },
+      };
+      yield { type: "message_stop" };
+    }
+    const stub = buildAnthropicStub({ stream: fakeStream() });
+    const wrapped = wrapAnthropic(stub, { recorder, sdkVersion: "anthropic@0.30.0" });
+    const stream = wrapped.messages.create({
+      model: "claude-opus-4-8",
+      stream: true,
+    }) as AsyncIterable<unknown>;
+    for await (const _evt of stream) {
+      void _evt;
+    }
+    const span = recorder.spansByKind("model_call")[0]!;
+    expect(span.attributes["input_tokens"]).toBe(2679); // message_start seed, NOT 10682
+    expect(span.attributes["output_tokens"]).toBe(510);
+  });
 });
 
 describe("VAL-W4-038: Anthropic adapter scrubs tool input args", () => {

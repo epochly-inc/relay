@@ -477,13 +477,21 @@ async def compare_and_set_state(
                 # row is durably recorded as ONE atomic outcome.
                 event_id = str(uuid.uuid4())
                 now = _now_rfc3339_utc()
-                full_payload = {
-                    "event": event,
-                    "expected_from": expected_from,
-                    "observed_state": current_state,
-                    "rejected_reason": INVALID_TRANSITION,
-                }
-                full_payload.update(payload_in)
+                # Engine-authoritative verdict keys WIN over caller payload,
+                # mirroring the actor_identity_hash override above: build from
+                # the caller payload FIRST, then .update() the engine keys LAST
+                # so a caller cannot spoof the forensic verdict (event /
+                # expected_from / observed_state / rejected_reason) and corrupt
+                # audit attribution. Non-reserved caller fields are preserved.
+                full_payload = dict(payload_in)
+                full_payload.update(
+                    {
+                        "event": event,
+                        "expected_from": expected_from,
+                        "observed_state": current_state,
+                        "rejected_reason": INVALID_TRANSITION,
+                    }
+                )
 
                 # W2.5 VAL-W2-057: anti-bypass screen on the caller-supplied
                 # portion. The engine-supplied keys above never contain bypass
@@ -682,12 +690,22 @@ async def compare_and_set_state(
             # Step 11: emit the audit row.
             new_epoch = current_epoch + 1
             event_id = str(uuid.uuid4())
-            full_payload = {
-                "event": event,
-                "expected_from": expected_from,
-                "applied_at_epoch": current_epoch,
-            }
-            full_payload.update(payload_in)
+            # Engine-authoritative audit keys WIN over caller payload,
+            # mirroring the actor_identity_hash override above: build from the
+            # caller payload FIRST, then .update() the engine keys LAST so a
+            # caller cannot spoof the audit attribution (event / expected_from)
+            # NOR poison the idempotency probe -- _was_event_already_applied
+            # matches on the recorded {event, applied_at_epoch}, so a clobbered
+            # applied_at_epoch would mis-detect a legitimate idempotent retry.
+            # Non-reserved caller fields are preserved.
+            full_payload = dict(payload_in)
+            full_payload.update(
+                {
+                    "event": event,
+                    "expected_from": expected_from,
+                    "applied_at_epoch": current_epoch,
+                }
+            )
             # W2.5 VAL-W2-057: anti-bypass screen. The engine-supplied keys
             # are clean; ``payload_in`` is caller-controlled. The
             # ``operator_override`` event_kind path consults the actors
@@ -706,12 +724,37 @@ async def compare_and_set_state(
             override_conn = (
                 conn if override_event_kind == OPERATOR_OVERRIDE_EVENT_KIND else None
             )
+            # Bind the operator_override_claim to the REQUEST actor anchor.
+            # The engine already overwrites payload_in['actor_identity_hash']
+            # with actor.identity_hash above ("a caller MUST NOT be able to
+            # spoof the actor anchor"); the override claim's OWN
+            # actor_identity_hash must equal that same actor anchor. This closes
+            # the override-SPECIFIC privilege escalation: a non-admin actor can
+            # no longer keep its own (non-admin) actor identity on the row while
+            # BORROWING a known admin identity_hash purely in the override claim
+            # to slip bypass markers past the anti-bypass keystone guard (admin
+            # identity_hashes are not secret -- they appear in audit columns). An
+            # override is now honored ONLY when the request is itself attributed
+            # to the non-revoked org_admin.
+            #
+            # TRUST BOUNDARY (not a residual of this fix): in the OSS local
+            # sidecar the actor identity is CALLER-ASSERTED (the bearer token
+            # grants scopes, not a registered identity -- runtime.py:1325, and
+            # registered_tokens records carry only `scopes`). A caller who both
+            # possesses a valid token AND knows an admin identity_hash can fully
+            # impersonate that admin on ANY endpoint, not just this one. Binding
+            # cryptographic actor identity to the authenticated channel is a
+            # HOSTED control-plane property (hosted-issued tokens); the OSS path
+            # cannot enforce it without a spec amendment introducing
+            # identity-bearing OSS tokens. This binding is the strongest
+            # guarantee achievable in the OSS trust model (roborev a2adc74).
             raise_on_reject(
                 await screen_payload(
                     payload=full_payload,
                     event_kind=override_event_kind,
                     operator_override_claim=override_claim,
                     actors_connection=override_conn,
+                    authenticated_actor_identity_hash=actor.identity_hash,
                 )
             )
             # W2.5 VAL-W2-038: blob spillover for oversize payloads.

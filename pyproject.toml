@@ -14,7 +14,13 @@
 name = "epochly-relay-workspace"
 version = "0.0.0"
 description = "Relay v0.1 OSS workspace root (not published)."
-requires-python = ">=3.12"
+# >=3.12.4 (not >=3.12): the workspace member packages/sdk-python pins
+# requires-python = ">=3.12.4" (its egress SSRF guard's is_private classification
+# is only correct on the CVE-2024-4032-patched CPython), so the workspace lock's
+# resolved floor is >=3.12.4. Keep this root declaration consistent with the lock
+# and the transitive dependency graph. Independent leaf packages (schemas, acef,
+# contracts, ...) that do NOT depend on sdk-python keep their own >=3.12 floor.
+requires-python = ">=3.12.4"
 
 [project.optional-dependencies]
 # Documentation site dependencies (m4-f04, VAL-DOCS-M4-004).
@@ -109,6 +115,35 @@ exclude = [
 root = "apps/local-sidecar/tests"
 extraPaths = ["apps/local-sidecar/tests"]
 
+# The cel-wasm test suite (packages/cel-wasm/tests) drives the wasm loader
+# through a runtime sys.path insert: each test does
+# `sys.path.insert(0, os.path.join(_HERE, "..", "python"))` then
+# `from relay_cel_wasm import RelayCel  # noqa: E402`, where the loader module
+# lives at packages/cel-wasm/python/relay_cel_wasm.py. pyright does not model
+# that runtime sys.path mutation, so it reports the (runtime-valid) import as
+# unresolved (reportMissingImports). Declaring the test directory as an
+# execution-environment root with the python/ loader dir on extraPaths mirrors
+# the runtime search path WITHOUT changing any test behavior. Scoped to this
+# root only -- it does not affect type checking of any other tree, and it does
+# NOT exclude the tests (they stay fully type-checked).
+[[tool.pyright.executionEnvironments]]
+root = "packages/cel-wasm/tests"
+extraPaths = ["packages/cel-wasm/python"]
+
+# The WS-E UDF-via-CEL corpus generator (scripts/generate-relay-udf-via-cel-corpus.py)
+# drives the wasm loader through a runtime sys.path insert, identical to the
+# cel-wasm tests above: `sys.path.insert(0, REPO_ROOT / "packages/cel-wasm/python")`
+# then `from relay_cel_wasm import RelayCel  # noqa: E402`. The loader module
+# (packages/cel-wasm/python/relay_cel_wasm.py) is NOT an installed package, so
+# pyright reports the runtime-valid import as unresolved (reportMissingImports).
+# Declaring scripts/ as an execution-environment root with the python/ loader
+# dir on extraPaths mirrors the runtime search path WITHOUT changing any
+# behavior. Scoped to this root only; it does not affect any other tree and
+# does NOT exclude the scripts (they stay fully type-checked).
+[[tool.pyright.executionEnvironments]]
+root = "scripts"
+extraPaths = ["packages/cel-wasm/python"]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = [
@@ -123,6 +158,7 @@ testpaths = [
   "packages/verifier/tests",
   "packages/acef/tests",
   "packages/replay-sandbox-protocol/tests",
+  "packages/cel-wasm/tests",
   "apps/local-sidecar/tests",
   "apps/replay-proxy/tests",
 ]
@@ -212,4 +248,14 @@ dev = [
     "pytest-asyncio>=0.24,<0.26",
     "aiohttp>=3.9",
     "requests>=2.31",
+    # Shakedown-loop measurement + formal-methods tooling (see
+    # scripts/run-mutation.py and the property-test suites):
+    #   - cosmic-ray: mutation testing -- the loop's PRIMARY convergence signal
+    #     (a surviving mutant is a test gap / latent bug to kill or justify).
+    #   - hypothesis: property-based tests backing the keystone invariants
+    #     (formal-methods acceptance gate).
+    #   - coverage: real line/branch coverage (not the qsense import heuristic).
+    "cosmic-ray>=8.3",
+    "hypothesis>=6.100",
+    "coverage>=7.4",
 ]

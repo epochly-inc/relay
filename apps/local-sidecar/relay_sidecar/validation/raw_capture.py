@@ -160,20 +160,29 @@ def _iter_string_leaves(value: Any, *, path: tuple[str, ...] = ()) -> Any:
     The result is a generator. ``path`` accumulates dict keys + list
     indices (as ``str(idx)``) so the rejection envelope can pinpoint the
     offending field for caller debugging.
+
+    ITERATIVE (explicit stack), NOT recursive: this gate runs at the ingest
+    boundary BEFORE the nesting-depth cap (``validate_span_size_and_depth``),
+    so a ``yield from`` recursion turned the keystone-#7 raw_capture
+    default-deny control into an unhandled-500 DoS -- a ~3000-deep nested body
+    (~6 KB, well under the body and 16-level depth caps) exceeds CPython's
+    1000-frame recursion limit and raises ``RecursionError``. The explicit
+    stack mirrors the iterative ``_measure_depth`` in ingest_limits.py and
+    cannot overflow. Children are pushed in REVERSE so the pop order preserves
+    the original depth-first, left-to-right leaf-yield order (the path the
+    rejection envelope reports).
     """
-    if isinstance(value, dict):
-        for k, v in value.items():
-            yield from _iter_string_leaves(v, path=path + (str(k),))
-        return
-    if isinstance(value, list):
-        for idx, v in enumerate(value):
-            yield from _iter_string_leaves(v, path=path + (str(idx),))
-        return
-    if isinstance(value, tuple):
-        for idx, v in enumerate(value):
-            yield from _iter_string_leaves(v, path=path + (str(idx),))
-        return
-    yield (path, value)
+    stack: list[tuple[tuple[str, ...], Any]] = [(path, value)]
+    while stack:
+        cur_path, cur = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in reversed(list(cur.items())):
+                stack.append((cur_path + (str(k),), v))
+        elif isinstance(cur, list | tuple):
+            for idx in range(len(cur) - 1, -1, -1):
+                stack.append((cur_path + (str(idx),), cur[idx]))
+        else:
+            yield (cur_path, cur)
 
 
 def _walk_dotted_path(span: dict[str, Any], dotted: tuple[str, ...]) -> Any:

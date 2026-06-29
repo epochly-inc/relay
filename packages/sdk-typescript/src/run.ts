@@ -38,6 +38,7 @@
  */
 
 import * as crypto from "node:crypto";
+import { isIP } from "node:net";
 
 import { FlushPolicy } from "./flush.js";
 import { AsyncFlushDispatcher } from "./flush.js";
@@ -127,6 +128,844 @@ export const REPLAY_POLICIES: ReadonlySet<string> = new Set([
 export type ReplayPolicy = "replay_in_sandbox" | "block_in_replay" | "external_irreversible";
 
 // ---------------------------------------------------------------------------
+// SDK-boundary SSRF egress-allowlist guard (parity with the Python SDK
+// packages/sdk-python/relay/network_policy.py::validate_egress_entries,
+// exercised by Run.replayCreate's egressAllowlist option).
+//
+// The replay-case submit path validates every caller-supplied
+// egress-allowlist entry and rejects any host that falls inside an RFC 1918
+// private range, the IPv4 link-local block (169.254.0.0/16), the IPv4
+// loopback block (127.0.0.0/8), the multicast / unspecified / reserved
+// ranges, an IPv6 internal range, one of the well-known cloud-metadata
+// endpoints, or the reserved-hostname denylist. Rejected entries surface as
+// EgressDenied carrying a structured envelope whose keys are stable
+// wire-format names (code / http_status / denied_entry / denied_reason /
+// denied_cidr) -- byte-identical to the Python EgressDenied.envelope.
+//
+// ASCII-only per CLAUDE.md "ASCII-Safe Source".
+// ---------------------------------------------------------------------------
+
+/** Wire code for an egress-allowlist entry denied by the SSRF guard.
+ *
+ * Word-form code per the precedent set by ``RELAY-EVID-SIGCOUNT-EXCEEDED``;
+ * mirrors the Python ``relay.network_policy.RELAY_REPLAY_SSRF`` constant so
+ * an operator running the same agent on Node or Python sees the same code. */
+export const RELAY_REPLAY_SSRF_CODE = "RELAY-REPLAY-SSRF";
+
+const _EGRESS_DENIED_HTTP_STATUS = 400;
+
+/** Well-known cloud-metadata endpoints (spec AI line 5664). The link-local
+ * /16 catches IPv4 cloud metadata as a separate ``link_local`` reason; this
+ * set upgrades the most-targeted endpoints to ``cloud_metadata`` so an
+ * operator's detection routing can distinguish them. Mirrors the Python
+ * ``CLOUD_METADATA_IPS`` frozenset. */
+const _CLOUD_METADATA_IPS: ReadonlySet<string> = new Set([
+  "169.254.169.254", // AWS EC2, GCP, Azure, OpenStack
+  "100.100.100.200", // Alibaba Cloud
+  "fd00:ec2::254", // AWS IPv6 metadata
+]);
+
+/** Exact reserved-hostname denylist (mirrors ``_HOSTNAME_DENYLIST_EXACT``). */
+const _HOSTNAME_DENYLIST_EXACT: ReadonlySet<string> = new Set([
+  "localhost",
+  "metadata",
+  "metadata.google.internal",
+  "instance-data.ec2.internal",
+  "kubernetes",
+  "kubernetes.default.svc",
+]);
+
+/** Reserved-hostname suffix denylist (mirrors ``_HOSTNAME_DENYLIST_SUFFIXES``). */
+const _HOSTNAME_DENYLIST_SUFFIXES: readonly string[] = [
+  ".local",
+  ".internal",
+  ".svc",
+  ".svc.cluster.local",
+  ".localhost",
+];
+
+/** Structured rejection envelope carried by {@link EgressDenied}. The key
+ * set is byte-identical to the Python ``EgressDenied.envelope`` so the wire
+ * shape an operator serialises is the same across SDKs. */
+export interface EgressDeniedEnvelope {
+  readonly code: string;
+  readonly http_status: number;
+  readonly denied_entry: string;
+  readonly denied_reason: string;
+  readonly denied_cidr: string;
+}
+
+/**
+ * Raised when an egress-allowlist entry is denied by the SDK-boundary SSRF
+ * guard (parity with ``relay.network_policy.EgressDenied``).
+ *
+ * The structured rejection envelope is on {@link envelope}; the human
+ * message echoes ``denied_entry`` so the error is self-explanatory in logs.
+ */
+export class EgressDenied extends Error {
+  readonly envelope: EgressDeniedEnvelope;
+  constructor(envelope: EgressDeniedEnvelope) {
+    super(
+      `egress entry ${JSON.stringify(envelope.denied_entry)} denied by SSRF guard ` +
+        `(reason=${envelope.denied_reason})`,
+    );
+    this.name = "EgressDenied";
+    this.envelope = envelope;
+    Object.setPrototypeOf(this, EgressDenied.prototype);
+  }
+}
+
+/** Faithful port of Python ``urllib.parse.urlparse(entry).hostname`` for the
+ * URL-form egress-allowlist entries.
+ *
+ * The TS SDK previously used the WHATWG ``new URL()`` parser, but WHATWG and
+ * ``urlparse`` resolve the authority DIFFERENTLY for backslash-in-userinfo and
+ * embedded-space URLs, so ``validateEgressEntries`` (TS) and
+ * ``validate_egress_entries`` (Python) returned OPPOSITE verdicts for the same
+ * caller-supplied entry -- a Py<->TS parity break AND a default-deny SSRF
+ * under-block on the TS side (round-5 re-hunt HIGH). E.g.
+ * ``http://evil.com\@10.0.0.1/``: WHATWG treats ``\`` as a path delimiter so
+ * ``hostname`` is ``evil.com`` (ALLOW), while urlparse keeps ``10.0.0.1`` as the
+ * host (DENY -- and the IP a urlparse-style HTTP client actually dials); and
+ * ``http://10.0.0.1 /``: ``new URL`` THROWS so the old extractor returned ""
+ * (ALLOW) while urlparse yields ``10.0.0.1 `` (DENY after _classify strips it).
+ *
+ * ``urlparse`` does NOT treat ``\`` as a delimiter and does NOT strip
+ * whitespace: netloc = the authority after ``scheme://`` up to the first ``/``,
+ * ``?``, or ``#``; the host is the part after the LAST ``@`` (userinfo split),
+ * with a bracketed IPv6 form or a trailing ``:port`` removed, then lowercased
+ * (the empty case maps to ""). Verified byte-identical to ``urlparse().hostname``
+ * across the divergent + canonical forms. */
+function _urlparseHostname(entry: string): string {
+  // CPython's urlsplit/urlparse REMOVES every ASCII tab (\t) and newline
+  // (\r, \n) from the URL before splitting (the bpo-43882 / CVE-2022-0391
+  // hardening: _UNSAFE_URL_BYTES_TO_REMOVE). Without this, an entry like
+  // http://169.254.\t169.254/ keeps the embedded tab on the TS side so
+  // _classify no longer recognizes the host as an IP and ALLOWS the metadata
+  // target, while Python strips the tab and DENIES 169.254.169.254 -- a
+  // Py<->TS parity break + SSRF under-block. Strip the same three bytes first.
+  entry = entry.replace(/[\t\r\n]/g, "");
+  const schemeIdx = entry.indexOf("://");
+  const rest = entry.slice(schemeIdx + 3);
+  let end = rest.length;
+  for (const sep of ["/", "?", "#"]) {
+    const i = rest.indexOf(sep);
+    if (i >= 0 && i < end) end = i;
+  }
+  const netloc = rest.slice(0, end);
+  const at = netloc.lastIndexOf("@");
+  const hostinfo = at >= 0 ? netloc.slice(at + 1) : netloc;
+  const openBr = hostinfo.indexOf("[");
+  let hostname: string;
+  if (openBr >= 0) {
+    const bracketed = hostinfo.slice(openBr + 1);
+    const closeBr = bracketed.indexOf("]");
+    hostname = closeBr >= 0 ? bracketed.slice(0, closeBr) : bracketed;
+  } else {
+    const colon = hostinfo.indexOf(":");
+    hostname = colon >= 0 ? hostinfo.slice(0, colon) : hostinfo;
+  }
+  return hostname.toLowerCase();
+}
+
+/** Return the host portion of ``entry`` (URL or bare host). Mirrors the Python
+ * ``_extract_host``: URL forms go through ``_urlparseHostname`` (a faithful
+ * urlparse port, NOT WHATWG ``new URL()`` -- see that function); bare forms
+ * strip a single trailing ``:port`` and the RFC 3986 bracketed-IPv6 form. */
+function _extractHost(entry: string): string {
+  if (entry.includes("://")) {
+    return _urlparseHostname(entry);
+  }
+  let host = entry;
+  // RFC 3986 bracketed IPv6 authority form: ``[ipv6]`` or ``[ipv6]:port``.
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]");
+    if (end > 0) {
+      return host.slice(1, end);
+    }
+    return host;
+  }
+  // ``host:port`` -- a single colon means it is not an IPv6 literal (which
+  // carries multiple colons), so strip the trailing port.
+  if (host.includes(":") && (host.match(/:/g) ?? []).length === 1) {
+    host = host.split(":", 1)[0] as string;
+  }
+  return host;
+}
+
+/** Canonicalise a numeric-IPv4 literal (integer / hex / octal / short-form)
+ * the SAME WAY the libc resolver (``inet_aton``) does, or ``null`` if
+ * ``host`` is not such a literal. Mirrors the Python
+ * ``_canonical_numeric_ipv4``: these encodings are dialled by the OS
+ * resolver / HTTP client but rejected by a strict dotted-decimal parser, so
+ * left unhandled they would bypass the default-deny screen. This only
+ * NORMALISES; the caller must still classify the result so a numeric form
+ * resolving to a PUBLIC IP stays allowed exactly like its dotted twin. */
+function _canonicalNumericIpv4(host: string): string | null {
+  if (!host) return null;
+  const parts = host.split(".");
+  // Alpha-guard: only ASCII digits, dots, and a leading ``0x``/``0X`` hex
+  // prefix per part are permitted, so a real DNS name never coerces onto the
+  // numeric path. inet_aton accepts at most 4 parts.
+  if (parts.length > 4) return null;
+  const values: bigint[] = [];
+  for (const part of parts) {
+    if (part === "") {
+      // Empty part (leading/trailing/double dot) -- not a clean numeric
+      // literal. inet_aton rejects these, so bail out.
+      return null;
+    }
+    const lowered = part.toLowerCase();
+    let value: bigint;
+    if (lowered.startsWith("0x")) {
+      const body = lowered.slice(2);
+      if (body === "" || /[^0-9a-f]/.test(body)) return null;
+      value = BigInt(`0x${body}`);
+    } else if (lowered.startsWith("0") && lowered.length > 1) {
+      // Octal (leading zero), per inet_aton.
+      if (/[^0-7]/.test(lowered)) return null;
+      value = BigInt(`0o${lowered}`);
+    } else {
+      if (/[^0-9]/.test(lowered)) return null;
+      value = BigInt(lowered);
+    }
+    values.push(value);
+  }
+  // inet_aton part semantics: the final part fills the remaining low octets;
+  // each leading part is exactly one octet (must be <= 255). The integer
+  // 1-part form fills all four octets.
+  let packed: bigint;
+  const n = values.length;
+  if (n === 1) {
+    // inet_aton / getaddrinfo MASK a 1-part value to its low 32 bits rather
+    // than reject the overflow (verified: 7147006462 -> 169.254.169.254,
+    // 0x17f000001 -> 127.0.0.1, 4294967296 -> 0.0.0.0). Returning null here
+    // made _classify treat the entry as a non-IP and ALLOW it, while the OS
+    // resolver the replay HTTP client uses reaches the masked internal /
+    // metadata IP -- a Py<->TS verdict split (Python delegates to inet_aton,
+    // which masks + denies) and an SSRF default-deny under-block. Mask to
+    // match the resolver, then re-classify on the true resolved IP (an
+    // overflow form masking to a public IP stays allowed).
+    packed = (values[0] as bigint) & 0xffffffffn;
+  } else {
+    packed = 0n;
+    for (let i = 0; i < n - 1; i += 1) {
+      const octet = values[i] as bigint;
+      if (octet > 0xffn) return null;
+      packed |= octet << BigInt(8 * (3 - i));
+    }
+    const last = values[n - 1] as bigint;
+    // inet_aton: the (n-1) leading parts are one octet each (top bits), and
+    // the LAST part fills the remaining low 32-8*(n-1) bits = 8*(5-n).
+    // (The earlier 8*(4-n) was off by one octet: for n===4 it yielded 0 bits,
+    // rejecting any last octet >=1 so 0177.0.0.1 / 0x7f.0.0.1 escaped the
+    // numeric canonicalization and bypassed the SSRF screen -- round-2 #11.)
+    const remainingBits = 8 * (5 - n);
+    if (last >= 1n << BigInt(remainingBits)) return null;
+    packed |= last;
+  }
+  const a = Number((packed >> 24n) & 0xffn);
+  const b = Number((packed >> 16n) & 0xffn);
+  const c = Number((packed >> 8n) & 0xffn);
+  const d = Number(packed & 0xffn);
+  return `${a}.${b}.${c}.${d}`;
+}
+
+/** Parse a dotted-decimal IPv4 literal to its 32-bit integer, or ``null``. */
+function _ipv4ToInt(host: string): number | null {
+  if (isIP(host) !== 4) return null;
+  const parts = host.split(".");
+  let value = 0;
+  for (const part of parts) {
+    value = value * 256 + Number(part);
+  }
+  return value >>> 0;
+}
+
+/** Classify a dotted-decimal IPv4 host. Mirrors the IPv4 arm of the Python
+ * ``_classify`` EXACTLY, including its branch ORDER, so the TS allow/deny
+ * verdict AND the (denied_reason, denied_cidr) envelope bytes are identical
+ * to ``ipaddress.ip_address(host)``-driven classification on CPython
+ * 3.12 / 3.13 / 3.14:
+ *
+ *   1. RFC 1918 explicit (10/8, 172.16/12, 192.168/16)  -> rfc1918 / <cidr>
+ *   2. link-local 169.254.0.0/16                         -> link_local / ...
+ *   3. is_loopback   127.0.0.0/8                         -> loopback / ...
+ *   4. is_multicast  224.0.0.0/4                         -> multicast / ...
+ *   5. is_unspecified (0.0.0.0 ONLY, not the whole /8)   -> reserved / 0.0.0.0/8
+ *   6. is_private (the full ipaddress private set)       -> rfc1918 / private
+ *   7. is_reserved (240.0.0.0/4 -- unreachable: caught by 6) -> reserved / ...
+ *
+ * Round-2 follow-on (roborev MED): the previous tail (a) DENIED CGNAT
+ * 100.64.0.0/10 as rfc1918, but Python's ``is_private`` and ``is_reserved``
+ * are BOTH False for 100.64.0.0/10 on 3.12/3.13/3.14, so Python ALLOWS it --
+ * the TS deny was a parity break (over-block); and (b) labelled the
+ * documentation / benchmarking / 240.0.0.0/4 / 192.0.0.0/24 /
+ * 255.255.255.255 blocks ``reserved`` / ``ipv4_reserved``, but Python tags
+ * every one of them ``is_private`` (the private check precedes the reserved
+ * check), so the parity-correct reason/cidr is ``rfc1918`` / ``private``.
+ * A public IPv4 returns ``null`` (allowed). */
+function _classifyIpv4(host: string): readonly [string, string] | null {
+  const v = _ipv4ToInt(host);
+  if (v === null) return null;
+  const inNet = (net: number, prefix: number): boolean => {
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    return ((v & mask) >>> 0) === ((net & mask) >>> 0);
+  };
+  // (1) RFC 1918 explicit -- keep the specific matched CIDR.
+  if (inNet(0x0a000000, 8)) return ["rfc1918", "10.0.0.0/8"];
+  if (inNet(0xac100000, 12)) return ["rfc1918", "172.16.0.0/12"];
+  if (inNet(0xc0a80000, 16)) return ["rfc1918", "192.168.0.0/16"];
+  // (2) link-local.
+  if (inNet(0xa9fe0000, 16)) return ["link_local", "169.254.0.0/16"];
+  // (3) loopback.
+  if (inNet(0x7f000000, 8)) return ["loopback", "127.0.0.0/8"];
+  // (4) multicast.
+  if (inNet(0xe0000000, 4)) return ["multicast", "224.0.0.0/4"];
+  // (5) unspecified -- ONLY 0.0.0.0 (Python ``is_unspecified``). Interior
+  // 0.0.0.0/8 addresses (e.g. 0.0.0.5) are ``is_private``, handled at (6).
+  if (v === 0) return ["reserved", "0.0.0.0/8"];
+  // (6) The remaining IANA private blocks Python tags via ``is_private``
+  // (``ipaddress``'s _private_networks): the 0.0.0.0/8 remainder, the IETF
+  // protocol-assignment 192.0.0.0/24, the documentation TEST-NET-1/2/3
+  // (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24), the benchmarking
+  // 198.18.0.0/15, and the future-use 240.0.0.0/4 (which also covers the
+  // 255.255.255.255 limited broadcast). All tag ``rfc1918`` / ``private`` --
+  // ``is_private`` runs BEFORE ``is_reserved`` in CPython, so the future-use
+  // /4 never reaches the reserved label.
+  if (inNet(0x00000000, 8)) return ["rfc1918", "private"]; // 0.0.0.0/8 remainder
+  if (inNet(0xc0000000, 24)) return ["rfc1918", "private"]; // 192.0.0.0/24
+  if (inNet(0xc0000200, 24)) return ["rfc1918", "private"]; // 192.0.2.0/24 TEST-NET-1
+  if (inNet(0xc6336400, 24)) return ["rfc1918", "private"]; // 198.51.100.0/24 TEST-NET-2
+  if (inNet(0xcb007100, 24)) return ["rfc1918", "private"]; // 203.0.113.0/24 TEST-NET-3
+  if (inNet(0xc6120000, 15)) return ["rfc1918", "private"]; // 198.18.0.0/15 benchmarking
+  if (inNet(0xf0000000, 4)) return ["rfc1918", "private"]; // 240.0.0.0/4 future use
+  // CGNAT 100.64.0.0/10 is is_private == False AND is_reserved == False on
+  // CPython 3.12/3.13/3.14, so it is NOT denied here (parity: Python allows
+  // it). A public IPv4 falls through to null.
+  return null;
+}
+
+/** Expand an IPv6 literal to its 8 16-bit hextets as bigint, or ``null``. */
+function _ipv6Hextets(host: string): bigint[] | null {
+  if (isIP(host) !== 6) return null;
+  // RFC 6874 zone identifier (``addr%zone``): Node net.isIP already validated
+  // the zone form (it returns 6 only for a non-empty, single-``%`` scope --
+  // identical to CPython ipaddress._split_scope_id, which raises on an empty or
+  // multi-``%`` scope so _classify returns None/ALLOWED). CPython classifies on
+  // the address bits alone (the scope is metadata), so strip the ``%zone``
+  // suffix before hextet parsing. Without this the suffix poisons the trailing
+  // group (``%eth0`` -> parseInt NaN -> BigInt(NaN) RangeError), a non-verdict
+  // crash that diverges from CPython's clean classification (keystone #16/#9).
+  const pct = host.indexOf("%");
+  let h = pct >= 0 ? host.slice(0, pct) : host;
+  // An IPv4-mapped / transition trailer (e.g. ``::ffff:1.2.3.4``) is handled
+  // by the caller via dedicated unwrap helpers; for the generic hextet
+  // expansion convert a trailing dotted-IPv4 group into two hextets.
+  const lastColon = h.lastIndexOf(":");
+  const trailer = h.slice(lastColon + 1);
+  if (trailer.includes(".")) {
+    const v = _ipv4ToInt(trailer);
+    if (v === null) return null;
+    const hi = (v >>> 16) & 0xffff;
+    const lo = v & 0xffff;
+    h = `${h.slice(0, lastColon + 1)}${hi.toString(16)}:${lo.toString(16)}`;
+  }
+  const doubleColon = h.indexOf("::");
+  let groups: string[];
+  if (doubleColon >= 0) {
+    const [left, right] = h.split("::");
+    const leftParts = left ? left.split(":") : [];
+    const rightParts = right ? right.split(":") : [];
+    const fill = 8 - leftParts.length - rightParts.length;
+    if (fill < 0) return null;
+    groups = [...leftParts, ...Array(fill).fill("0"), ...rightParts];
+  } else {
+    groups = h.split(":");
+  }
+  if (groups.length !== 8) return null;
+  return groups.map((g) => BigInt(parseInt(g === "" ? "0" : g, 16)));
+}
+
+/** Assemble an IPv6 literal's 128-bit integer from its hextets. */
+function _ipv6ToInt(hextets: bigint[]): bigint {
+  let value = 0n;
+  for (const hx of hextets) {
+    value = (value << 16n) | hx;
+  }
+  return value;
+}
+
+/** Classify an IPv6 host. Mirrors the IPv6 arm of the Python ``_classify``,
+ * including unwrap-and-reclassify for IPv4-mapped (``::ffff:a.b.c.d``),
+ * 6to4 (2002::/16), NAT64 (64:ff9b::/96), and the deprecated
+ * IPv4-compatible (``::/96``) transition forms so an embedded internal /
+ * metadata IPv4 cannot tunnel past the guard, while an embedded PUBLIC IPv4
+ * stays allowed. */
+function _classifyIpv6(host: string): readonly [string, string] | null {
+  const hextets = _ipv6Hextets(host);
+  if (hextets === null) return null;
+  const value = _ipv6ToInt(hextets);
+  const low32 = Number(value & 0xffffffffn) >>> 0;
+  const embeddedIpv4 = (v: number): string =>
+    `${(v >>> 24) & 0xff}.${(v >>> 16) & 0xff}.${(v >>> 8) & 0xff}.${v & 0xff}`;
+  // IPv4-mapped ``::ffff:a.b.c.d`` -- bits 32..47 == 0xffff, high bits 0.
+  const high96 = value >> 32n;
+  if (high96 === 0xffffn) {
+    return _classify(embeddedIpv4(low32));
+  }
+  // 6to4 2002::/16 -- embedded IPv4 in bits 16..47.
+  if ((value >> 112n) === 0x2002n) {
+    const v = Number((value >> 80n) & 0xffffffffn) >>> 0;
+    return _classify(embeddedIpv4(v));
+  }
+  // NAT64 64:ff9b::/96 -- embedded IPv4 in the low 32 bits. high96 is the
+  // TOP 96 bits (value >> 32n), so the /96 prefix is 0x64ff9b shifted into the
+  // high 32 bits of that window (0x64ff9b << 64), NOT the bare 0x64ff9b (which
+  // never matched, so 64:ff9b::7f00:1 wrapping 127.0.0.1 was ALLOWED -- round-2
+  // #11). Mirrors Python `ip in _NAT64_NETWORK` (membership in 64:ff9b::/96).
+  if (high96 === 0x64ff9bn << 64n) {
+    return _classify(embeddedIpv4(low32));
+  }
+  // Native specials in the SAME branch order as Python's IPv6 ``_classify``
+  // arm: link-local, then ``is_private`` (which subsumes the documentation,
+  // loopback, and unspecified blocks below), then multicast, then the
+  // IPv4-compatible ::/96 unwrap, so the allow/deny verdict AND the
+  // (denied_reason, denied_cidr) bytes match CPython 3.12/3.13/3.14.
+  //
+  // Link-local fe80::/10.
+  if ((value >> 118n) === (0xfe80n >> 6n)) {
+    return ["link_local", "fe80::/10"];
+  }
+  // CPython ``is_private`` (faithful replica via _ipv6IsPrivate): an address is
+  // private iff it is in ANY _private_networks block AND in NO
+  // _private_networks_exceptions block (Lib/ipaddress.py _IPv6Constants). This
+  // subsumes loopback ``::1`` and unspecified ``::`` (is_private runs BEFORE
+  // is_unspecified in CPython, so ``::`` tags fc00::/7, NOT reserved/::/128),
+  // the documentation 2001:db8::/32, the discard-only 100::/64, ULA fc00::/7,
+  // and -- the fix for THIS finding -- the IETF special-registry blocks
+  // 2001::/23, 3fff::/20, and the NAT64 local-use 64:ff9b:1::/48, MINUS the
+  // global carve-out exceptions inside 2001::/23 (2001:1::1, 2001:1::2,
+  // 2001:3::/32, 2001:4:112::/48, 2001:20::/28, 2001:30::/28). The previous
+  // hand-rolled subset matched only ::, ::1, 2001:db8::/32, 100::/64, and
+  // fc00::/7, so 2001::1 / 2001:2::1 / 2001:10::1 / 3fff::1 (and their
+  // [bracket] / https://[...]/ forms) were ALLOWED by TS while CPython DENIED
+  // them -- a P0 Py<->TS verdict divergence (keystone #16). DRIFT WARNING:
+  // CPython's is_private tracks a MOVING definition (these 2001::/23 and
+  // 3fff::/20 entries and their exceptions were added / revised across 3.x
+  // point releases); if a future CPython mutates the table this TS copy drifts
+  // again, so the parity corpus
+  // (test/replay_egress_ipv6_is_private_parity.test.ts) drives the REAL CPython
+  // network_policy as the structural tripwire that catches it.
+  if (_ipv6IsPrivate(value)) {
+    return ["rfc1918", "fc00::/7"];
+  }
+  // Multicast ff00::/8.
+  if ((value >> 120n) === 0xffn) return ["multicast", "ff00::/8"];
+  // Deprecated IPv4-compatible ::/96 (high 96 bits zero, not the specials
+  // above) -- unwrap the embedded IPv4. ``::`` and ``::1`` are already handled
+  // above as private, so only genuine IPv4-compatible wrappers reach here.
+  if (high96 === 0n) {
+    return _classify(embeddedIpv4(low32));
+  }
+  // Native ``is_reserved`` (CPython): the FINAL native-IPv6 branch, mirroring
+  // network_policy.py::_classify's ``if ip.is_reserved: ("reserved",
+  // "ipv6_reserved")``. Without this, a reserved address (4000::1, 8000::1,
+  // ...) fell through to the ALLOW null below -- a Py<->TS verdict divergence
+  // and an SSRF allowlist gap.
+  for (const net of _RESERVED_IPV6_NETWORKS) {
+    if (value >= net.first && value <= net.last) {
+      return ["reserved", "ipv6_reserved"];
+    }
+  }
+  return null;
+}
+
+/** Parse a CIDR ("a.b.c.d/p" or "ipv6/p") into its inclusive integer range. */
+function _cidrToRange(
+  cidr: string,
+): { v: 4 | 6; first: bigint; last: bigint } | null {
+  const slash = cidr.indexOf("/");
+  if (slash < 0) return null;
+  const addr = cidr.slice(0, slash);
+  const prefixStr = cidr.slice(slash + 1);
+  if (!/^\d+$/.test(prefixStr)) return null;
+  const prefix = Number(prefixStr);
+  const kind = isIP(addr);
+  if (kind === 4) {
+    if (prefix > 32) return null;
+    const i = _ipv4ToInt(addr);
+    if (i === null) return null;
+    const ai = BigInt(i >>> 0);
+    const hostBits = BigInt(32 - prefix);
+    const first = hostBits === 32n ? 0n : (ai >> hostBits) << hostBits;
+    const last = first | ((1n << hostBits) - 1n);
+    return { v: 4, first, last };
+  }
+  if (kind === 6) {
+    if (prefix > 128) return null;
+    const hextets = _ipv6Hextets(addr);
+    if (hextets === null) return null;
+    const ai = _ipv6ToInt(hextets);
+    const hostBits = BigInt(128 - prefix);
+    const first = hostBits === 128n ? 0n : (ai >> hostBits) << hostBits;
+    const last = first | ((1n << hostBits) - 1n);
+    return { v: 6, first, last };
+  }
+  return null;
+}
+
+// Special-purpose / non-global ranges a CIDR allowlist entry must not OVERLAP
+// (byte-for-byte the Python network_policy._DENIED_SUPERNETS list). A broad CIDR
+// supernet can contain these with a public-looking network address.
+const _DENIED_SUPERNETS: ReadonlyArray<{
+  v: 4 | 6;
+  first: bigint;
+  last: bigint;
+  cidr: string;
+}> = (
+  [
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.0.0.0/24",
+    "192.0.2.0/24",
+    "192.168.0.0/16",
+    "198.18.0.0/15",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+    "255.255.255.255/32",
+    "::1/128",
+    "::/128",
+    "fc00::/7",
+    "fe80::/10",
+    "ff00::/8",
+    "2001:db8::/32",
+    // IETF special-registry PRIVATE blocks (no global carve-out exceptions) that
+    // single-host _classifyIpv6 denies via _ipv6IsPrivate: 3fff::/20 (RFC 9637
+    // documentation) and 64:ff9b:1::/48 (NAT64 local-use). Without these the
+    // OVERLAP check admitted a BROAD CIDR whose network address is public but
+    // whose range CONTAINS the private block -- e.g. 3fff:ffff::1/16 (the /16
+    // spans 3fff::/20) -- an SSRF gap and an inconsistency with the single-host
+    // deny. 2001::/23 is handled SEPARATELY below (it HAS global carve-out
+    // exceptions) so an all-global exception CIDR is not over-blocked. Byte-for-
+    // byte mirror of the Python network_policy._DENIED_SUPERNETS entries
+    // (str(ip_network(c)) renders each: "3fff::/20", "64:ff9b:1::/48").
+    "3fff::/20",
+    "64:ff9b:1::/48",
+    // IPv4-in-IPv6 transition prefixes: a broad CIDR over IPv4-mapped
+    // (::ffff:0.0.0.0/96), 6to4 (2002::/16), NAT64 (64:ff9b::/96), or the
+    // deprecated IPv4-compatible (::/96) space can embed denied IPv4 ranges with
+    // a public-looking IPv6 network address (e.g. ::800:0/102 spans ::a00:0 ==
+    // 10.0.0.0). Mirrors the Python _DENIED_SUPERNETS transition entries; ::/96
+    // subsumes the ::1/128 and ::/128 specials above. The IPv4-mapped entry is
+    // written in DOTTED form (::ffff:0.0.0.0/96, not ::ffff:0:0/96) so the
+    // denied_cidr envelope byte matches Python's str(ip_network(...)) -- CPython
+    // renders the IPv4-mapped /96 dotted; both forms parse to the same range.
+    "::ffff:0.0.0.0/96",
+    "2002::/16",
+    "64:ff9b::/96",
+    "::/96",
+  ] as const
+).map((c) => {
+  const r = _cidrToRange(c);
+  /* c8 ignore next */
+  if (r === null) throw new Error(`bad denied supernet literal: ${c}`);
+  return { v: r.v, first: r.first, last: r.last, cidr: c };
+});
+
+// CPython ``ipaddress.IPv6Address.is_reserved`` -- membership in any of the 15
+// IETF-reserved IPv6 networks. The Python egress _classify denies a native
+// reserved address as ("reserved","ipv6_reserved") in its FINAL IPv6 branch
+// (after link-local, is_private, multicast, and the ::/96 IPv4-compatible
+// unwrap). Mirrored here so _classifyIpv6 fails closed identically. The
+// table is the stable IANA reserved set. The per-sub-block private blocks that
+// live in the NON-reserved 2000::/3 (2001::/23, 3fff::/20) and their global
+// carve-out exceptions are handled separately by _ipv6IsPrivate /
+// _PRIVATE_IPV6_NETWORKS, which runs BEFORE this table because CPython checks
+// is_private before is_reserved. Built from the same _cidrToRange machinery as
+// _DENIED_SUPERNETS so the range arithmetic is shared and tested.
+const _RESERVED_IPV6_NETWORKS: ReadonlyArray<{
+  first: bigint;
+  last: bigint;
+}> = (
+  [
+    "::/8",
+    "100::/8",
+    "200::/7",
+    "400::/6",
+    "800::/5",
+    "1000::/4",
+    "4000::/3",
+    "6000::/3",
+    "8000::/3",
+    "a000::/3",
+    "c000::/3",
+    "e000::/4",
+    "f000::/5",
+    "f800::/6",
+    "fe00::/9",
+  ] as const
+).map((c) => {
+  const r = _cidrToRange(c);
+  /* c8 ignore next */
+  if (r === null) throw new Error(`bad reserved ipv6 literal: ${c}`);
+  return { first: r.first, last: r.last };
+});
+
+// CPython ``ipaddress.IPv6Address.is_private`` for NATIVE (non-unwrapped) IPv6
+// addresses -- a faithful replica of Lib/ipaddress.py _IPv6Constants:
+//   is_private == any(addr in net for net in _private_networks)
+//                 and all(addr not in net for net in _private_networks_exceptions)
+// _PRIVATE_IPV6_NETWORKS lists ONLY the _private_networks blocks that can REACH
+// the is_private check in _classifyIpv6. CPython's full _private_networks ALSO
+// contains ::ffff:0.0.0.0/96, 2002::/16, and fe80::/10, but those are
+// pre-empted EARLIER in _classifyIpv6 (the IPv4-mapped unwrap, the 6to4 unwrap,
+// and the link-local branch respectively, each of which runs BEFORE is_private
+// in CPython _classify too). Omitting them here is deliberate: classifying a
+// 6to4 / IPv4-mapped wrapper on its is_private flag would OVER-BLOCK a public
+// embedded IPv4 (e.g. 2002:0808:0808:: wrapping 8.8.8.8 reports is_private ==
+// True), which is exactly why _classify unwraps those forms first. Built from
+// the same _cidrToRange machinery as _DENIED_SUPERNETS / _RESERVED_IPV6_NETWORKS
+// so the range arithmetic is shared and tested.
+const _PRIVATE_IPV6_NETWORKS: ReadonlyArray<{
+  first: bigint;
+  last: bigint;
+}> = (
+  [
+    "::1/128", // loopback
+    "::/128", // unspecified
+    "100::/64", // IETF discard-only (the rest of 100::/8 is is_reserved)
+    "2001::/23", // IETF protocol assignments (Teredo etc.)
+    "2001:db8::/32", // documentation
+    "3fff::/20", // documentation (RFC 9637)
+    "64:ff9b:1::/48", // NAT64 local-use (the GLOBAL 64:ff9b::/96 is unwrapped)
+    "fc00::/7", // ULA
+  ] as const
+).map((c) => {
+  const r = _cidrToRange(c);
+  /* c8 ignore next */
+  if (r === null) throw new Error(`bad private ipv6 literal: ${c}`);
+  return { first: r.first, last: r.last };
+});
+
+// CPython ``_private_networks_exceptions`` -- the global carve-outs that sit
+// INSIDE 2001::/23 and are is_private == False (is_global == True) despite being
+// in a private supernet. Mirrored verbatim so TS does NOT over-block them
+// (2001:1::1 / 2001:3::1 / 2001:20::1 are public and MUST stay ALLOWED, exactly
+// like CPython). If TS denied these while CPython allowed them, that would be a
+// fresh Py<->TS divergence in the OPPOSITE direction.
+const _PRIVATE_IPV6_EXCEPTIONS: ReadonlyArray<{
+  first: bigint;
+  last: bigint;
+}> = (
+  [
+    "2001:1::1/128",
+    "2001:1::2/128",
+    "2001:3::/32",
+    "2001:4:112::/48",
+    "2001:20::/28",
+    "2001:30::/28",
+  ] as const
+).map((c) => {
+  const r = _cidrToRange(c);
+  /* c8 ignore next */
+  if (r === null) throw new Error(`bad private ipv6 exception literal: ${c}`);
+  return { first: r.first, last: r.last };
+});
+
+// The PRIVATE REMAINDER of 2001::/23: the supernet minus the union of all global
+// carve-out exceptions, as a sorted list of {first,last} bigint intervals. A CIDR
+// allowlist entry is denied ONLY when it overlaps one of these PRIVATE intervals;
+// an entry fully inside the global portion -- one exception (2001:20::/28) OR a
+// span of ADJACENT exceptions (2001:20::/27 == 2001:20::/28 + 2001:30::/28) --
+// hits no private interval and is allowed (global space the single-host path also
+// allows). Same interval-subtraction algorithm as
+// network_policy._private_remainder so both SDKs deny EXACTLY the same CIDRs.
+const _IPV6_2001_23_PRIVATE_REMAINDER: ReadonlyArray<{
+  first: bigint;
+  last: bigint;
+}> = (() => {
+  const sup = _cidrToRange("2001::/23");
+  /* c8 ignore next */
+  if (sup === null) throw new Error("bad 2001::/23 literal");
+  // Sweep the exceptions in address order, accumulating the gaps; adjacent or
+  // overlapping exceptions merge via the cursor max so a CIDR spanning two
+  // touching exception blocks leaves no spurious private sliver.
+  const excs = _PRIVATE_IPV6_EXCEPTIONS.map((e) => ({
+    first: e.first,
+    last: e.last,
+  })).sort((a, b) => (a.first < b.first ? -1 : a.first > b.first ? 1 : 0));
+  const remainder: Array<{ first: bigint; last: bigint }> = [];
+  let cursor = sup.first;
+  for (const e of excs) {
+    if (e.first > cursor) remainder.push({ first: cursor, last: e.first - 1n });
+    const next = e.last + 1n;
+    if (next > cursor) cursor = next;
+  }
+  if (cursor <= sup.last) remainder.push({ first: cursor, last: sup.last });
+  return remainder;
+})();
+
+/** CPython ``IPv6Address.is_private`` for a native IPv6 integer: in ANY
+ * _PRIVATE_IPV6_NETWORKS block AND in NO _PRIVATE_IPV6_EXCEPTIONS block. */
+function _ipv6IsPrivate(value: bigint): boolean {
+  let inPrivate = false;
+  for (const net of _PRIVATE_IPV6_NETWORKS) {
+    if (value >= net.first && value <= net.last) {
+      inPrivate = true;
+      break;
+    }
+  }
+  if (!inPrivate) return false;
+  for (const net of _PRIVATE_IPV6_EXCEPTIONS) {
+    if (value >= net.first && value <= net.last) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Return ``[denied_reason, denied_cidr]`` or ``null`` if ``host`` is not
+ * denied by the SSRF guard. Mirrors the Python ``_classify`` chokepoint:
+ * normalise surrounding whitespace + trailing FQDN-root dots, match the
+ * cloud-metadata literals first, then IPv4 / IPv6 ranges (including
+ * numeric-form normalisation and IPv4-in-IPv6 unwrap), then the
+ * reserved-hostname denylist. */
+function _classify(host: string): readonly [string, string] | null {
+  if (!host) return null;
+  host = host.trim().replace(/\.+$/, "");
+  if (!host) return null;
+  if (_CLOUD_METADATA_IPS.has(host)) {
+    return ["cloud_metadata", host];
+  }
+  // CIDR-block entry (e.g. "10.0.0.0/8", "fc00::/7"): the replay sandbox accepts
+  // CIDR allowlist entries, so a private/reserved RANGE must be denied like a
+  // single internal address. Byte-for-byte mirror of the Python `_classify`
+  // CIDR branch.
+  if (host.includes("/")) {
+    // (1) network/address portion internal -> denied (the common case).
+    const direct = _classify(host.split("/", 1)[0] ?? "");
+    if (direct !== null) return direct;
+    // (2) a BROAD CIDR supernet can CONTAIN internal ranges with a public-looking
+    // network address (8.0.0.0/6 contains 10.0.0.0/8). Deny any CIDR that
+    // OVERLAPS a special-purpose range (mirrors Python _DENIED_SUPERNETS).
+    const range = _cidrToRange(host);
+    if (range === null) return null;
+    for (const d of _DENIED_SUPERNETS) {
+      if (d.v === range.v && range.first <= d.last && d.first <= range.last) {
+        return ["rfc1918", d.cidr];
+      }
+    }
+    // 2001::/23 with EXCEPTION-awareness (mirrors network_policy.py): deny a CIDR
+    // ONLY when it overlaps the PRIVATE REMAINDER of 2001::/23 (the supernet minus
+    // the union of all global exceptions). A CIDR fully inside the global portion
+    // -- one exception (2001:20::/28) OR a span of adjacent exceptions
+    // (2001:20::/27) -- hits no private interval and is allowed; a CIDR straddling
+    // private + exception space (2001:3::1/31) hits a private interval and is
+    // denied.
+    if (range.v === 6) {
+      for (const r of _IPV6_2001_23_PRIVATE_REMAINDER) {
+        if (range.first <= r.last && r.first <= range.last) {
+          return ["rfc1918", "2001::/23"];
+        }
+      }
+    }
+    return null;
+  }
+  // RFC 6874 IPv6 zone identifier (``addr%zone``). CPython
+  // ipaddress.ip_address parses a zone on an IPv6 literal (classifying on the
+  // address bits; the scope is metadata) and accepts ANY non-empty scope that
+  // contains no ``%`` (ipaddress._split_scope_id). Node net.isIP is STRICTER --
+  // it returns 0 for a scope with a space/underscore/punctuation -- so gating
+  // IPv6 classification on isIP(host) alone FAILS OPEN: an address with a
+  // CPython-valid-but-isIP-rejected zone (e.g. the cloud-metadata endpoint
+  // ``::ffff:169.254.169.254%bad zone``) would skip the IPv6 path, fall to the
+  // hostname denylist, miss, and ALLOW -- diverging from CPython which DENIES
+  // (keystone #9 default-deny egress, #16 Py<->TS parity). Strip a CPython-valid
+  // zone here, but ONLY when the address part is a valid IPv6 literal: zones are
+  // IPv6-ONLY in CPython, so an IPv4 (or invalid) address carrying a ``%zone``
+  // does NOT parse there (ip_address raises) -> hostname path -> ALLOW (e.g.
+  // ``10.0.0.1%eth0``). Preserve that by NOT stripping unless isIP(addr) === 6.
+  let singleHost = host;
+  const zonePct = host.indexOf("%");
+  if (zonePct >= 0) {
+    const scope = host.slice(zonePct + 1);
+    if (scope.length > 0 && !scope.includes("%")) {
+      const addr = host.slice(0, zonePct);
+      if (isIP(addr) === 6) {
+        singleHost = addr;
+      }
+    }
+  }
+  const kind = isIP(singleHost);
+  if (kind === 4) {
+    return _classifyIpv4(singleHost);
+  }
+  if (kind === 6) {
+    return _classifyIpv6(singleHost);
+  }
+  // Not a literal IP per the strict parser. First, the numeric-IPv4
+  // encodings the libc resolver accepts (integer / hex / octal / short-form):
+  // canonicalise and re-classify so e.g. ``2130706433`` is rejected as
+  // 127.0.0.1 while ``134744072`` stays allowed as the public 8.8.8.8.
+  const canonical = _canonicalNumericIpv4(host);
+  if (canonical !== null && canonical !== host) {
+    return _classify(canonical);
+  }
+  // Hostname denylist. Normalise: lowercase + strip a single trailing dot.
+  let normalized = host.toLowerCase();
+  if (normalized.endsWith(".")) {
+    normalized = normalized.slice(0, -1);
+  }
+  if (_HOSTNAME_DENYLIST_EXACT.has(normalized)) {
+    return ["reserved_hostname", normalized];
+  }
+  for (const suffix of _HOSTNAME_DENYLIST_SUFFIXES) {
+    if (normalized.endsWith(suffix)) {
+      return ["reserved_hostname", suffix];
+    }
+  }
+  // Hostname not in the denylist. General hostname-based SSRF is out of
+  // scope for this SDK-boundary guard (it requires DNS-pinning policy owned
+  // by the replay-sandbox network primitive).
+  return null;
+}
+
+/**
+ * Validate every entry in ``entries`` against the SSRF guard. Throws
+ * {@link EgressDenied} on the FIRST rejected entry (short-circuit, parity
+ * with the Python ``validate_egress_entries``); returns silently if every
+ * entry passes. The thrown error carries a structured ``envelope`` ready to
+ * serialise directly into an HTTP rejection body.
+ */
+export function validateEgressEntries(entries: readonly string[]): void {
+  for (const entry of entries) {
+    if (typeof entry !== "string" || entry === "") {
+      continue;
+    }
+    const host = _extractHost(entry);
+    const classification = _classify(host);
+    if (classification === null) {
+      continue;
+    }
+    const [deniedReason, deniedCidr] = classification;
+    throw new EgressDenied({
+      code: RELAY_REPLAY_SSRF_CODE,
+      http_status: _EGRESS_DENIED_HTTP_STATUS,
+      denied_entry: entry,
+      denied_reason: deniedReason,
+      denied_cidr: deniedCidr,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Span types
 // ---------------------------------------------------------------------------
 
@@ -206,6 +1045,15 @@ export interface RunHttpClient {
   postEvidence(envelope: EvidenceEnvelope): Promise<Record<string, unknown>>;
   postReplayCaseRun(
     caseId: string,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
+  /**
+   * Create a replay case (POST /v1/replay-cases). Required by
+   * replayCreate() when no explicit caseId is supplied (the sidecar run
+   * endpoint 404s for a case it never created). Optional on the interface so
+   * stubs that only exercise the explicit-caseId path need not implement it.
+   */
+  postReplayCaseCreate?(
     body: Record<string, unknown>,
   ): Promise<Record<string, unknown>>;
 }
@@ -429,6 +1277,19 @@ export class FetchRunHttpClient implements RunHttpClient {
     await this.raiseForError(resp);
     return this.parseJson(resp);
   }
+
+  async postReplayCaseCreate(
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const idempotency = newUlid();
+    const resp = await this.fetchImpl(`${this.baseUrl}/v1/replay-cases`, {
+      method: "POST",
+      headers: this.headers(idempotency),
+      body: JSON.stringify(body),
+    });
+    await this.raiseForError(resp);
+    return this.parseJson(resp);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +1323,14 @@ export interface ReplayCreateOptions {
   runId?: string;
   mode?: "cassette" | "live";
   acknowledgeDegradedApproximation?: boolean;
+  /**
+   * Optional egress allowlist for the replay case. Every entry is screened
+   * by the SDK-boundary SSRF guard ({@link validateEgressEntries}) BEFORE
+   * any HTTP I/O. A rejected entry throws {@link EgressDenied}; the request
+   * is not sent. Parity with the Python SDK ``replay_create`` option of the
+   * same name (packages/sdk-python/relay/run.py).
+   */
+  egressAllowlist?: string[];
 }
 
 /**
@@ -685,25 +1554,77 @@ export class Run {
         },
       );
     }
-    const caseId = options.caseId ?? newUlid();
+    // SDK-boundary SSRF screen (parity with the Python SDK
+    // build_replay_case_envelope -> validate_egress_entries). Every
+    // caller-supplied egress-allowlist entry is validated BEFORE any HTTP
+    // I/O (including the getRunResult preflight); a rejected entry throws
+    // EgressDenied and the request is not sent.
+    //
+    // TOCTOU (roborev HIGH): snapshot the caller's array NOW, by value, and
+    // validate + send ONLY this private copy. The previous code aliased
+    // ``options.egressAllowlist`` by reference and reused that same array to
+    // build the POST body AFTER the awaited getRunResult() preflight -- so a
+    // caller (or a concurrent mutator) could append an unvalidated internal
+    // host between validation and POST and have it sent to the sidecar. The
+    // copy closes that window: the validated bytes are exactly the sent bytes.
+    const egressAllowlist = [...(options.egressAllowlist ?? [])];
+    if (egressAllowlist.length > 0) {
+      validateEgressEntries(egressAllowlist);
+    }
     const runIdRef = options.runId ?? this.runId;
     // Pre-flight: confirm the canonical RunResult exists (parity with
     // Python, spec line 2122-2178). The sidecar returns RELAY-REPLAY-002
     // when the run is still in flight; raiseForError() surfaces it as
     // RelayReplayPrecondition.
     await this.httpClient.getRunResult(runIdRef);
+    // The sidecar run endpoint POST /v1/replay-cases/{case_id}/run 404s for a
+    // case it never created. So when no explicit caseId is supplied, perform
+    // the real create-then-run flow (parity with the Python SDK): POST
+    // /v1/replay-cases with from_run_id to CREATE, then run the returned id.
+    // An explicit caseId is run directly (the caller owns the case lifecycle).
+    let caseRef: string;
+    if (options.caseId !== undefined) {
+      caseRef = options.caseId;
+    } else {
+      if (this.httpClient.postReplayCaseCreate === undefined) {
+        throw new RelayConfigError(
+          "replayCreate without an explicit caseId requires an HTTP client that " +
+            "implements postReplayCaseCreate (POST /v1/replay-cases)",
+          { details: { field: "caseId", reason: "no_create_capability" } },
+        );
+      }
+      const createBody = {
+        schema_version: "relay.replay_case.create.v1",
+        from_run_id: runIdRef,
+        run_id: runIdRef,
+        mode,
+        manifest_commit_hash: this.manifestCommitHash,
+        actor_identity_hash: this.actorIdentityHash,
+        egress_allowlist: egressAllowlist,
+      };
+      const created = await this.httpClient.postReplayCaseCreate(createBody);
+      const createdId = created["replay_case_id"] ?? created["case_id"];
+      if (typeof createdId !== "string" || createdId === "") {
+        throw new RelayConfigError(
+          "sidecar replay-case create response omitted a case id (replay_case_id/case_id)",
+          { details: { field: "replay_case_id" } },
+        );
+      }
+      caseRef = createdId;
+    }
     const body = {
       schema_version: "relay.replay_case.run.v1",
-      case_id: caseId,
+      case_id: caseRef,
       run_id: runIdRef,
       mode,
       manifest_commit_hash: this.manifestCommitHash,
       actor_identity_hash: this.actorIdentityHash,
+      egress_allowlist: egressAllowlist,
       ...(mode === "live"
         ? { acknowledge_degraded_approximation: true }
         : {}),
     };
-    return this.httpClient.postReplayCaseRun(caseId, body);
+    return this.httpClient.postReplayCaseRun(caseRef, body);
   }
 
   /**

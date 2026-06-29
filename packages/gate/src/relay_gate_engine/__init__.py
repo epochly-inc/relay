@@ -5,7 +5,8 @@ Public surface for w8.1:
 - :class:`GateEvaluator` -- the deterministic three-gate evaluator that
   consumes a :class:`GateDecisionDraft` and produces a
   :class:`DraftOutcome`. Conditions on each gate's policy are evaluated
-  through the W6 :class:`relay_contracts.RelayCelEvaluator`; assertions
+  through the W6 contract engine -- the wasm-backed evaluator built by
+  :func:`relay_contracts.make_cel_evaluator`; assertions
   are sorted ``P0 > P1 > P2 > P3`` and short-circuit on the first failing
   P0 when ``cascade_on_block`` is true (VAL-W8-004). Pipeline order is
   fixed scrutiny -> structural-review -> testing (VAL-W8-001).

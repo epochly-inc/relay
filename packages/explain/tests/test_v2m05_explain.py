@@ -685,6 +685,51 @@ def test_engine_clamps_unknown_class_and_emits_event() -> None:
     assert any(e.name == "taxonomy_review_required" for e in store.events)
 
 
+# ---------------------------------------------------------------------------
+# Taxonomy clamp must NOT mask a schema error (re-hunt evals-explain-1).
+# _clamp_taxonomy runs BEFORE validate(); a MISSING or NON-STRING
+# hypothesis_class is a schema violation, NOT an out-of-enum taxonomy-clamp
+# case. Clamping it to "unknown" silently persisted a bogus row and bypassed
+# validation. The clamp must only fire for a PRESENT out-of-enum STRING; a
+# missing/non-string field must pass through unchanged so validate() rejects it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M05-014")
+def test_engine_rejects_missing_hypothesis_class_no_clamp() -> None:
+    store = InMemoryHypothesisStore()
+    rid = str(uuid.uuid4())
+    sid = str(uuid.uuid4())
+    store.register_span(rid, sid)
+    eng = ExplainEngine(store=store)
+
+    payload = _good_payload(run_id=rid, span_id=sid)
+    del payload["hypothesis_class"]
+    with pytest.raises(ValidationError):
+        eng.ingest(payload)
+    # No row persisted and NO taxonomy event emitted (it was never a clamp case).
+    assert len(store.rows) == 0
+    assert not any(e.name == "taxonomy_review_required" for e in store.events)
+
+
+@pytest.mark.plumbing
+@pytest.mark.fulfills("VAL-V2M05-014")
+@pytest.mark.parametrize("bad", [123, None, ["schema_contract_drift"], {"k": "v"}])
+def test_engine_rejects_non_string_hypothesis_class_no_clamp(bad: Any) -> None:
+    store = InMemoryHypothesisStore()
+    rid = str(uuid.uuid4())
+    sid = str(uuid.uuid4())
+    store.register_span(rid, sid)
+    eng = ExplainEngine(store=store)
+
+    payload = _good_payload(run_id=rid, span_id=sid, hypothesis_class=bad)
+    with pytest.raises(ValidationError):
+        eng.ingest(payload)
+    assert len(store.rows) == 0
+    assert not any(e.name == "taxonomy_review_required" for e in store.events)
+
+
 # ===========================================================================
 # VAL-V2M05-015: span_id not on run is rejected with RELAY-EXPLAIN-001
 # ===========================================================================
