@@ -243,6 +243,13 @@ def test_corpus_eval_error_idiom_categories_present() -> None:
 
 @pytest.mark.plumbing
 @pytest.mark.fulfills("VAL-W6-050")
+# Re-runs the corpus generator in a subprocess (evaluating every case through
+# the wasm) and byte-compares -- ~20s locally, but 2-3x slower on the shared CI
+# runners under the full plumbing tier, which trips the global --timeout=60.
+# Override with a generous per-test timeout (the marker takes precedence over
+# the CLI value); the test stays in the plumbing TIER (its runtime fits well
+# within the 1380s tier budget), only its per-test hang-guard is relaxed.
+@pytest.mark.timeout(300)
 def test_corpus_is_not_stale_vs_generator() -> None:
     """A re-run of the generator MUST produce byte-identical output.
     A divergence means a contributor edited the corpus by hand or a
