@@ -155,6 +155,42 @@ def _all_packages() -> list[tuple[str, str]]:
     return sorted(_editable_packages(lock).items())
 
 
+def _wheel_packages_and_sdist_include(pkg_path: Path) -> tuple[list[str], list[str] | None]:
+    data = tomllib.loads((pkg_path / "pyproject.toml").read_text(encoding="utf-8"))
+    targets = data.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {})
+    wheel = list(targets.get("wheel", {}).get("packages", []))
+    sdist = targets.get("sdist", {}).get("include", None)
+    return wheel, (list(sdist) if sdist is not None else None)
+
+
+@pytest.mark.plumbing
+@pytest.mark.parametrize("dist,src_rel", _all_packages())
+def test_sdist_ships_every_wheel_package(dist: str, src_rel: str) -> None:
+    """Every wheel-shipped package MUST also be in the sdist ``include``.
+
+    A package present in the wheel but missing from the sdist ``include`` ships
+    a working wheel but a BROKEN source distribution: ``pip install`` that builds
+    from sdist (no wheel available) omits the package and fails at import. The
+    cli regressed exactly this when ``src/verify_self`` was added to the wheel
+    but not the sdist. A package with no sdist ``include`` ships everything (OK).
+    """
+    wheel, sdist = _wheel_packages_and_sdist_include(REPO_ROOT / src_rel)
+    if not wheel or sdist is None:
+        pytest.skip(f"{dist}: no explicit wheel packages or sdist ships all")
+    missing = [
+        w
+        for w in wheel
+        if not any(
+            s.rstrip("/") == w or s.startswith(w + "/") or w.startswith(s.rstrip("/") + "/")
+            for s in sdist
+        )
+    ]
+    assert not missing, (
+        f"{dist} wheel ships {missing} but the sdist [tool.hatch.build.targets."
+        f"sdist].include omits it -> a source-build install is broken; sdist={sdist!r}"
+    )
+
+
 @pytest.mark.plumbing
 @pytest.mark.parametrize("dist,src_rel", _all_packages())
 def test_production_hard_imports_have_declared_runtime_provider(

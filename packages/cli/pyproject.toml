@@ -121,6 +121,9 @@ packages = ["src/relay_cli", "src/verify_self"]
 [tool.hatch.build.targets.sdist]
 include = [
   "src/relay_cli",
+  # Ship verify_self in the sdist too (it is a wheel package above): a
+  # source-build install must include it or relay_cli.main breaks at import.
+  "src/verify_self",
   "README.md",
 ]
 
