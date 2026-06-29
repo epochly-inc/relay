@@ -213,3 +213,47 @@ describe("F6: native-IPv6 is_private egress parity with CPython", () => {
     }
   });
 });
+
+// RFC 6874 IPv6 zone identifiers (scoped addresses, ``addr%zone``). CPython
+// ``ipaddress.ip_address`` parses ``fe80::1%eth0`` (scope kept as metadata,
+// classification uses the address bits) and REJECTS an empty/multi-``%`` zone.
+// Found by the egress parity property test: the TS hand-rolled IPv6 parser
+// passed the ``%zone`` suffix into hextet splitting -> the trailing group
+// ``%eth0`` -> ``parseInt("%eth0",16)`` = NaN -> ``BigInt(NaN)`` RangeError,
+// a non-EgressDenied crash where CPython returns a clean verdict (keystone
+// #16 / #9 Py<->TS divergence). ``fe80::1%eth0`` survived only by luck
+// (``parseInt("1%eth0",16)`` == 1). Verdicts captured from CPython 3.14.3
+// ``relay.network_policy._classify`` (via validate_egress_entries).
+describe("IPv6 zone identifiers (RFC 6874) parity with CPython", () => {
+  // Valid zone (non-empty, single ``%``; Node net.isIP == 6, CPython parses):
+  // classify on the address part, scope ignored.
+  const VALID_ZONE_DENY = [
+    { entry: "::%eth0", reason: "rfc1918", cidr: "fc00::/7" },
+    { entry: "[::%eth0]", reason: "rfc1918", cidr: "fc00::/7" },
+    { entry: "::1%lo0", reason: "rfc1918", cidr: "fc00::/7" },
+    { entry: "fe80::1%eth0", reason: "link_local", cidr: "fe80::/10" },
+    { entry: "[fe80::1%eth0]", reason: "link_local", cidr: "fe80::/10" },
+    // IPv4-mapped with a zone unwraps to the embedded IPv4 (loopback).
+    { entry: "::ffff:127.0.0.1%eth0", reason: "loopback", cidr: "127.0.0.0/8" },
+  ] as const;
+  for (const c of VALID_ZONE_DENY) {
+    it(`denies ${c.entry} as ${c.reason}/${c.cidr} (zone stripped)`, () => {
+      expect(classifyEntry(c.entry)).toEqual({ reason: c.reason, cidr: c.cidr });
+    });
+  }
+
+  // A PUBLIC address with a valid zone stays allowed (scope is not a reason
+  // to block a globally-routable host).
+  it("allows a public address with a valid zone 2606:4700::%x", () => {
+    expect(classifyEntry("2606:4700::%x")).toBeNull();
+  });
+
+  // Invalid zone (empty, or contains a second ``%``): Node net.isIP == 0 and
+  // CPython ip_address RAISES -> _classify returns None -> ALLOWED. TS must
+  // agree (return null), NOT crash.
+  for (const entry of ["::%", "fe80::1%", "::%e%t"] as const) {
+    it(`allows ${entry} (invalid zone; CPython ip_address rejects -> None)`, () => {
+      expect(classifyEntry(entry)).toBeNull();
+    });
+  }
+});

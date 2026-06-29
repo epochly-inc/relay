@@ -449,7 +449,16 @@ function _classifyIpv4(host: string): readonly [string, string] | null {
 /** Expand an IPv6 literal to its 8 16-bit hextets as bigint, or ``null``. */
 function _ipv6Hextets(host: string): bigint[] | null {
   if (isIP(host) !== 6) return null;
-  let h = host;
+  // RFC 6874 zone identifier (``addr%zone``): Node net.isIP already validated
+  // the zone form (it returns 6 only for a non-empty, single-``%`` scope --
+  // identical to CPython ipaddress._split_scope_id, which raises on an empty or
+  // multi-``%`` scope so _classify returns None/ALLOWED). CPython classifies on
+  // the address bits alone (the scope is metadata), so strip the ``%zone``
+  // suffix before hextet parsing. Without this the suffix poisons the trailing
+  // group (``%eth0`` -> parseInt NaN -> BigInt(NaN) RangeError), a non-verdict
+  // crash that diverges from CPython's clean classification (keystone #16/#9).
+  const pct = host.indexOf("%");
+  let h = pct >= 0 ? host.slice(0, pct) : host;
   // An IPv4-mapped / transition trailer (e.g. ``::ffff:1.2.3.4``) is handled
   // by the caller via dedicated unwrap helpers; for the generic hextet
   // expansion convert a trailing dotted-IPv4 group into two hextets.
