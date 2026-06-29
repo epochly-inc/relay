@@ -121,7 +121,6 @@
         "apps/local-sidecar/tests/test_audit_r4_actors_kind_alignment.py",
         "apps/local-sidecar/tests/test_canon_002_int_coercion_422.py",
         "apps/local-sidecar/tests/test_compare_and_set_state.py",
-        "apps/local-sidecar/tests/test_dependency_surface.py",
         "apps/local-sidecar/tests/test_gate_decision_draft_handoff.py",
         "apps/local-sidecar/tests/test_guards_pred_handoff_draft_actions.py",
         "apps/local-sidecar/tests/test_guards_pred_registry.py",
@@ -206,7 +205,7 @@
         "tests/examples/test_w16_3_lifecycle_e2e.py",
         "tests/examples/test_w16_4_lifecycle_e2e.py"
       ],
-      "guard_test_count": 90
+      "guard_test_count": 89
     },
     {
       "n": "5",

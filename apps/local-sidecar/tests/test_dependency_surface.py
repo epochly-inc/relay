@@ -1,7 +1,7 @@
 """Local-sidecar dependency-surface guards.
 
 The sidecar is the local control-plane process (loopback HTTP, single-writer
-SQLite, the file-based event log, the three-anchor handoff validator). It is
+SQLite, the file-based event log, the state-machine transition guards). It is
 published as ``epochly-relay-sidecar`` and is also consumed as a workspace
 dependency by the SDK, the CLI, the gate engine, and the replay-proxy.
 
