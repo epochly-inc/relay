@@ -52,8 +52,11 @@ exclude_path = [
 
 # Accept these status codes as OK. Some sites return 403 to crawlers even
 # when the link is valid for browsers; 206 covers partial-content
-# responses. 405 (Method Not Allowed) is NOT globally accepted -- the one
-# POST-only endpoint we care about (the RFC 3161 TSA at
+# responses. 202 (Accepted) is a 2xx success returned by some async resolvers
+# (eur-lex.europa.eu serves the official EU AI Act regulation ELI permalink
+# with 202 to lychee's GET) -- accepting it keeps those links covered against
+# rot rather than excluding the URL. 405 (Method Not Allowed) is NOT globally
+# accepted -- the one POST-only endpoint we care about (the RFC 3161 TSA at
 # timestamp.sigstore.dev) is in `exclude` above so a 405 from any other
 # link still surfaces as broken.
-accept = ["200", "204", "206", "301", "302", "403"]
+accept = ["200", "202", "204", "206", "301", "302", "403"]

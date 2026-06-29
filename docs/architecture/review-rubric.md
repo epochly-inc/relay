@@ -76,8 +76,9 @@ Can a new senior engineer understand and safely change the system?
 | 8 | The above with at most a P2 doc-staleness item. |
 | <8 | Any doc claim that does not resolve against source (alignment audit P0/P1). |
 
-Evidence: `scripts/docs/audit-codebase-alignment.py` (0/0/0);
-[`ARCHITECTURE.md`](../../ARCHITECTURE.md); this rubric.
+Evidence: `scripts/docs/audit-codebase-alignment.py` (0/0/0); the repo-root
+`ARCHITECTURE.md` (not web-published); the [architecture overview](overview.md);
+this rubric.
 
 ## Gate computation
 
