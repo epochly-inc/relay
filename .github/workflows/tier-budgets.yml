@@ -217,7 +217,16 @@ jobs:
         run: npm run build --workspace @epochly/relay-contracts
 
       - name: "install python deps"
-        run: uv sync --all-packages --all-extras
+        # Exclude the mitmproxy extra on this py3.14 job: mitmproxy's transitive
+        # mitmproxy-linux (eBPF) has NO py3.14 wheel, so it builds from source and
+        # fails ("Failed to find bpf-linker on PATH") -- the same wall the py3.14
+        # matrix leg hit (matrix-release-gate.yml). This is why the nightly eval
+        # job failed at install every night after the cutover merge (the job only
+        # runs on schedule/workflow_dispatch, so the merge push never exercised it).
+        # The eval tier is LLM-judged quality (Explain / assertion-hit-rate /
+        # parity) and does NOT use the mitmdump replay driver, so the extra is
+        # unnecessary here. The smoke tier (py3.12, wheel present) keeps it.
+        run: uv sync --all-packages --all-extras --no-extra mitmproxy
 
       - name: "run eval tier"
         id: run_eval
